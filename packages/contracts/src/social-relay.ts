@@ -35,8 +35,16 @@ export const SOCIAL_RELAY_CONFIG_KEY = 'substrat:social-relay';
  * registration spends the platform's upstream client, so only the platform's own issuer
  * gets one — a builder's vertical that happens to be named the same lives under
  * `<tenant>/<name>` and is not matched.
+ *
+ * Both of the platform's lineages: the bare `auth-server` it was first registered under, and
+ * `substrat-9yjbbn/auth-server`, the platform workspace's own lineage that the bare platform
+ * verticals were retired onto (#389, `manyfold` → `substrat-9yjbbn/manyfold`). An install of
+ * the standard Auth Server is bound to the second, and with the bare slug alone every relay
+ * path — hostname trigger, staff pass, the install's own call — refused it as "not an Auth
+ * Server install". Only the platform workspace can push under its prefix: a builder's prefix
+ * is fixed by its own authentication.
  */
-export const SOCIAL_RELAY_VERTICALS: readonly string[] = ['auth-server'];
+export const SOCIAL_RELAY_VERTICALS: readonly string[] = ['auth-server', 'substrat-9yjbbn/auth-server'];
 
 /**
  * The provider id an install holds a relay provider under. Suffixed, because the bare ids
