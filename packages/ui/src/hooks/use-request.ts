@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useRef, useState, type DependencyList, type Dispatch, type SetStateAction } from 'react';
-import { requestLoading, requestOk, settleFailure, type RequestState } from '../request-state';
+import { requestFailed, requestLoading, requestOk, settleFailure, type RequestState } from '../request-state';
 
 export interface Request<T> {
   state: RequestState<T>;
   /**
    * Read again. With an answer shown it stays shown until the new one lands (a failed reload
    * keeps it); from an error it goes back to loading, so a Retry visibly does something.
-   * Resolves once settled, and never rejects.
+   * Resolves once settled, and never rejects, to how THIS read settled: `ok`, or `error` even
+   * when the shown answer was kept (so a caller can say the refresh failed), or null when a
+   * newer read started first and this one's answer was dropped. Every read shares one order,
+   * so an older answer landing last never replaces a newer one.
    */
-  reload: () => Promise<void>;
+  reload: () => Promise<RequestState<T> | null>;
   /** For an optimistic edit of the answer (pair with `mapOk`). */
   set: Dispatch<SetStateAction<RequestState<T>>>;
 }
@@ -25,13 +28,17 @@ export function useRequest<T>(load: () => Promise<T>, deps: DependencyList): Req
   const loadRef = useRef(load);
   loadRef.current = load;
 
-  const run = useCallback(async () => {
+  const run = useCallback(async (): Promise<RequestState<T> | null> => {
     const mine = ++generation.current;
     try {
       const value = await loadRef.current();
-      if (mine === generation.current) set(requestOk(value));
+      if (mine !== generation.current) return null;
+      set(requestOk(value));
+      return requestOk(value);
     } catch (error) {
-      if (mine === generation.current) set(settleFailure<T>(error));
+      if (mine !== generation.current) return null;
+      set(settleFailure<T>(error));
+      return requestFailed<T>(error);
     }
   }, []);
 

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { Vertical, VerticalSource } from '@substrat-run/contracts';
-import { Badge, Button, Card, Dialog, Input, RequestError, Select, Skeleton, SkeletonRegion, Table, Tag, requestOk, settleFailure, useRequest, valueOr } from '../components';
+import { Badge, Button, Card, Dialog, Input, RequestError, Select, Skeleton, SkeletonRegion, Table, Tag, useRequest, valueOr } from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
 import type { Api } from '../lib/api';
@@ -35,17 +35,13 @@ export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToa
   // mutation keeps the rows shown, so a flag flip re-resolves the detail without a flash.
   const registry = useRequest(() => walkAll((p) => api.listVerticals(p)), [api]);
   const verticals = valueOr(registry.state, NONE);
-  // The re-read after a mutation (here or in the detail). `registry.reload` would keep the
-  // rows and say nothing when it fails, so the vertical just registered would stay missing
-  // with no word why. This keeps the rows too, and says so — what the detail does when its
-  // own re-walk fails.
+  // The re-read after a mutation (here or in the detail). Through `reload`, so it shares the
+  // first read's order: two mutations in a row start two reads, and the older one landing last
+  // must not bring back flags the newer one already moved. A failed refresh keeps the rows and
+  // says so — the vertical just registered would otherwise stay missing with no word why.
   async function refresh() {
-    try {
-      registry.set(requestOk(await walkAll((p) => api.listVerticals(p))));
-    } catch (e) {
-      registry.set(settleFailure<Vertical[]>(e));
-      onToast('Failed to refresh verticals', (e as Error).message, 'danger');
-    }
+    const settled = await registry.reload();
+    if (settled?.state === 'error') onToast('Failed to refresh verticals', (settled.error as Error).message, 'danger');
   }
   const [q, setQ] = useState('');
   const filtered = useMemo(() => {
