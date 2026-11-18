@@ -650,6 +650,27 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     expect(upserts).toEqual([expect.objectContaining({ scopeId: otherApp, provider: 'acme.docbox', secret: { apiKey: 'k-2' } })]);
   });
 
+  it("the team page's door withdraws a live connection no app serves, and only a live one it lists", async () => {
+    const del = (id: string, cookie = 'sb_session=sub-owner') =>
+      app.request(`/api/teams/${tenant}/integrations/connections/${id}`, { method: 'DELETE', headers: { cookie } }, env);
+    // Fortnox for acme/other: this team runs no app of that vertical, so no app door reaches it.
+    const orphan = byLabel('Other AB');
+    const mailIn = row({ provider: 'mail-in', label: 'Mail in' });
+    rows.push(mailIn);
+
+    expect((await del(orphan.id, '')).status).toBe(401);
+    expect((await del(ulid())).status).toBe(404);
+    expect((await del(byLabel('Gone AB').id)).status).toBe(404);
+    // Not a provider the page lists: mail-in's own door also deletes the mail it holds.
+    expect((await del(mailIn.id)).status).toBe(404);
+    expect(revoked).toEqual([]);
+
+    const res = await del(orphan.id);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ disconnected: orphan.id });
+    expect(revoked).toEqual([orphan.id]);
+  });
+
   it('the addressed revoke reaches an undeclared connection of this vertical too', async () => {
     const live = row({ provider: 'acme.docbox', label: 'Docbox' });
     rows.push(live);

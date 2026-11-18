@@ -3075,6 +3075,32 @@ async function actOnAppMailInIn(
  * above refuses to guess for. The id only selects among this app's own live rows for this
  * provider (`inspectableConnection`), so it can never reach another vertical's connection.
  */
+/**
+ * The team page's withdrawal door: one live connection the team Integrations page lists, addressed
+ * by its id alone. The app-addressed doors resolve through a serving app, and a connection can
+ * outlive every app it served — deleting an app revokes nothing, and a tenant connection of a
+ * vertical no app runs any more is served by none — so without this the page would list a live
+ * credential nobody can withdraw. The id is resolved among the tenant's live rows of a provider the
+ * page lists (first-party or vertical-defined), never trusted on its own; mail-in is not one of
+ * them, since its revoke must also delete the mail it holds. Gated by the same in-scope check as
+ * every other connection act.
+ */
+async function disconnectTeamConnectionIn(ctx: TeamContext, wantedId: string) {
+  const { c, node } = ctx;
+  const dash = await teamScope(ctx);
+  const rows = await connectionsFor(c.env, node.tenantId, node.principal);
+  const row = rows.find(
+    (r) =>
+      r.id === wantedId &&
+      r.status !== 'revoked' &&
+      (Object.hasOwn(PROVIDERS, r.provider) || isVerticalConnectorProvider(r.provider)),
+  );
+  if (!row) throw new HTTPException(404, { message: 'no such connection' });
+  await dash.invoke('dashboard/begin-connection', { provider: row.provider });
+  await controlPlaneFor(c.env, node.tenantId, node.principal).revokeConnection(row.id);
+  return { disconnected: row.id };
+}
+
 async function disconnectAppConnectionIn(ctx: TeamContext, appScopeId: string, provider: string, wantedId: string) {
   const { connectionId, cp } = await inspectableConnection(ctx, appScopeId, provider, wantedId, { revoke: true });
   await cp.revokeConnection(connectionId);
@@ -5997,6 +6023,7 @@ const routeHandlers = {
   'dashboard/get-app-mail-in': async (ctx, { scopeId: app }) => appMailInIn(ctx, app),
   'dashboard/set-app-mail-in': async (ctx, { scopeId: app, action, allowlist }) => actOnAppMailInIn(ctx, app, { action, allowlist }),
   'dashboard/list-team-integrations': async (ctx) => teamIntegrationsIn(ctx),
+  'dashboard/disconnect-team-connection': async (ctx, { connectionId: id }) => disconnectTeamConnectionIn(ctx, id),
   'dashboard/connect-app-integration': async (ctx, { scopeId: app, provider, secret, label }) =>
     connectAppIntegrationIn(ctx, app, provider, { secret, label }),
   'dashboard/disconnect-app-integration': async (ctx, { scopeId: app, provider }) =>

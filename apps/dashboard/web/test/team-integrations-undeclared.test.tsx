@@ -5,8 +5,9 @@ import { Integrations } from '../src/views/Integrations';
 import { button, buttons } from './wa';
 
 /**
- * A vertical-defined connection its vertical no longer declares (#3278): the team-wide page lists
- * it formless, and the one act left on it — withdrawing it — has to be reachable from that card.
+ * A vertical-defined connection its vertical no longer declares, served by no app (#3278): the
+ * team-wide page lists it formless, and the one act left on it — withdrawing it — has to be
+ * reachable from that card, through the team's own door since there is no app to route through.
  * Details, Manage and Rotate would all answer 404 for a provider with no declaration, so the card
  * offers none of them.
  */
@@ -26,7 +27,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it('disconnects an undeclared connection from the team page, addressed through an app it serves', async () => {
+it('disconnects an undeclared connection no app serves any more, from the team page', async () => {
   let live = true;
   const requests: string[] = [];
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -39,12 +40,13 @@ it('disconnects an undeclared connection from the team page, addressed through a
         connections: live ? [{
           id: 'conn-1', label: 'Docbox', status: 'active', externalAccountRef: null, ownerScopeId: null,
           expiresAt: null, lastOkAt: null, lastError: null, lastErrorAt: null, createdAt: '2026-11-01T09:00:00.000Z',
-          vertical: 'acme/books', apps: [{ scopeId: 'app-a', name: 'Books' }], sweepRuns: [],
+          // The app that served it was deleted: deleting an app revokes nothing.
+          vertical: 'acme/books', apps: [], sweepRuns: [],
         }] : [],
         connectTargets: [],
       }] });
     }
-    if (path === '/api/teams/team-a/apps/app-a/integrations/acme.docbox/connections/conn-1' && init?.method === 'DELETE') {
+    if (path === '/api/teams/team-a/integrations/connections/conn-1' && init?.method === 'DELETE') {
       live = false;
       return Response.json({ disconnected: true });
     }
@@ -60,9 +62,9 @@ it('disconnects an undeclared connection from the team page, addressed through a
 
   await act(async () => button('Disconnect', container)!.click());
   const dialog = container.querySelector('wa-dialog')!;
-  expect(dialog.textContent).toContain('Books');
+  expect(dialog.textContent).toContain('No app of this team uses it any more.');
   await act(async () => buttons(dialog).find((b) => b.textContent?.trim() === 'Disconnect')!.click());
 
-  expect(requests).toContain('DELETE /api/teams/team-a/apps/app-a/integrations/acme.docbox/connections/conn-1');
+  expect(requests).toContain('DELETE /api/teams/team-a/integrations/connections/conn-1');
   expect(container.textContent).not.toContain('Docbox');
 });

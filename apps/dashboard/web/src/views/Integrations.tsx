@@ -1236,11 +1236,10 @@ export function Integrations({ teamId }: { teamId: string }) {
   const [err, setErr] = useState<string | null>(null);
   const [dialog, setDialog] = useState<AccountIntegration | null>(null);
   const [detail, setDetail] = useState<{ provider: AccountIntegration; scopeId: string; connection: ConnectionView } | null>(null);
-  // Addressed by the connection's own id, through one app it serves — the same door the app
-  // panel's fleet rows use, and the one that still answers once the vertical stopped declaring it.
+  // Addressed by the connection's own id at the team's door, which needs no serving app: a
+  // connection can outlive every app it served, and the page lists it all the same.
   const [disconnect, setDisconnect] = useState<{
     provider: AccountIntegration;
-    scopeId: string;
     connection: AccountIntegration['connections'][number];
   } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1250,11 +1249,7 @@ export function Integrations({ teamId }: { teamId: string }) {
     if (!disconnect || busy) return;
     setBusy(true);
     try {
-      await teamApi(teamId).disconnectAppConnection({
-        scopeId: disconnect.scopeId,
-        provider: disconnect.provider.provider,
-        connectionId: disconnect.connection.id,
-      });
+      await teamApi(teamId).disconnectTeamConnection({ connectionId: disconnect.connection.id });
     } catch {
       // The refetch below shows the surviving state either way.
     }
@@ -1319,11 +1314,9 @@ export function Integrations({ teamId }: { teamId: string }) {
                             Details
                           </Button>
                         )}
-                        {c.apps[0] && (
-                          <Button variant="ghost" size="sm" onClick={() => setDisconnect({ provider: p, scopeId: c.apps[0]!.scopeId, connection: c })}>
-                            Disconnect
-                          </Button>
-                        )}
+                        <Button variant="ghost" size="sm" onClick={() => setDisconnect({ provider: p, connection: c })}>
+                          Disconnect
+                        </Button>
                       </div>
                       <HealthLine conn={c} />
                       <SweepStrip runs={c.sweepRuns ?? []} skippedNote="nothing polls this connection" />
@@ -1394,8 +1387,10 @@ export function Integrations({ teamId }: { teamId: string }) {
           {disconnect && (
             <>
               The stored {disconnect.provider.name} credential is deleted and every grant it carried is revoked — this cannot
-              be undone. Every app it serves loses it
-              {disconnect.connection.apps.length > 0 ? ` (${disconnect.connection.apps.map((a) => a.name).join(', ')})` : ''}.
+              be undone.{' '}
+              {disconnect.connection.apps.length > 0
+                ? `Every app it serves loses it (${disconnect.connection.apps.map((a) => a.name).join(', ')}).`
+                : 'No app of this team uses it any more.'}{' '}
               Deliveries already queued stay queued and resume if it is connected again.
             </>
           )}

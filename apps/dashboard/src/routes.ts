@@ -1480,6 +1480,12 @@ export const dashboardRoutes = defineRoutes({
     })) }),
     http: { method: 'GET', path: '/integrations' },
   },
+  'dashboard/disconnect-team-connection': {
+    summary: 'Revoke one addressed live connection the team Integrations page lists, whether or not an app still serves it',
+    input: z.object({ connectionId: z.string().min(1) }),
+    output: z.object({ disconnected: z.string() }),
+    http: { method: 'DELETE', path: '/integrations/connections/{connectionId}' },
+  },
   'dashboard/connect-app-integration': {
     summary: 'Connect or rotate one provider credential for an app',
     input: z.object({
