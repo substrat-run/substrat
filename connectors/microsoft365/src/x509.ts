@@ -134,6 +134,129 @@ export async function certificateMatchesKey(certificateBase64: string, privateKe
   }
 }
 
+/**
+ * What the platform reads off a certificate it did not make (#3281): the public key and the
+ * validity window. Nothing else is judged — the issuer, the extensions and the signature are the
+ * owner's and Entra's business, and a certificate their PKI issued is as good a key carrier as a
+ * self-signed one. `undefined` for anything that is not one DER X.509 certificate; never throws.
+ */
+export interface CertificateFacts {
+  /** The SubjectPublicKeyInfo, whole — what `crypto.subtle.importKey('spki', …)` takes. */
+  spki: Uint8Array;
+  notBefore: Date;
+  notAfter: Date;
+}
+
+export function readCertificateFacts(der: Uint8Array): CertificateFacts | undefined {
+  try {
+    const cert = readTlv(der, 0, 0x30);
+    if (!cert || cert.end !== der.length) return undefined;
+    const tbs = readTlv(der, cert.body, 0x30);
+    if (!tbs || tbs.end > cert.end) return undefined;
+    // tbs: [0] version (absent on a v1 certificate), serial, signature, issuer, validity, subject, spki, …
+    let at = tbs.body;
+    const version = readTlv(der, at, 0xa0);
+    if (version) at = version.end;
+    const parts: { start: number; body: number; end: number }[] = [];
+    for (let i = 0; i < 6; i++) {
+      const t = readTlv(der, at);
+      if (!t || t.end > tbs.end) return undefined;
+      parts.push(t);
+      at = t.end;
+    }
+    const [serial, , , validity, , spki] = parts as [typeof parts[0], unknown, unknown, typeof parts[0], unknown, typeof parts[0]];
+    if (der[serial.start] !== 0x02 || der[validity.start] !== 0x30 || der[spki.start] !== 0x30) return undefined;
+    const from = readTlv(der, validity.body);
+    const until = from && readTlv(der, from.end);
+    if (!from || !until || until.end !== validity.end) return undefined;
+    const notBefore = readTime(der, from);
+    const notAfter = readTime(der, until);
+    if (!notBefore || !notAfter) return undefined;
+    return { spki: der.slice(spki.start, spki.end), notBefore, notAfter };
+  } catch {
+    return undefined;
+  }
+}
+
+/** A UTCTime or GeneralizedTime in the `Z` form RFC 5280 requires; `undefined` for any other. */
+function readTime(b: Uint8Array, t: { start: number; body: number; end: number }): Date | undefined {
+  const s = new TextDecoder().decode(b.subarray(t.body, t.end));
+  const m =
+    b[t.start] === 0x17
+      ? /^(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})Z$/.exec(s)
+      : b[t.start] === 0x18
+        ? /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})Z$/.exec(s)
+        : null;
+  if (!m) return undefined;
+  let year = Number(m[1]);
+  if (b[t.start] === 0x17) year += year >= 50 ? 1900 : 2000; // RFC 5280 §4.1.2.5.1
+  const d = new Date(Date.UTC(year, Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])));
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
+/**
+ * Does the certificate carry this private key's public half? For a certificate the owner
+ * supplied (#3281): the modulus and exponent compared, nothing else — unlike
+ * {@link certificateMatchesKey}, which also holds a certificate this module minted to the exact
+ * shape it mints. False on anything unreadable or not RSA; never throws.
+ */
+export async function suppliedCertificateMatchesKey(certificateBase64: string, privateKeyBase64: string): Promise<boolean> {
+  try {
+    const facts = readCertificateFacts(fromBase64(certificateBase64));
+    if (!facts) return false;
+    const pub = await rsaPublicJwk(facts.spki);
+    const priv = await rsaPrivateJwk(fromBase64(privateKeyBase64));
+    return pub.n === priv.n && pub.e === priv.e;
+  } catch {
+    return false;
+  }
+}
+
+/** The RSA public key in a SubjectPublicKeyInfo, as a JWK. Throws when it is not RSA. */
+export async function rsaPublicJwk(spki: Uint8Array): Promise<JsonWebKey> {
+  const key = await crypto.subtle.importKey('spki', spki, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, true, ['verify']);
+  return crypto.subtle.exportKey('jwk', key);
+}
+
+/** An RSA PKCS#8 private key, as a JWK (read for its `n` and `e`). Throws when it is not one. */
+export async function rsaPrivateJwk(pkcs8: Uint8Array): Promise<JsonWebKey> {
+  const key = await crypto.subtle.importKey('pkcs8', pkcs8, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, true, ['sign']);
+  return crypto.subtle.exportKey('jwk', key);
+}
+
+const OID_RSA_ENCRYPTION = '1.2.840.113549.1.1.1';
+
+/**
+ * What a DER private key is, by its structure alone (never by trying to decrypt it):
+ *
+ * - `'pkcs8'` — a PrivateKeyInfo for an RSA key: `SEQ { INTEGER 0, SEQ { rsaEncryption … }, OCTET STRING }`.
+ * - `'pkcs8-not-rsa'` — a PrivateKeyInfo for another algorithm (an EC key, say).
+ * - `'pkcs8-encrypted'` — an EncryptedPrivateKeyInfo: `SEQ { SEQ { algorithm }, OCTET STRING }`.
+ * - `'pkcs1'` — an RSAPrivateKey: `SEQ { INTEGER 0, INTEGER n, INTEGER e, … }`.
+ * - `undefined` — none of these.
+ */
+export type PrivateKeyShape = 'pkcs8' | 'pkcs8-not-rsa' | 'pkcs8-encrypted' | 'pkcs1';
+
+export function privateKeyShape(der: Uint8Array): PrivateKeyShape | undefined {
+  const outer = readTlv(der, 0, 0x30);
+  if (!outer || outer.end !== der.length) return undefined;
+  const first = readTlv(der, outer.body);
+  const second = first && readTlv(der, first.end);
+  if (!first || !second) return undefined;
+  if (der[first.start] === 0x30 && der[second.start] === 0x04) return 'pkcs8-encrypted';
+  if (der[first.start] !== 0x02) return undefined;
+  if (der[second.start] === 0x02) return 'pkcs1';
+  if (der[second.start] !== 0x30) return undefined;
+  const algorithm = readTlv(der, second.body, 0x06);
+  if (!algorithm) return undefined;
+  return equal(der.subarray(algorithm.start, algorithm.end), oid(OID_RSA_ENCRYPTION)) ? 'pkcs8' : 'pkcs8-not-rsa';
+}
+
+/** A PKCS#1 RSAPrivateKey wrapped as the PKCS#8 PrivateKeyInfo Web Crypto imports (RFC 5208 §5). */
+export function pkcs8FromPkcs1(pkcs1: Uint8Array): Uint8Array {
+  return seq(integer(new Uint8Array([0])), seq(oid(OID_RSA_ENCRYPTION), nul()), tlv(0x04, pkcs1));
+}
+
 /** One TLV at `at`: where it starts, where its body starts, where it ends. `tag` checks the tag when given. */
 function readTlv(
   b: Uint8Array,

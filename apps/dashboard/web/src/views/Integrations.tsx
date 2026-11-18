@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react';
-import { Button, Checkbox, Dialog, Input, Select } from '@substrat-run/ui/wa';
+import { Button, Checkbox, Dialog, Input, Select, Textarea } from '@substrat-run/ui/wa';
 import {
   api,
   teamApi,
@@ -527,23 +527,33 @@ function IntegrationDetail({
         )}
 
         {/* #2100: the certificate the platform generated for this connection. Public — the
-            private key never leaves the plane — and the tenant's next step until it is uploaded. */}
+            private key never leaves the plane — and the tenant's next step until it is uploaded.
+            #3281: or the owner's own, which the platform does not renew, so its end is a warning. */}
         {activity?.certificate && (
           <div>
-            <CertificateCard
-              title="Certificate"
-              certificate={activity.certificate}
-              download="Download certificate (.cer)"
-              filename={provider.provider}
-              note="Upload it to your app registration under Certificates & secrets, then test the connection. The thumbprint Entra shows should match the one above. The private key stays with the platform."
-            />
+            {activity.certificate.supplied ? (
+              <>
+                <CertificateCard
+                  title="Certificate (yours, supplied)"
+                  certificate={activity.certificate}
+                  note="You supplied this certificate and its private key; the platform does not renew it. The thumbprint Entra shows under Certificates & secrets should match the one above."
+                />
+                <SuppliedExpiry notAfter={activity.certificate.notAfter} />
+              </>
+            ) : (
+              <CertificateCard
+                title="Certificate"
+                certificate={activity.certificate}
+                download={{ label: 'Download certificate (.cer)', filename: provider.provider }}
+                note="Upload it to your app registration under Certificates & secrets, then test the connection. The thumbprint Entra shows should match the one above. The private key stays with the platform."
+              />
+            )}
             {activity.certificate.next && (
               <div style={{ marginTop: 10 }}>
                 <CertificateCard
                   title="New certificate"
                   certificate={activity.certificate.next}
-                  download="Download new certificate (.cer)"
-                  filename={`${provider.provider}-new`}
+                  download={{ label: 'Download new certificate (.cer)', filename: `${provider.provider}-new` }}
                   note={`Upload it beside the current one before ${activity.certificate.notAfter.slice(0, 10)}, then save the connection: it switches to the new certificate once Entra accepts it, and you can then remove the old one from the app registration. Until then the current certificate keeps signing.`}
                 />
               </div>
@@ -689,7 +699,7 @@ function ConnectDialog({
   const fleet = provider.multiAccount === true;
   const unit = fleetUnit(provider);
   const [manual, setManual] = useState(!redirect);
-  const [values, setValues] = useState<Record<string, string>>({});
+  const [values, setValues] = useState<Record<string, string>>(() => initialValues(provider.fields, rotate));
   const [target, setTarget] = useState<string>(scopeId ?? pickTarget?.[0]?.scopeId ?? '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -701,7 +711,9 @@ function ConnectDialog({
   const [links, setLinks] = useState<ConnectLinkView[]>([]);
   /** The link just minted for sharing — shown once; listing never returns the URL. */
   const [minted, setMinted] = useState<{ url: string; expiresAt: string; copied: boolean } | null>(null);
-  const complete = provider.fields.every((f) => f.optional || (values[f.key] ?? '').trim() !== '') && target !== '';
+  const shown = (f: ProviderField) => fieldShown(f, values);
+  const complete =
+    provider.fields.every((f) => !fieldRequired(f, values, rotate) || (values[f.key] ?? '').trim() !== '') && target !== '';
 
   useEffect(() => {
     if (!redirect || DEV_MOCK || target === '') return;
@@ -774,11 +786,12 @@ function ConnectDialog({
     setRefusal(null);
     setUnavailable(null);
     try {
-      // An optional field left empty is left out, not sent as '' (#2100).
+      // An optional field left empty is left out, not sent as '' (#2100), and so is one its
+      // choice hides (#3281): a key typed before switching to a client secret is not sent.
       const secret = Object.fromEntries(
         provider.fields.flatMap((f) => {
           const v = (values[f.key] ?? '').trim();
-          return v ? [[f.key, v]] : [];
+          return v && shown(f) ? [[f.key, v]] : [];
         }),
       );
       await teamApi(teamId).connectAppIntegration({ scopeId: target, provider: provider.provider, secret });
@@ -938,8 +951,25 @@ function ConnectDialog({
         )}
 
         {(!redirect || manual) &&
-          provider.fields.map((f) =>
-            f.toggle ? (
+          provider.fields.filter(shown).map((f) =>
+            f.choices ? (
+              <ChoiceField
+                key={f.key}
+                field={f}
+                rotate={rotate}
+                value={values[f.key] ?? ''}
+                onChange={(v) => setValues((prev) => ({ ...prev, [f.key]: v }))}
+              />
+            ) : f.file ? (
+              <FileField
+                key={f.key}
+                field={f}
+                required={fieldRequired(f, values, rotate)}
+                rotate={rotate}
+                value={values[f.key] ?? ''}
+                onChange={(v) => setValues((prev) => ({ ...prev, [f.key]: v }))}
+              />
+            ) : f.toggle ? (
               <Checkbox
                 key={f.key}
                 label={f.label}
@@ -949,7 +979,7 @@ function ConnectDialog({
             ) : (
               <Input
                 key={f.key}
-                label={f.optional ? `${f.label} (optional)` : f.label}
+                label={fieldRequired(f, values, rotate) ? f.label : `${f.label} (optional)`}
                 type={f.secret ? 'password' : 'text'}
                 placeholder={f.placeholder ?? (f.secret ? '••••••••' : '')}
                 value={values[f.key] ?? ''}
@@ -969,6 +999,162 @@ function ConnectDialog({
       </div>
     </Dialog>
   );
+}
+
+/**
+ * #3281: what the form starts with. A choice starts on its first option for a new connection, and
+ * on "keep how it signs in now" (left out) when rotating, so a save that corrects one field never
+ * changes how the connection signs in unless someone picks another method.
+ */
+function initialValues(fields: ProviderField[], rotate: boolean): Record<string, string> {
+  return Object.fromEntries(fields.flatMap((f) => (f.choices && !rotate && f.choices[0] ? [[f.key, f.choices[0].value]] : [])));
+}
+
+/** Shown, and sent, only while its choice holds one of the values that show it. */
+function fieldShown(f: ProviderField, values: Record<string, string>): boolean {
+  return !f.showWhen || f.showWhen.values.includes(values[f.showWhen.field] ?? '');
+}
+
+/**
+ * Whether the dialog holds Connect until the field is filled. A file field (the owner's own key
+ * and certificate) is required on a new connection; when rotating, left empty keeps the pair the
+ * connection already holds, so it is not.
+ */
+function fieldRequired(f: ProviderField, values: Record<string, string>, rotate: boolean): boolean {
+  if (!fieldShown(f, values) || f.toggle || f.choices) return false;
+  if (!f.optional) return true;
+  if (f.file) return !rotate;
+  return f.showWhen !== undefined && (f.requiredWhen ?? []).includes(values[f.showWhen.field] ?? '');
+}
+
+/** #3281: one choice between alternatives — Microsoft 365's sign-in method — with what it means. */
+function ChoiceField({
+  field,
+  rotate,
+  value,
+  onChange,
+}: {
+  field: ProviderField;
+  rotate: boolean;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const options = [
+    ...(rotate ? [{ value: '', label: 'Keep how it signs in now' }] : []),
+    ...(field.choices ?? []).map((c) => ({ value: c.value, label: c.label })),
+  ];
+  const hint =
+    value === ''
+      ? 'Saving keeps the certificate the connection signs in with, yours or generated. A connection that signs in with a client secret needs it typed again: left empty, it switches to a generated certificate.'
+      : field.choices?.find((c) => c.value === value)?.hint;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <Select label={field.label} options={options} value={value} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => onChange(e.target.value)} />
+      {hint && <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>{hint}</div>}
+    </div>
+  );
+}
+
+/** The largest file read: a key or a certificate is a few KB; the connector refuses past 64 KB too. */
+const MAX_FILE_BYTES = 64 * 1024;
+
+/**
+ * #3281: a value read from a file in the browser, or pasted. A text file (PEM) is sent as its
+ * text; a binary one (a DER `.cer`) as the base64 of its bytes, which the connector reads as DER.
+ * A secret read from a file is never drawn: the field says which file it came from, nothing more.
+ */
+function FileField({
+  field,
+  required,
+  rotate,
+  value,
+  onChange,
+}: {
+  field: ProviderField;
+  required: boolean;
+  rotate: boolean;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const [loaded, setLoaded] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const read = async (file: File | undefined) => {
+    setProblem(null);
+    if (!file) return;
+    if (file.size > MAX_FILE_BYTES) {
+      setProblem(`${file.name} is larger than 64 KB — that is not one key or certificate.`);
+      return;
+    }
+    onChange(fileValue(new Uint8Array(await file.arrayBuffer())));
+    setLoaded(file.name);
+  };
+  const clear = () => {
+    setLoaded(null);
+    onChange('');
+  };
+  const suffix = required ? '' : rotate ? ' (empty keeps the one stored)' : ' (optional)';
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ fontSize: 12.5, color: 'var(--text-primary)' }}>
+        {field.label}
+        {suffix}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <label style={{ fontSize: 12, cursor: 'pointer' }}>
+          <input
+            type="file"
+            accept={field.file?.accept}
+            style={{ fontSize: 12 }}
+            onChange={(e) => {
+              void read(e.target.files?.[0]);
+              // The same file chosen again after Clear still fires.
+              e.target.value = '';
+            }}
+          />
+        </label>
+        {loaded && (
+          <>
+            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Read from {loaded}</span>
+            <Button variant="ghost" size="sm" onClick={clear}>
+              Clear
+            </Button>
+          </>
+        )}
+      </div>
+      {!loaded && (
+        <Textarea
+          ariaLabel={`${field.label} — or paste it here`}
+          placeholder={`…or paste it here: ${field.placeholder ?? ''}`}
+          rows={3}
+          mono
+          spellCheck={false}
+          value={value}
+          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onChange(e.target.value)}
+        />
+      )}
+      {field.secret && (
+        <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+          Read in your browser and sent once to be sealed with the connection; it is never shown again. Once the
+          connection works, delete your local copy.
+        </div>
+      )}
+      {problem && <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{problem}</div>}
+    </div>
+  );
+}
+
+/** A file's bytes as the value the connector reads: PEM as text, anything else as base64. */
+function fileValue(bytes: Uint8Array): string {
+  let text: string | null = null;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    text = null;
+  }
+  if (text !== null && text.includes('-----BEGIN')) return text;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
 }
 
 /**
@@ -1444,18 +1630,43 @@ export function Integrations({ teamId }: { teamId: string }) {
   );
 }
 
-/** One public certificate: its thumbprint and end, a download, and what to do with it. */
+/** How far ahead a supplied certificate's end is warned of — the platform's own rotation window. */
+const SUPPLIED_WARNING_DAYS = 30;
+
+/**
+ * #3281: the end of a certificate the owner supplied. Nothing renews it, so from 30 days out it is
+ * a warning saying what to do; until then, a line saying who renews it.
+ */
+function SuppliedExpiry({ notAfter }: { notAfter: string }) {
+  const days = Math.floor((Date.parse(notAfter) - Date.now()) / 86_400_000);
+  const what =
+    'Before then, generate a new pair, have its certificate uploaded to the app registration, and rotate this connection with it under "My own certificate" — or rotate to "A certificate generated for this connection", which keeps yours signing until Entra accepts the new one.';
+  if (days > SUPPLIED_WARNING_DAYS) {
+    return <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>{what}</div>;
+  }
+  return (
+    <div style={{ ...card, padding: 10, marginTop: 8, borderColor: 'var(--status-warning-fg)', fontSize: 12, color: 'var(--text-secondary)' }}>
+      <div style={{ color: 'var(--status-warning-fg)', marginBottom: 4 }}>
+        {days < 0
+          ? `Your certificate expired on ${notAfter.slice(0, 10)} — this connection cannot sign in.`
+          : `Your certificate expires on ${notAfter.slice(0, 10)}, in ${days} day${days === 1 ? '' : 's'}.`}
+      </div>
+      {what}
+    </div>
+  );
+}
+
+/** One public certificate: its thumbprint and end, a download when it is ours to hand out, and what to do with it. */
 function CertificateCard({
   title,
   certificate,
   download,
-  filename,
   note,
 }: {
   title: string;
   certificate: CertificateView;
-  download: string;
-  filename: string;
+  /** Absent for a certificate the owner supplied: they hold it already. */
+  download?: { label: string; filename: string };
   note: string;
 }) {
   return (
@@ -1469,11 +1680,13 @@ function CertificateCard({
         <span style={{ color: 'var(--text-tertiary)' }}>Expires</span>
         <span style={{ color: 'var(--text-secondary)' }}>{certificate.notAfter.slice(0, 10)}</span>
       </div>
-      <div style={{ marginTop: 6 }}>
-        <Button variant="secondary" size="sm" onClick={() => downloadCertificate(certificate.pem, filename)}>
-          {download}
-        </Button>
-      </div>
+      {download && (
+        <div style={{ marginTop: 6 }}>
+          <Button variant="secondary" size="sm" onClick={() => downloadCertificate(certificate.pem, download.filename)}>
+            {download.label}
+          </Button>
+        </div>
+      )}
       <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>{note}</div>
     </>
   );

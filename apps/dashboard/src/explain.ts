@@ -64,6 +64,11 @@ export const SAMPLE_MAX = 240;
 const RULES: ReadonlyArray<readonly [RegExp, string | ((match: string) => string)]> = [
   // A PEM block, whole: private keys, certificates.
   [/-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g, '[key]'],
+  // #3281: a PEM block cut off before its END line (a key pasted in part, a message truncated
+  // upstream): the header and every base64 or RFC 1421 header character after it. One character
+  // class, so the match is linear whatever follows; a base64 run with `/` in it would otherwise
+  // reach the opaque-run rules below in pieces short enough to pass.
+  [/-----BEGIN [A-Z ]+-----[A-Za-z0-9+/=:,\s-]*/g, '[key]'],
   // Credentials in a URL: the user and password before the `@` become `[credentials]`.
   [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, '$1[credentials]@'],
   // An Authorization header's value, whatever scheme it names.

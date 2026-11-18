@@ -37,6 +37,24 @@ describe('parseProviderSecret with an optional field (#2100)', () => {
     expect(parseProviderSecret(m365, filled)).toEqual(filled);
   });
 
+  it('a choice is one of its values or left out; a field its choice hides is dropped (#3281)', () => {
+    const own = { ...filled, signInWith: 'own-certificate', ownPrivateKey: 'KEY', ownCertificate: 'CERT' };
+    expect(parseProviderSecret(m365, { ...own, clientSecret: 'S', rotateCertificate: 'yes' })).toEqual(own);
+    expect(parseProviderSecret(m365, { ...filled, signInWith: 'certificate', ownPrivateKey: 'KEY', rotateCertificate: 'yes' })).toEqual({
+      ...filled,
+      signInWith: 'certificate',
+      rotateCertificate: 'yes',
+    });
+    // Left out ("keep how it signs in now"), the client secret and the rotate flag are what they were before the choice.
+    expect(parseProviderSecret(m365, { ...filled, clientSecret: 'S', ownPrivateKey: 'KEY' })).toEqual({ ...filled, clientSecret: 'S' });
+    for (const v of ['password', '', 1]) expect(parseProviderSecret(m365, { ...filled, signInWith: v, ownPrivateKey: 'KEY' })).toEqual(filled);
+  });
+
+  it('a client secret is required only when it is the chosen method (#3281)', () => {
+    expect(() => parseProviderSecret(m365, { ...filled, signInWith: 'client-secret' })).toThrow(/clientSecret/);
+    expect(parseProviderSecret(m365, { ...filled, signInWith: 'client-secret', clientSecret: 'S' }).clientSecret).toBe('S');
+  });
+
   it('the door says the connection sends mail and carries a certificate', () => {
     expect(m365).toMatchObject({ sendsMail: true, certificate: true, grants: [] });
   });

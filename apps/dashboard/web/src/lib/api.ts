@@ -393,6 +393,14 @@ export interface ProviderField {
   optional?: boolean;
   /** A checkbox: sent as `'yes'` when ticked, left out otherwise. */
   toggle?: boolean;
+  /** #3281: a choice between alternatives, sent as the chosen value; left out, the connector keeps what is stored. */
+  choices?: { value: string; label: string; hint?: string }[];
+  /** #3281: shown, and sent, only while the named choice holds one of `values` (`''` for left out). */
+  showWhen?: { field: string; values: string[] };
+  /** #3281: required while its `showWhen` choice holds one of these values. */
+  requiredWhen?: string[];
+  /** #3281: the value may be read from a file — a text file as its text, a binary one as its bytes' base64 — or pasted. */
+  file?: { accept: string };
 }
 
 /** A public certificate a connection signs in with (#2100). */
@@ -625,6 +633,8 @@ export interface ConnectionActivityView {
   certificate?: (CertificateView & {
     /** The successor being rotated in; the fields above stay the certificate in use until it is uploaded. */
     next?: CertificateView;
+    /** #3281: the certificate in use is the owner's own; the platform does not renew it. */
+    supplied?: boolean;
   }) | null;
   /**
    * The platform's dispatch record for this provider (#618) — newest first, empty on a plane

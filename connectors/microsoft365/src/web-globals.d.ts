@@ -5,6 +5,11 @@
 interface CryptoKey {
   readonly type: string;
 }
+/** The JWK members this package reads: an RSA key's modulus and exponent. */
+interface JsonWebKey {
+  n?: string;
+  e?: string;
+}
 interface CryptoKeyPair {
   publicKey: CryptoKey;
   privateKey: CryptoKey;
@@ -13,7 +18,7 @@ interface CryptoKeyPair {
 declare const crypto: {
   subtle: {
     generateKey(algorithm: object, extractable: boolean, usages: string[]): Promise<CryptoKeyPair | CryptoKey>;
-    exportKey(format: 'jwk', key: CryptoKey): Promise<{ n?: string; e?: string }>;
+    exportKey(format: 'jwk', key: CryptoKey): Promise<JsonWebKey>;
     exportKey(format: 'spki' | 'pkcs8', key: CryptoKey): Promise<ArrayBuffer>;
     importKey(format: 'pkcs8' | 'spki', data: Uint8Array, algorithm: object, extractable: boolean, usages: string[]): Promise<CryptoKey>;
     verify(algorithm: string | object, key: CryptoKey, signature: Uint8Array, data: Uint8Array): Promise<boolean>;
@@ -26,6 +31,7 @@ declare const crypto: {
 
 declare const console: { log(...data: unknown[]): void; warn(...data: unknown[]): void };
 declare const TextEncoder: new () => { encode(input: string): Uint8Array };
+declare const TextDecoder: new () => { decode(input: Uint8Array): string };
 declare const AbortSignal: { timeout(ms: number): unknown };
 declare function btoa(data: string): string;
 declare function atob(data: string): string;

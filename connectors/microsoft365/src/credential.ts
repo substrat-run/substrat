@@ -1,7 +1,15 @@
 import { z } from 'zod';
 import { deriveExpiryWarning } from '@substrat-run/contracts';
 import type { FetchLike } from '@substrat-run/kernel';
-import { certificateMatchesKey, fromBase64, generateCertificate, thumbprintS256, toBase64Url } from './x509.js';
+import { Microsoft365CertificateRefusal, readSuppliedPair } from './supplied.js';
+import {
+  certificateMatchesKey,
+  fromBase64,
+  generateCertificate,
+  suppliedCertificateMatchesKey,
+  thumbprintS256,
+  toBase64Url,
+} from './x509.js';
 
 /**
  * The stored credential — one tenant's app registration, app-only, in its own Entra directory.
@@ -14,8 +22,13 @@ import { certificateMatchesKey, fromBase64, generateCertificate, thumbprintS256,
  * a self-signed certificate generated for THIS connection. The private key is sealed with the
  * rest of the secret and never leaves the platform; the tenant downloads the certificate.
  *
+ * Or (#3281) a keypair the OWNER generated, whose certificate their Entra admin already uploaded:
+ * checked, then sealed in the same fields a generated pair is, with `certificateSupplied: 'yes'`
+ * saying the current pair is theirs. The platform never rotates a supplied pair.
+ *
  * While a certificate is being rotated, a second keypair — the `next*` fields — sits beside the
- * current one until the tenant has uploaded it (see `prepareMicrosoft365Candidate`).
+ * current one until the tenant has uploaded it (see `prepareMicrosoft365Candidate`). A successor
+ * is always one the platform generated.
  */
 export const microsoft365Secret = z.object({
   tenantId: z.string().trim().min(1),
@@ -27,6 +40,8 @@ export const microsoft365Secret = z.object({
   privateKey: z.string().optional(),
   certificate: z.string().optional(),
   certificateNotAfter: z.string().optional(),
+  /** #3281: the current pair is the owner's own, not the platform's. Only ever `'yes'`, or absent. */
+  certificateSupplied: z.literal('yes').optional(),
   nextPrivateKey: z.string().optional(),
   nextCertificate: z.string().optional(),
   nextCertificateNotAfter: z.string().optional(),
@@ -38,6 +53,7 @@ const GENERATED = [
   'privateKey',
   'certificate',
   'certificateNotAfter',
+  'certificateSupplied',
   'nextPrivateKey',
   'nextCertificate',
   'nextCertificateNotAfter',
@@ -48,6 +64,24 @@ const GENERATED = [
  * anything else, or absence, does not. It is an instruction, never stored.
  */
 export const ROTATE_FIELD = 'rotateCertificate';
+
+/**
+ * #3281: the candidate field that says how the connection signs in — one of {@link SIGN_IN_METHODS}.
+ * An instruction, never stored. Absent, the method is read off the candidate and the stored
+ * credential as before it existed: a client secret signs in with it, a supplied pair with that
+ * pair, a stored supplied pair is kept, and anything else gets a platform-generated certificate.
+ */
+export const SIGN_IN_FIELD = 'signInWith';
+export const SIGN_IN_METHODS = ['certificate', 'own-certificate', 'client-secret'] as const;
+export type SignInMethod = (typeof SIGN_IN_METHODS)[number];
+
+/**
+ * #3281: the candidate fields carrying the owner's own pair — the private key (PEM, PKCS#8 or
+ * PKCS#1, or a binary key's base64) and the certificate (PEM, or a DER `.cer`'s base64). Read
+ * once by `prepareMicrosoft365Candidate`, never stored under these names, never echoed.
+ */
+export const OWN_KEY_FIELD = 'ownPrivateKey';
+export const OWN_CERTIFICATE_FIELD = 'ownCertificate';
 
 /** How long before the current certificate's end a save mints its successor. */
 export const ROTATION_WINDOW_DAYS = 30;
@@ -66,6 +100,10 @@ export type AuthMethod = 'certificate' | 'client-secret';
 export const authMethodOf = (s: Microsoft365Secret): AuthMethod =>
   s.clientSecret?.trim() ? 'client-secret' : 'certificate';
 
+/** #3281: does the connection sign in with a certificate the owner supplied (not one the platform made)? */
+export const isSuppliedCertificate = (s: Pick<Microsoft365Secret, 'clientSecret' | 'certificateSupplied'>): boolean =>
+  !s.clientSecret?.trim() && s.certificateSupplied === 'yes';
+
 /**
  * Finish a candidate credential on the platform side, before it is probed and sealed.
  *
@@ -76,7 +114,28 @@ export const authMethodOf = (s: Microsoft365Secret): AuthMethod =>
  *   tenant already uploaded keeps working; a connection that has none, whose certificate
  *   has lapsed, or whose certificate is malformed or not its key's, gets a new one.
  *
- * Key material in the candidate itself is always discarded: a caller cannot choose the key.
+ * Key material in the candidate's stored fields is always discarded: a caller cannot write the
+ * key the platform keeps. The one way a key comes in from outside is the owner's own pair (#3281),
+ * through {@link OWN_KEY_FIELD} and {@link OWN_CERTIFICATE_FIELD}, read and checked here.
+ *
+ * **The sign-in method** ({@link SIGN_IN_FIELD}) picks one of three:
+ *
+ * - `'client-secret'` — as above; refused without a secret.
+ * - `'own-certificate'` — the owner's pair, checked by `readSuppliedPair` (an unencrypted RSA key
+ *   of 2048 bits or more, its certificate unexpired) and stored in the current slot, marked
+ *   supplied; any pending successor is dropped. With no pair given, the stored supplied pair is
+ *   kept, so a save that only corrects a sender leaves it alone; with none stored, refused.
+ * - `'certificate'` — the platform's. Switching from a supplied pair goes through the successor
+ *   slot: the supplied certificate keeps signing while a generated one waits beside it, promoted
+ *   once Entra accepts it, so mail does not stop while the tenant uploads it.
+ *
+ * Absent, the method is inferred as it was before there was a choice: a client secret, else a
+ * supplied pair, else the stored supplied pair kept (unless a switch to a generated one is under
+ * way), else the platform's.
+ *
+ * **A supplied certificate is never rotated by the platform**: no window, no rotate flag, mints a
+ * successor beside it. Only an explicit `'certificate'` does, and that is the switch above. The
+ * owner replaces it with a new pair of theirs, and is warned of its end like any other.
  *
  * **Rotation** puts a second keypair beside the first, so mail never stops while the tenant
  * swaps certificates:
@@ -106,16 +165,43 @@ export async function prepareMicrosoft365Candidate(
 ): Promise<{ secret: Record<string, string>; expiresAt: string | null }> {
   const secret = { ...candidate };
   const rotate = secret[ROTATE_FIELD] === 'yes';
-  delete secret[ROTATE_FIELD];
-  for (const k of GENERATED) delete secret[k];
-  // Entra does not report a client secret's end to an app-only caller, so there is none to set.
-  if (secret.clientSecret?.trim()) return { secret, expiresAt: null };
+  const asked = secret[SIGN_IN_FIELD];
+  const ownKey = secret[OWN_KEY_FIELD] ?? '';
+  const ownCertificate = secret[OWN_CERTIFICATE_FIELD] ?? '';
+  for (const k of [ROTATE_FIELD, SIGN_IN_FIELD, OWN_KEY_FIELD, OWN_CERTIFICATE_FIELD, ...GENERATED]) delete secret[k];
+  if (asked !== undefined && !(SIGN_IN_METHODS as readonly string[]).includes(asked)) {
+    throw new Microsoft365CertificateRefusal(`unknown sign-in method: choose one of ${SIGN_IN_METHODS.join(', ')}`);
+  }
+  const hasSecret = Boolean(secret.clientSecret?.trim());
+  const ownGiven = ownKey.trim() !== '' || ownCertificate.trim() !== '';
+
+  if (asked === 'client-secret' || (asked === undefined && hasSecret)) {
+    if (!hasSecret) throw new Microsoft365CertificateRefusal('to sign in with a client secret, give the client secret');
+    // Entra does not report a client secret's end to an app-only caller, so there is none to set.
+    return { secret, expiresAt: null };
+  }
   delete secret.clientSecret;
 
   let [current, next] = await Promise.all([
     storedKeypair(previous, 'current', opts.now),
     storedKeypair(previous, 'next', opts.now),
   ]);
+
+  // The owner's own pair (#3281). Kept as the only pair: a successor is the platform's, and the
+  // owner has chosen theirs.
+  const keepSupplied = current?.supplied === true && next === undefined;
+  if (asked === 'own-certificate' || (asked === undefined && (ownGiven || keepSupplied))) {
+    if (ownGiven) {
+      const pair = await readSuppliedPair(ownKey, ownCertificate, opts.now);
+      const own: Keypair = { ...pair, supplied: true };
+      return { secret: { ...secret, ...slot(own, 'current') }, expiresAt: own.notAfter };
+    }
+    if (current?.supplied) return { secret: { ...secret, ...slot(current, 'current') }, expiresAt: current.notAfter };
+    throw new Microsoft365CertificateRefusal(
+      'to sign in with your own certificate, give both the private key and the certificate — this connection holds none of yours to keep',
+    );
+  }
+
   let promoted = false;
   if (!current && next) {
     current = next;
@@ -133,9 +219,10 @@ export async function prepareMicrosoft365Candidate(
   }
   if (!current) {
     current = await mint(opts);
-  } else if (!promoted && !next && (rotate || rotationDue(current.notAfter, opts.now))) {
+  } else if (!promoted && !next && (current.supplied || rotate || rotationDue(current.notAfter, opts.now))) {
     // Not on the save that promoted: the certificate it switched to is the one the tenant just
-    // uploaded, so a successor to it is only asked for on a later save.
+    // uploaded, so a successor to it is only asked for on a later save. A supplied current one is
+    // here only because the platform's certificate was asked for (#3281): the switch is its successor.
     next = await mint(opts);
   }
   return {
@@ -152,6 +239,8 @@ interface Keypair {
   privateKey: string;
   certificate: string;
   notAfter: string;
+  /** #3281: the owner's own pair. Only ever in the current slot. */
+  supplied?: true;
 }
 
 const FIELDS = {
@@ -175,13 +264,24 @@ async function storedKeypair(
   const notAfter = stored?.[f.notAfter];
   if (!privateKey || !certificate || !notAfter) return undefined;
   if (!(Date.parse(notAfter) > now.getTime())) return undefined;
-  if (!(await certificateMatchesKey(certificate, privateKey))) return undefined;
-  return { privateKey, certificate, notAfter };
+  // A supplied pair is held to being the owner's key and its certificate, not to the shape the
+  // platform mints (another issuer, another signature algorithm, extensions are all theirs).
+  const supplied = which === 'current' && stored?.certificateSupplied === 'yes';
+  const matches = supplied
+    ? await suppliedCertificateMatchesKey(certificate, privateKey)
+    : await certificateMatchesKey(certificate, privateKey);
+  if (!matches) return undefined;
+  return { privateKey, certificate, notAfter, ...(supplied ? { supplied: true as const } : {}) };
 }
 
 function slot(k: Keypair, which: keyof typeof FIELDS): Record<string, string> {
   const f = FIELDS[which];
-  return { [f.privateKey]: k.privateKey, [f.certificate]: k.certificate, [f.notAfter]: k.notAfter };
+  return {
+    [f.privateKey]: k.privateKey,
+    [f.certificate]: k.certificate,
+    [f.notAfter]: k.notAfter,
+    ...(which === 'current' && k.supplied ? { certificateSupplied: 'yes' } : {}),
+  };
 }
 
 async function mint(opts: { now: Date; commonName: string }): Promise<Keypair> {
@@ -194,7 +294,8 @@ async function mint(opts: { now: Date; commonName: string }): Promise<Keypair> {
  * `undefined` when no rotation is under way, or the credential signs in with a client secret.
  */
 export function withNextOnly(secret: Microsoft365Secret): Microsoft365Secret | undefined {
-  const { nextPrivateKey, nextCertificate, nextCertificateNotAfter, ...rest } = secret;
+  // The successor is always the platform's, so the current pair's supplied mark does not carry over.
+  const { nextPrivateKey, nextCertificate, nextCertificateNotAfter, certificateSupplied: _supplied, ...rest } = secret;
   if (authMethodOf(secret) !== 'certificate' || !nextPrivateKey || !nextCertificate || !nextCertificateNotAfter) {
     return undefined;
   }
@@ -296,7 +397,18 @@ export async function requestToken(
     error_codes?: number[];
   };
   if (res.ok && body.access_token) return { ok: true, accessToken: body.access_token };
-  return classifyTokenError(res.status, body);
+  const refused = classifyTokenError(res.status, body);
+  // The generated certificate's advice is to download it here; the owner's own one (#3281) is
+  // theirs to have uploaded, and there is nothing here to download that they do not hold.
+  if (refused.notRegistered && isSuppliedCertificate(secret)) {
+    return {
+      ...refused,
+      error:
+        'your certificate is not on the app registration yet — have it uploaded under Certificates & secrets ' +
+        '(the thumbprint Entra shows should match the one here), then test the connection again',
+    };
+  }
+  return refused;
 }
 
 /** AADSTS700027: the assertion's key is not registered on the app (or not yet propagated). */

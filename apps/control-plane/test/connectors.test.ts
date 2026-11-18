@@ -194,6 +194,24 @@ describe('connector registry', () => {
     await expect(prepare({ secretKey: 'pk_test_51Mock000000000000' }, undefined)).rejects.toMatchObject({ name: 'ConnectionRelayError', status: 422 });
   });
 
+  it("refuses an owner's own Microsoft 365 pair it will not store as a 422, without quoting it (#3281)", async () => {
+    // Refused before any sign-in, so this needs no network.
+    const prepare = connectionInspectorsFor(ENV)['microsoft365']!.prepareCandidate!;
+    const candidate = {
+      tenantId: 't',
+      clientId: 'c',
+      senders: 'a@acme.example',
+      siteUrl: 'https://acme.sharepoint.com/sites/Team',
+      signInWith: 'own-certificate',
+      ownPrivateKey: '-----BEGIN ENCRYPTED PRIVATE KEY-----\nQUJDRA==\n-----END ENCRYPTED PRIVATE KEY-----\n',
+      ownCertificate: 'QUJDRA==',
+    };
+    const err = await prepare(candidate, undefined).then(() => undefined, (e: unknown) => e as Error & { status: number });
+    expect(err).toMatchObject({ name: 'ConnectionRelayError', status: 422 });
+    expect(err!.message).toContain('encrypted');
+    expect(err!.message).not.toContain('QUJDRA');
+  });
+
   it('refuses to act with no provider base rather than defaulting to the testbed', async () => {
     // #610/#990: the old default sent a PRODUCTION credential to the testbed, which
     // answers 401 — indistinguishable from a mistyped key. A named throw is the whole

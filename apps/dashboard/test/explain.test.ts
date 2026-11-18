@@ -50,6 +50,11 @@ describe('redact', () => {
     expect(redact(`could not parse ${pem} as PKCS#8`)).toBe('could not parse [key] as PKCS#8');
   });
 
+  it('removes a PEM block cut off before its END line, base64 slashes and all (#3281)', () => {
+    const cut = '-----BEGIN ' + 'RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nMIIEow/IBAAKC+AQEAu3/Xq9\nab/cd/ef';
+    expect(redact(`Unexpected token in "${cut}`)).toBe('Unexpected token in "[key]');
+  });
+
   it('keeps what a reader needs to find the occurrence: ids, timestamps, statuses, paths, versions', () => {
     const text = 'POST /internal/lifecycle-flow answered 502 at 2026-10-23T09:14:02.120Z for 01JZ8F3K2M4N6P8Q0R2S4T6V8W (v1.4.12, port 8443)';
     expect(redact(text)).toBe(text);
