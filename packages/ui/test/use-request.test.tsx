@@ -8,6 +8,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { useRequest, type Request } from '../src/hooks/use-request';
+import type { RequestState } from '../src/request-state';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -46,13 +47,36 @@ it('keeps the shown answer through a reload, and through a failed one', async ()
   expect(h.last().state).toEqual({ state: 'ok', value: 'rows' });
 
   const from = h.seen.length;
-  let reloaded!: Promise<void>;
+  let reloaded!: Promise<RequestState<string> | null>;
   act(() => void (reloaded = h.last().reload()));
+  const failure = new Error('poll missed');
   await act(async () => {
-    queue[1]!.reject(new Error('poll missed'));
+    queue[1]!.reject(failure);
     await reloaded;
   });
   expect(h.seen.slice(from).map((r) => r.state)).toEqual(h.seen.slice(from).map(() => ({ state: 'ok', value: 'rows' })));
+  // The answer stayed, and the reload still says its own read failed — what a caller toasts.
+  expect(await reloaded).toEqual({ state: 'error', error: failure });
+});
+
+it('overlapping reloads settled newest-first keep the newest answer', async () => {
+  // Two mutations in a row start two refreshes; the older one landing last must not bring
+  // back what the newer one already moved (List, then Block installs, then a stale `open`).
+  const { load, queue } = reads();
+  const h = mount(load, 'team-a');
+  await act(async () => queue[0]!.resolve('listed'));
+
+  let older!: Promise<RequestState<string> | null>;
+  let newer!: Promise<RequestState<string> | null>;
+  act(() => void (older = h.last().reload()));
+  act(() => void (newer = h.last().reload()));
+  await act(async () => queue[2]!.resolve('listed+blocked'));
+  await act(async () => queue[1]!.resolve('listed'));
+
+  expect(h.last().state).toEqual({ state: 'ok', value: 'listed+blocked' });
+  expect(await newer).toEqual({ state: 'ok', value: 'listed+blocked' });
+  // The dropped read reports nothing, so its caller toasts nothing about it either.
+  expect(await older).toBeNull();
 });
 
 it('a new key starts over from loading, and the old key’s late answer is dropped', async () => {
