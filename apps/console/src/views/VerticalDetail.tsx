@@ -96,6 +96,10 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   // a mutation keeps what is shown; only the first read of a slug draws the skeleton.
   const [detail, setDetail] = useState<RequestState<true>>(requestLoading);
   const shown = useRef(false);
+  // Which read is the newest. Reads overlap (a promote's re-walk with the next action's, or a
+  // slug's with the one before it), and only the newest may write: an older one landing last
+  // would show a channel pointer a later promotion already moved.
+  const reads = useRef(0);
 
   // The promote dialog: a target (channel, version) plus the acknowledgements the
   // digest diff requires. Null when closed.
@@ -167,8 +171,15 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   // landing over rows the pending re-walk is about to replace.
   const pageBusy = busy !== null || bulkBusy;
 
+  /**
+   * Walk the detail and show it. Resolves to why a RE-walk failed — the answer already shown
+   * stays, and the caller says so in the toast it was about to post anyway (App has one toast
+   * slot, so a warning posted here would be replaced by the caller's success at once) — or
+   * null when it landed, failed on the first read (the page's own error), or was superseded.
+   */
   const loadDetail = useCallback(
-    async (slug: string) => {
+    async (slug: string): Promise<string | null> => {
+      const mine = ++reads.current;
       try {
         // Walked in FULL, not one page: the channel cards and the promote picker are
         // computations over the whole version set — a channel pointer whose version fell
@@ -194,6 +205,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
           // detail view down with it.
           api.verticalEgress(slug).catch(() => null),
         ]);
+        if (mine !== reads.current) return null;
         setVersions(vs);
         setChannels(ch);
         setFailures(fl);
@@ -203,15 +215,26 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
         setBoundScopes(sc.filter((s) => s.status !== 'reaped'));
         shown.current = true;
         setDetail(requestOk(true));
+        return null;
       } catch (e) {
-        // A failed first read is the page's error; a failed re-walk keeps the answer shown
-        // and says so in a toast.
-        if (shown.current) onToast('Failed to load versions', (e as Error).message, 'danger');
-        else setDetail(requestFailed(e));
+        if (mine !== reads.current) return null;
+        // A failed first read is the page's error; a failed re-walk keeps the answer shown.
+        if (shown.current) return (e as Error).message;
+        setDetail(requestFailed(e));
+        return null;
       }
     },
-    [api, onToast],
+    [api],
   );
+
+  /**
+   * The toast after a write that landed, carrying a failed re-walk with it when there was one:
+   * the write still happened, so the title stays what it did, and the page is said to be stale.
+   */
+  function toastAfter(stale: string | null, title: string, detail?: string, status?: 'success' | 'danger') {
+    if (stale === null) onToast(title, detail, status);
+    else onToast(title, `${detail ? `${detail} · ` : ''}this page could not re-read and may be out of date (${stale})`, 'danger');
+  }
 
   // Re-walk versions + channels + bound scopes whenever the opened vertical changes.
   useEffect(() => {
@@ -224,6 +247,10 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
     shown.current = false;
     setDetail(requestLoading());
     void loadDetail(vertical.slug);
+    // Leaving this slug (or the page) retires every read still out for it.
+    return () => {
+      reads.current++;
+    };
   }, [vertical.slug, loadDetail]);
 
   /**
@@ -239,8 +266,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
     try {
       await fn();
       onChanged();
-      await loadDetail(vertical.slug);
-      onToast(title, detail);
+      toastAfter(await loadDetail(vertical.slug), title, detail);
     } catch (e) {
       onToast('Refused', (e as Error).message, 'danger');
     } finally {
@@ -361,11 +387,12 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
     // message, tick the acknowledgement, and retry the remainder — scopes that did move drop
     // out of the selection naturally when the reload removes them from the bound list.
     onChanged();
-    await loadDetail(vertical.slug);
+    const stale = await loadDetail(vertical.slug);
     // Busy is released only once the re-walk has landed: a dialog that frees its confirm
     // while the page behind it is still the old one invites a second run over stale rows.
     setBulkBusy(false);
-    onToast(
+    toastAfter(
+      stale,
       `${ok} scope${ok === 1 ? '' : 's'} moved to ${move.choice}`,
       run.reviewMoved ? 'A version changed while you were reviewing — this is what the move would apply now.' : (run.refusal ?? undefined),
       run.refusal ? 'danger' : 'success',
@@ -416,9 +443,10 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
     setBulkRetire(null);
     setSelectedIds(new Set());
     onChanged();
-    await loadDetail(vertical.slug);
+    const stale = await loadDetail(vertical.slug);
     setBulkBusy(false);
-    onToast(
+    toastAfter(
+      stale,
       `${ok} scope${ok === 1 ? '' : 's'} retired`,
       failed > 0 ? `${failed} failed` : undefined,
       failed > 0 ? 'danger' : 'success',
@@ -687,7 +715,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
       // re-reads the review in this same dialog, and ask again from scratch.
       if (promoteReviewReasonIn((e as { body?: unknown }).body) !== undefined) {
         setAck({});
-        await loadDetail(vertical.slug).catch(() => undefined);
+        await loadDetail(vertical.slug);
         onToast('Review again', 'The channel changed while you were reviewing — this is what the promotion would apply now.', 'danger');
       } else {
         onToast('Refused', (e as Error).message, 'danger');
@@ -697,8 +725,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
       setBusy(null);
     }
     onChanged();
-    await loadDetail(vertical.slug);
-    onToast(`Promoted ${promote.channel}`, versionById(promote.versionId)?.version);
+    toastAfter(await loadDetail(vertical.slug), `Promoted ${promote.channel}`, versionById(promote.versionId)?.version);
     setPromote(null);
     setAck({});
   }

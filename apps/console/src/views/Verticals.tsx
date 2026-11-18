@@ -143,7 +143,9 @@ export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToa
   // A resolved open slug routes to the full detail; App owns the URL, this owns the data.
   if (openSlug && resolved) {
     return (
+      // Keyed by slug: another vertical is another page, with its own loading state and reads.
       <VerticalDetail
+        key={resolved.slug}
         api={api}
         vertical={resolved}
         onBack={onBack}
