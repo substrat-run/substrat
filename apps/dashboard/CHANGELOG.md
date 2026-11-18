@@ -1,5 +1,22 @@
 # @substrat-run/dashboard
 
+## 0.49.21
+
+### Patch Changes
+
+- e424c14: The team's Integrations page now lists the connectors your apps' verticals define, beside the platform's own. Each one offers Connect only for the apps whose vertical declares it. Every connection on the page now has a Disconnect button, which works even when no app uses the connection any more, and a connection a vertical no longer declares stays listed with that button as its only action.
+- Updated dependencies [f1f01b0]
+  - @substrat-run/contracts@0.203.0
+  - @substrat-run/connector-fortnox@0.8.1
+  - @substrat-run/engine-invites@0.9.80
+  - @substrat-run/engine-protocol@0.14.3
+  - @substrat-run/adapter-cloudflare@0.203.0
+  - @substrat-run/control-plane-api@0.203.0
+  - @substrat-run/control-plane-client@0.9.3
+  - @substrat-run/kernel@0.203.0
+  - @substrat-run/model-providers@0.5.93
+  - @substrat-run/vertical-host@0.203.0
+
 ## 0.49.20
 
 ### Patch Changes

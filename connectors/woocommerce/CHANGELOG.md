@@ -1,5 +1,13 @@
 # @substrat-run/connector-woocommerce
 
+## 0.0.9
+
+### Patch Changes
+
+- Updated dependencies [f1f01b0]
+  - @substrat-run/contracts@0.203.0
+  - @substrat-run/kernel@0.203.0
+
 ## 0.0.8
 
 ### Patch Changes
