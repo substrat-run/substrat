@@ -331,8 +331,8 @@ export function judge(files, allowed = ALLOWED) {
         found = refusalsIn(text, path);
       } catch (err) {
         offences.push(
-          `${err.message}\n    Babel's TypeScript parser refuses some valid TypeScript, such as an arrow function with ` +
-            'a return type in a ternary branch: parenthesize that expression.',
+          `${err.message}\n    Babel's TypeScript parser can refuse a construct tsc accepts: ` +
+            'parenthesize or rewrite the expression it names.',
         );
         continue;
       }
