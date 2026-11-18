@@ -3280,11 +3280,22 @@ async function teamIntegrationsIn({ c, host, node }: TeamContext) {
     if (list.length < 20) list.push({ id: r.id, outcome: r.outcome, at: r.at, error: r.error, elapsedMs: r.elapsedMs });
     sweepByConnection.set(r.connectionId, list);
   }
+  // Every first-party provider, always — then each vertical-defined one an app of this team
+  // declares (vertical-connectors.md §7.2), and a live one no vertical declares any more (formless,
+  // for withdrawing only, as on the app panel). A vertical-defined provider's targets are only the
+  // apps whose vertical declares it, and each connect goes through that app's own door, which
+  // resolves the form from that app's vertical — so listing it here offers nothing the app panel
+  // does not.
+  const specs: ProviderSpec[] = Object.values(PROVIDERS);
+  for (const s of [...offeredBy.values()].flat()) {
+    if (isVerticalConnectorProvider(s.provider) && !specs.some((x) => x.provider === s.provider)) specs.push(s);
+  }
+  for (const r of rows) {
+    if (r.status === 'revoked' || !isVerticalConnectorProvider(r.provider) || specs.some((x) => x.provider === r.provider)) continue;
+    specs.push(undeclaredConnectorSpec(r.provider));
+  }
   return {
-    // First-party only, deliberately: this view is per provider ACROSS apps, and a
-    // vertical-defined provider means nothing outside the one vertical that declares it.
-    // Its door is that app's own Integrations panel.
-    providers: Object.values(PROVIDERS).map((spec) => {
+    providers: specs.map((spec) => {
       const targets = apps
         .filter((a) => (offeredBy.get(a.vertical_slug) ?? []).some((s) => s.provider === spec.provider))
         .map((a) => ({

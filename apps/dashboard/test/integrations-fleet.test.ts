@@ -591,6 +591,27 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     expect(revoked).toEqual([live.id]);
   });
 
+  it("the team-wide page lists the connectors its apps' verticals declare, and a live undeclared one formless", async () => {
+    type TeamProvider = { provider: string; fields: unknown[]; connections: { id: string }[]; connectTargets: { scopeId: string }[] };
+    const teamWide = async () =>
+      ((await (await app.request(`/api/teams/${tenant}/integrations`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).json()) as {
+        providers: TeamProvider[];
+      }).providers;
+    const live = row({ provider: 'acme.docbox', label: 'Docbox' });
+    rows.push(live);
+    const docbox = (await teamWide()).find((p) => p.provider === 'acme.docbox');
+    expect(docbox).toMatchObject({ fields: DOC_CONNECTOR.fields, connections: [{ id: live.id }], connectTargets: [{ scopeId: appScope }] });
+    // acme/other declares its own, but no app of this team runs that vertical.
+    expect((await teamWide()).some((p) => p.provider === 'acme.other')).toBe(false);
+
+    declared = [];
+    expect((await teamWide()).find((p) => p.provider === 'acme.docbox')).toMatchObject({
+      fields: [],
+      connections: [{ id: live.id }],
+      connectTargets: [],
+    });
+  });
+
   it('the addressed revoke reaches an undeclared connection of this vertical too', async () => {
     const live = row({ provider: 'acme.docbox', label: 'Docbox' });
     rows.push(live);
