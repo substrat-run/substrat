@@ -23,7 +23,7 @@ operation's `BEGIN` and its commit.
 host code.** The engine first commits an **attempt**: what it reserves (a receipt number, say), the
 request exactly as it will be sent, and a journal entry for it. That commit happens before the
 request leaves. Host code in the vertical's worker then makes the call, under the declared `outbound`
-of D-46, within a time budget. A second operation then either records the answer (the receipt, its
+of D-46, within deadlines the attempt carries, so that it can never send or wait past the moment the attempt may be abandoned. A second operation then either records the answer (the receipt, its
 counters and its journal entries in one transaction) or abandons the attempt and journals the
 failure. A late answer to an abandoned attempt is refused and journaled, never applied.
 

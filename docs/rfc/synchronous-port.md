@@ -83,8 +83,13 @@ properties below, and each option is judged against them:
   sale's journal entry commit **together**, in one transaction, and only with a control code
   received for that receipt's data (4:9 first sentence, 6:2).
 - **A2. Every exchange is journaled, including one that failed.** The request is in the journal
-  before it leaves (write-ahead). The answer is journaled when it arrives, even if it arrives late,
-  and so is the fact that none arrived (4:9 third sentence, 4:10).
+  before it leaves (write-ahead). The answer is journaled when it reaches the scope, even if it
+  arrives late, and so is the fact that none arrived (4:9 third sentence, 4:10). **The limit:** an
+  answer exists only in the memory of the process that received it until a transaction commits it.
+  If that process dies in between, the answer is lost and the attempt is journaled as `unknown`, the
+  same as an answer that never came. No option closes that window, because (a1) holds its answer in
+  memory until its commit too. What a design can do is keep the window to one hop (§4.2) and, where
+  the unit offers it, look the answer up again (§6 Q8).
 - **A3. The receipt series has no gap.** A number reaches a receipt only when its sale commits. An
   attempt that ends without a code is journaled as an uncompleted sale and leaves the series where
   it was (7:1 d, 7:2 s, 7:3 t).
@@ -176,7 +181,8 @@ a prepared exchange with no completion and runs `complete` with `outcome: 'unkno
 - *What it adds over (b):* the kernel, rather than host code, enforces the order of the three steps,
   and it saves one worker-to-DO hop. Under (b) the engine's state machine already refuses every order
   the regulation forbids (§4.2). A host driver that misbehaves can stall one till until its attempt
-  expires, but it cannot break A1–A4.
+  expires, but it cannot break the order (A2–A4). Whether a code belongs to the data the engine
+  journaled (A1) rests on what the answer echoes back, and that is the same under (a2) (§4.2, Q8).
 - *Egress:* still DO-originated, still unpoliced.
 - *Credentials:* still unsolved. The scope DO runs in the vertical's worker and holds none.
 - *Blast radius:* every vertical's invoke path changes, to serve one consumer.
@@ -271,7 +277,7 @@ thin: the check plus one export. Names are illustrative.
 ```ts
 // engine in-scope functions — module code, no network
 type Opened =
-  | { kind: 'send'; attemptId; token; receiptNumber; request } // only the transaction that created it
+  | { kind: 'send'; attemptId; token; receiptNumber; request; sendWithinMs; abortAfterMs } // only its creator
   | { kind: 'open'; attemptId }                               // someone else holds the send
   | { kind: 'recorded'; attemptId; receipt }
   | { kind: 'abandoned'; attemptId };
@@ -283,12 +289,18 @@ abandonAttempt(ctx, { attemptId, token, failure }): { abandoned: true }         
 ```ts
 // the driver — host code in the vertical's worker, never module code (R3)
 // No idempotencyKey: a #116 replay would hand the recorded request to a second caller.
+const started = performance.now(); // BEFORE the open: the driver's clock can only run ahead of the engine's
 const opened = await scope.invoke('till/begin-sale', { unit, attemptKey, sale });
 if (opened.kind !== 'send') return opened; // a duplicate or a retry: report the state, send nothing
-const { attemptId, token, request } = opened;
+const { attemptId, token, request, sendWithinMs, abortAfterMs } = opened;
+const elapsed = performance.now() - started;
+if (elapsed >= sendWithinMs) {
+  // paused too long: never send late
+  return scope.invoke('till/abandon-sale', { attemptId, token, failure: 'not sent: past send-by' });
+}
 let answer: ControlUnitAnswer;
 try {
-  answer = await controlUnit.send(request, { signal: AbortSignal.timeout(budgetMs) });
+  answer = await controlUnit.send(request, { signal: AbortSignal.timeout(abortAfterMs - elapsed) });
 } catch (failure) {
   return scope.invoke('till/abandon-sale', { attemptId, token, failure: describe(failure) });
 }
@@ -317,6 +329,29 @@ reports that the old attempt was abandoned.
   sends. The attempt expires and is abandoned as `unknown`. Its journal entry therefore records a
   request **handed to the transport**, which may never have left. The abandonment says so, and from
   the register's side the two cases can't be told apart anyway.
+- **The driver sends the request unchanged, and the engine checks what it can.** The driver is host
+  code of the same vertical, trusted as the vertical is, and its obligation is to send `request`
+  byte-for-byte. The engine can't see what went on the wire, so it checks the answer against the
+  journaled request on every field the protocol echoes back: receipt number, unit identity and
+  amount, where the unit returns them. A mismatch is refused, and journaled the same way as a late
+  answer. Whether a code can be bound to the whole request (a digest the unit echoes, or a code the
+  engine can verify) depends on the unit's protocol, and is §6 Q8.
+- **An answer is committed one hop after it arrives.** The driver hands the answer to `complete-sale`
+  as its next step, with no other I/O in between. A process that dies in that hop loses the answer,
+  and the attempt expires as `unknown` (A2's stated limit). Where the unit can be asked for the code
+  of a receipt it has already answered, the expiry path asks it before abandoning (Q8). Until that is
+  known, nothing is assumed.
+- **Sending is fenced by the attempt's own deadlines, not by a separately started budget.**
+  `openAttempt` stamps the attempt at `T0 = ctx.now()` and returns two durations, `sendWithinMs` and
+  `abortAfterMs`. The driver reads its monotonic clock **before** it calls `begin-sale`, so its
+  local `started` instant is no later than `T0`. Its "send by" (`started + sendWithinMs`) and "abort
+  at" (`started + abortAfterMs`) are therefore never later than the engine's `T0 + sendWithinMs` and
+  `T0 + abortAfterMs`, whatever the two clocks read. Only their rates need to agree, which is not
+  true of comparing the two clocks' readings. A driver that pauses past "send by" abandons instead
+  of sending. The attempt's expiry is `T0 + abortAfterMs + transitMarginMs`. So by the time a later
+  `openAttempt` may abandon it, this attempt's driver has stopped waiting, and any request it sent
+  has had the margin to arrive. A request still in the network after its abort is not something any
+  host can recall: the margin bounds that risk, and §4.4 covers the rest.
 - `openAttempt` refuses while the unit has an open attempt that has not expired. An expired open
   attempt is first abandoned with outcome `unknown`, in the same transaction and journaled, and then
   the new attempt opens.
@@ -332,13 +367,12 @@ reports that the old attempt was abandoned.
 
 ### 4.3 Time
 
-The driver holds the call's budget with an `AbortSignal`. The engine holds the attempt's expiry as an
-engine option, judged with `ctx.now()`. It is longer than the driver's budget, so that an attempt the
-driver is still waiting on can't be abandoned under it. No retry happens inside a sale: a failure is
-an abandon, and the cashier tries again with a new attempt key, which opens a new attempt with the
-same receipt number. The
-numbers are §6 Q5. Tests inject small values and freeze the clock (`manualClock`), so no test waits
-for the real budget.
+The engine owns the three durations (`sendWithinMs`, `abortAfterMs`, `transitMarginMs`) as engine
+options, and judges expiry with `ctx.now()`. The driver derives its deadlines from them, measured
+from before the open (§4.2), and never starts a budget of its own. No retry happens inside a sale: a
+failure is an abandon, and the cashier tries again with a new attempt key, which opens a new attempt
+with the same receipt number. The numbers are §6 Q5. Tests inject small values and freeze the clock
+(`manualClock`), so no test waits for the real budget.
 
 ### 4.4 The window no design closes
 
@@ -373,9 +407,15 @@ noticing, since the engine only sees `request` and `answer`.
   - an `openAttempt` with the key of a recorded or abandoned attempt returns that outcome, with no
     request;
   - a record or abandon without the token, or with another attempt's token, is refused;
-  - a `send` result the driver never receives leads to expiry and an `unknown` abandonment.
-- **Driver:** a duplicate `begin-sale` and a retry after the outcome make **zero** calls to the
-  injected `fetch`, and only the first caller sends.
+  - a `send` result the driver never receives leads to expiry and an `unknown` abandonment;
+  - an attempt can't expire before `T0 + abortAfterMs + transitMarginMs`;
+  - an answer whose echoed receipt number, unit or amount differs from the journaled request is
+    refused and journaled.
+- **Driver:**
+  - a duplicate `begin-sale` and a retry after the outcome make **zero** calls to the injected
+    `fetch`, and only the first caller sends;
+  - a driver paused past `sendWithinMs` (an injected monotonic clock) abandons without sending;
+  - the abort fires no later than `abortAfterMs` after the moment measured before the open.
 - **Connector:** an injected `fetch`, the pattern the first-party connectors already use.
 - **`adapter-sqlite` and the contract suites:** no change.
 
@@ -419,6 +459,12 @@ inference.
    the connector package (§4.5)?
 7. **The probe.** Should the workerd probe of a `fetch` inside an async `transaction()` (§2) be run
    now, for the record, even though this recommendation doesn't depend on it?
+8. **What the unit's protocol gives back.** Does an answer echo enough of the request (receipt
+   number, unit identity, amount, or a digest of the whole request) for the engine to refuse a code
+   that belongs to other data? And can the unit be asked again for the code of a receipt it has
+   already answered, so that an answer lost between the network and the commit can be recovered
+   rather than journaled as `unknown`? Both are facts about the certified unit's API, and both
+   change the engine's checks, not this decision.
 
 ## 7. Not in scope
 
