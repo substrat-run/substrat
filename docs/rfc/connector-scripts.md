@@ -49,17 +49,26 @@ that runs with the whole platform in reach.
 ### 3.1 What runs where
 
 ```
-control plane ──CONNECTOR_CALLS.callScript──▶ router ──DISPATCH.get('substrat-connector-bolagsverket',
-   (opens the credential,                       │      outbound: { OUTBOUND_POLICY })──▶ script
-    records the uses)                            │                                        │
-                                                 └── POST /internal/connector-probe ◀────┘
-                                                              egress worker ──▶ Bolagsverket
+control plane            opens the credential; later records the uses the script reports
+  │ CONNECTOR_CALLS.callScript(target, request)
+  ▼
+router                   DISPATCH.get('substrat-connector-bolagsverket', { outbound: { OUTBOUND_POLICY } })
+  │ POST /internal/connector-probe
+  ▼
+script                   probes with the credential in the call; answers the probe and its uses
+  │ fetch (token mint, ping)
+  ▼
+egress worker            admits only the hosts in OUTBOUND_POLICY
+  │
+  ▼
+Bolagsverket
 ```
 
 - **The script** is `connectors/bolagsverket/src/script.ts`, deployed by its own `wrangler.jsonc`
   into the dispatch namespace as `substrat-connector-bolagsverket`. It declares **no binding at all** —
   no storage, no secret, no var, no service — and the suite fails if one appears. It serves
-  `probe-candidate` and `probe` on the probe path; any other role, path or provider is a 400.
+  `probe-candidate` and `probe` on the probe path. Another path is a 404, another method on the
+  probe path a 405, and another role, provider or configuration a 400.
 - **The router** gains `ConnectorCalls.callScript(target, request)` beside `call`. It parses the
   target (`connectorScriptCallTarget`: the script, the tenant to meter, the hosts) and the call, refuses
   a scoped role, a script that is not the provider's, or a connection of another tenant, and dispatches
@@ -87,8 +96,9 @@ and the control plane records them against the connection it opened.
 
 A credential the provider refuses is `refused: true`, as in-process. Anything that is the
 platform's failure — no route, a script that is not deployed (503 after the router's one retry), a
-call the script or the router refuses (400), an answer that is not the contract — is
-`ok: false, refused: false` with the reason, never a refused credential.
+call the script or the router refuses (400), an answer that is not the contract, a provider call the
+egress worker refuses (its 403 marked `x-substrat-egress: refused`) — is `ok: false, refused: false`
+with the reason, never a refused credential.
 
 ### 3.4 The name space
 
@@ -126,8 +136,11 @@ The figure that decides anything is the log line from the test environment.
 
 1. Merge, so the router and the control plane in TEST carry `callScript` and the flag (their normal
    deploys; the flag is off).
-2. Deploy the script: `pnpm --filter @substrat-run/connector-bolagsverket cf:deploy:test`
-   (`wrangler deploy --dispatch-namespace substrat-verticals-test`).
+2. Build the script's workspace dependencies, then deploy it:
+   `pnpm --filter @substrat-run/connector-bolagsverket... build`, then
+   `pnpm --filter @substrat-run/connector-bolagsverket cf:deploy:test`
+   (`wrangler deploy --dispatch-namespace substrat-verticals-test`). The script imports
+   `@substrat-run/kernel` and `@substrat-run/contracts`, which resolve from their built `dist`.
 3. Turn the flag on for TEST only: add `"REMOTE_CONNECTORS": "bolagsverket"` (and, to measure,
    `"PROBE_CONNECTOR_HOP": "bolagsverket"`) to `env.test.vars` in `apps/control-plane/wrangler.jsonc`,
    in a reviewed change the test deploy carries. A var set by hand in the Cloudflare dashboard works
@@ -135,9 +148,11 @@ The figure that decides anything is the log line from the test environment.
 4. Press **Test connection** on a Bolagsverket connection, or paste a candidate pair, and read the
    `connector-hop-probe` lines from `substrat-control-plane-test`'s logs.
 
-To turn it off, remove the var (or let the next deploy drop a hand-set one): the next call runs
-in-process, with nothing else to undo. The script can stay deployed, unused, or be deleted from the
-`substrat-verticals-test` namespace in the Cloudflare dashboard.
+To turn it off, remove **both** vars, `REMOTE_CONNECTORS` and `PROBE_CONNECTOR_HOP` (or let the next
+deploy drop hand-set ones): with `REMOTE_CONNECTORS` alone removed, the answer is in-process again but
+the hop probe still calls the script for its comparison. Once the control plane runs without either
+var, every call is in-process and there is nothing else to undo. Only then delete the script, if
+wanted, from the `substrat-verticals-test` namespace in the Cloudflare dashboard.
 
 ## 4. Later phases
 

@@ -174,31 +174,42 @@ describe('a connector run as its own script (docs/rfc/connector-scripts.md)', ()
     }
   });
 
-  it('keeps health writes out of both hop samples, whichever side is placed, and records only the placed one', async () => {
-    // A recorder this slow would move hopMs by ±2 × WRITE_MS if either sample timed the writes.
-    const WRITE_MS = 150;
+  it('records health only once both hop samples are done and compared, and only the placed side', async () => {
     const real = host();
-    const recorded: unknown[] = [];
-    const slow = {
-      admin: {
-        openConnection: (...a: Parameters<typeof real.admin.openConnection>) => real.admin.openConnection(...a),
-        recordConnectionUse: async (_id: unknown, use: unknown) => {
-          recorded.push(use);
-          await new Promise((resolve) => setTimeout(resolve, WRITE_MS));
-        },
-      },
-    } as unknown as ScopeHost;
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const compared = () => log.mock.calls.filter(([line]) => String(line).includes('"connector-hop-probe"')).length;
     try {
       for (const placement of [REMOTE, {}]) {
-        recorded.length = 0;
-        expect(await bolagsverket({ ...placement, PROBE_CONNECTOR_HOP: 'bolagsverket' }).probe!(slow, await connection())).toMatchObject({ ok: true });
+        const before = compared();
+        const recorded: unknown[] = [];
+        // A recorder held open: the first write says when writing began, and the probe must wait for it.
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => (release = resolve));
+        let began!: () => void;
+        const writing = new Promise<void>((resolve) => (began = resolve));
+        const deferred = {
+          admin: {
+            openConnection: (...a: Parameters<typeof real.admin.openConnection>) => real.admin.openConnection(...a),
+            recordConnectionUse: async (_id: unknown, use: unknown) => {
+              recorded.push(use);
+              began();
+              await held;
+            },
+          },
+        } as unknown as ScopeHost;
+        let settled = false;
+        const answered = bolagsverket({ ...placement, PROBE_CONNECTOR_HOP: 'bolagsverket' })
+          .probe!(deferred, await connection())
+          .then((p) => ((settled = true), p));
+        await writing;
+        // Both samples had finished, and been compared, before the first health write: neither timed it.
+        expect(compared()).toBe(before + 1);
+        expect(settled).toBe(false);
+        release();
+        expect(await answered).toMatchObject({ ok: true });
         // The placed side's token mint and ping, once each; the shadow's are never recorded.
         expect(recorded).toEqual([expect.objectContaining({ ok: true, status: 200 }), expect.objectContaining({ ok: true, status: 200 })]);
       }
-      const lines = log.mock.calls.map(([line]) => JSON.parse(String(line)) as { connector?: string; answeredBy: string; hopMs: number }).filter((l) => l.connector === 'connector-hop-probe');
-      expect(lines.map((l) => l.answeredBy)).toEqual(['script', 'in-process']);
-      for (const { hopMs } of lines) expect(Math.abs(hopMs)).toBeLessThan(WRITE_MS);
     } finally {
       log.mockRestore();
     }

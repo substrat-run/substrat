@@ -18,7 +18,16 @@ export interface Exchange {
   status: number;
   body: string;
   retryAfter: string | null;
+  /**
+   * The platform's egress worker refused this request itself, before it reached the provider
+   * (`x-substrat-egress: refused`, a 403 to a host outside the connector's declared egress). Not a
+   * refused credential: the credential never got where it was going.
+   */
+  egressRefused: boolean;
 }
+
+/** The mark the egress worker puts on its own refusals (vertical-egress's `EGRESS_HEADER`). */
+const EGRESS_REFUSAL_HEADER = 'x-substrat-egress';
 
 /**
  * One request and its whole body. A transport failure (DNS, a timeout, a body cut off) is
@@ -28,7 +37,13 @@ export interface Exchange {
 export async function exchange(fetch: Fetch, url: string, init: Parameters<Fetch>[1], what: string): Promise<Exchange> {
   try {
     const res = await fetch(url, init);
-    return { ok: res.ok, status: res.status, body: await res.text(), retryAfter: res.headers?.get('Retry-After') ?? null };
+    return {
+      ok: res.ok,
+      status: res.status,
+      body: await res.text(),
+      retryAfter: res.headers?.get('Retry-After') ?? null,
+      egressRefused: res.headers?.get(EGRESS_REFUSAL_HEADER) === 'refused',
+    };
   } catch (err) {
     throw new BolagsverketError('upstream', `${what} did not answer: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -97,7 +112,7 @@ export class ClientCredentialsToken {
     const { body } = res;
     if (!res.ok) {
       // RFC 6749 §5.2: a bad client is `400 invalid_client` as often as a 401.
-      const refused = res.status === 400 || res.status === 401 || res.status === 403;
+      const refused = !res.egressRefused && (res.status === 400 || res.status === 401 || res.status === 403);
       throw new BolagsverketError(
         refused ? 'refused' : 'upstream',
         `Bolagsverket token mint failed: ${errorMessage(body, res.status)}`,

@@ -1058,6 +1058,11 @@ export async function handleConnectorScriptCall(env: Env, rawTarget: unknown, ra
   if (request.role === 'probe' && request.connection.tenantId !== target.tenantId) {
     return { status: 400, body: { error: 'connector call refused: the connection belongs to another tenant than the target' } };
   }
+  // A candidate is probed before any connection exists, so it belongs to no tenant yet, and egress
+  // must not meter it to one.
+  if (request.role === 'probe-candidate' && target.tenantId !== null) {
+    return { status: 400, body: { error: 'connector call refused: a probe-candidate call belongs to no tenant, and its target names one' } };
+  }
   if (target.script !== connectorScriptName(request.provider)) {
     return { status: 400, body: { error: `connector call refused: ${target.script} is not the script of ${request.provider}` } };
   }

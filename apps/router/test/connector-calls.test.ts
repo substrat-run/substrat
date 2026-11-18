@@ -142,14 +142,14 @@ describe('ConnectorCalls.callScript (docs/rfc/connector-scripts.md)', () => {
 
   it("dispatches into the script under the connector's own egress, with no scope, no secret and no envelope", async () => {
     const ns = dispatch(() => Response.json({ ok: true, result: null, state: [], uses: [] }));
-    const out = await callScript({ DISPATCH: ns }, scriptTarget(), candidate);
+    const out = await callScript({ DISPATCH: ns }, scriptTarget({ tenantId: null }), candidate);
     expect(out.status).toBe(200);
     const [seen] = ns.seen();
     expect(seen!.name).toBe('substrat-connector-bolagsverket');
     expect(seen!.outbound).toEqual({
       OUTBOUND_POLICY: {
         slug: 'substrat-connector-bolagsverket',
-        tenant: TENANT,
+        tenant: '',
         hosts: ['portal.api.bolagsverket.se', 'gw.api.bolagsverket.se'],
         scope: '',
         calls: [],
@@ -168,7 +168,8 @@ describe('ConnectorCalls.callScript (docs/rfc/connector-scripts.md)', () => {
     ['a vertical deployment as the script', scriptTarget({ script: 'acme-crm--v3' }), candidate, /target is malformed/],
     ['a target with no egress host', scriptTarget({ hosts: [] }), candidate, /target is malformed/],
     ['a vertical-defined provider', scriptTarget(), { ...candidate, provider: 'acme.docbox' }, /request is malformed/],
-    ['another provider than the script serves', scriptTarget(), { ...candidate, provider: 'fortnox' }, /not the script of fortnox/],
+    ['another provider than the script serves', scriptTarget({ tenantId: null }), { ...candidate, provider: 'fortnox' }, /not the script of fortnox/],
+    ['a candidate whose target names a tenant', scriptTarget(), candidate, /probe-candidate call belongs to no tenant/],
     ['a probe with no tenant on its target', scriptTarget({ tenantId: null }), { role: 'probe', provider: 'bolagsverket', connection: { ...CONNECTION, provider: 'bolagsverket' }, state: [] }, /another tenant/],
     ['a connection of another tenant', scriptTarget({ tenantId: OTHER_TENANT }), { role: 'probe', provider: 'bolagsverket', connection: { ...CONNECTION, provider: 'bolagsverket' }, state: [] }, /another tenant/],
     ['a scoped role', scriptTarget(), { role: 'bind', provider: 'bolagsverket', connection: { ...CONNECTION, provider: 'bolagsverket' }, scopeId: SCOPE, options: {} }, /connection-level calls only, not bind/],
@@ -182,7 +183,7 @@ describe('ConnectorCalls.callScript (docs/rfc/connector-scripts.md)', () => {
   it('answers 503 when the script is not deployed, after the one retry', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const missing = { get: () => ({ fetch: async () => { throw new Error('Worker not found.'); } }) } as unknown as DispatchNamespace;
-    const out = await callScript({ DISPATCH: missing }, scriptTarget(), candidate);
+    const out = await callScript({ DISPATCH: missing }, scriptTarget({ tenantId: null }), candidate);
     expect(out).toEqual({ status: 503, body: { error: expect.stringMatching(/not deployed/) } });
   });
 });
