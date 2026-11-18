@@ -258,7 +258,7 @@ describe("signing in with the owner's own certificate", () => {
     expect(view).toMatchObject({ supplied: true, notAfter: pair.minted.notAfter });
     expect(view.thumbprint).toBe(new X509Certificate(pair.certPem).fingerprint.replace(/:/g, ''));
     const summary = await microsoft365CredentialSummary(hostWith(secret), conn);
-    expect(summary.fields.find((f) => f.key === 'certificateSource')!.value).toContain('does not renew it');
+    expect(summary.fields.find((f) => f.key === 'certificateSupplied')!.value).toContain('does not renew it');
     // A generated certificate's view does not claim to be supplied.
     const generated = (await prepare(base)).secret;
     expect(await microsoft365Certificate(hostWith(generated), conn)).not.toHaveProperty('supplied');
@@ -359,5 +359,52 @@ describe('switching between the three sign-in methods', () => {
     expect(generated).not.toHaveProperty('certificateSupplied');
     expect(await refusalOf(prepare({ ...base, signInWith: 'client-secret' }))).toContain('give the client secret');
     expect(await refusalOf(prepare({ ...base, signInWith: 'password' }))).toContain('unknown sign-in method');
+  });
+});
+
+describe('a client secret, named and kept (#3281)', () => {
+  const withSecret = () =>
+    prepare({ ...base, signInWith: 'client-secret', clientSecret: 'S1', clientSecretExpiresOn: '2027-05-31' });
+
+  it("takes the end Entra shows as the connection's expiry, and shows it", async () => {
+    const { secret, expiresAt } = await withSecret();
+    expect(secret).toMatchObject({ clientSecret: 'S1', clientSecretExpiresAt: '2027-05-31T00:00:00.000Z' });
+    expect(secret).not.toHaveProperty('clientSecretExpiresOn');
+    expect(expiresAt).toBe('2027-05-31T00:00:00.000Z');
+    const summary = await microsoft365CredentialSummary(hostWith(secret), conn);
+    expect(summary.fields.find((f) => f.key === 'clientSecretExpiresAt')!.value).toBe('2027-05-31');
+  });
+
+  it('left empty on a save, the stored secret and its end are kept; a new date replaces the end', async () => {
+    const { secret } = await withSecret();
+    const kept = await prepare({ ...base, signInWith: 'client-secret', senders: 'b@acme.example' }, secret);
+    expect(kept.secret).toMatchObject({ clientSecret: 'S1', clientSecretExpiresAt: secret.clientSecretExpiresAt, senders: 'b@acme.example' });
+    expect(kept.expiresAt).toBe(secret.clientSecretExpiresAt);
+    const later = await prepare({ ...base, signInWith: 'client-secret', clientSecretExpiresOn: '2027-12-01' }, secret);
+    expect(later.expiresAt).toBe('2027-12-01T00:00:00.000Z');
+  });
+
+  it('a new secret without a date clears the end, which described the old one', async () => {
+    const { secret } = await withSecret();
+    const fresh = await prepare({ ...base, signInWith: 'client-secret', clientSecret: 'S2' }, secret);
+    expect(fresh.secret).not.toHaveProperty('clientSecretExpiresAt');
+    expect(fresh.expiresAt).toBeNull();
+  });
+
+  it('a save naming no method keeps the stored secret; only a named certificate replaces it', async () => {
+    const { secret } = await withSecret();
+    expect((await prepare(base, secret)).secret.clientSecret).toBe('S1');
+    const switched = await prepare({ ...base, signInWith: 'certificate' }, secret);
+    expect(switched.secret).not.toHaveProperty('clientSecret');
+    expect(switched.secret).not.toHaveProperty('clientSecretExpiresAt');
+    expect(switched.secret.certificate).toBeTruthy();
+  });
+
+  it('a date that is not one is refused, and a caller cannot write the stored end', async () => {
+    for (const d of ['31/05/2027', '2027-02-30', 'soon']) {
+      expect(await refusalOf(prepare({ ...base, signInWith: 'client-secret', clientSecret: 'S', clientSecretExpiresOn: d }))).toContain('YYYY-MM-DD');
+    }
+    const { secret } = await prepare({ ...base, signInWith: 'client-secret', clientSecret: 'S', clientSecretExpiresAt: '2099-01-01T00:00:00.000Z' });
+    expect(secret).not.toHaveProperty('clientSecretExpiresAt');
   });
 });

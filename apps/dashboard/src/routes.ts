@@ -129,9 +129,12 @@ const integrationProviderForm = z.object({
     key: z.string(), label: z.string(), secret: z.boolean(), placeholder: z.string().optional(),
     optional: z.boolean().optional(), toggle: z.boolean().optional(),
     // #3281: a choice, a field shown only for some of its values, and a field read from a file.
-    choices: z.array(z.object({ value: z.string(), label: z.string(), hint: z.string().optional() })).optional(),
+    choices: z.array(z.object({
+      value: z.string(), label: z.string(), hint: z.string().optional(), heldWhen: z.array(z.string()).optional(),
+    })).optional(),
     showWhen: z.object({ field: z.string(), values: z.array(z.string()) }).optional(),
     requiredWhen: z.array(z.string()).optional(),
+    input: z.literal('date').optional(),
     file: z.object({ accept: z.string() }).optional(),
   })),
   connectFlow: z.literal('redirect').nullable(), multiAccount: z.boolean(), sendsMail: z.boolean(),

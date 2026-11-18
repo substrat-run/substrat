@@ -37,6 +37,12 @@ export const microsoft365Secret = z.object({
   senders: z.string().trim().min(1),
   siteUrl: z.string().trim().url(),
   clientSecret: z.string().optional(),
+  /**
+   * When the client secret ends, as the owner read it off Entra (the secret itself carries no
+   * end, and Entra does not tell an app-only caller). ISO 8601, the start of that day in UTC.
+   * Platform-written from {@link CLIENT_SECRET_EXPIRY_FIELD}; absent when nobody gave it.
+   */
+  clientSecretExpiresAt: z.string().optional(),
   privateKey: z.string().optional(),
   certificate: z.string().optional(),
   certificateNotAfter: z.string().optional(),
@@ -50,6 +56,7 @@ export type Microsoft365Secret = z.infer<typeof microsoft365Secret>;
 
 /** The fields only the platform may write — never accepted from a caller's candidate. */
 const GENERATED = [
+  'clientSecretExpiresAt',
   'privateKey',
   'certificate',
   'certificateNotAfter',
@@ -72,7 +79,7 @@ export const ROTATE_FIELD = 'rotateCertificate';
  * pair, a stored supplied pair is kept, and anything else gets a platform-generated certificate.
  */
 export const SIGN_IN_FIELD = 'signInWith';
-export const SIGN_IN_METHODS = ['certificate', 'own-certificate', 'client-secret'] as const;
+export const SIGN_IN_METHODS = ['client-secret', 'certificate', 'own-certificate'] as const;
 export type SignInMethod = (typeof SIGN_IN_METHODS)[number];
 
 /**
@@ -82,6 +89,12 @@ export type SignInMethod = (typeof SIGN_IN_METHODS)[number];
  */
 export const OWN_KEY_FIELD = 'ownPrivateKey';
 export const OWN_CERTIFICATE_FIELD = 'ownCertificate';
+
+/**
+ * The candidate field carrying the date a client secret expires, as Entra shows it (`YYYY-MM-DD`).
+ * Optional; read into `clientSecretExpiresAt` and the connection's expiry, never stored as given.
+ */
+export const CLIENT_SECRET_EXPIRY_FIELD = 'clientSecretExpiresOn';
 
 /** How long before the current certificate's end a save mints its successor. */
 export const ROTATION_WINDOW_DAYS = 30;
@@ -108,8 +121,9 @@ export const isSuppliedCertificate = (s: Pick<Microsoft365Secret, 'clientSecret'
  * Finish a candidate credential on the platform side, before it is probed and sealed.
  *
  * - A client secret: stored as given, and any generated key material dropped — with the
- *   connection's expiry cleared (`null`), since the certificate it described is gone.
- * - No client secret: the key is the platform's. A rotation that changes only the tenant's
+ *   connection's expiry the secret's end when the owner gave one, else cleared (`null`), since
+ *   the certificate it described is gone.
+ * - A certificate: the key is the platform's. A rotation that changes only the tenant's
  *   fields (a new sender, a corrected site) keeps the stored keypair, so the certificate the
  *   tenant already uploaded keeps working; a connection that has none, whose certificate
  *   has lapsed, or whose certificate is malformed or not its key's, gets a new one.
@@ -120,7 +134,10 @@ export const isSuppliedCertificate = (s: Pick<Microsoft365Secret, 'clientSecret'
  *
  * **The sign-in method** ({@link SIGN_IN_FIELD}) picks one of three:
  *
- * - `'client-secret'` — as above; refused without a secret.
+ * - `'client-secret'` — as above. Left empty, the stored secret is kept (a save that corrects a
+ *   sender does not need it retyped); with none stored, refused. Its end, when the owner gives
+ *   it ({@link CLIENT_SECRET_EXPIRY_FIELD}, read off Entra), is the connection's expiry; a new
+ *   secret without one clears it, since the date described the old secret.
  * - `'own-certificate'` — the owner's pair, checked by `readSuppliedPair` (an unencrypted RSA key
  *   of 2048 bits or more, its certificate unexpired) and stored in the current slot, marked
  *   supplied; any pending successor is dropped. With no pair given, the stored supplied pair is
@@ -129,9 +146,11 @@ export const isSuppliedCertificate = (s: Pick<Microsoft365Secret, 'clientSecret'
  *   slot: the supplied certificate keeps signing while a generated one waits beside it, promoted
  *   once Entra accepts it, so mail does not stop while the tenant uploads it.
  *
- * Absent, the method is inferred as it was before there was a choice: a client secret, else a
- * supplied pair, else the stored supplied pair kept (unless a switch to a generated one is under
- * way), else the platform's.
+ * Absent, the method is read from what the candidate holds, then from what the stored credential
+ * holds: a client secret given, a supplied pair given, a client secret stored, a supplied pair
+ * stored (unless a switch to a generated one is under way), else the platform's certificate. An
+ * empty client secret no longer switches a client-secret connection to a certificate by
+ * itself: that takes `'certificate'`, named.
  *
  * **A supplied certificate is never rotated by the platform**: no window, no rotate flag, mints a
  * successor beside it. Only an explicit `'certificate'` does, and that is the switch above. The
@@ -168,17 +187,44 @@ export async function prepareMicrosoft365Candidate(
   const asked = secret[SIGN_IN_FIELD];
   const ownKey = secret[OWN_KEY_FIELD] ?? '';
   const ownCertificate = secret[OWN_CERTIFICATE_FIELD] ?? '';
-  for (const k of [ROTATE_FIELD, SIGN_IN_FIELD, OWN_KEY_FIELD, OWN_CERTIFICATE_FIELD, ...GENERATED]) delete secret[k];
+  const secretExpiry = secret[CLIENT_SECRET_EXPIRY_FIELD]?.trim() ?? '';
+  for (const k of [ROTATE_FIELD, SIGN_IN_FIELD, OWN_KEY_FIELD, OWN_CERTIFICATE_FIELD, CLIENT_SECRET_EXPIRY_FIELD, ...GENERATED]) {
+    delete secret[k];
+  }
   if (asked !== undefined && !(SIGN_IN_METHODS as readonly string[]).includes(asked)) {
     throw new Microsoft365CertificateRefusal(`unknown sign-in method: choose one of ${SIGN_IN_METHODS.join(', ')}`);
   }
-  const hasSecret = Boolean(secret.clientSecret?.trim());
+  const givenSecret = secret.clientSecret?.trim() ? secret.clientSecret : undefined;
+  const storedSecret = previous?.clientSecret?.trim() ? previous.clientSecret : undefined;
   const ownGiven = ownKey.trim() !== '' || ownCertificate.trim() !== '';
 
-  if (asked === 'client-secret' || (asked === undefined && hasSecret)) {
-    if (!hasSecret) throw new Microsoft365CertificateRefusal('to sign in with a client secret, give the client secret');
-    // Entra does not report a client secret's end to an app-only caller, so there is none to set.
-    return { secret, expiresAt: null };
+  // The method named, or else the one the candidate or the stored credential holds (#3281).
+  const method: SignInMethod =
+    (asked as SignInMethod | undefined) ??
+    (givenSecret
+      ? 'client-secret'
+      : ownGiven
+        ? 'own-certificate'
+        : storedSecret
+          ? 'client-secret'
+          : previous?.certificateSupplied === 'yes' && !previous.nextCertificate
+            ? 'own-certificate'
+            : 'certificate');
+
+  if (method === 'client-secret') {
+    // Left empty, the stored secret is kept — and with it the end it was given, unless a new one is.
+    const clientSecret = givenSecret ?? storedSecret;
+    if (!clientSecret) throw new Microsoft365CertificateRefusal('to sign in with a client secret, give the client secret');
+    const expiresAt = secretExpiry
+      ? clientSecretExpiryOf(secretExpiry)
+      : givenSecret
+        ? undefined
+        : previous?.clientSecretExpiresAt;
+    // Entra does not report a client secret's end to an app-only caller: it is what the owner gave, or none.
+    return {
+      secret: { ...secret, clientSecret, ...(expiresAt ? { clientSecretExpiresAt: expiresAt } : {}) },
+      expiresAt: expiresAt ?? null,
+    };
   }
   delete secret.clientSecret;
 
@@ -189,8 +235,7 @@ export async function prepareMicrosoft365Candidate(
 
   // The owner's own pair (#3281). Kept as the only pair: a successor is the platform's, and the
   // owner has chosen theirs.
-  const keepSupplied = current?.supplied === true && next === undefined;
-  if (asked === 'own-certificate' || (asked === undefined && (ownGiven || keepSupplied))) {
+  if (method === 'own-certificate') {
     if (ownGiven) {
       const pair = await readSuppliedPair(ownKey, ownCertificate, opts.now);
       const own: Keypair = { ...pair, supplied: true };
@@ -229,6 +274,15 @@ export async function prepareMicrosoft365Candidate(
     secret: { ...secret, ...slot(current, 'current'), ...(next ? slot(next, 'next') : {}) },
     expiresAt: current.notAfter,
   };
+}
+
+/** A client secret's end as the owner typed it (`YYYY-MM-DD`): the start of that day, UTC. */
+function clientSecretExpiryOf(date: string): string {
+  const at = /^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(`${date}T00:00:00.000Z`) : undefined;
+  if (!at || Number.isNaN(at.getTime()) || at.toISOString().slice(0, 10) !== date) {
+    throw new Microsoft365CertificateRefusal("the client secret's end date must be a date, YYYY-MM-DD, as Entra shows it");
+  }
+  return at.toISOString();
 }
 
 /** Is the certificate ending at `notAfter` within the rotation window at `now`? Inclusive. */

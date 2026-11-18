@@ -148,7 +148,7 @@ export interface InputProps {
   onEnter?: (value: string) => void;
   onKeyDown?: (e: KeyboardEvent<HTMLElement>) => void;
   style?: CSSProperties;
-  type?: 'text' | 'password' | 'search';
+  type?: 'text' | 'password' | 'search' | 'date';
 }
 
 /** What a view may do to an `Input` or a `Textarea` it holds a ref to. */
@@ -431,6 +431,43 @@ export function Segmented<T extends string>({ label, options, value, onChange, s
     >
       {options.map((o) => (
         <wa-radio key={o.value} appearance="button" value={o.value} title={o.title}>
+          {o.label}
+        </wa-radio>
+      ))}
+    </wa-radio-group>
+  );
+}
+
+export interface RadioGroupProps<T extends string> {
+  /** The group's label, drawn above it. */
+  label: string;
+  options: Array<{ value: T; label: ReactNode }>;
+  value: T;
+  onChange: (value: T) => void;
+  style?: CSSProperties;
+}
+
+/**
+ * One choice among a few alternatives whose labels are too long for {@link Segmented}: a vertical
+ * list of plain radios under a visible label (a connector's sign-in method, #3281).
+ */
+export function RadioGroup<T extends string>({ label, options, value, onChange, style }: RadioGroupProps<T>) {
+  const ref = useLiveValue<HTMLElement & { value: string }>(value);
+  return (
+    <wa-radio-group
+      ref={ref as never}
+      label={label}
+      orientation="vertical"
+      size="s"
+      value={value}
+      onInput={(e) => {
+        const picked = (e.currentTarget as unknown as { value: T }).value;
+        if (picked !== value) onChange(picked);
+      }}
+      style={css(style)}
+    >
+      {options.map((o) => (
+        <wa-radio key={o.value} value={o.value}>
           {o.label}
         </wa-radio>
       ))}

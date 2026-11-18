@@ -8823,6 +8823,9 @@
                                 "notAfter"
                               ],
                               "additionalProperties": false
+                            },
+                            "supplied": {
+                              "type": "boolean"
                             }
                           },
                           "required": [
@@ -11163,6 +11166,9 @@
                                 "notAfter"
                               ],
                               "additionalProperties": false
+                            },
+                            "supplied": {
+                              "type": "boolean"
                             }
                           },
                           "required": [
@@ -11577,6 +11583,75 @@
                                 },
                                 "toggle": {
                                   "type": "boolean"
+                                },
+                                "choices": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string"
+                                      },
+                                      "label": {
+                                        "type": "string"
+                                      },
+                                      "hint": {
+                                        "type": "string"
+                                      },
+                                      "heldWhen": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    },
+                                    "required": [
+                                      "value",
+                                      "label"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "showWhen": {
+                                  "type": "object",
+                                  "properties": {
+                                    "field": {
+                                      "type": "string"
+                                    },
+                                    "values": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "field",
+                                    "values"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "requiredWhen": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "input": {
+                                  "type": "string",
+                                  "const": "date"
+                                },
+                                "file": {
+                                  "type": "object",
+                                  "properties": {
+                                    "accept": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "accept"
+                                  ],
+                                  "additionalProperties": false
                                 }
                               },
                               "required": [
@@ -20867,6 +20942,75 @@
                                 },
                                 "toggle": {
                                   "type": "boolean"
+                                },
+                                "choices": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string"
+                                      },
+                                      "label": {
+                                        "type": "string"
+                                      },
+                                      "hint": {
+                                        "type": "string"
+                                      },
+                                      "heldWhen": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    },
+                                    "required": [
+                                      "value",
+                                      "label"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "showWhen": {
+                                  "type": "object",
+                                  "properties": {
+                                    "field": {
+                                      "type": "string"
+                                    },
+                                    "values": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "field",
+                                    "values"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "requiredWhen": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "input": {
+                                  "type": "string",
+                                  "const": "date"
+                                },
+                                "file": {
+                                  "type": "object",
+                                  "properties": {
+                                    "accept": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "accept"
+                                  ],
+                                  "additionalProperties": false
                                 }
                               },
                               "required": [

@@ -44,18 +44,25 @@ export interface ProviderField {
   /**
    * #3281: a choice between alternatives rather than part of the credential — Microsoft 365's
    * sign-in method. Sent as the chosen `value`; anything not listed is left out, never stored as
-   * typed. The connector reads it and never stores it. Always optional: left out, the connector
-   * infers what it did before there was a choice, which is what "keep how it signs in now" sends.
+   * typed. The connector reads it and never stores it. A new connection starts on the first
+   * choice; a rotation starts on the one the connection holds: the first whose `heldWhen` names a
+   * key of the stored credential's summary (`ConnectionCredential.fields`).
    */
-  choices?: { value: string; label: string; hint?: string }[];
+  choices?: { value: string; label: string; hint?: string; heldWhen?: string[] }[];
   /**
    * #3281: shown, and sent, only while the named choice field holds one of `values` (`''` for
    * the choice left out). A field hidden by its choice is dropped before the credential leaves
    * the dashboard, whatever the form held.
    */
   showWhen?: { field: string; values: string[] };
-  /** #3281: an `optional` field that is required while its `showWhen` choice holds one of these values. */
+  /**
+   * #3281: an `optional` field the dialog requires on a NEW connection while its `showWhen` choice
+   * holds one of these values. Not when rotating: left empty there, the connector keeps what the
+   * connection holds, and refuses in its own words when it holds nothing to keep.
+   */
   requiredWhen?: string[];
+  /** #3281: a date (`YYYY-MM-DD`) rather than text. */
+  input?: 'date';
   /**
    * #3281: the value may come from a file, read in the browser: a text file (PEM) as its text, a
    * binary one (a DER `.cer`) as the base64 of its bytes — or be pasted. `accept` is the file
@@ -275,18 +282,19 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     name: 'Microsoft 365',
     description:
       "Send mail as your organisation's own addresses, and keep documents in one Teams channel's folder, " +
-      'through an app registration in your Entra directory. ' +
-      'It signs in with a certificate generated for this connection (recommended: download it here and upload it ' +
-      'under Certificates & secrets — its private key never leaves the platform), a certificate you generated ' +
-      'yourself and already uploaded, or a client secret.',
+      'through an app registration in your Entra directory. It signs in with a client secret (the quickest), ' +
+      'a certificate generated for this connection (the most secure: its private key never leaves the platform), ' +
+      'or a certificate of your own.',
     monogram: 'M3',
     fields: [
       { key: 'tenantId', label: 'Directory (tenant) ID', secret: false, placeholder: '00000000-0000-0000-0000-000000000000' },
       { key: 'clientId', label: 'Application (client) ID', secret: false, placeholder: '00000000-0000-0000-0000-000000000000' },
       { key: 'senders', label: 'Sender addresses (comma-separated)', secret: false, placeholder: 'noreply@example.com' },
       { key: 'siteUrl', label: 'SharePoint site URL', secret: false, placeholder: 'https://example.sharepoint.com/sites/Team' },
-      // `SIGN_IN_FIELD` in the connector (#3281). The dialog adds "keep how it signs in now" when
-      // rotating, which sends none of these: the connector then keeps what is stored.
+      // `SIGN_IN_FIELD` in the connector (#3281), in the owner's order: the simplest first. `heldWhen`
+      // names the summary keys `microsoft365CredentialSummary` writes for each method, so a rotation
+      // starts on the method the connection holds. A switch to a generated certificate still under
+      // way (`nextCertificate`) reads as the generated one, so a save continues it.
       {
         key: 'signInWith',
         label: 'Sign in with',
@@ -294,29 +302,44 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
         optional: true,
         choices: [
           {
+            value: 'client-secret',
+            label: 'Client secret',
+            hint: 'The simplest. Microsoft generates it: Certificates & secrets → Client secrets → New. Paste its value, and the date Entra shows it expires.',
+            heldWhen: ['clientSecret'],
+          },
+          {
             value: 'certificate',
-            label: 'A certificate generated for this connection (recommended)',
-            hint: 'Download it after saving and upload it under Certificates & secrets. Its private key never leaves the platform, and it is renewed before it ends.',
+            label: 'Platform-generated certificate',
+            hint: 'The most secure: the private key never leaves the platform. After saving, download the certificate here and upload it under Certificates & secrets → Certificates. It is renewed before it ends.',
+            heldWhen: ['nextCertificate', 'certificateGenerated'],
           },
           {
             value: 'own-certificate',
-            label: 'My own certificate',
-            hint: 'One you generated and your Entra admin already uploaded. Give its private key and certificate; the platform does not renew it.',
+            label: 'Your own certificate',
+            hint: 'A certificate you generated and your Entra admin already uploaded. Give its private key and its .cer. The platform does not renew it.',
+            heldWhen: ['certificateSupplied'],
           },
-          { value: 'client-secret', label: 'A client secret' },
         ],
       },
+      // Shown with no choice too ('' — a caller from before the choice), where a given secret still signs in.
       {
         key: 'clientSecret',
         label: 'Client secret',
         secret: true,
         optional: true,
-        placeholder: 'leave empty to use a certificate',
         showWhen: { field: 'signInWith', values: ['client-secret', ''] },
         requiredWhen: ['client-secret'],
       },
+      // `CLIENT_SECRET_EXPIRY_FIELD` in the connector: the secret carries no end, Entra shows it.
+      {
+        key: 'clientSecretExpiresOn',
+        label: 'Secret expires on',
+        secret: false,
+        optional: true,
+        input: 'date',
+        showWhen: { field: 'signInWith', values: ['client-secret', ''] },
+      },
       // `OWN_KEY_FIELD` / `OWN_CERTIFICATE_FIELD` in the connector. Read once there, sealed, never echoed.
-      // Left empty when rotating, the stored pair of yours is kept.
       {
         key: 'ownPrivateKey',
         label: 'Private key (PEM, unencrypted)',
@@ -324,6 +347,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
         optional: true,
         placeholder: '-----BEGIN PRIVATE KEY-----',
         showWhen: { field: 'signInWith', values: ['own-certificate'] },
+        requiredWhen: ['own-certificate'],
         file: { accept: '.pem,.key,.txt' },
       },
       {
@@ -333,6 +357,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
         optional: true,
         placeholder: '-----BEGIN CERTIFICATE-----',
         showWhen: { field: 'signInWith', values: ['own-certificate'] },
+        requiredWhen: ['own-certificate'],
         file: { accept: '.cer,.crt,.pem,.der' },
       },
       // `ROTATE_FIELD` in the connector. Without it, a save within 30 days of the certificate's end rotates anyway.
@@ -432,9 +457,10 @@ export function parseProviderSecret(spec: ProviderSpec, raw: unknown): Record<st
       if (v === 'yes') secret[f.key] = 'yes';
       continue;
     }
-    const required = !f.optional || (f.showWhen !== undefined && (f.requiredWhen ?? []).includes(chosen(f.showWhen.field)));
+    // `requiredWhen` is the dialog's, for a new connection: here an empty one may be a rotation
+    // keeping what is stored, which only the connector can judge.
     if (typeof v === 'string' && v.trim() !== '') secret[f.key] = v.trim();
-    else if (required) missing.push(f.key);
+    else if (!f.optional) missing.push(f.key);
   }
   if (missing.length > 0) {
     throw new Error(`missing credential field${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`);

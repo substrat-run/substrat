@@ -116,23 +116,29 @@ The site grant covers the whole site. The connector narrows it to the one channe
 ### 4. Connect it in the dashboard
 
 Open the app's **Integrations**, choose **Microsoft 365**, and enter the directory ID, client ID,
-sender addresses and site URL. Then pick how it signs in under **Sign in with**:
+sender addresses and site URL. Then pick how it signs in under **Sign in with**. Each is a
+complete choice; nothing is inferred from a field left empty.
 
-- **A certificate generated for this connection (recommended):** the platform generates a keypair
-  for this connection and keeps the private key; open the connection and **Download
-  certificate**, upload it under **Certificates & secrets → Certificates**, then **Test
-  connection**. The thumbprint Entra shows should match the one on the connection.
-- **My own certificate:** for when your Entra admin has already uploaded a certificate you
-  generated. Give its private key and its certificate, each from a file or pasted (below).
-- **A client secret:** create one (at most 12 months) and paste it.
+1. **Client secret** — the quickest. Pick it to get going today. Microsoft generates it: in the app
+   registration, **Certificates & secrets → Client secrets → New**, then paste its **Value** (shown
+   only once). Give **Secret expires on**, the date Entra shows beside it: the secret itself carries
+   no end, and Microsoft does not tell the app, so this date is the only way the connection can
+   warn you (from 30 days before) to make a new one. A secret lives at most 24 months.
+2. **Platform-generated certificate** — the most secure. Pick it when you can upload one file to
+   the app registration. The platform generates a keypair for this connection and keeps the private
+   key, which never exists anywhere else: not on a laptop, in a mailbox, a ticket or a backup. After
+   saving, open the connection, **Download certificate**, upload it under **Certificates & secrets →
+   Certificates**, then **Test connection**. The thumbprint Entra shows should match the one on the
+   connection. It is renewed before it ends (see [Rotation](#rotation-and-revocation)).
+3. **Your own certificate** — pick it when your Entra admin has already uploaded a certificate you
+   generated, so no further round with them is needed. Give its private key and its `.cer`, each
+   from a file or pasted (below). The key existed on the machine that generated it, and on every
+   machine it was copied to on the way here, which is why the platform-generated certificate is the
+   more secure of the two. The platform does not renew yours.
 
-**Why the generated certificate is the default.** Its private key is made on the platform, sealed
-there, and never exists anywhere else: not on a laptop, in a mailbox, a ticket or a backup. With
-your own certificate, the key existed on whichever machine generated it, and on every machine it
-was copied to on the way here, and the platform cannot know where those copies are. A generated
-certificate is also renewed before it ends (see [Rotation](#rotation-and-revocation)); one you
-supply is not. Use your own when uploading a generated certificate would cost another round with
-the people who administer Entra.
+When you rotate a connection, **Sign in with** starts on the method it uses now, and a client
+secret, private key or certificate left empty keeps the one stored, so changing a sender does not
+mean retyping a secret. Pick another method to switch.
 
 #### Using your own certificate
 
@@ -300,6 +306,14 @@ the box ticked, so the one you downloaded stays the one to upload. The save that
 new certificate never generates another one, even with the box ticked: tick it on a later save if
 you want to rotate again.
 
+### Client secrets
+
+The platform cannot renew a client secret: Microsoft makes it, in your directory. With **Secret
+expires on** given, the connection shows the date and, from 30 days before it, a warning. Before
+then, create a new secret, rotate the connection with it and its new date, then delete the old
+secret from the app registration. A new secret saved without a date clears the old date, since it
+described the old secret.
+
 ### Your own certificate
 
 The platform **never renews a certificate you supplied**: no save, inside the 30-day window or with
@@ -308,18 +322,19 @@ connection's expiry, and from 30 days before it the connection shows a warning. 
 either:
 
 - **Supply a new pair.** Generate a new key and certificate, have the certificate uploaded to the
-  app registration, then rotate the connection with **My own certificate** and the new files. The
+  app registration, then rotate the connection with **Your own certificate** and the new files. The
   new pair replaces the old one at once, so upload first, then save.
-- **Switch to a generated certificate.** Rotate the connection with **A certificate generated for
-  this connection**. The platform generates one beside yours, and yours keeps signing: download the
+- **Switch to a platform-generated certificate.** Rotate the connection with **Platform-generated
+  certificate**. The platform generates one beside yours, and yours keeps signing: download the
   new certificate, upload it, and save again, exactly as in the steps above. Once Entra accepts it,
   the connection switches and your key is dropped.
 
-Rotating with **Keep how it signs in now** (to change a sender, say) leaves your certificate as it
-is.
+Rotating with **Your own certificate** and the files left empty (to change a sender, say) leaves
+your certificate as it is.
 
 ### Client secrets and revoking
 
-Switching the connection to a client secret drops both certificates and clears the expiry with
-them, since Microsoft does not report a client secret's end to the app. Disabling or deleting the
+Switching the connection to a client secret drops both certificates; the connection's expiry
+becomes the secret's end date if you give one, and is cleared if you do not, since Microsoft does
+not report a client secret's end to the app. Disabling or deleting the
 app under **Enterprise applications** revokes everything at once.

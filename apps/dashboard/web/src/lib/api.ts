@@ -393,12 +393,17 @@ export interface ProviderField {
   optional?: boolean;
   /** A checkbox: sent as `'yes'` when ticked, left out otherwise. */
   toggle?: boolean;
-  /** #3281: a choice between alternatives, sent as the chosen value; left out, the connector keeps what is stored. */
-  choices?: { value: string; label: string; hint?: string }[];
+  /**
+   * #3281: a choice between alternatives, sent as the chosen value. A rotation starts on the first
+   * whose `heldWhen` names a key of the stored credential's summary.
+   */
+  choices?: { value: string; label: string; hint?: string; heldWhen?: string[] }[];
   /** #3281: shown, and sent, only while the named choice holds one of `values` (`''` for left out). */
   showWhen?: { field: string; values: string[] };
-  /** #3281: required while its `showWhen` choice holds one of these values. */
+  /** #3281: required on a NEW connection while its `showWhen` choice holds one of these values; a rotation keeps what is stored. */
   requiredWhen?: string[];
+  /** #3281: a date (`YYYY-MM-DD`) rather than text. */
+  input?: 'date';
   /** #3281: the value may be read from a file — a text file as its text, a binary one as its bytes' base64 — or pasted. */
   file?: { accept: string };
 }
