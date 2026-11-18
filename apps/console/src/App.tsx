@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { EntitlementGrant, HostnameBinding, Scope, ScopeId, Tenant, TenantId } from '@substrat-run/contracts';
-import { Card, Input, SupportWidget, Toast, useAutoRefresh } from './components';
-import { scopeHandle } from './lib/fleet';
+import type { ScopeId, TenantId } from '@substrat-run/contracts';
+import { RequestError, Skeleton, SkeletonRegion } from '@substrat-run/ui/wa';
+import { Card, Input, SupportWidget, Toast, requestLoading, requestOk, settleFailure, useAutoRefresh, valueOr, type RequestState } from './components';
+import { scopeHandle, sidebarCounts, type Fleet } from './lib/fleet';
 import { navPath, parseNav, type Nav } from './lib/nav';
 import { ConsoleShell } from './ConsoleShell';
 import type { ViewKey } from './ConsoleShell';
@@ -93,6 +94,25 @@ function writeNav(view: ViewKey, detail?: string): void {
 const DEV_ACTOR = import.meta.env.VITE_DEV_ACTOR as string | undefined;
 const devMode = !!DEV_ACTOR;
 
+const NO_FLEET: Fleet = { tenants: [], scopes: [], hostnames: [], entitlements: new Map() };
+
+/** The fleet views' placeholder while the directory walk is out: a list-shaped skeleton. */
+function FleetSkeleton() {
+  return (
+    <SkeletonRegion label="Loading the fleet directory…">
+      <Card padding={0}>
+        {[0, 1, 2, 3, 4].map((i) => (
+          <div key={i} style={{ display: 'flex', gap: 16, padding: '14px 16px', borderTop: i ? '1px solid var(--border-subtle)' : undefined }}>
+            <Skeleton w={160} />
+            <Skeleton w={120} />
+            <Skeleton w={80} style={{ marginLeft: 'auto' }} />
+          </div>
+        ))}
+      </Card>
+    </SkeletonRegion>
+  );
+}
+
 export function App() {
   const [actor, setActor] = useDevActor();
   // undefined = checking session; null = signed out; StaffSession = signed in.
@@ -115,10 +135,11 @@ export function App() {
   const [toast, setToast] = useState<Toast>();
   const [error, setError] = useState<string>();
 
-  const [tenants, setTenants] = useState<Tenant[]>([]);
-  const [scopes, setScopes] = useState<Scope[]>([]);
-  const [entitlements, setEntitlements] = useState<Map<TenantId, EntitlementGrant[]>>(new Map());
-  const [hostnames, setHostnames] = useState<HostnameBinding[]>([]);
+  // The directory walk, as a request (#3244): no answer yet is `loading`, not four empty
+  // lists — the sidebar counts and the fleet views would otherwise read "0 tenants" before
+  // the read lands, and keep reading it if it fails. A failed re-read keeps the answer shown
+  // (`settleFailure`); `error` is that read's message, for the stale-answer notice.
+  const [fleet, setFleet] = useState<RequestState<Fleet>>(requestLoading);
   // Where this platform's scripts and stores live, so the detail views can link into the
   // Cloudflare dashboard. Deployment-wide and immutable, so it is fetched once here rather
   // than per view; null (unconfigured, or the read failed) simply means no links.
@@ -193,19 +214,34 @@ export function App() {
       // No batch read for entitlements — one call per tenant. Fine at fleet
       // sizes the console handles today; a real N+1 to revisit if it isn't.
       const keys = await Promise.all(ts.map((t) => api.listEntitlements(t.id)));
-      setTenants(ts);
-      setScopes(ss);
-      setHostnames(hs);
-      setEntitlements(new Map(ts.map((t, i) => [t.id, keys[i] ?? []])));
+      setFleet(
+        requestOk({ tenants: ts, scopes: ss, hostnames: hs, entitlements: new Map(ts.map((t, i) => [t.id, keys[i] ?? []])) }),
+      );
       setError(undefined);
     } catch (e) {
+      setFleet(settleFailure<Fleet>(e));
       setError((e as Error).message);
     }
   }, [api, authed]);
 
+  // A new actor or session is a different question: start over from loading rather than
+  // captioning it with the previous answer.
   useEffect(() => {
+    setFleet(requestLoading());
+    setError(undefined);
     void load();
   }, [load]);
+
+  // Retry from a failed first read goes back to loading, so the button visibly does something.
+  const retryFleet = () => {
+    setFleet((prev) => (prev.state === 'error' ? requestLoading() : prev));
+    void load();
+  };
+
+  // Lookups and computations read the answer, or nothing while there is none (slugs fall back
+  // to ids). What CLAIMS something about the fleet — the sidebar counts and the Tenants,
+  // Scopes and Domains views — waits for `fleet.state === 'ok'` instead.
+  const { tenants, scopes, hostnames, entitlements } = valueOr(fleet, NO_FLEET);
 
   // Keep the directory live without a manual browser reload: refetch when the tab
   // regains focus, plus a slow poll while it stays visible. 60s (not the hook's 30s
@@ -310,9 +346,7 @@ export function App() {
       }}
       onToggleDark={() => setDark((d) => !d)}
       crumbs={crumbs}
-      tenantCount={tenants.length}
-      scopeCount={scopes.length}
-      hostnameCount={hostnames.length}
+      {...sidebarCounts(fleet)}
       identityLabel={devMode ? undefined : session?.email}
       onSignOut={devMode ? undefined : () => signOut()}
     >
@@ -327,13 +361,27 @@ export function App() {
       */}
       <SupportWidget />
 
-      {error && (
-        <Card style={{ marginBottom: 16 }}>
-          <span style={{ fontSize: 13, color: 'var(--status-danger-fg)' }}>{error}</span>
+      {fleet.state === 'error' ? (
+        <Card padding={0} style={{ marginBottom: 16 }}>
+          <RequestError what="the fleet directory" error={fleet.error} onRetry={retryFleet} />
         </Card>
+      ) : (
+        error && (
+          <Card style={{ marginBottom: 16 }}>
+            <span style={{ fontSize: 13, color: 'var(--status-danger-fg)' }}>
+              Could not refresh the fleet directory; showing the last answer. {error}
+            </span>
+          </Card>
+        )
       )}
 
-      {view === 'tenants' &&
+      {/* Tenants, Scopes and Domains speak for the whole directory (counts, "No tenants
+          yet.", the bindable-scope list), so they draw only an answer. A failed first read
+          is the error above, never an empty fleet. */}
+      {fleet.state === 'loading' && (view === 'tenants' || view === 'scopes' || view === 'domains') && <FleetSkeleton />}
+
+      {fleet.state === 'ok' &&
+        view === 'tenants' &&
         (tenantDetail ? (
           <TenantDetail
             api={api}
@@ -362,7 +410,8 @@ export function App() {
           />
         ))}
 
-      {view === 'scopes' &&
+      {fleet.state === 'ok' &&
+        view === 'scopes' &&
         (scopeDetail ? (
           <ScopeDetail
             api={api}
@@ -386,7 +435,7 @@ export function App() {
             onToast={notify}
           />
         ))}
-      {view === 'domains' && (
+      {fleet.state === 'ok' && view === 'domains' && (
         <Domains
           api={api}
           scopes={scopes}

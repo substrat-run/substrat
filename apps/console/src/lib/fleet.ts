@@ -1,5 +1,6 @@
 import { AUTO_ADMISSION_NOTE } from '@substrat-run/contracts';
-import type { Scope, ScopeStatus, Tenant, TenantId, VerticalVersion } from '@substrat-run/contracts';
+import type { EntitlementGrant, HostnameBinding, Scope, ScopeStatus, Tenant, TenantId, VerticalVersion } from '@substrat-run/contracts';
+import type { RequestState } from '@substrat-run/ui';
 
 /**
  * Effective vs stored scope status — the one place the console is allowed to
@@ -126,6 +127,35 @@ export function admissionLabel(a: EffectiveAdmission): string {
 /** `{tenant.slug}/{scope.slug}` — the console's handle. Scope slugs are unique per tenant, not per fleet. */
 export function scopeHandle(scope: Scope, tenants: Map<TenantId, Tenant>): string {
   return `${tenants.get(scope.tenantId)?.slug ?? '?'}/${scope.slug}`;
+}
+
+/**
+ * The whole directory, as the console walks it on load: one read, so one answer. Held as a
+ * `RequestState<Fleet>` rather than four `[]` defaults (#3244), because an empty array cannot
+ * tell "no tenants" from "not read yet" or from "the read failed".
+ */
+export interface Fleet {
+  tenants: Tenant[];
+  scopes: Scope[];
+  hostnames: HostnameBinding[];
+  entitlements: Map<TenantId, EntitlementGrant[]>;
+}
+
+export interface SidebarCounts {
+  tenantCount?: number;
+  scopeCount?: number;
+  hostnameCount?: number;
+}
+
+/**
+ * The sidebar's badges: a count only once the directory has answered. While it is loading,
+ * or after a first read that failed, there is no count to show, and a `0` would claim an
+ * empty fleet. A failed re-read keeps the last answer (`settleFailure`), so its counts stay.
+ */
+export function sidebarCounts(fleet: RequestState<Fleet>): SidebarCounts {
+  if (fleet.state !== 'ok') return {};
+  const { tenants, scopes, hostnames } = fleet.value;
+  return { tenantCount: tenants.length, scopeCount: scopes.length, hostnameCount: hostnames.length };
 }
 
 export interface FleetCounts {
