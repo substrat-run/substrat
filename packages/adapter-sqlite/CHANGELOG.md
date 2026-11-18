@@ -1,5 +1,13 @@
 # @substrat-run/adapter-sqlite
 
+## 0.203.0
+
+### Patch Changes
+
+- Updated dependencies [f1f01b0]
+  - @substrat-run/contracts@0.203.0
+  - @substrat-run/kernel@0.203.0
+
 ## 0.202.0
 
 ### Minor Changes

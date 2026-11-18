@@ -1,5 +1,11 @@
 # @substrat-run/contracts
 
+## 0.203.0
+
+### Minor Changes
+
+- f1f01b0: Add `connectorScriptCallRequest` and `connectorScriptCallTarget`, the call into a first-party connector deployed as its own script, and reserve the `substrat-connector-` script name space for it.
+
 ## 0.202.0
 
 ### Minor Changes
