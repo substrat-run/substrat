@@ -16,6 +16,7 @@ export {
   type BolagsverketConnectorOptions,
 } from './connector.js';
 export { BolagsverketApi, type BolagsverketApiOptions } from './api.js';
+export { bolagsverketCallConfig, bolagsverketConfigOf, bolagsverketEgressHosts, serveBolagsverketCall, type ScriptAnswer } from './remote.js';
 export {
   BOLAGSVERKET_ENVIRONMENTS,
   BOLAGSVERKET_READ_SCOPE,

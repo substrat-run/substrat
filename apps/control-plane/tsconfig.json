@@ -7,5 +7,7 @@
     "rootDir": ".",
     "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"]
   },
+  // `fixtures/` is out: the connector-script suite's router stand-in imports the router's source
+  // across this rootDir, which tsc refuses; vitest.config.ts bundles it as an auxiliary worker.
   "include": ["src", "test", "vitest.config.ts"]
 }

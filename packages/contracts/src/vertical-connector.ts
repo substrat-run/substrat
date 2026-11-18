@@ -175,65 +175,112 @@ export const verticalConnectorBinding = z
   .strict();
 export type VerticalConnectorBinding = z.infer<typeof verticalConnectorBinding>;
 
+/**
+ * A first-party provider: a plain slug, no dot (§4). What a connector deployed as its own platform
+ * script is called for (docs/rfc/connector-scripts.md), so the two kinds can never be confused on
+ * one wire.
+ */
+export const firstPartyConnectorProvider = connectionProvider.refine(
+  (p) => !isVerticalConnectorProvider(p),
+  'a first-party provider is a plain slug, with no dot',
+);
+
+const connectorCallConnectionOf = <P extends z.ZodType<string, string>>(provider: P) =>
+  z
+    .object({
+      id: connectionId,
+      tenantId,
+      vertical: z.string().min(1),
+      provider,
+      externalAccountRef: z.string().nullable(),
+      expiresAt: instant.nullable(),
+      secret: z.record(z.string(), z.string()),
+    })
+    .strict();
+
 /** The connection a call is made for, with its opened credential. Never anything else's. */
-export const connectorCallConnection = z
-  .object({
-    id: connectionId,
-    tenantId,
-    vertical: z.string().min(1),
-    provider: verticalConnectorProvider,
-    externalAccountRef: z.string().nullable(),
-    expiresAt: instant.nullable(),
-    secret: z.record(z.string(), z.string()),
-  })
-  .strict();
+export const connectorCallConnection = connectorCallConnectionOf(verticalConnectorProvider);
 export type ConnectorCallConnection = z.infer<typeof connectorCallConnection>;
 
+/**
+ * The call, one shape per role, for a provider rule. Two instances exist and they differ only in
+ * the rule and in what the connection-level roles may carry beside the credential: a vertical's
+ * call (dotted provider, nothing else) and a first-party connector script's (plain slug, and the
+ * deployment's configuration). One factory, so a role added to one is added to both.
+ */
+function connectorCallRequestOf<P extends z.ZodType<string, string>, C extends z.ZodRawShape>(provider: P, probeExtra: C) {
+  const connection = connectorCallConnectionOf(provider);
+  return z
+    .discriminatedUnion('role', [
+      z.object({ role: z.literal('probe-candidate'), provider, secret: z.record(z.string(), z.string()), ...probeExtra }).strict(),
+      z.object({ role: z.literal('probe'), provider, connection, state: connectorCallState, ...probeExtra }).strict(),
+      z
+        .object({
+          role: z.literal('bind'),
+          provider,
+          connection,
+          scopeId,
+          options: z.record(z.string(), z.unknown()),
+        })
+        .strict(),
+      z
+        .object({
+          role: z.literal('sweep'),
+          provider,
+          connection,
+          binding: verticalConnectorBinding,
+          state: connectorCallState,
+        })
+        .strict(),
+      z
+        .object({
+          role: z.literal('dispatch'),
+          provider,
+          connection,
+          scopeId,
+          binding: verticalConnectorBinding.nullable(),
+          event: domainEvent,
+          state: connectorCallState,
+        })
+        .strict(),
+    ])
+    .superRefine((parsed, ctx) => {
+      // Read structurally: the provider rule is generic here, which narrows nothing.
+      const req = parsed as { provider: string; connection?: { provider: string } };
+      if (req.connection && req.connection.provider !== req.provider) {
+        ctx.addIssue({ code: 'custom', path: ['connection', 'provider'], message: `the connection is for ${req.connection.provider}, not ${req.provider}` });
+      }
+    });
+}
+
 /** The platform's call into a vertical's worker (§6.3), one per role. */
-export const connectorCallRequest = z
-  .discriminatedUnion('role', [
-    z
-      .object({ role: z.literal('probe-candidate'), provider: verticalConnectorProvider, secret: z.record(z.string(), z.string()) })
-      .strict(),
-    z
-      .object({ role: z.literal('probe'), provider: verticalConnectorProvider, connection: connectorCallConnection, state: connectorCallState })
-      .strict(),
-    z
-      .object({
-        role: z.literal('bind'),
-        provider: verticalConnectorProvider,
-        connection: connectorCallConnection,
-        scopeId,
-        options: z.record(z.string(), z.unknown()),
-      })
-      .strict(),
-    z
-      .object({
-        role: z.literal('sweep'),
-        provider: verticalConnectorProvider,
-        connection: connectorCallConnection,
-        binding: verticalConnectorBinding,
-        state: connectorCallState,
-      })
-      .strict(),
-    z
-      .object({
-        role: z.literal('dispatch'),
-        provider: verticalConnectorProvider,
-        connection: connectorCallConnection,
-        scopeId,
-        binding: verticalConnectorBinding.nullable(),
-        event: domainEvent,
-        state: connectorCallState,
-      })
-      .strict(),
-  ])
-  .superRefine((req, ctx) => {
-    if ('connection' in req && req.connection.provider !== req.provider) {
-      ctx.addIssue({ code: 'custom', path: ['connection', 'provider'], message: `the connection is for ${req.connection.provider}, not ${req.provider}` });
-    }
-  });
+export const connectorCallRequest = connectorCallRequestOf(verticalConnectorProvider, {});
 export type ConnectorCallRequest = z.infer<typeof connectorCallRequest>;
+
+/** Keys a connector script's per-call configuration may carry. */
+export const CONNECTOR_SCRIPT_CONFIG_MAX_KEYS = 16;
+
+/**
+ * The deployment's configuration for one call into a first-party connector script: which provider
+ * environment, which host overrides. Sent by the control plane, which holds it, so a script holds
+ * no configuration of its own and the hosts its egress admits are derived from the same values.
+ * Never a credential: that travels as `secret` or `connection.secret`.
+ */
+export const connectorScriptConfig = z
+  .record(z.string().min(1).max(64), z.string().max(2048))
+  .refine((c) => Object.keys(c).length <= CONNECTOR_SCRIPT_CONFIG_MAX_KEYS, {
+    message: `a connector script's configuration carries at most ${CONNECTOR_SCRIPT_CONFIG_MAX_KEYS} keys`,
+  });
+
+/**
+ * The same call, made to a first-party connector deployed as its own platform script rather than
+ * run inside the control plane (docs/rfc/connector-scripts.md). The response is
+ * `connectorCallResponse`, unchanged.
+ */
+export const connectorScriptCallRequest = connectorCallRequestOf(firstPartyConnectorProvider, {
+  config: connectorScriptConfig.optional(),
+});
+export type ConnectorScriptCallRequest = z.infer<typeof connectorScriptCallRequest>;
 
 const uses = z.array(connectionUseOutcome).max(CONNECTOR_CALL_MAX_USES);
 

@@ -72,6 +72,13 @@ export class BolagsverketApi {
         `Bolagsverket ${method} ${path}`,
       );
       const { body } = res;
+      // The platform's egress refused the call before it left: the platform's failure, never the client's.
+      if (res.egressRefused) {
+        throw new BolagsverketError('upstream', `Bolagsverket ${method} ${path} was refused by the platform's egress: ${errorMessage(body, res.status)}`, {
+          status: res.status,
+          body,
+        });
+      }
       if (res.status === 401 && !reminted) {
         reminted = true;
         this.token.invalidate();

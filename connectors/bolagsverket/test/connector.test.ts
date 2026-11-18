@@ -10,6 +10,23 @@ const options = (api: Reply[], token?: Reply) => {
   return { fake, options: { fetch: fetchLikeOf(fake.fetch), tokenUrl: TOKEN_URL, apiBase: API_BASE, environment: 'test' as const } };
 };
 
+describe("the platform's egress refusal", () => {
+  // The egress worker answers a host outside the connector's declared egress with a 403 marked
+  // `x-substrat-egress: refused`. The credential never reached the provider, so it is not refused.
+  const EGRESS = { status: 403, body: { error: 'outbound refused' }, headers: { 'x-substrat-egress': 'refused' } };
+
+  it.each([
+    ['on the token mint', [] as Reply[], EGRESS],
+    ['on the ping', [EGRESS], undefined],
+  ])('reads as inconclusive %s, where an unmarked 403 is a refusal', async (_, api, token) => {
+    const { options: o } = options(api, token);
+    expect(await probeBolagsverketSecret(CREDENTIAL, o)).toMatchObject({ ok: false, refused: false, error: expect.stringMatching(/egress|outbound refused/) });
+    const unmarked = { status: 403, body: { error: 'forbidden' } };
+    const { options: plain } = options(token ? [] : [unmarked], token ? unmarked : undefined);
+    expect(await probeBolagsverketSecret(CREDENTIAL, plain)).toMatchObject({ ok: false, refused: true });
+  });
+});
+
 describe('probeBolagsverketSecret', () => {
   it('mints and pings, and names the environment and the granted scopes', async () => {
     const { options: o } = options([{ status: 200, body: '' }], {

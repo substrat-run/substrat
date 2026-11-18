@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CONNECTOR_CALL_PATH, CONNECTOR_PROBE_PATH, PLATFORM_SECRET_HEADER } from '@substrat-run/contracts';
-import { handleConnectorCall, type Env } from '../src/worker.js';
+import { handleConnectorCall, handleConnectorScriptCall, type Env } from '../src/worker.js';
 
 /**
  * The router's connector-call entrypoint (vertical-connectors.md §6.3). What it owes: a
@@ -127,5 +127,63 @@ describe('ConnectorCalls', () => {
     expect(out).toEqual({ status: 500, body: null });
     expect((ns.seen()[0]!.outbound!.OUTBOUND_POLICY as { scope: string }).scope).toBe('');
     expect(new URL(ns.seen()[0]!.request!.url).pathname).toBe(CONNECTOR_PROBE_PATH);
+  });
+});
+
+describe('ConnectorCalls.callScript (docs/rfc/connector-scripts.md)', () => {
+  const scriptTarget = (over: Record<string, unknown> = {}) => ({
+    script: 'substrat-connector-bolagsverket',
+    tenantId: TENANT,
+    hosts: ['portal.api.bolagsverket.se', 'gw.api.bolagsverket.se'],
+    ...over,
+  });
+  const candidate = { role: 'probe-candidate', provider: 'bolagsverket', secret: { clientId: 'c', clientSecret: 's' }, config: { environment: 'prod' } };
+  const callScript = (env: Partial<Env>, t: unknown, r: unknown) => handleConnectorScriptCall({ PLATFORM_SECRET: SECRET, ...env } as unknown as Env, t, r);
+
+  it("dispatches into the script under the connector's own egress, with no scope, no secret and no envelope", async () => {
+    const ns = dispatch(() => Response.json({ ok: true, result: null, state: [], uses: [] }));
+    const out = await callScript({ DISPATCH: ns }, scriptTarget({ tenantId: null }), candidate);
+    expect(out.status).toBe(200);
+    const [seen] = ns.seen();
+    expect(seen!.name).toBe('substrat-connector-bolagsverket');
+    expect(seen!.outbound).toEqual({
+      OUTBOUND_POLICY: {
+        slug: 'substrat-connector-bolagsverket',
+        tenant: '',
+        hosts: ['portal.api.bolagsverket.se', 'gw.api.bolagsverket.se'],
+        scope: '',
+        calls: [],
+        stores: null,
+        depth: 0,
+        primary: true,
+      },
+    });
+    const sent = seen!.request!;
+    expect(new URL(sent.url).pathname).toBe(CONNECTOR_PROBE_PATH);
+    expect(sent.headers.get(PLATFORM_SECRET_HEADER)).toBeNull();
+    expect(await sent.json()).toEqual(candidate);
+  });
+
+  it.each([
+    ['a vertical deployment as the script', scriptTarget({ script: 'acme-crm--v3' }), candidate, /target is malformed/],
+    ['a target with no egress host', scriptTarget({ hosts: [] }), candidate, /target is malformed/],
+    ['a vertical-defined provider', scriptTarget(), { ...candidate, provider: 'acme.docbox' }, /request is malformed/],
+    ['another provider than the script serves', scriptTarget({ tenantId: null }), { ...candidate, provider: 'fortnox' }, /not the script of fortnox/],
+    ['a candidate whose target names a tenant', scriptTarget(), candidate, /probe-candidate call belongs to no tenant/],
+    ['a probe with no tenant on its target', scriptTarget({ tenantId: null }), { role: 'probe', provider: 'bolagsverket', connection: { ...CONNECTION, provider: 'bolagsverket' }, state: [] }, /another tenant/],
+    ['a connection of another tenant', scriptTarget({ tenantId: OTHER_TENANT }), { role: 'probe', provider: 'bolagsverket', connection: { ...CONNECTION, provider: 'bolagsverket' }, state: [] }, /another tenant/],
+    ['a scoped role', scriptTarget(), { role: 'bind', provider: 'bolagsverket', connection: { ...CONNECTION, provider: 'bolagsverket' }, scopeId: SCOPE, options: {} }, /connection-level calls only, not bind/],
+  ])('refuses %s without dispatching', async (_, t, r, message) => {
+    const ns = dispatch();
+    const out = await callScript({ DISPATCH: ns }, t, r);
+    expect(out).toEqual({ status: 400, body: { error: expect.stringMatching(message) } });
+    expect(ns.seen()).toHaveLength(0);
+  });
+
+  it('answers 503 when the script is not deployed, after the one retry', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const missing = { get: () => ({ fetch: async () => { throw new Error('Worker not found.'); } }) } as unknown as DispatchNamespace;
+    const out = await callScript({ DISPATCH: missing }, scriptTarget({ tenantId: null }), candidate);
+    expect(out).toEqual({ status: 503, body: { error: expect.stringMatching(/not deployed/) } });
   });
 });

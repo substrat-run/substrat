@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-133 decisions · 72 plan · 61 kernel
+134 decisions · 73 plan · 61 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -133,7 +133,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-56](decisions/K-056-a-runtime-installed-extension-acts-only-as-a-capability-the-vertical-mints-for-it.md) | 2026-10-23 | kernel | A runtime-installed extension acts only as a capability the vertical mints for it | #1671, #1672 |
 | [K-57](decisions/K-057-a-semantic-index-is-scope-local-a-semantic-read-is-declared-eventual-an-external-index-only-as-a-store-driver.md) | 2026-10-23 | kernel | A semantic index is scope-local; a semantic read is declared eventual; an external index only as a scope-store driver | #1576 |
 | [K-58](decisions/K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md) | 2026-10-23 | kernel | A call from the platform to a vertical carries an Ed25519 envelope, a deployed vertical holds public keys only, and its calls up to the control plane give way to its outbox <br>*awaiting ratification* |  |
-| [D-64](decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md) | 2026-10-26 | plan | A vertical may define its own connector, and it runs in the vertical's worker with a capability narrowed to one connection <br>*awaiting ratification* <br>*amends D-18* | #2614 |
+| [D-64](decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md) | 2026-10-26 | plan | A vertical may define its own connector, and it runs in the vertical's worker with a capability narrowed to one connection <br>*awaiting ratification* <br>*amends D-18* <br>*amended by D-73* | #2614 |
 | [D-65](decisions/D-065-a-store-driver-release-runs-after-a-person-approves-its-uploaded-bytes.md) | 2026-10-28 | plan | A store driver release runs after a person approves its uploaded bytes <br>*amends D-63* | #2210, #2297 |
 | [D-66](decisions/D-066-projects-use-github-or-artifacts-and-the-platform-builds-every-release.md) | 2026-10-28 | plan | Projects use GitHub or Cloudflare Artifacts and the platform builds every release <br>*supersedes D-53* |  |
 | [D-67](decisions/D-067-the-graph-driver-is-admitted-under-a-reviewed-release-isolation-lift.md) | 2026-10-31 | plan | The graph driver is admitted under a reviewed-release isolation lift <br>*amends D-63* <br>*amended by D-70* | #2210, #2394, #2830 |
@@ -145,3 +145,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-71](decisions/D-071-a-store-object-a-deletion-has-fenced-refuses-what-it-left-in-flight.md) | 2026-11-07 | plan | A store object a deletion has fenced refuses what that deletion left in flight <br>*awaiting ratification* <br>*amends D-63, D-69, K-50, K-52* | #2285 |
 | [K-61](decisions/K-061-an-operation-reads-the-callers-verified-address-from-the-platform-and-a-share-can-name-an-address.md) | 2026-11-07 | kernel | An operation reads the caller's verified address from the platform, and a share can name an address | #1359 |
 | [D-72](decisions/D-072-a-managed-tenant-signs-in-at-its-provisioner-s-team-auth-server-and-the-platform-registers-its-client-and-place-there.md) | 2026-11-16 | plan | A managed tenant may sign in at its provisioner's team auth-server, and the platform registers its client and its place there <br>*awaiting ratification* <br>*amends D-62* | #3202 |
+| [D-73](decisions/D-073-a-connector-is-its-own-deployable-unit-with-one-call-contract.md) | 2026-11-18 | plan | A connector is its own deployable unit with one call contract, and where it runs is a choice <br>*awaiting ratification* <br>*amends D-64* | #2855 |

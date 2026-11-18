@@ -84,7 +84,7 @@ These are recorded rather than fixed, and are tracked in
 
 ## The decision log
 
-[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->133 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
+[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->134 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
 generated from [`decisions/`](decisions/), one file per decision. The tables in master plan
 §12 and kernel design §14 are generated from the same source and must not be hand-edited.
 
@@ -202,6 +202,7 @@ Open proposals. A document leaves when it is decided — to `architecture/` rewr
 | [booking-social.md](rfc/booking-social.md) | `building` | Booking engine shipped; the cross-tenant social tier is not. |
 | [callout-concept.md](rfc/callout-concept.md) | `historical` | The Callout field-service concept — the first demo vertical, which the workorder, invoicing and protocol engines were cut against; the demo is gone, the argument stays. |
 | [callout-testrun.md](rfc/callout-testrun.md) | `historical` | The original test-run spec the first engines (workorder, invoicing) were cut from — kept after the Callout demo was removed. |
+| [connector-scripts.md](rfc/connector-scripts.md) | `proposed` | A connector is its own deployable unit with one call contract, and where it runs is a choice. Phase 1 is a pilot: Bolagsverket as its own script in the dispatch namespace, called by the control plane through the router behind a flag, TEST only, to measure the extra hop. D-73 records the direction as proposed. |
 | [cross-scope-read.md](rfc/cross-scope-read.md) | `proposed` | A read for the screen that lists a principal's scopes — declared, run by the host, checked by every scope it touches. #1581. |
 | [dependent-people.md](rfc/dependent-people.md) | `proposed` | A vertical takes its people from another app of the same tenant. It signs them in at the shared issuer, asks the other app who each login is by a peer call, and keeps the answer for a bounded time. The other app may also call it as the person signed in, with a token the issuer exchanged for them. Built on both hosts, with a demo pair. |
 | [disclosure-register.md](rfc/disclosure-register.md) | `proposed` | Can the platform say which processors hold data about one subject? Argues #860 against the two positions it must survive; lands on not-yet-in-this-shape, and on one live erasure hole found while arguing. Revision 2 takes the forks and recommends a derived register plus a declared superset. |

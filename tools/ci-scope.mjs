@@ -469,6 +469,14 @@ export const READS = [
     paths: /^apps\/router\/src\/store-calls/,
     suite: 'apps/vertical-egress/test/store-hop.workerd.test.ts',
   },
+  // The connector-script hop (docs/rfc/connector-scripts.md) bundles the router's connector-call
+  // source and the egress worker as auxiliary workers. Neither is a package the control plane can
+  // depend on.
+  {
+    reader: '@substrat-run/control-plane',
+    paths: /^apps\/(router|vertical-egress)\/src\//,
+    suite: 'apps/control-plane/test/connector-script.test.ts',
+  },
   // #2192: the caller-side recorder reads the egress worker's refusal mark, and the worker is
   // not a package vertical-host can depend on, so the suite reads the literal off the source.
   {

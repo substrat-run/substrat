@@ -7,6 +7,7 @@ import {
 } from '@substrat-run/control-plane-api';
 import type { ConnectionBinder } from '@substrat-run/kernel';
 import type { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
+import type { ConnectorScriptCallsBinding } from './connector-scripts.js';
 
 /**
  * The control plane's half of a vertical-defined connector (docs/architecture/vertical-connectors.md
@@ -18,7 +19,7 @@ import type { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
  * The router's `ConnectorCalls` entrypoint, structurally — the router dispatches the call into
  * the target deployment under its `outbound` hosts, which a `dispatch.get(ref)` from here cannot.
  */
-export interface ConnectorCallsBinding {
+export interface ConnectorCallsBinding extends ConnectorScriptCallsBinding {
   call(target: unknown, request: unknown): Promise<{ status: number; body: unknown }>;
 }
 

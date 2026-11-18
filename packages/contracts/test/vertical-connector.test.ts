@@ -10,6 +10,9 @@ import {
   connectorCallRequest,
   connectorCallTarget,
   connectorCallState,
+  connectorScriptCallRequest,
+  connectorScriptCallTarget,
+  connectorScriptName,
   connectorsOfManifestJson,
   pushedConnectorProblems,
   pushedPermissionRegistry,
@@ -159,5 +162,25 @@ describe('vertical-defined connectors', () => {
     expect(pushedPermissionRegistry.safeParse({ ...base, connectors: [{ ...row, grants: ['assistant:run'] }] }).success).toBe(false);
     expect(pushedPermissionRegistry.safeParse({ ...base, connectors: [row, row] }).success).toBe(false);
     expect(pushedPermissionRegistry.safeParse({ ...base, connectors: [{ ...row, provider: 'scrive' }] }).success).toBe(false);
+  });
+});
+
+describe('first-party connector scripts (docs/rfc/connector-scripts.md)', () => {
+  it('takes the same roles for a plain slug only, and a per-call config only there', () => {
+    const candidate = { role: 'probe-candidate', provider: 'bolagsverket', secret: { clientId: 'c' }, config: { environment: 'test' } };
+    expect(connectorScriptCallRequest.safeParse(candidate).success).toBe(true);
+    expect(connectorScriptCallRequest.safeParse({ ...candidate, provider: 'acme.docbox' }).success).toBe(false);
+    // The vertical call is unchanged: a dotted provider, and nothing beside the credential.
+    expect(connectorCallRequest.safeParse({ ...candidate, provider: 'acme.docbox' }).success).toBe(false);
+    expect(connectorCallRequest.safeParse({ role: 'probe-candidate', provider: 'bolagsverket', secret: {} }).success).toBe(false);
+    const tooMany = Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`k${i}`, 'v']));
+    expect(connectorScriptCallRequest.safeParse({ ...candidate, config: tooMany }).success).toBe(false);
+  });
+
+  it('targets only a reserved script name, with at least one egress host', () => {
+    const target = { script: connectorScriptName('bolagsverket'), tenantId: '01HZ0000000000000000000000', hosts: ['gw.api.bolagsverket.se'] };
+    expect(connectorScriptCallTarget.safeParse(target).success).toBe(true);
+    expect(connectorScriptCallTarget.safeParse({ ...target, script: 'meridian-01hz' }).success).toBe(false);
+    expect(connectorScriptCallTarget.safeParse({ ...target, hosts: [] }).success).toBe(false);
   });
 });
