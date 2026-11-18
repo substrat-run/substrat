@@ -69,7 +69,9 @@ export function Domains({ teamId }: { teamId: string }) {
     [teamId],
   );
   const domains = domainsReq.state;
-  const load = domainsReq.reload;
+  const load = async () => {
+    await domainsReq.reload();
+  };
   const setDomains = domainsReq.set;
 
   const loadMore = useCallback(async () => {
