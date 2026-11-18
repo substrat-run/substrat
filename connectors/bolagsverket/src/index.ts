@@ -4,7 +4,7 @@
  *
  * Host code, never module code: module code reaches a connector as a capability and never
  * calls `fetch`. The credential is the tenant's own, pasted and sealed in a per-tenant
- * connection; `connector.ts` is what the control plane's registration calls.
+ * connection; `connector.ts` and `dispatch.ts` are what the control plane's registration calls.
  */
 export {
   BOLAGSVERKET_CONNECTION_GRANTS,
@@ -15,6 +15,21 @@ export {
   sweepBolagsverket,
   type BolagsverketConnectorOptions,
 } from './connector.js';
+export {
+  BOLAGSVERKET_LOOKUP_OUTCOMES,
+  BOLAGSVERKET_LOOKUP_REQUESTED,
+  bindBolagsverketScope,
+  bolagsverketConnector,
+  bolagsverketLookupLanding,
+  bolagsverketLookupRequested,
+  declareBolagsverketConnector,
+  listBolagsverketBindings,
+  unbindBolagsverketScope,
+  type BolagsverketBinding,
+  type BolagsverketDispatchOptions,
+  type BolagsverketLookupLanding,
+  type BolagsverketLookupRequested,
+} from './dispatch.js';
 export { BolagsverketApi, type BolagsverketApiOptions } from './api.js';
 export { bolagsverketCallConfig, bolagsverketConfigOf, bolagsverketEgressHosts, serveBolagsverketCall, type ScriptAnswer } from './remote.js';
 export {

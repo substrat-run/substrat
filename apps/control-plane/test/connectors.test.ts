@@ -224,7 +224,7 @@ describe('connector registry', () => {
     // drain's handler map or the sweep's sweeper map must not take the whole pass down
     // over one connector's unset var. So constructing them is fine…
     const sweeper = scrive.sweep(blank);
-    const dispatcher = scrive.dispatch!(blank);
+    const dispatcher = scrive.dispatch!(blank, null as never);
     // …and using them is what refuses.
     await expect(
       sweeper(null as never, 'con_x' as never, { fetch: null as never }),
@@ -236,7 +236,7 @@ describe('connector registry', () => {
 it('registered poll binding doors preserve the vertical landing configuration', async () => {
   const id = connectionId.parse('01JZ0000000000000000000001');
   const target = { tenantId: '01JZ0000000000000000000002', scopeId: '01JZ0000000000000000000003', vertical: 'acme-crm' };
-  for (const [provider, operation, permission] of [['planima', 'maintenance/record-plan', 'plan:record'], ['fortnox', 'ledger/record-period', 'ledger:record'], ['woocommerce', 'shop/record-commerce', 'commerce:record'], ['stripe', 'shop/record-payment', 'payment:record']] as const) {
+  for (const [provider, operation, permission] of [['planima', 'maintenance/record-plan', 'plan:record'], ['fortnox', 'ledger/record-period', 'ledger:record'], ['woocommerce', 'shop/record-commerce', 'commerce:record'], ['stripe', 'shop/record-payment', 'payment:record'], ['bolagsverket', 'crm/record-organisation-lookup', 'organisation:record']] as const) {
     const records = new Map<string, unknown>();
     const host = {
       connectionGrantsInScope: async () => [{ connectionId: id, permission: permissionKey.parse(permission) }],
@@ -262,8 +262,11 @@ describe('connection binders (#2316)', () => {
   it('binds from a declaration only for a provider whose inspector binds, with the door\'s options (#2316)', () => {
     const binders = connectionBindersFor(ENV);
     // Scrive is dispatched, not polled: nothing to bind, so a declaration for it binds nothing.
-    expect(Object.keys(binders).sort()).toEqual(['fortnox', 'microsoft365', 'planima', 'stripe', 'woocommerce']);
+    expect(Object.keys(binders).sort()).toEqual(['bolagsverket', 'fortnox', 'microsoft365', 'planima', 'stripe', 'woocommerce']);
     expect(binders['stripe']!.bindBeforeGrant).toBeTypeOf('function');
+    expect(binders['bolagsverket']!.bindBeforeGrant).toBeTypeOf('function');
+    // A lookup's binding names its operation and permission, and takes no options.
+    expect(() => binders['bolagsverket']!.options!({ window: null })).toThrow();
     expect(binders['woocommerce']!.bindBeforeGrant).toBeTypeOf('function');
     // No options: a WooCommerce binding names its operation and permission, and nothing else.
     expect(() => binders['woocommerce']!.options!({ window: null })).toThrow();

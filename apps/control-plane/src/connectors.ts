@@ -75,7 +75,11 @@ import {
 } from '@substrat-run/connector-microsoft365';
 import {
   BOLAGSVERKET_CONNECTION_GRANTS,
+  bindBolagsverketScope,
+  bolagsverketConnector,
   bolagsverketCredentialSummary,
+  listBolagsverketBindings,
+  unbindBolagsverketScope,
   probeBolagsverketConnection,
   probeBolagsverketSecret,
   sweepBolagsverket,
@@ -248,7 +252,13 @@ export interface ConnectorRegistration {
    * no `connector:<provider>` intent kind is drainable, which is right: an intent of
    * that kind could only ever have been enqueued by mistake.
    */
-  dispatch?(env: ConnectorEnv): ConnectorHandler;
+  /*
+   * `host` is the control plane's own, for a connector that lands its answer from the dispatch
+   * itself (Bolagsverket opens the scope as the connection with `host.getConnectorScope`). A
+   * dispatch's `ConnectorContext` holds no scope, and a sweep or a callback is handed the same
+   * host already.
+   */
+  dispatch?(env: ConnectorEnv, host: ScopeHost): ConnectorHandler;
   /** The poll floor (#574): re-read the provider's truth and write it back. */
   sweep(env: ConnectorEnv): ConnectorSweeper;
   /**
@@ -683,9 +693,16 @@ const STRIPE: ConnectorRegistration = {
 /**
  * Bolagsverket (#2855): organisation-number validation over the free value-datasets API. The
  * credential is the tenant's own client id and secret, pasted into the dashboard's door, so
- * the provider's 60-a-minute limit is metered per tenant. No consent round, no callback, and
- * no dispatch yet: v1 is the connection and its probes, which mint a token and ping. The
- * token names no account, so a probe reports the environment and the granted scopes.
+ * the provider's 60-a-minute limit is metered per tenant. No consent round and no callback. The
+ * probes mint a token and ping; the token names no account, so a probe reports the environment
+ * and the granted scopes.
+ *
+ * The dispatch is the lookup: a vertical emits `bolagsverket.organisation-lookup-requested`, and
+ * the dispatch looks the number up with the tenant's connection and lands the answer through the
+ * operation the vertical's `connections` landing declares, as the connection. It lands from the
+ * dispatch rather than from a sweep, so the answer arrives with the router's drain kick instead of
+ * at the next 15-minute pass. The landing pass grants the declared key and binds each install with
+ * the binding verbs below, as it does Planima's.
  */
 function bolagsverketOptions(env: ConnectorEnv): BolagsverketConnectorOptions {
   return {
@@ -717,7 +734,16 @@ const BOLAGSVERKET: ConnectorRegistration = {
       hosts: () => bolagsverketEgressHosts(bolagsverketOptions(env)),
     }),
     credential: (h, row) => bolagsverketCredentialSummary(h, row),
+    bindScope: (h, row, target) => bindBolagsverketScope(h, { ...target, connectionId: row.id }),
+    bindings: (h, row) => listBolagsverketBindings(h, row.id),
+    unbindScope: (h, row, scopeId) => unbindBolagsverketScope(h, row.id, scopeId),
   }),
+  // Always in-process, whatever REMOTE_CONNECTORS says: the script pilot serves the probes only.
+  dispatch: (env, host) =>
+    bolagsverketConnector({
+      ...bolagsverketOptions(env),
+      scope: (connectionId, scopeId) => host.getConnectorScope(connectionId, scopeId),
+    }),
   sweep: () => sweepBolagsverket,
 };
 
@@ -857,7 +883,7 @@ export function connectionBindersFor(env: ConnectorEnv): Record<string, Connecti
         list: (h, row) => bindings(h, row),
         bind: (h, row, target) => bindScope(h, row, target as Parameters<typeof bindScope>[2]),
         ...(inspector.unbindScope ? { unbind: inspector.unbindScope } : {}),
-        ...(['fortnox', 'planima', 'woocommerce', 'stripe'].includes(c.provider)
+        ...(['fortnox', 'planima', 'woocommerce', 'stripe', 'bolagsverket'].includes(c.provider)
           ? {
               bindBeforeGrant: (h: ScopeHost, row: Parameters<typeof bindScope>[1], target: Parameters<typeof bindScope>[2]) =>
                 bindScope(h, row, { ...target, grantPreflighted: true } as Parameters<typeof bindScope>[2]),
