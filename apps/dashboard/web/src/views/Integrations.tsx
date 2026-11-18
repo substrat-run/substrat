@@ -1290,13 +1290,13 @@ export function Integrations({ teamId }: { teamId: string }) {
       {!err && !view && <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading integrations…</div>}
       {view && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
-          {view.map((p) => {
+          {view.map((p, i) => {
             const connected = p.connections.length > 0;
             // A vertical-defined provider no vertical declares any more: no form to connect or
             // rotate with, and nothing to inspect — the one thing left is withdrawing it.
             const formless = p.fields.length === 0;
             return (
-              <div key={p.provider} style={{ ...card, padding: 16, display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <div key={`${p.provider}:${i}`} style={{ ...card, padding: 16, display: 'flex', gap: 12, alignItems: 'flex-start' }}>
                 <Monogram text={p.monogram} />
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

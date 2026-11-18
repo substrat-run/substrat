@@ -3282,43 +3282,66 @@ async function teamIntegrationsIn({ c, host, node }: TeamContext) {
   }
   // Every first-party provider, always — then each vertical-defined one an app of this team
   // declares (vertical-connectors.md §7.2), and a live one no vertical declares any more (formless,
-  // for withdrawing only, as on the app panel). A vertical-defined provider's targets are only the
-  // apps whose vertical declares it, and each connect goes through that app's own door, which
-  // resolves the form from that app's vertical — so listing it here offers nothing the app panel
-  // does not.
-  const specs: ProviderSpec[] = Object.values(PROVIDERS);
-  for (const s of [...offeredBy.values()].flat()) {
-    if (isVerticalConnectorProvider(s.provider) && !specs.some((x) => x.provider === s.provider)) specs.push(s);
+  // for withdrawing only, as on the app panel). Each connect goes through the target app's own door,
+  // which parses against that app's vertical's declaration — so listing a provider here offers
+  // nothing the app panel does not.
+  //
+  // Two verticals may declare the same dotted provider differently (another field, another grant),
+  // so a vertical-defined card is one DECLARATION, not one provider name: its targets and
+  // connections are only those of the verticals that declare exactly that spec, and the form the
+  // dialog renders is always the one the chosen app's door will parse against.
+  const cards: Array<{ spec: ProviderSpec; verticals: Set<string> | null }> = Object.values(PROVIDERS).map((spec) => ({
+    spec,
+    verticals: null,
+  }));
+  for (const [slug, specs] of offeredBy) {
+    for (const s of specs) {
+      if (!isVerticalConnectorProvider(s.provider)) continue;
+      const same = cards.find((k) => k.verticals !== null && JSON.stringify(k.spec) === JSON.stringify(s));
+      if (same) same.verticals!.add(slug);
+      else cards.push({ spec: s, verticals: new Set([slug]) });
+    }
   }
+  const declares = (provider: string, vertical: string) =>
+    cards.some((k) => k.spec.provider === provider && k.verticals?.has(vertical));
   for (const r of rows) {
-    if (r.status === 'revoked' || !isVerticalConnectorProvider(r.provider) || specs.some((x) => x.provider === r.provider)) continue;
-    specs.push(undeclaredConnectorSpec(r.provider));
+    if (r.status === 'revoked' || !isVerticalConnectorProvider(r.provider) || declares(r.provider, r.vertical)) continue;
+    if (cards.some((k) => k.spec.provider === r.provider && k.verticals?.size === 0)) continue;
+    cards.push({ spec: undeclaredConnectorSpec(r.provider), verticals: new Set() });
   }
+  // First-party: every vertical requiring it. Declared: the verticals of that declaration. The
+  // undeclared card: whatever live row of the provider no declaration here claims.
+  const covers = ({ spec, verticals }: (typeof cards)[number], vertical: string) =>
+    verticals === null
+      ? (offeredBy.get(vertical) ?? []).some((s) => s.provider === spec.provider)
+      : verticals.size > 0
+        ? verticals.has(vertical)
+        : !declares(spec.provider, vertical);
   return {
-    providers: specs.map((spec) => {
+    providers: cards.map((card) => {
+      const { spec } = card;
+      const live = rows.filter(
+        (r) => r.provider === spec.provider && r.status !== 'revoked' && (card.verticals === null || covers(card, r.vertical)),
+      );
       const targets = apps
-        .filter((a) => (offeredBy.get(a.vertical_slug) ?? []).some((s) => s.provider === spec.provider))
+        .filter((a) => card.verticals?.size !== 0 && covers(card, a.vertical_slug))
         .map((a) => ({
           scopeId: a.app_scope_id,
           name: a.name,
           vertical: a.vertical_slug,
-          connected: rows.some(
-            (r) => r.provider === spec.provider && r.status !== 'revoked' && r.vertical === a.vertical_slug && servesApp(r, a.app_scope_id),
-          ),
+          connected: live.some((r) => r.vertical === a.vertical_slug && servesApp(r, a.app_scope_id)),
         }));
       return {
         ...providerForm(spec, c.env),
-        connections: rows
-          .filter((r) => r.provider === spec.provider && r.status !== 'revoked')
-          .map((r) => ({
-            ...connectionView(r),
-            vertical: r.vertical,
-            // #3201: a scope's own connection is that one app's, not every app of its vertical's.
-            apps: apps
-              .filter((a) => a.vertical_slug === r.vertical && servesApp(r, a.app_scope_id))
-              .map((a) => ({ scopeId: a.app_scope_id, name: a.name })),
-            sweepRuns: sweepByConnection.get(r.id) ?? [],
-          })),
+        connections: live.map((r) => ({
+          ...connectionView(r),
+          vertical: r.vertical,
+          // #3201: a scope's own connection is that one app's, not every app of its vertical's.
+          apps: apps
+            .filter((a) => a.vertical_slug === r.vertical && servesApp(r, a.app_scope_id))
+            .map((a) => ({ scopeId: a.app_scope_id, name: a.name })),
+          sweepRuns: sweepByConnection.get(r.id) ?? [],
+        })),
         connectTargets: targets,
       };
     }),

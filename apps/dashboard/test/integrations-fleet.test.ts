@@ -108,6 +108,10 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
   let tokenTenants: string[];
   // What this vertical's latest push declares; a test empties it to model a push that dropped one.
   let declared: (typeof DOC_CONNECTOR)[];
+  // What acme/other's latest push declares: by default a connector of its own.
+  // The team's owner — the person the `sb_session=sub-owner` cookie signs in as.
+  let owner: ReturnType<typeof principalId.parse>;
+  let otherDeclared: Array<Omit<typeof DOC_CONNECTOR, 'fields'> & { fields: Array<Record<string, unknown>> }>;
   let env: Record<string, unknown>;
 
   const row = (over: Partial<Row>): Row => ({
@@ -140,8 +144,9 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     planeCalls = [];
     tokenTenants = [];
     declared = [DOC_CONNECTOR];
+    otherDeclared = [{ ...DOC_CONNECTOR, provider: 'acme.other', label: 'Other archive' }];
 
-    const owner = principalId.parse(ulid());
+    owner = principalId.parse(ulid());
     const node = await provisionDashboard(host, { tenantId: tenant, scopeId: dashScope, owner, slug: 'bureau', name: 'Bureau' });
     await host.admin.registerIdentityPool(staff, { provider: 'authhero', topology: 'central', tenantId: null });
     await host.admin.linkIdentity(staff, {
@@ -187,7 +192,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
                 // Another vertical's own connector: not a door on this app.
                 {
                   slug: 'acme/other', name: 'Other', source: 'registry', ownerTenant: null, listed: true,
-                  connectors: [{ ...DOC_CONNECTOR, provider: 'acme.other', label: 'Other archive' }],
+                  connectors: otherDeclared,
                 },
               ],
               nextCursor: null,
@@ -610,6 +615,39 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
       connections: [{ id: live.id }],
       connectTargets: [],
     });
+  });
+
+  it('two verticals declaring one provider differently get a card each, with their own form, apps and connections', async () => {
+    // acme/other declares the same dotted provider with the archive field left out.
+    otherDeclared = [{ ...DOC_CONNECTOR, fields: [DOC_CONNECTOR.fields[0]!] }];
+    const otherApp = scopeId.parse(ulid());
+    await (await host.getScope(owner, tenant, dashScope)).invoke('dashboard/provision-app', { appScopeId: otherApp, verticalSlug: 'acme/other', name: 'Ledger' });
+    const mine = row({ provider: 'acme.docbox', label: 'Books docbox' });
+    const theirs = row({ vertical: 'acme/other', provider: 'acme.docbox', label: 'Ledger docbox' });
+    rows.push(mine, theirs);
+
+    const res = await app.request(`/api/teams/${tenant}/integrations`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+    const { providers } = (await res.json()) as {
+      providers: { provider: string; fields: { key: string }[]; connections: { id: string }[]; connectTargets: { scopeId: string }[] }[];
+    };
+    const docboxes = providers.filter((p) => p.provider === 'acme.docbox');
+    expect(docboxes.map((p) => ({
+      fields: p.fields.map((f) => f.key),
+      targets: p.connectTargets.map((t) => t.scopeId),
+      connections: p.connections.map((c) => c.id),
+    })).sort((a, b) => b.fields.length - a.fields.length)).toEqual([
+      { fields: ['apiKey', 'archive'], targets: [appScope], connections: [mine.id] },
+      { fields: ['apiKey'], targets: [otherApp], connections: [theirs.id] },
+    ]);
+
+    // The second card's form is what that app's door parses against: no archive asked for.
+    const post = await app.request(`/api/teams/${tenant}/apps/${otherApp}/integrations/acme.docbox`, {
+      method: 'POST',
+      headers: { cookie: 'sb_session=sub-owner', 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: { apiKey: 'k-2' } }),
+    }, env);
+    expect(post.status).toBe(200);
+    expect(upserts).toEqual([expect.objectContaining({ scopeId: otherApp, provider: 'acme.docbox', secret: { apiKey: 'k-2' } })]);
   });
 
   it('the addressed revoke reaches an undeclared connection of this vertical too', async () => {
