@@ -1,10 +1,13 @@
 import {
   PLATFORM_SECRET_HEADER,
   SOCIAL_RELAY_CONFIG_KEY,
+  SOCIAL_RELAY_DELIVERY_STALE,
   SOCIAL_RELAY_SECRET_NEEDED,
+  SOCIAL_RELAY_SECRET_STALE,
   SOCIAL_RELAY_VERTICALS,
   relayCallbackPath,
   socialRelayProviders,
+  z,
   type SocialRelayDelivery,
   type SocialRelayProvider,
 } from '@substrat-run/contracts';
@@ -28,9 +31,25 @@ import type { CustomHostnameProvisioner, FetchFn } from './custom-hostnames.js';
  *
  * The relay hands a client's secret out only when it creates the client, so an ordinary run
  * delivers none and the install keeps the one it holds. An install that holds none answers
- * `SOCIAL_RELAY_SECRET_NEEDED`; only then is the secret rotated and the entry sent again. Rotating
- * on every run would let two runs that overlap — an install binds several hostnames back to back,
- * each one a trigger — deliver their secrets out of order and leave the stale one in place.
+ * `SOCIAL_RELAY_SECRET_NEEDED`; only then is the secret rotated and the entry sent again.
+ *
+ * Two runs of one install overlap easily — an install binds several hostnames back to back, each
+ * one a trigger — and "hand out a secret, then deliver it" must have one owner at a time, or both
+ * hand one out and the slower delivery leaves the install holding the secret the relay rotated
+ * away (#3275). Three things hold that, all at the relay, which owns the secret:
+ *
+ *   - **A lease.** Creating a client or rotating its secret takes a short lease on it, given back
+ *     once the secret is delivered (or outlived, if this run dies first), and while it is held the
+ *     relay refuses every other rotation of that client. An overlapping run that finds the install
+ *     without a secret skips instead: the lease holder is delivering one.
+ *   - **A compare-and-set.** A rotation names the generation this run read at its ensure, and the
+ *     relay rotates only from that one, so two runs that both saw the install without a secret
+ *     cannot both rotate even with no lease between them.
+ *   - **A generation on every delivery.** The install refuses a secret older than the one it holds
+ *     (`SOCIAL_RELAY_DELIVERY_STALE`), so a stale delivery cannot overwrite a newer secret even if
+ *     the two above are ever bypassed; and it reports a held secret the relay has rotated past
+ *     (`SOCIAL_RELAY_SECRET_STALE`), which this run answers with one rotation under the lease — so
+ *     an install left holding a dead secret heals on its next reconcile instead of never.
  *
  * Triggers (#1544): a hostname of an Auth Server install becoming active, which covers install
  * time and every custom domain; a staff-run pass over every install after a provider change; and
@@ -88,10 +107,11 @@ export interface ReconcileInput {
   /** Deliver config entries to the install (`VerticalClient.configureInstance`). */
   configure(entries: { key: string; value: string }[]): Promise<void>;
   /**
-   * May this run rotate the client's secret when the install answers that it holds none?
-   * Default true. False skips instead (`SELF_ROTATION_REFUSED`): the install's own call says it
-   * holds a relay client, and a call an install makes must never replace a secret it may be
-   * signing people in with.
+   * May this run rotate the client's secret when the install answers that it holds none it can
+   * vouch for (`SOCIAL_RELAY_SECRET_NEEDED`)? Default true. False skips instead
+   * (`SELF_ROTATION_REFUSED`): the install's own call says it holds a relay client, and a call an
+   * install makes must never replace a secret it may be signing people in with. A secret the relay
+   * has rotated past (`SOCIAL_RELAY_SECRET_STALE`) signs nobody in, so it is rotated either way.
    */
   rotate?: boolean;
 }
@@ -100,6 +120,48 @@ export interface ReconcileInput {
 export const SELF_ROTATION_REFUSED =
   'the install holds a relay client but no secret for the one the relay keeps for it; a platform operator’s reconcile rotates it';
 
+/** Why a run skipped: another run holds the lease on this client's secret and is delivering it. */
+export const ROTATION_IN_PROGRESS =
+  'another reconcile is delivering a new secret for this install’s relay client; it completes the install';
+
+/** Why a run skipped: the secret was rotated after this run read it, by a run that has delivered it. */
+export const ROTATED_MEANWHILE =
+  'another reconcile rotated this install’s relay secret after this one read it; the next reconcile delivers against it';
+
+/** Why a run skipped: the install already holds a newer secret than the one this run delivered. */
+export const DELIVERY_SUPERSEDED =
+  'the install already holds a newer relay secret than the one this reconcile delivered';
+
+/**
+ * What the relay answers an ensure. `generation` and `lease` are absent from a relay older than
+ * generations (#3275); a run against one delivers as runs always did, without either.
+ */
+const ensuredClient = z.object({
+  clientId: z.string().min(1),
+  clientSecret: z.string().min(1).nullable(),
+  created: z.boolean(),
+  disabled: z.boolean(),
+  generation: z.number().int().positive().optional(),
+  lease: z.string().min(1).optional(),
+});
+
+const rotatedSecret = z.object({
+  clientSecret: z.string().min(1),
+  generation: z.number().int().positive().optional(),
+  lease: z.string().min(1).optional(),
+});
+
+/** The install's 409s that say why it did not apply the relay entry, and nothing else. */
+const INSTALL_REFUSALS: ReadonlySet<string> = new Set([
+  SOCIAL_RELAY_SECRET_NEEDED,
+  SOCIAL_RELAY_SECRET_STALE,
+  SOCIAL_RELAY_DELIVERY_STALE,
+]);
+
+function installRefusal(e: unknown): string | null {
+  return e instanceof ControlPlaneError && e.status === 409 && INSTALL_REFUSALS.has(e.message) ? e.message : null;
+}
+
 export async function reconcileSocialRelay(relay: SocialRelayOptions, input: ReconcileInput): Promise<SocialRelayOutcome> {
   const origin = relay.origin.replace(/\/+$/, '');
   const { providers } = socialRelayProviders.parse(await relayJson(relay, 'GET', `${origin}/providers`));
@@ -107,35 +169,50 @@ export async function reconcileSocialRelay(relay: SocialRelayOptions, input: Rec
   if (input.hostnames.length === 0) return { status: 'skipped', reason: 'the install has no active hostname' };
 
   const redirectUris = relayRedirectUris(input.hostnames, providers);
-  const ensured = (await relayJson(
-    relay,
-    'PUT',
-    `${origin}/internal/clients/by-ref/${encodeURIComponent(relayClientRef(input.scopeId))}`,
-    { name: `${input.tenantId}/${input.scopeId}`, redirectUris },
-  )) as { clientId: string; clientSecret: string | null; created: boolean; disabled: boolean };
+  const ensured = ensuredClient.parse(
+    await relayJson(relay, 'PUT', `${origin}/internal/clients/by-ref/${encodeURIComponent(relayClientRef(input.scopeId))}`, {
+      name: `${input.tenantId}/${input.scopeId}`,
+      redirectUris,
+    }),
+  );
 
-  const deliver = (clientSecret: string | null) => {
+  const deliver = (clientSecret: string | null, generation: number | undefined) => {
     const value: SocialRelayDelivery = {
       clientId: ensured.clientId,
       ...(clientSecret ? { clientSecret } : {}),
+      ...(generation === undefined ? {} : { generation }),
       providers,
     };
     return input.configure([{ key: SOCIAL_RELAY_CONFIG_KEY, value: JSON.stringify(value) }]);
   };
+  const skipped = (reason: string): SocialRelayOutcome => ({ status: 'skipped', reason });
 
   let rotated = false;
   try {
-    await deliver(ensured.clientSecret);
-  } catch (e) {
-    if (!(e instanceof ControlPlaneError && e.status === 409 && e.message === SOCIAL_RELAY_SECRET_NEEDED)) throw e;
-    if (input.rotate === false) return { status: 'skipped', reason: SELF_ROTATION_REFUSED };
-    const { clientSecret } = (await relayJson(
-      relay,
-      'POST',
-      `${origin}/internal/clients/${encodeURIComponent(ensured.clientId)}/secret`,
-    )) as { clientSecret: string };
-    await deliver(clientSecret);
-    rotated = true;
+    try {
+      await deliver(ensured.clientSecret, ensured.generation);
+    } catch (e) {
+      const refused = installRefusal(e);
+      if (refused === SOCIAL_RELAY_DELIVERY_STALE) return skipped(DELIVERY_SUPERSEDED);
+      // Only a secretless delivery is answered with either of the two below.
+      if (refused === null || ensured.clientSecret !== null) throw e;
+      if (refused === SOCIAL_RELAY_SECRET_NEEDED && input.rotate === false) return skipped(SELF_ROTATION_REFUSED);
+      const rotation = await rotateSecret(relay, origin, ensured.clientId, ensured.generation);
+      if (rotation.status === 'busy') return skipped(ROTATION_IN_PROGRESS);
+      if (rotation.status === 'moved') return skipped(ROTATED_MEANWHILE);
+      try {
+        await deliver(rotation.clientSecret, rotation.generation);
+      } catch (e2) {
+        if (installRefusal(e2) === SOCIAL_RELAY_DELIVERY_STALE) return skipped(DELIVERY_SUPERSEDED);
+        throw e2;
+      } finally {
+        if (rotation.lease) await releaseLease(relay, origin, ensured.clientId, rotation.lease);
+      }
+      rotated = true;
+    }
+  } finally {
+    // A creation hands its secret out under a lease too: given back once it is delivered.
+    if (ensured.lease) await releaseLease(relay, origin, ensured.clientId, ensured.lease);
   }
 
   return {
@@ -147,6 +224,32 @@ export async function reconcileSocialRelay(relay: SocialRelayOptions, input: Rec
     providers: providers.map((p) => p.id),
     hostnames: [...new Set(input.hostnames.map((h) => h.toLowerCase()))].sort(),
   };
+}
+
+type Rotation =
+  | { status: 'rotated'; clientSecret: string; generation?: number | undefined; lease?: string | undefined }
+  /** Another run holds the client's lease: it is delivering a secret of its own (409). */
+  | { status: 'busy' }
+  /** The secret is past the generation this run read: another run rotated it since (412). */
+  | { status: 'moved' };
+
+/**
+ * Rotate the client's secret from the generation this run read, under a lease (#3275). A relay
+ * older than generations ignores the body and rotates as it always did, answering no generation.
+ */
+async function rotateSecret(relay: SocialRelayOptions, origin: string, clientId: string, generation: number | undefined): Promise<Rotation> {
+  const url = `${origin}/internal/clients/${encodeURIComponent(clientId)}/secret`;
+  const res = await relayFetch(relay, 'POST', url, generation === undefined ? {} : { generation });
+  if (res.status === 409) return { status: 'busy' };
+  if (res.status === 412) return { status: 'moved' };
+  if (!res.ok) throw await relayRefused('POST', url, res);
+  return { status: 'rotated', ...rotatedSecret.parse(await res.json()) };
+}
+
+/** Give a lease back. A failure is not this run's to report: the lease simply runs out. */
+async function releaseLease(relay: SocialRelayOptions, origin: string, clientId: string, lease: string): Promise<void> {
+  const url = `${origin}/internal/clients/${encodeURIComponent(clientId)}/rotation-lease/${encodeURIComponent(lease)}`;
+  await relayFetch(relay, 'DELETE', url).catch(() => undefined);
 }
 
 /**
@@ -221,7 +324,9 @@ export async function reconcileScopeSocialRelay<S extends { vertical: string | n
  * issuer, whatever else holds the platform credential. Otherwise the same reconcile every trigger
  * runs, rotating only for an install that says it holds no client (`hasClient`, which narrows:
  * a `false` cannot rotate a working install, since only its own delivery's
- * `SOCIAL_RELAY_SECRET_NEEDED` answer leads to a rotation, and it holds the secret it signs in with).
+ * `SOCIAL_RELAY_SECRET_NEEDED` answer leads to a rotation, and it holds the secret it signs in with)
+ * — or for one whose delivery shows the secret it holds is one the relay rotated past
+ * (`SOCIAL_RELAY_SECRET_STALE`), which signs nobody in, so replacing it is the heal (#3275).
  */
 export async function selfReconcileSocialRelay<S extends { vertical: string | null }>(
   deps: ScopeReconcileDeps<S>,
@@ -240,7 +345,18 @@ export async function selfReconcileSocialRelay<S extends { vertical: string | nu
 
 /** One call to the relay, refused loudly: a reconcile that half-ran must say which half. */
 async function relayJson(relay: SocialRelayOptions, method: string, url: string, body?: unknown): Promise<unknown> {
-  const res = await relay.fetch(url, {
+  const res = await relayFetch(relay, method, url, body);
+  if (!res.ok) throw await relayRefused(method, url, res);
+  return res.json();
+}
+
+async function relayRefused(method: string, url: string, res: Response): Promise<Error> {
+  const detail = (await res.text().catch(() => '')).slice(0, 300);
+  return new Error(`social relay refused ${method} ${new URL(url).pathname} (${res.status}): ${detail}`);
+}
+
+function relayFetch(relay: SocialRelayOptions, method: string, url: string, body?: unknown): Promise<Response> {
+  return relay.fetch(url, {
     method,
     headers: {
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
@@ -248,9 +364,4 @@ async function relayJson(relay: SocialRelayOptions, method: string, url: string,
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  if (!res.ok) {
-    const detail = (await res.text().catch(() => '')).slice(0, 300);
-    throw new Error(`social relay refused ${method} ${new URL(url).pathname} (${res.status}): ${detail}`);
-  }
-  return res.json();
 }

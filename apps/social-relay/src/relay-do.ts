@@ -32,6 +32,8 @@ import {
   updateClientDisabled,
   ensureClientRow,
   rotateClientSecretRow,
+  releaseRotationLease,
+  type RotationResult,
   type SqlExec,
 } from './store.js';
 
@@ -108,8 +110,12 @@ export class RelayDO extends DurableObject implements RelayStore {
     return ensureClientRow(this.sql, ref, input, now);
   }
 
-  async rotateClientSecret(clientId: string): Promise<string | null> {
-    return rotateClientSecretRow(this.sql, clientId);
+  async rotateClientSecret(clientId: string, expected: number, now: number): Promise<RotationResult | null> {
+    return rotateClientSecretRow(this.sql, clientId, expected, now);
+  }
+
+  async releaseRotationLease(clientId: string, lease: string): Promise<boolean> {
+    return releaseRotationLease(this.sql, clientId, lease);
   }
 
   async deleteClient(clientId: string): Promise<boolean> {

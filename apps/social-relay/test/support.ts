@@ -15,6 +15,7 @@ import {
   updateClientDisabled,
   ensureClientRow,
   rotateClientSecretRow,
+  releaseRotationLease,
   type SqlExec,
 } from '../src/store.js';
 
@@ -82,8 +83,11 @@ export function testStore(): TestStore {
     async ensureClient(ref: string, input: RegisterClientInput, now: number): Promise<EnsuredClient> {
       return ensureClientRow(sql, ref, input, now);
     },
-    async rotateClientSecret(clientId: string) {
-      return rotateClientSecretRow(sql, clientId);
+    async rotateClientSecret(clientId: string, expected: number, now: number) {
+      return rotateClientSecretRow(sql, clientId, expected, now);
+    },
+    async releaseRotationLease(clientId: string, lease: string) {
+      return releaseRotationLease(sql, clientId, lease);
     },
     async deleteClient(clientId: string) {
       return removeClient(sql, clientId);

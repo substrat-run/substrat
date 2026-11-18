@@ -54,8 +54,12 @@ export type AuthServerStub = {
    * never was (#1660). Writes nothing: a reconcile carries no slug or name to record.
    */
   reconcileInstance(): Promise<InstanceMeta | null>;
-  /** `socialRelaySecretNeeded`: a `substrat:social-relay` entry arrived without a secret and none is held. */
-  setInstanceConfig(entries: ConfigEntry[]): Promise<{ socialRelaySecretNeeded: boolean }>;
+  /**
+   * `socialRelayRefused`: why a `substrat:social-relay` entry was not applied (`social-relay.ts`) —
+   * no secret held, a held secret rotated out, or a delivered one older than the held one. Null
+   * when it was applied, or there was none.
+   */
+  setInstanceConfig(entries: ConfigEntry[]): Promise<{ socialRelayRefused: import('./social-relay.js').SocialRelayRefusal | null }>;
   /** §5.4 admin-query reads (the dashboard Data tab); secrets are redacted inside the DO. */
   introspectTables(): Promise<import('@substrat-run/contracts').ScopeTable[]>;
   introspectTable(

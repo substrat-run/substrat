@@ -45,7 +45,13 @@ import { isPlacesEntry, parsePlacesEntry, syncPlaceRegistrations } from './place
 import { isClientRedirectsEntry, parseClientRedirectsEntry, syncClientRedirects } from './client-redirects.js';
 import { authenticateClient, servePlaces, serveReport } from './places-http.js';
 import { isDelegationsEntry, parseDelegationsEntry, syncDelegations } from './delegations.js';
-import { isSocialRelayEntry, parseSocialRelayEntry, relayHop, syncSocialRelay } from './social-relay.js';
+import {
+  isSocialRelayEntry,
+  parseSocialRelayEntry,
+  relayHop,
+  syncSocialRelay,
+  type SocialRelayRefusal,
+} from './social-relay.js';
 import { claimHeal, recordHealResult, type HealClaim, type HealResult } from './social-relay-heal.js';
 import { exchangeToken } from './token-exchange.js';
 import { backfillActivity, recordClientToken } from './user-activity.js';
@@ -532,7 +538,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
    * delivering `ADMIN_EMAIL`/`ADMIN_PASSWORD` is exactly how a hosted instance gets its
    * deterministic first admin (the seed itself stays guarded on a zero-user store).
    */
-  async setInstanceConfig(entries: ConfigEntry[]): Promise<{ socialRelaySecretNeeded: boolean }> {
+  async setInstanceConfig(entries: ConfigEntry[]): Promise<{ socialRelayRefused: SocialRelayRefusal | null }> {
     // `substrat:resources:<scope>` is not config but the platform's registration of a
     // vertical's MCP endpoint (#1619, `resources.ts`). It becomes rows in `oauth_resource`,
     // which is the registry the plugin reads, and is NOT also kept as a `cfg:` row: one
@@ -610,12 +616,12 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       }
     }
     for (const sync of synced.socialRelayResults) {
-      if (sync.secretNeeded || sync.created.length || sync.switchedOff.length || sync.operatorOwned.length) {
+      if (sync.refused || sync.created.length || sync.switchedOff.length || sync.operatorOwned.length) {
         log.info('social relay providers synced', { sync });
       }
     }
     await this.seedEnvAdmin();
-    return { socialRelaySecretNeeded: synced.socialRelayResults.some((sync) => sync.secretNeeded) };
+    return { socialRelayRefused: synced.socialRelayResults.find((sync) => sync.refused)?.refused ?? null };
   }
 
   /**

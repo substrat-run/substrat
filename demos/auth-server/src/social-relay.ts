@@ -1,6 +1,9 @@
 import { isAllowedEndpoint } from '@substrat-run/oidc-rp/discovery';
 import {
   SOCIAL_RELAY_CONFIG_KEY,
+  SOCIAL_RELAY_DELIVERY_STALE,
+  SOCIAL_RELAY_SECRET_NEEDED,
+  SOCIAL_RELAY_SECRET_STALE,
   relayProviderId,
   socialRelayDelivery,
   type SocialRelayDelivery,
@@ -34,19 +37,29 @@ import { readProvider, readProviders, upsertProvider, type ProviderRow } from '.
  *
  * The delivery is the whole set, so re-sending it is a no-op. It carries a secret only when the
  * platform has a new one; otherwise the one held here is kept, and if none is held the sync
- * writes nothing and says `secretNeeded`, which the configure route answers with a 409.
+ * writes nothing and says `SOCIAL_RELAY_SECRET_NEEDED`, which the configure route answers with a 409.
+ *
+ * The secret's generation (#3275) is held beside it, and decides two more refusals, each writing
+ * nothing: a delivery carrying a secret OLDER than the one held is a slow delivery from a run that
+ * rotated before a later one did (`SOCIAL_RELAY_DELIVERY_STALE`), and one carrying none while the
+ * relay is at a NEWER generation than the held secret means that secret was rotated out and cannot
+ * work (`SOCIAL_RELAY_SECRET_STALE`) — the answer that has the platform rotate once and heal it.
+ * A secret held from before generations has none to compare; a delivery that names one is answered
+ * `SOCIAL_RELAY_SECRET_NEEDED`, since nothing here can vouch for that secret being the live one.
  */
 
 /**
  * Where the relay client this install was given is remembered (`config`, not a `cfg:` row), as
- * `{ clientId, clientSecret }`: the secret is what a provider added later is created with, since
- * a re-delivery does not carry it.
+ * `{ clientId, clientSecret, generation? }`: the secret is what a provider added later is created
+ * with, since a re-delivery does not carry it. `generation` is absent on a secret delivered before
+ * generations were (#3275), or by a platform that sends none.
  */
 const CLIENT_KEY = 'social_relay_client';
 
 interface StoredClient {
   clientId: string;
   clientSecret: string;
+  generation?: number;
 }
 
 function storedClient(sql: SqlExec): StoredClient | null {
@@ -56,9 +69,12 @@ function storedClient(sql: SqlExec): StoredClient | null {
   if (!row) return null;
   try {
     const parsed = JSON.parse(row.value) as Partial<StoredClient>;
-    return typeof parsed.clientId === 'string' && typeof parsed.clientSecret === 'string'
-      ? { clientId: parsed.clientId, clientSecret: parsed.clientSecret }
-      : null;
+    if (typeof parsed.clientId !== 'string' || typeof parsed.clientSecret !== 'string') return null;
+    return {
+      clientId: parsed.clientId,
+      clientSecret: parsed.clientSecret,
+      ...(Number.isInteger(parsed.generation) ? { generation: parsed.generation } : {}),
+    };
   } catch {
     return null;
   }
@@ -91,14 +107,52 @@ export function parseSocialRelayEntry(value: string): SocialRelayDelivery {
   return delivery;
 }
 
+/** Why a delivery was refused, as the configure route's 409 `detail` says it. */
+export type SocialRelayRefusal =
+  | typeof SOCIAL_RELAY_SECRET_NEEDED
+  | typeof SOCIAL_RELAY_SECRET_STALE
+  | typeof SOCIAL_RELAY_DELIVERY_STALE;
+
 /** What one sync did, for a caller that logs it and a test that pins it. */
 export interface SocialRelaySync {
-  /** The delivery carried no secret and none is held for its client: nothing was written. */
-  secretNeeded: boolean;
+  /** Why the delivery was refused, or null. A refused delivery wrote nothing. */
+  refused: SocialRelayRefusal | null;
   created: string[];
   updated: string[];
   switchedOff: string[];
   operatorOwned: string[];
+}
+
+/**
+ * Which secret a delivery leaves this install holding, or why it is refused (#3275).
+ *
+ *   - With a secret: that one, unless this install holds a newer generation of the same client's.
+ *   - Without one: the held secret of the same client, unless the relay is past its generation
+ *     (dead), or it has no generation to judge by while the delivery names one (unvouched).
+ *     A held generation NEWER than the delivery's is fine: that delivery read the relay before a
+ *     rotation whose secret has since landed here.
+ *
+ * Generations are compared only when both sides have one, so a platform that sends none is
+ * handled exactly as before generations existed.
+ */
+export function resolveRelaySecret(
+  stored: StoredClient | null,
+  delivery: Pick<SocialRelayDelivery, 'clientId' | 'clientSecret' | 'generation'>,
+): { clientSecret: string; generation: number | undefined } | { refused: SocialRelayRefusal } {
+  const same = stored !== null && stored.clientId === delivery.clientId ? stored : null;
+  const delivered = delivery.generation;
+  if (delivery.clientSecret) {
+    if (same?.generation !== undefined && delivered !== undefined && delivered < same.generation) {
+      return { refused: SOCIAL_RELAY_DELIVERY_STALE };
+    }
+    return { clientSecret: delivery.clientSecret, generation: delivered };
+  }
+  if (!same) return { refused: SOCIAL_RELAY_SECRET_NEEDED };
+  if (delivered !== undefined) {
+    if (same.generation === undefined) return { refused: SOCIAL_RELAY_SECRET_NEEDED };
+    if (same.generation < delivered) return { refused: SOCIAL_RELAY_SECRET_STALE };
+  }
+  return { clientSecret: same.clientSecret, generation: same.generation };
 }
 
 /** The relay client this install was given, if any. */
@@ -145,12 +199,12 @@ export function isPlatformRow(row: ProviderRow, clientId: string | null): boolea
  * transaction (the DO runs this inside `storage.transactionSync` with the rest of the delivery).
  */
 export function syncSocialRelay(sql: SqlExec, delivery: SocialRelayDelivery): SocialRelaySync {
-  const result: SocialRelaySync = { secretNeeded: false, created: [], updated: [], switchedOff: [], operatorOwned: [] };
+  const result: SocialRelaySync = { refused: null, created: [], updated: [], switchedOff: [], operatorOwned: [] };
   const stored = storedClient(sql);
   const previousClient = stored?.clientId ?? null;
-  const clientSecret =
-    delivery.clientSecret ?? (stored?.clientId === delivery.clientId ? stored.clientSecret : undefined);
-  if (!clientSecret) return { ...result, secretNeeded: true };
+  const resolved = resolveRelaySecret(stored, delivery);
+  if ('refused' in resolved) return { ...result, refused: resolved.refused };
+  const { clientSecret, generation } = resolved;
   const delivered = new Set<string>();
 
   for (const provider of delivery.providers) {
@@ -193,7 +247,7 @@ export function syncSocialRelay(sql: SqlExec, delivery: SocialRelayDelivery): So
   sql.exec(
     'INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)',
     CLIENT_KEY,
-    JSON.stringify({ clientId: delivery.clientId, clientSecret }),
+    JSON.stringify({ clientId: delivery.clientId, clientSecret, ...(generation === undefined ? {} : { generation }) }),
   );
   return result;
 }

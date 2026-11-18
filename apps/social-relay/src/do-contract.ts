@@ -30,7 +30,14 @@ export interface EnsuredClient {
   clientSecret: string | null;
   created: boolean;
   disabled: boolean;
+  /** The client's secret generation (#3275): 1 at creation, one more per rotation. */
+  generation: number;
+  /** On creation only: the rotation lease the new secret's delivery runs under. */
+  lease?: string;
 }
+
+/** What a leased rotation came to (`store.ts`, `rotateClientSecretRow`). */
+export type { RotationResult } from './store.js';
 
 /** An authorization round in flight: minted at `/authorize`, consumed at the callback. */
 export interface FlowRecord {
@@ -82,8 +89,14 @@ export interface RelayStore {
    * A disabled client stays disabled: the kill switch is not the reconciler's to lift.
    */
   ensureClient(ref: string, input: RegisterClientInput, now: number): Promise<EnsuredClient>;
-  /** A fresh secret for an existing client; the old one stops working at once. Null if no such client. */
-  rotateClientSecret(clientId: string): Promise<string | null>;
+  /**
+   * A fresh secret for an existing client, the old one stopping at once — only if its secret is
+   * still at generation `expected` and no other rotation holds its lease (#3275). Null if no such
+   * client.
+   */
+  rotateClientSecret(clientId: string, expected: number, now: number): Promise<import('./store.js').RotationResult | null>;
+  /** Give back the lease a creation or rotation took, once its secret is delivered. */
+  releaseRotationLease(clientId: string, lease: string): Promise<boolean>;
   deleteClient(clientId: string): Promise<boolean>;
   listClients(): Promise<ClientRecord[]>;
   putFlow(id: string, flow: FlowRecord, expiresAt: number): Promise<void>;
