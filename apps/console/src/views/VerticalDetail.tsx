@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ChannelName,
   OpsFailureEntry,
@@ -10,7 +10,25 @@ import type {
   VerticalVersion,
 } from '@substrat-run/contracts';
 import { clipReviewText, delegationNote, discardTally, grantShapeHolderNotes, promoteReviewReasonIn, RESERVED_KEY_MARK, reservationNote, reviewLine, reviewSql, roleHolderNote, type MigrationEntry } from '@substrat-run/contracts';
-import { Badge, Button, Card, Checkbox, Dialog, Input, Select, SelectBox, Table, Tag } from '../components';
+import {
+  Badge,
+  Button,
+  Card,
+  Checkbox,
+  Dialog,
+  Input,
+  RequestError,
+  Select,
+  SelectBox,
+  Skeleton,
+  SkeletonRegion,
+  Table,
+  Tag,
+  requestFailed,
+  requestLoading,
+  requestOk,
+  type RequestState,
+} from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
 import type { Api, EgressReport } from '../lib/api';
@@ -72,6 +90,12 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   // Which page of the walked version list the TABLE shows. Clamped on read, so a
   // reload that shortens the list never strands the view past the last page.
   const [versionsPage, setVersionsPage] = useState(0);
+  // Whether the walk below has answered (#3244). Every list above starts `[]`, and drawn
+  // from those alone the page claimed "No versions published yet.", an unset prod channel
+  // and a dead Promote until the walk landed — or for good, when it failed. A re-walk after
+  // a mutation keeps what is shown; only the first read of a slug draws the skeleton.
+  const [detail, setDetail] = useState<RequestState<true>>(requestLoading);
+  const shown = useRef(false);
 
   // The promote dialog: a target (channel, version) plus the acknowledgements the
   // digest diff requires. Null when closed.
@@ -177,8 +201,13 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
         // Reaped rows are terminal tombstones that never block the delete — the retire
         // panel lists only what still does (live + archived).
         setBoundScopes(sc.filter((s) => s.status !== 'reaped'));
+        shown.current = true;
+        setDetail(requestOk(true));
       } catch (e) {
-        onToast('Failed to load versions', (e as Error).message, 'danger');
+        // A failed first read is the page's error; a failed re-walk keeps the answer shown
+        // and says so in a toast.
+        if (shown.current) onToast('Failed to load versions', (e as Error).message, 'danger');
+        else setDetail(requestFailed(e));
       }
     },
     [api, onToast],
@@ -192,6 +221,8 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
     setFailures([]);
     setVersionsPage(0);
     setSelectedIds(new Set());
+    shown.current = false;
+    setDetail(requestLoading());
     void loadDetail(vertical.slug);
   }, [vertical.slug, loadDetail]);
 
@@ -492,7 +523,11 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   ];
 
   const versionColumns: TableColumn<VerticalVersion>[] = [
-    { header: 'Version', render: (v) => v.version, mono: true },
+    // A width of its own, `auto`: the table gives its first column ALL the slack otherwise,
+    // and a short version string then sat in half the card while the Outbound hosts and the
+    // Admit/Reject pair were squeezed to their narrowest and stacked. With every column auto,
+    // the slack is shared by what each column holds.
+    { header: 'Version', render: (v) => v.version, mono: true, width: 'auto' },
     { header: 'Pushed', render: (v) => v.createdAt.slice(0, 16).replace('T', ' '), mono: true, muted: true, width: 140 },
     {
       header: 'Admission',
@@ -587,7 +622,8 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
       align: 'right',
       render: (v) =>
         v.admission === 'pending' ? (
-          <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 8 }}>
+          // One line, always: wrapped, a narrow cell put Reject under Admit.
+          <span style={{ display: 'inline-flex', gap: 8 }}>
             <Button
               size="sm"
               loading={busy === `admit:${v.id}`}
@@ -823,178 +859,194 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
           </div>
         )}
 
-        {/* Channels: the named pointers promotion moves. */}
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
-          {CHANNELS.map((ch) => {
-            const v = channelVersion(ch);
-            const pointer = channels.find((c) => c.channel === ch);
-            return (
-              <div
-                key={ch}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  border: '1px solid var(--border-default)',
-                  borderRadius: 8,
-                  padding: '8px 12px',
-                  background: 'var(--surface-card)',
-                }}
-              >
-                <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)' }}>
-                  {ch}
-                </span>
-                {v ? (
-                  <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 8 }}>
-                    <Tag mono>{v.version}</Tag>
-                    {pointer && (
-                      <span style={{ fontSize: 11, color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>
-                        {pointer.updatedAt.slice(0, 16).replace('T', ' ')}
-                      </span>
-                    )}
-                  </span>
-                ) : (
-                  <span style={{ color: 'var(--text-placeholder)', fontSize: 12.5 }}>unset</span>
-                )}
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={pageBusy || versions.every((x) => x.admission !== 'admitted')}
-                  onClick={() => {
-                    setAck({});
-                    // The NEWEST admitted version, matching the order the picker lists
-                    // them in — an oldest-first default sat at the bottom of the list.
-                    setPromote({ channel: ch, versionId: newestFirst.find((x) => x.admission === 'admitted')?.id ?? '' });
+        {detail.state === 'loading' ? (
+          <VersionsSkeleton />
+        ) : detail.state === 'error' ? (
+          <RequestError
+            what="this vertical's versions"
+            error={detail.error}
+            style={{ padding: '8px 0' }}
+            onRetry={() => {
+              setDetail(requestLoading());
+              void loadDetail(vertical.slug);
+            }}
+          />
+        ) : (
+          <>
+          {/* Channels: the named pointers promotion moves. */}
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
+            {CHANNELS.map((ch) => {
+              const v = channelVersion(ch);
+              const pointer = channels.find((c) => c.channel === ch);
+              return (
+                <div
+                  key={ch}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    border: '1px solid var(--border-default)',
+                    borderRadius: 8,
+                    padding: '8px 12px',
+                    background: 'var(--surface-card)',
                   }}
                 >
-                  Promote…
-                </Button>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* What the Outbound column's observed half is worth (#859). An egress read is
-            head-sampled and row-capped, so an absent host is NOT evidence a version never
-            called it — and a reader who takes "no undeclared hosts" as a clean bill of
-            health has been misled by a partial answer. Say the coverage out loud, every
-            time, rather than only when something looks wrong. */}
-        {egress && (
-          <div style={{ padding: '8px 0 0', color: 'var(--text-placeholder)', fontSize: 12 }}>
-            Observed egress: last {egress.hours}h
-            {egress.samplingRate === null
-              ? ', sampling rate unknown — absence of a host is not proof it was never called'
-              : `, sampled at ${Math.round(egress.samplingRate * 100)}%`}
-            {egress.truncated && ' · TRUNCATED: the host list is a floor, not the whole set'}
-            {egress.servicesTruncated &&
-              ` · only ${egress.versionsConsidered} of ${egress.versionsTotal} deployed versions were queried`}
-          </div>
-        )}
-
-        {/* Newest first — the most recent push is the row a reader opened this page for.
-            Paged Prev/Next over the already-walked set (the Scopes-view footer), so the
-            position is stated rather than implied by how many times Load-more was hit. */}
-        <Table columns={versionColumns} rows={versionRows} emptyText="No versions published yet." />
-        {newestFirst.length > PAGE && (
-          <div
-            style={{
-              padding: '12px 0 0',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-              flexWrap: 'wrap',
-            }}
-          >
-            <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-              Showing {versionStart + 1}–{Math.min(versionStart + PAGE, newestFirst.length)} of {newestFirst.length}
-            </span>
-            <span style={{ flex: 1 }} />
-            <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-              Page {versionPage + 1} of {versionPageCount}
-            </span>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={versionPage === 0}
-              onClick={() => setVersionsPage(versionPage - 1)}
-            >
-              Prev
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={versionPage >= versionPageCount - 1}
-              onClick={() => setVersionsPage(versionPage + 1)}
-            >
-              Next
-            </Button>
-          </div>
-        )}
-
-        {/* Bound scopes — the installs this vertical still backs, and what the delete
-            refusal counts. Retiring each (release names → reap; forks are hard-deleted)
-            is what frees the vertical for deletion, done here where the operator can see
-            exactly which scope and which names, per the reap-safety lesson. */}
-        {boundScopes.length > 0 && (
-          <div style={{ marginTop: 20 }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
-              <h4 style={{ margin: 0, fontSize: 13 }}>Bound scopes ({boundScopes.length})</h4>
-              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                installs still on this vertical — move or retire each before the vertical can be deleted
-              </span>
-              <span style={{ flex: 1 }} />
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setSelectedIds(allSelected ? new Set() : new Set(boundScopes.map((s) => s.id)))}
-              >
-                {allSelected ? 'Clear selection' : 'Select all'}
-              </Button>
-            </div>
-            {/* Bulk bar — Move rides the #389 rebind (data-first, source kept as backout);
-                Retire wipes storage and is armed by typing the count in its dialog. */}
-            {selectedScopes.length > 0 && (
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
-                  padding: '8px 12px',
-                  marginBottom: 8,
-                  borderRadius: 8,
-                  border: '1px solid var(--border-default)',
-                  background: 'var(--surface-inset)',
-                  flexWrap: 'wrap',
-                }}
-              >
-                <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>
-                  {selectedScopes.length} selected
-                </span>
-                <span style={{ flex: 1 }} />
-                {movableScopes.length > 0 && (
+                  <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)' }}>
+                    {ch}
+                  </span>
+                  {v ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 8 }}>
+                      <Tag mono>{v.version}</Tag>
+                      {pointer && (
+                        <span style={{ fontSize: 11, color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>
+                          {pointer.updatedAt.slice(0, 16).replace('T', ' ')}
+                        </span>
+                      )}
+                    </span>
+                  ) : (
+                    <span style={{ color: 'var(--text-placeholder)', fontSize: 12.5 }}>unset</span>
+                  )}
                   <Button
                     size="sm"
-                    variant="secondary"
-                    loading={busy === 'open-move'}
-                    disabled={pageBusy}
-                    onClick={() => void openMove()}
+                    variant="ghost"
+                    disabled={pageBusy || versions.every((x) => x.admission !== 'admitted')}
+                    onClick={() => {
+                      setAck({});
+                      // The NEWEST admitted version, matching the order the picker lists
+                      // them in — an oldest-first default sat at the bottom of the list.
+                      setPromote({ channel: ch, versionId: newestFirst.find((x) => x.admission === 'admitted')?.id ?? '' });
+                    }}
                   >
-                    Move to vertical… ({movableScopes.length})
+                    Promote…
                   </Button>
-                )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* What the Outbound column's observed half is worth (#859). An egress read is
+              head-sampled and row-capped, so an absent host is NOT evidence a version never
+              called it — and a reader who takes "no undeclared hosts" as a clean bill of
+              health has been misled by a partial answer. Say the coverage out loud, every
+              time, rather than only when something looks wrong. */}
+          {egress && (
+            <div style={{ padding: '8px 0 0', color: 'var(--text-placeholder)', fontSize: 12 }}>
+              Observed egress: last {egress.hours}h
+              {egress.samplingRate === null
+                ? ', sampling rate unknown — absence of a host is not proof it was never called'
+                : `, sampled at ${Math.round(egress.samplingRate * 100)}%`}
+              {egress.truncated && ' · TRUNCATED: the host list is a floor, not the whole set'}
+              {egress.servicesTruncated &&
+                ` · only ${egress.versionsConsidered} of ${egress.versionsTotal} deployed versions were queried`}
+            </div>
+          )}
+
+          {/* Newest first — the most recent push is the row a reader opened this page for.
+              Paged Prev/Next over the already-walked set (the Scopes-view footer), so the
+              position is stated rather than implied by how many times Load-more was hit. */}
+          <Table columns={versionColumns} rows={versionRows} emptyText="No versions published yet." />
+          {newestFirst.length > PAGE && (
+            <div
+              style={{
+                padding: '12px 0 0',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                flexWrap: 'wrap',
+              }}
+            >
+              <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+                Showing {versionStart + 1}–{Math.min(versionStart + PAGE, newestFirst.length)} of {newestFirst.length}
+              </span>
+              <span style={{ flex: 1 }} />
+              <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+                Page {versionPage + 1} of {versionPageCount}
+              </span>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={versionPage === 0}
+                onClick={() => setVersionsPage(versionPage - 1)}
+              >
+                Prev
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={versionPage >= versionPageCount - 1}
+                onClick={() => setVersionsPage(versionPage + 1)}
+              >
+                Next
+              </Button>
+            </div>
+          )}
+
+          {/* Bound scopes — the installs this vertical still backs, and what the delete
+              refusal counts. Retiring each (release names → reap; forks are hard-deleted)
+              is what frees the vertical for deletion, done here where the operator can see
+              exactly which scope and which names, per the reap-safety lesson. */}
+          {boundScopes.length > 0 && (
+            <div style={{ marginTop: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
+                <h4 style={{ margin: 0, fontSize: 13 }}>Bound scopes ({boundScopes.length})</h4>
+                <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                  installs still on this vertical — move or retire each before the vertical can be deleted
+                </span>
+                <span style={{ flex: 1 }} />
                 <Button
+                  variant="ghost"
                   size="sm"
-                  variant="danger"
-                  loading={busy === 'open-bulk-retire'}
-                  disabled={pageBusy}
-                  onClick={() => void openBulkRetire()}
+                  onClick={() => setSelectedIds(allSelected ? new Set() : new Set(boundScopes.map((s) => s.id)))}
                 >
-                  Retire… ({selectedScopes.length})
+                  {allSelected ? 'Clear selection' : 'Select all'}
                 </Button>
               </div>
-            )}
-            <Table columns={scopeColumns} rows={boundScopes} emptyText="" />
-          </div>
+              {/* Bulk bar — Move rides the #389 rebind (data-first, source kept as backout);
+                  Retire wipes storage and is armed by typing the count in its dialog. */}
+              {selectedScopes.length > 0 && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    padding: '8px 12px',
+                    marginBottom: 8,
+                    borderRadius: 8,
+                    border: '1px solid var(--border-default)',
+                    background: 'var(--surface-inset)',
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>
+                    {selectedScopes.length} selected
+                  </span>
+                  <span style={{ flex: 1 }} />
+                  {movableScopes.length > 0 && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      loading={busy === 'open-move'}
+                      disabled={pageBusy}
+                      onClick={() => void openMove()}
+                    >
+                      Move to vertical… ({movableScopes.length})
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    loading={busy === 'open-bulk-retire'}
+                    disabled={pageBusy}
+                    onClick={() => void openBulkRetire()}
+                  >
+                    Retire… ({selectedScopes.length})
+                  </Button>
+                </div>
+              )}
+              <Table columns={scopeColumns} rows={boundScopes} emptyText="" />
+            </div>
+          )}
+          </>
         )}
       </Card>
 
@@ -1437,5 +1489,51 @@ export function MigrationDiffView({ review }: { review: MigrationReview }) {
         </span>
       )}
     </div>
+  );
+}
+
+/**
+ * The versions half of the detail while its first walk is out (#3244): the prod channel's
+ * pill and a few table rows, laid out like what replaces them so nothing jumps.
+ */
+function VersionsSkeleton() {
+  return (
+    <SkeletonRegion label="Loading versions…">
+      <div
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 10,
+          border: '1px solid var(--border-default)',
+          borderRadius: 8,
+          padding: '8px 12px',
+          marginBottom: 16,
+        }}
+      >
+        <Skeleton w={32} h={10} />
+        <Skeleton w={72} h={18} r={4} />
+        <Skeleton w={64} h={24} />
+      </div>
+      <div style={{ border: '1px solid var(--border-default)', borderRadius: 8 }}>
+        {[0, 1, 2, 3].map((i) => (
+          <div
+            key={i}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 24,
+              padding: '0 12px',
+              height: 40,
+              borderTop: i === 0 ? undefined : '1px solid var(--border-default)',
+            }}
+          >
+            <Skeleton w={i === 0 ? 56 : 120} h={i === 0 ? 10 : 12} />
+            <Skeleton w={i === 0 ? 48 : 110} h={i === 0 ? 10 : 12} />
+            <Skeleton w={i === 0 ? 64 : 72} h={i === 0 ? 10 : 18} r={i === 0 ? 6 : 4} />
+            <Skeleton w="22%" h={i === 0 ? 10 : 12} />
+          </div>
+        ))}
+      </div>
+    </SkeletonRegion>
   );
 }

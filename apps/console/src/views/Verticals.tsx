@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { Vertical, VerticalSource } from '@substrat-run/contracts';
-import { Badge, Button, Card, Dialog, Input, Select, Table, Tag } from '../components';
+import { Badge, Button, Card, Dialog, Input, RequestError, Select, Skeleton, SkeletonRegion, Table, Tag, useRequest, valueOr } from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
 import type { Api } from '../lib/api';
 import { VerticalDetail } from './VerticalDetail';
+
+const NONE: Vertical[] = [];
 
 /**
  * The vertical + version registry (orchestration.md §5.7) — where the two human
@@ -26,26 +28,13 @@ export interface VerticalsProps {
 }
 
 export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToast }: VerticalsProps) {
-  // Bumped after every mutation — re-walks the registry so a flag flip anywhere still
-  // shows, and re-resolves the detail the operator drilled into.
-  const [refresh, setRefresh] = useState(0);
   // The registry is small: walked to the end, like Tenants, Domains and App do, so search,
-  // paging and the deep-link resolve all see every row.
-  const [verticals, setVerticals] = useState<Vertical[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    void walkAll((p) => api.listVerticals(p))
-      .then((all) => {
-        if (!cancelled) setVerticals(all);
-      })
-      .catch((e: Error) => {
-        if (!cancelled) onToast('Failed to load verticals', e.message, 'danger');
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- onToast is a fresh closure per render
-  }, [api, refresh]);
+  // paging and the deep-link resolve all see every row. Held as a request (#3244): read as
+  // a bare `[]`, a deep link drew the whole list saying "No verticals registered yet." until
+  // the walk landed, and only then turned into the detail it was a link to. `reload` after a
+  // mutation keeps the rows shown, so a flag flip re-resolves the detail without a flash.
+  const registry = useRequest(() => walkAll((p) => api.listVerticals(p)), [api]);
+  const verticals = valueOr(registry.state, NONE);
   const [q, setQ] = useState('');
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -69,7 +58,7 @@ export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToa
   async function run(fn: () => Promise<unknown>, title: string, detail?: string) {
     try {
       await fn();
-      setRefresh((n) => n + 1);
+      void registry.reload();
       onToast(title, detail);
     } catch (e) {
       onToast('Refused', (e as Error).message, 'danger');
@@ -120,6 +109,25 @@ export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToa
     { header: 'Created', render: (v) => v.createdAt.slice(0, 10), mono: true, muted: true, width: 110 },
   ];
 
+  // A deep link waits for the registry rather than flashing the list it is not a link to.
+  if (openSlug && registry.state.state !== 'ok') {
+    return registry.state.state === 'loading' ? (
+      <SkeletonRegion label="Loading vertical…">
+        <Card padding={16}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <Skeleton w={180} h={16} />
+            <Skeleton w={260} h={12} />
+            <Skeleton w="100%" h={120} r={8} style={{ marginTop: 12 }} />
+          </div>
+        </Card>
+      </SkeletonRegion>
+    ) : (
+      <Card>
+        <RequestError what="the vertical registry" error={registry.state.error} onRetry={() => void registry.reload()} />
+      </Card>
+    );
+  }
+
   // A resolved open slug routes to the full detail; App owns the URL, this owns the data.
   if (openSlug && resolved) {
     return (
@@ -127,7 +135,7 @@ export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToa
         api={api}
         vertical={resolved}
         onBack={onBack}
-        onChanged={() => setRefresh((n) => n + 1)}
+        onChanged={() => void registry.reload()}
         onOpenFailures={onOpenFailures}
         onToast={onToast}
       />
@@ -167,14 +175,24 @@ export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToa
       </div>
 
       <Card padding={0}>
-        <Table
-          columns={verticalColumns}
-          rows={filtered}
-          paged
-          resetKey={q}
-          onRowClick={(v) => onOpen(v.slug)}
-          emptyText={verticals.length === 0 ? 'No verticals registered yet.' : 'No verticals match this filter.'}
-        />
+        {registry.state.state === 'error' ? (
+          <RequestError what="the vertical registry" error={registry.state.error} onRetry={() => void registry.reload()} />
+        ) : (
+          <Table
+            columns={verticalColumns}
+            rows={filtered}
+            paged
+            resetKey={q}
+            onRowClick={(v) => onOpen(v.slug)}
+            emptyText={
+              registry.state.state === 'loading'
+                ? 'Loading verticals…'
+                : verticals.length === 0
+                  ? 'No verticals registered yet.'
+                  : 'No verticals match this filter.'
+            }
+          />
+        )}
       </Card>
 
       {/* Register a vertical — the only producer action on this surface; publishing a
