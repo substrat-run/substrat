@@ -640,6 +640,18 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
       { fields: ['apiKey'], targets: [otherApp], connections: [theirs.id] },
     ]);
 
+    // acme/books drops it while acme/other keeps it: the books row moves to the formless card
+    // (withdraw only), never onto acme/other's card, whose Details door would refuse it.
+    declared = [];
+    const after = ((await (await app.request(`/api/teams/${tenant}/integrations`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).json()) as {
+      providers: { provider: string; fields: { key: string }[]; connections: { id: string }[]; connectTargets: { scopeId: string }[] }[];
+    }).providers.filter((p) => p.provider === 'acme.docbox');
+    expect(after.map((p) => ({ fields: p.fields.length, targets: p.connectTargets.length, connections: p.connections.map((c) => c.id) }))).toEqual([
+      { fields: 1, targets: 1, connections: [theirs.id] },
+      { fields: 0, targets: 0, connections: [mine.id] },
+    ]);
+    declared = [DOC_CONNECTOR];
+
     // The second card's form is what that app's door parses against: no archive asked for.
     const post = await app.request(`/api/teams/${tenant}/apps/${otherApp}/integrations/acme.docbox`, {
       method: 'POST',

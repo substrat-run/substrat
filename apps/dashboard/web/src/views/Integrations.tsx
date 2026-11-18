@@ -1243,15 +1243,33 @@ export function Integrations({ teamId }: { teamId: string }) {
     connection: AccountIntegration['connections'][number];
   } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [disconnectErr, setDisconnectErr] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
   const confirmDisconnect = async () => {
     if (!disconnect || busy) return;
+    const id = disconnect.connection.id;
     setBusy(true);
+    setDisconnectErr(null);
+    let failure: string | null = null;
     try {
-      await teamApi(teamId).disconnectTeamConnection({ connectionId: disconnect.connection.id });
-    } catch {
-      // The refetch below shows the surviving state either way.
+      await teamApi(teamId).disconnectTeamConnection({ connectionId: id });
+    } catch (e) {
+      failure = e instanceof TeamApiError ? e.message : String(e);
+    }
+    if (failure !== null) {
+      // The plane may have revoked it before its answer was lost, so a failed request is a
+      // failure only while the row is still live. Unreadable counts as still live: say so and
+      // let the person retry, rather than close on a guess.
+      const stillLive = await api
+        .integrations(teamId)
+        .then((v) => v.providers.some((p) => p.connections.some((c) => c.id === id)))
+        .catch(() => true);
+      if (stillLive) {
+        setBusy(false);
+        setDisconnectErr(failure);
+        return;
+      }
     }
     setBusy(false);
     setDisconnect(null);
@@ -1314,7 +1332,10 @@ export function Integrations({ teamId }: { teamId: string }) {
                             Details
                           </Button>
                         )}
-                        <Button variant="ghost" size="sm" onClick={() => setDisconnect({ provider: p, connection: c })}>
+                        <Button variant="ghost" size="sm" onClick={() => {
+                            setDisconnectErr(null);
+                            setDisconnect({ provider: p, connection: c });
+                          }}>
                           Disconnect
                         </Button>
                       </div>
@@ -1378,12 +1399,21 @@ export function Integrations({ teamId }: { teamId: string }) {
       <Dialog
         open={!!disconnect}
         title={disconnect ? `Disconnect ${disconnect.connection.label}` : ''}
-        confirmLabel={busy ? 'Disconnecting…' : 'Disconnect'}
+        confirmLabel={busy ? 'Disconnecting…' : disconnectErr ? 'Try again' : 'Disconnect'}
         danger
-        onCancel={() => setDisconnect(null)}
+        busy={busy}
+        onCancel={() => {
+          setDisconnect(null);
+          setDisconnectErr(null);
+        }}
         onConfirm={confirmDisconnect}
       >
         <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.55 }}>
+          {disconnectErr && (
+            <div style={{ color: 'var(--status-danger-fg)', marginBottom: 8 }}>
+              Couldn’t disconnect — the connection is still live: {disconnectErr}
+            </div>
+          )}
           {disconnect && (
             <>
               The stored {disconnect.provider.name} credential is deleted and every grant it carried is revoked — this cannot
