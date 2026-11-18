@@ -63,6 +63,14 @@ describe('redact', () => {
     expect(redact(`{"detail":"${escaped}"}`)).toBe('{"detail":"[key]"}');
   });
 
+  it('takes a cut-off PEM body after a blank line inside the block, and keeps the paragraph after it (#3281)', () => {
+    const blankFirst = '-----BEGIN ' + 'PRIVATE KEY-----\n\nMIIEow/IBAAKC+AQEAu3/Xq9\nab/cd/ef';
+    expect(redactDocument(`${blankFirst}\n\nRetry after 502.`)).toBe('[key]\n\nRetry after 502.');
+    const legacy = '-----BEGIN ' + 'RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0A1B2C\n\nMIIEow/IBAAKC+AQEAu3/Xq9\nab/cd/ef';
+    expect(redactDocument(`${legacy}\n\nRetry after 502.`)).toBe('[key]\n\nRetry after 502.');
+    for (const text of [blankFirst, legacy]) expect(redact(text)).not.toMatch(/MIIEow|ab\/cd/);
+  });
+
   it('keeps what a reader needs to find the occurrence: ids, timestamps, statuses, paths, versions', () => {
     const text = 'POST /internal/lifecycle-flow answered 502 at 2026-10-23T09:14:02.120Z for 01JZ8F3K2M4N6P8Q0R2S4T6V8W (v1.4.12, port 8443)';
     expect(redact(text)).toBe(text);
