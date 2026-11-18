@@ -27,8 +27,9 @@ const BINDING: BolagsverketBinding = {
   boundAt: new Date(NOW).toISOString(),
 };
 
-function world(api: Reply[], opts: { token?: Reply; binding?: BolagsverketBinding | null } = {}) {
+function world(api: Reply[], opts: { token?: Reply; binding?: BolagsverketBinding | null; grants?: string[] } = {}) {
   const fake = fakeFetch(api, opts.token);
+  const grants = opts.grants ?? [BINDING.permission];
   const landed: { connectionId: string; scopeId: string; operation: string; input: unknown }[] = [];
   const ctx = {
     tenantId: TENANT,
@@ -40,7 +41,7 @@ function world(api: Reply[], opts: { token?: Reply; binding?: BolagsverketBindin
     },
     connection: async (provider: string) => {
       expect(provider).toBe('bolagsverket');
-      return { id: CONN, secret: CREDENTIAL, fetch: fake.fetch };
+      return { id: CONN, secret: CREDENTIAL, fetch: fake.fetch, grants: async () => [...grants] };
     },
   } as unknown as ConnectorContext;
   const handler = bolagsverketConnector({
@@ -63,7 +64,7 @@ function world(api: Reply[], opts: { token?: Reply; binding?: BolagsverketBindin
       scopeId: SCOPE,
       payload: { requestId: 'req-1', organisationNumber, subject: SUBJECT },
     } as unknown as DomainEvent);
-  return { fake, landed, run };
+  return { fake, landed, run, grants };
 }
 
 const base = { requestId: 'req-1', subject: SUBJECT, connectionId: CONN, checkedAt: new Date(NOW).toISOString() };
@@ -110,6 +111,22 @@ describe('bolagsverketConnector', () => {
     await expect(run('5560000001')).rejects.toThrow(/no Bolagsverket landing is bound/);
     expect(fake.calls).toEqual([]);
     expect(landed).toEqual([]);
+  });
+
+  it('retries a binding whose landing grant has not arrived, and lands once it has', async () => {
+    // The landing pass binds before it grants: in between, an invoke would be a terminal 403.
+    const { fake, landed, run, grants } = world([{ status: 200, body: ACTIVE }], { grants: [] });
+    const err = await Promise.resolve(run('5560000001')).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/does not hold 'crm:organisation-lookup:record'/);
+    // No provider status on it, so the drain reads it as transient and retries.
+    expect(err).not.toHaveProperty('status');
+    expect(fake.calls).toEqual([]);
+    expect(landed).toEqual([]);
+
+    grants.push(BINDING.permission);
+    await run('5560000001');
+    expect(landed.map((l) => l.input)).toEqual([{ ...base, outcome: 'found', reason: null, result: expect.objectContaining({ exists: true }) }]);
   });
 });
 

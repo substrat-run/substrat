@@ -190,7 +190,7 @@ export interface BolagsverketDispatchOptions extends BolagsverketConfig {
 /**
  * The dispatch half: look the requested number up with the tenant's connection, and land the
  * answer through the scope's binding. Throws, and the drain retries, when there is no live
- * connection or no binding yet, on a rate limit and on an outage; a refused client lands
+ * connection, no binding or no landing grant yet, on a rate limit and on an outage; a refused client lands
  * `refused` and then throws, which the drain settles as failed.
  */
 export function bolagsverketConnector(options: BolagsverketDispatchOptions): ConnectorHandler {
@@ -205,6 +205,16 @@ export function bolagsverketConnector(options: BolagsverketDispatchOptions): Con
         `no Bolagsverket landing is bound to scope ${ctx.scopeId} on connection ${conn.id}. The vertical declares ` +
           `connections: [{ provider: 'bolagsverket', operation, permission }] in its module, and the next ` +
           `connector pass grants and binds it.`,
+      );
+    }
+    // The landing pass writes a binding BEFORE its grant (`bindBeforeGrant`), and a failed grant
+    // leaves the binding stored. An invoke without the key is a 403, which the drain settles as
+    // terminal, so a request caught in that gap would fail for good. Wait for the grant instead:
+    // a plain error is retried, and the next pass delivers the key.
+    if (!(await conn.grants()).includes(binding.permission as never)) {
+      throw new Error(
+        `connection ${conn.id} does not hold '${binding.permission}' on scope ${ctx.scopeId} yet, so the answer ` +
+          `could not land; retried once the connector pass delivers the grant`,
       );
     }
     const base = {
