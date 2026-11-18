@@ -26,6 +26,9 @@ import {
   CONNECTOR_PROBE_PATH,
   connectorCallRequest,
   connectorCallTarget,
+  connectorScriptCallRequest,
+  connectorScriptCallTarget,
+  connectorScriptName,
   type ConnectorCallRequest,
   type ConnectorCallTransportResult,
   decodeInvocationRecord,
@@ -1019,6 +1022,71 @@ export async function handleConnectorCall(
         status: 503,
         body: { error: `the deployment of '${target.slug}' did not answer — usually a deploy still propagating. Nothing ran; retry.` },
       };
+    }
+  }
+  const answered: unknown = await response.json().catch(() => null);
+  return { status: response.status, body: answered };
+}
+
+/**
+ * One call into a first-party connector deployed as its own script (docs/rfc/connector-scripts.md,
+ * phase 1): the same dispatch as a vertical's connector call, into a `substrat-connector-*` script
+ * instead of a vertical's deployment.
+ *
+ * What differs from {@link handleConnectorCall}, on purpose. The policy's `hosts` are the
+ * connector's declared egress for this call, and its `slug` is the script's name, so the egress
+ * worker meters the connector under its own name; the empty scope gives it no identity at the
+ * relay, a peer or a store. Nothing is sent but the call: no platform secret and no signed
+ * envelope, because the script holds nothing a caller could reach through it. Every value it uses
+ * arrives in the request, which only the control plane makes. Connection-level roles only: a
+ * scoped role would hand a script a scope's binding, which phase 1 does not do.
+ */
+export async function handleConnectorScriptCall(env: Env, rawTarget: unknown, rawRequest: unknown): Promise<ConnectorCallTransportResult> {
+  if (!env.DISPATCH) {
+    console.error('router: DISPATCH is not bound — refusing every connector script call');
+    return { status: 503, body: { error: 'this router cannot dispatch connector calls' } };
+  }
+  const parsedTarget = connectorScriptCallTarget.safeParse(rawTarget);
+  if (!parsedTarget.success) return refusedShape('target', parsedTarget.error.issues);
+  const parsedRequest = connectorScriptCallRequest.safeParse(rawRequest);
+  if (!parsedRequest.success) return refusedShape('request', parsedRequest.error.issues);
+  const target = parsedTarget.data;
+  const request = parsedRequest.data;
+  if (request.role !== 'probe' && request.role !== 'probe-candidate') {
+    return { status: 400, body: { error: `connector call refused: a connector script serves connection-level calls only, not ${request.role}` } };
+  }
+  if (request.role === 'probe' && request.connection.tenantId !== target.tenantId) {
+    return { status: 400, body: { error: 'connector call refused: the connection belongs to another tenant than the target' } };
+  }
+  if (target.script !== connectorScriptName(request.provider)) {
+    return { status: 400, body: { error: `connector call refused: ${target.script} is not the script of ${request.provider}` } };
+  }
+  const policy: OutboundPolicy = {
+    slug: target.script,
+    tenant: target.tenantId ?? '',
+    hosts: target.hosts,
+    scope: '',
+    calls: [],
+    stores: null,
+    depth: 0,
+    primary: true,
+  };
+  const script = env.DISPATCH.get(target.script, {}, { outbound: { OUTBOUND_POLICY: policy } });
+  const body = JSON.stringify(request);
+  const call = () =>
+    script.fetch(new Request(`https://connector${CONNECTOR_PROBE_PATH}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body }));
+  // The one retry the vertical path takes, for the same reason: a script not found ran nothing.
+  let response: Response;
+  try {
+    response = await call();
+  } catch (e) {
+    if (!isTransientDispatchFailure(e)) throw e;
+    try {
+      response = await call();
+    } catch (retryError) {
+      if (!isTransientDispatchFailure(retryError)) throw retryError;
+      console.error(`router: connector script '${target.script}' not found on retry`);
+      return { status: 503, body: { error: `the connector script '${target.script}' did not answer: it is not deployed, or a deploy is still propagating. Nothing ran.` } };
     }
   }
   const answered: unknown = await response.json().catch(() => null);

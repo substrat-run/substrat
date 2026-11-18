@@ -1,6 +1,6 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { ConnectorCallTransportResult } from '@substrat-run/contracts';
-import { handleConnectorCall, type Env } from './worker.js';
+import { handleConnectorCall, handleConnectorScriptCall, type Env } from './worker.js';
 
 /**
  * The connector-call entrypoint (vertical-connectors.md §6.3). Only the control plane binds it
@@ -10,5 +10,10 @@ import { handleConnectorCall, type Env } from './worker.js';
 export class ConnectorCalls extends WorkerEntrypoint<Env> {
   call(target: unknown, request: unknown): Promise<ConnectorCallTransportResult> {
     return handleConnectorCall(this.env, target, request);
+  }
+
+  /** A first-party connector deployed as its own script (docs/rfc/connector-scripts.md). */
+  callScript(target: unknown, request: unknown): Promise<ConnectorCallTransportResult> {
+    return handleConnectorScriptCall(this.env, target, request);
   }
 }

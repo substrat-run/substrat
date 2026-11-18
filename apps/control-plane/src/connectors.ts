@@ -78,6 +78,8 @@ import {
   probeBolagsverketConnection,
   probeBolagsverketSecret,
   sweepBolagsverket,
+  bolagsverketCallConfig,
+  bolagsverketEgressHosts,
   type BolagsverketConnectorOptions,
 } from '@substrat-run/connector-bolagsverket';
 import {
@@ -105,13 +107,14 @@ import {
   sweepMailIn,
 } from '@substrat-run/connector-mail-in';
 import { mailInInboundDeps, type MailInEnv } from './mail-in.js';
+import { placedProbes, type ConnectorScriptEnv } from './connector-scripts.js';
 
 /**
  * The env slice the connectors read — declared HERE rather than in `worker.ts`, so a
  * second connector's configuration arrives with the connector instead of in a second
  * file. `Env` extends this, which is what makes one entry below the whole edit.
  */
-export interface ConnectorEnv extends MailInEnv {
+export interface ConnectorEnv extends MailInEnv, ConnectorScriptEnv {
   /**
    * Scrive API base for the platform-run connector pass (#574/#96) — the sweep, the
    * webhook ingress and the inspection reads (#605) all go through it.
@@ -692,13 +695,27 @@ function bolagsverketOptions(env: ConnectorEnv): BolagsverketConnectorOptions {
   };
 }
 
+/**
+ * The pilot of a connector run as its own script (docs/rfc/connector-scripts.md, phase 1): with
+ * `bolagsverket` in `REMOTE_CONNECTORS` the probes go to `substrat-connector-bolagsverket` through
+ * the router, and without it they run here, as they always have. The credential summary is a read
+ * of the platform's own store and no provider call, so it stays here either way, and so does the
+ * sweep, which calls nothing.
+ */
 const BOLAGSVERKET: ConnectorRegistration = {
   provider: 'bolagsverket',
   grants: BOLAGSVERKET_CONNECTION_GRANTS,
   inspector: (env) => ({
-    probe: async (h, row) => probeBolagsverketConnection(h, row, bolagsverketOptions(env)),
+    ...placedProbes(env, {
+      provider: 'bolagsverket',
+      local: (fetch) => ({
+        probe: async (h, row) => probeBolagsverketConnection(h, row, { ...bolagsverketOptions(env), fetch }),
+        probeCandidate: async (secret) => probeBolagsverketSecret(secret, { ...bolagsverketOptions(env), fetch }),
+      }),
+      config: () => bolagsverketCallConfig(bolagsverketOptions(env)),
+      hosts: () => bolagsverketEgressHosts(bolagsverketOptions(env)),
+    }),
     credential: (h, row) => bolagsverketCredentialSummary(h, row),
-    probeCandidate: async (secret) => probeBolagsverketSecret(secret, bolagsverketOptions(env)),
   }),
   sweep: () => sweepBolagsverket,
 };

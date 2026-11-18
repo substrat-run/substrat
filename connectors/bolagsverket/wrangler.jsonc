@@ -1,0 +1,18 @@
+// The Bolagsverket connector as its own script (docs/rfc/connector-scripts.md, phase 1 — a pilot,
+// TEST only). Uploaded into the vertical dispatch namespace, never as a standalone worker:
+//
+//   pnpm --filter @substrat-run/connector-bolagsverket cf:deploy:test
+//
+// which is `wrangler deploy --dispatch-namespace substrat-verticals-test`. The router reaches it
+// there with an outbound policy, so its provider calls leave through the egress worker.
+//
+// It declares NO bindings — no storage, no secret, no vars, no service — and must keep declaring
+// none: the credential and the configuration arrive in each call, and nothing outlives one. The
+// control plane's workerd suite reads this file and fails if a binding appears.
+{
+	"name": "substrat-connector-bolagsverket",
+	"main": "src/script.ts",
+	"compatibility_date": "2025-01-01",
+	"workers_dev": false,
+	"observability": { "enabled": true, "logs": { "invocation_logs": false } }
+}

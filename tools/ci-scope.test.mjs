@@ -260,15 +260,15 @@ test('decide: a package that reads a changed file off disk joins the selection',
   assert.deepEqual(r.readers, readers);
   assert.deepEqual(r.lockfileImporters, []);
 });
-test('decide: a wrangler config selects contracts, the router source selects the adapter', () => {
+test('decide: a wrangler config selects contracts, the router source selects the adapter and the control plane', () => {
   const ask = (files) => {
     let asked;
     decide({ event: 'pull_request', base: 'B', files, lockfile: () => assert.fail('not read'), all, selectChanged: (extra) => ((asked = extra), [all[1]]) });
     return asked;
   };
-  assert.deepEqual(ask(['apps/router/wrangler.jsonc', 'apps/router/src/worker.ts']), ['@substrat-run/adapter-cloudflare', '@substrat-run/contracts']);
+  assert.deepEqual(ask(['apps/router/wrangler.jsonc', 'apps/router/src/worker.ts']), ['@substrat-run/adapter-cloudflare', '@substrat-run/contracts', '@substrat-run/control-plane']);
   assert.deepEqual(ask(['demos/auth-server/wrangler.jsonc']), ['@substrat-run/contracts']);
-  assert.deepEqual(ask(['apps/router/src/worker.ts']), ['@substrat-run/adapter-cloudflare']);
+  assert.deepEqual(ask(['apps/router/src/worker.ts']), ['@substrat-run/adapter-cloudflare', '@substrat-run/control-plane']);
   assert.deepEqual(ask(['demos/todo/wrangler.jsonc', 'apps/router/test/a.test.ts', 'apps/router/src2/x.ts']), []);
 });
 test('decide: the adapter\'s scope DO selects the kernel, other adapter source does not', () => {

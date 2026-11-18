@@ -32,6 +32,15 @@ There is no dispatch yet, so a vertical cannot ask for a validation through the 
 That is the next step. The control plane uses production unless `BOLAGSVERKET_ENV=test`;
 `BOLAGSVERKET_TOKEN_URL` and `BOLAGSVERKET_API_BASE` override the hosts.
 
+### As its own script (pilot)
+
+The package also ships a Worker entry, `src/script.ts`, that serves the connector's probes over the
+platform's connector call contract, deployed by `wrangler.jsonc` into the dispatch namespace as
+`substrat-connector-bolagsverket`. The control plane calls it through the router only when
+`REMOTE_CONNECTORS` names `bolagsverket`, which no environment does; otherwise everything above runs
+in-process as before. It declares no binding: the credential and the configuration arrive in each call.
+See [docs/rfc/connector-scripts.md](../../docs/rfc/connector-scripts.md), phase 1.
+
 ## What it is
 
 - **One lookup.** `POST /organisationer` by organisation number, plus `GET /isalive` for

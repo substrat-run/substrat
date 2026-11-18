@@ -103,6 +103,9 @@ describe('platform script names (#1923)', () => {
     expect(platformScriptCollision('substrat/router-test')).toBe('substrat-router-test');
     expect(platformScriptCollision('substrat-router')).toBe('substrat-router');
     expect(platformScriptCollision('substrat/control-plane')).toBe('substrat-control-plane');
+    // A connector script's name space (docs/rfc/connector-scripts.md), as the store's is.
+    expect(platformScriptCollision('substrat/connector-bolagsverket')).toBe('substrat-connector-bolagsverket');
+    expect(platformScriptCollision('substrat/connector')).toBe('substrat-connector');
     // The twin: ordinary slugs, and near misses, are free.
     for (const slug of ['ticket0', 'acme/router', 'substrat/routers', 'substrat/router-x', 't-0wv2mwk4j5/crm']) {
       expect(platformScriptCollision(slug), slug).toBeNull();

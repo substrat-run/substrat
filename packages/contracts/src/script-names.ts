@@ -53,6 +53,20 @@ export function verticalScriptStem(slug: string): string {
  */
 export const SCOPE_STORE_SCRIPT_PREFIX = 'substrat-store-';
 
+/**
+ * The name space first-party connector scripts are deployed into (docs/rfc/connector-scripts.md):
+ * `substrat-connector-<provider>`, in the same dispatch namespace as every vertical's scripts. Held
+ * like {@link SCOPE_STORE_SCRIPT_PREFIX}: {@link platformScriptCollision} refuses a slug whose stem
+ * falls inside it, so the router can never be pointed at a vertical through a connector's name.
+ */
+export const CONNECTOR_SCRIPT_PREFIX = 'substrat-connector-';
+
+/** The script a first-party connector is deployed as. A provider slug is already script-safe. */
+export function connectorScriptName(provider: string): string {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(provider)) throw new Error(`not a first-party provider: '${provider}'`);
+  return `${CONNECTOR_SCRIPT_PREFIX}${provider}`;
+}
+
 /** A store driver id (L20). No `-` and no `_`, which is what keeps {@link scopeStoreScriptName} injective. */
 export const STORE_DRIVER_ID = /^[a-z0-9]+$/;
 
@@ -103,12 +117,12 @@ export function scopeStoreCanaryScriptName(driver: string): string {
 /**
  * The platform script name a vertical with this slug would deploy under, or `null`. Checks the
  * stable script and its jurisdictional variants. A per-version script ends in a 26-character
- * ULID, which no platform name does. A stem inside the scope-store name space is returned as
- * itself: every script the slug could deploy under would fall in it.
+ * ULID, which no platform name does. A stem inside the scope-store or the connector-script name
+ * space is returned as itself: every script the slug could deploy under would fall in it.
  */
 export function platformScriptCollision(slug: string): string | null {
   const stem = verticalScriptStem(slug);
-  if (`${stem}-`.startsWith(SCOPE_STORE_SCRIPT_PREFIX)) return stem;
+  if (`${stem}-`.startsWith(SCOPE_STORE_SCRIPT_PREFIX) || `${stem}-`.startsWith(CONNECTOR_SCRIPT_PREFIX)) return stem;
   for (const name of [stem, ...JURISDICTION_SUFFIXES.map((j) => `${stem}-${j}`)]) {
     if (PLATFORM_SCRIPT_NAMES.has(name)) return name;
   }
