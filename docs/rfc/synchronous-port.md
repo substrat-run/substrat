@@ -193,8 +193,13 @@ second operation records the answer or abandons the attempt. Nothing in the kern
   committed, and the abandon adds the outcome. If the answer arrives after the abandon, recording it
   is refused, but the late answer **is journaled** (4:9 asks that what the register receives be
   registered) and the call returns `abandoned`. This meets A2, A3 and A4.
-- *Retry:* opening an attempt carries the till's sale id as its idempotency key (#116), so a retried
-  open replays the same attempt instead of opening a second one. Recording and abandoning are
+- *Retry and duplicates:* the request to send is handed out **once**, by the transaction that creates
+  the attempt, together with a send token. Every later call for the same attempt key gets the
+  attempt's state (open, recorded with its receipt, or abandoned) and never the request, so a
+  concurrent duplicate or a retry after the outcome cannot send again (§4.2). Opening an attempt
+  therefore does **not** use the host's idempotency replay (#116). That replay returns the recorded
+  result to every caller with the same key, and the recorded result would carry the request. The
+  engine keys attempts itself instead. Recording and abandoning require the send token, and are
   idempotent through the attempt's state.
 - *Fence:* at most one open attempt per registration unit. That is free in practice, because a till
   serves one customer at a time. It is bounded by the attempt's expiry, so it is not the open-ended
@@ -265,29 +270,53 @@ thin: the check plus one export. Names are illustrative.
 
 ```ts
 // engine in-scope functions — module code, no network
-openAttempt(ctx, { unit, sale }): { attemptId, receiptNumber, request }    // transaction 1
-recordAnswer(ctx, { attemptId, answer }): Receipt | { abandoned: true }   // transaction 2
-abandonAttempt(ctx, { attemptId, failure }): { abandoned: true }          // transaction 2'
+type Opened =
+  | { kind: 'send'; attemptId; token; receiptNumber; request } // only the transaction that created it
+  | { kind: 'open'; attemptId }                               // someone else holds the send
+  | { kind: 'recorded'; attemptId; receipt }
+  | { kind: 'abandoned'; attemptId };
+openAttempt(ctx, { unit, attemptKey, sale }): Opened                              // transaction 1
+recordAnswer(ctx, { attemptId, token, answer }): Receipt | { abandoned: true }   // transaction 2
+abandonAttempt(ctx, { attemptId, token, failure }): { abandoned: true }          // transaction 2'
 ```
 
 ```ts
 // the driver — host code in the vertical's worker, never module code (R3)
-const begun = await scope.invoke('till/begin-sale', { unit, sale }, { idempotencyKey: saleId });
+// No idempotencyKey: a #116 replay would hand the recorded request to a second caller.
+const opened = await scope.invoke('till/begin-sale', { unit, attemptKey, sale });
+if (opened.kind !== 'send') return opened; // a duplicate or a retry: report the state, send nothing
+const { attemptId, token, request } = opened;
 let answer: ControlUnitAnswer;
 try {
-  answer = await controlUnit.send(begun.request, { signal: AbortSignal.timeout(budgetMs) });
+  answer = await controlUnit.send(request, { signal: AbortSignal.timeout(budgetMs) });
 } catch (failure) {
-  return scope.invoke('till/abandon-sale', { attemptId: begun.attemptId, failure: describe(failure) });
+  return scope.invoke('till/abandon-sale', { attemptId, token, failure: describe(failure) });
 }
-return scope.invoke('till/complete-sale', { attemptId: begun.attemptId, answer });
+return scope.invoke('till/complete-sale', { attemptId, token, answer });
 ```
 
-`begun.request` is the exact payload the engine journaled. The driver sends it unchanged, and the
-answer is handed back as received (raw), so that the engine parses it with its own schema and
-journals what actually arrived.
+`request` is the exact payload the engine journaled. The driver sends it unchanged, at most once, and
+the answer is handed back as received (raw), so that the engine parses it with its own schema and
+journals what actually arrived. `attemptKey` is minted by the till **per try**, not per sale: after
+an abandon, the cashier's "try again" is a new key and a new attempt. Reusing the old key only
+reports that the old attempt was abandoned.
 
 ### 4.2 Invariants the engine holds, whoever drives it
 
+- **One send per attempt, owned durably.** `attemptKey` is unique per unit. The transaction that
+  inserts the attempt is the only one that returns `send`, with the request and a fresh token. Any
+  later `openAttempt` with the same key, concurrent or after the outcome, returns the attempt's state
+  instead. The scope's serialization (K-6) puts two concurrent opens one after the other, so exactly
+  one of them inserts. The host's idempotency replay (#116) is not used for this step, because it
+  would return the stored `send` result again.
+- **Only the token's holder settles.** `recordAnswer` and `abandonAttempt` without the attempt's
+  token are refused, so a driver that never got `send` cannot record or abandon someone else's
+  exchange. The expiry path (next bullet) is the engine's own and needs no token.
+- **A lost `send` result is an attempt nobody sent.** If the transaction commits but its result never
+  reaches the driver (a dropped connection, a crashed worker), no one holds the token, and so no one
+  sends. The attempt expires and is abandoned as `unknown`. Its journal entry therefore records a
+  request **handed to the transport**, which may never have left. The abandonment says so, and from
+  the register's side the two cases can't be told apart anyway.
 - `openAttempt` refuses while the unit has an open attempt that has not expired. An expired open
   attempt is first abandoned with outcome `unknown`, in the same transaction and journaled, and then
   the new attempt opens.
@@ -306,7 +335,8 @@ journals what actually arrived.
 The driver holds the call's budget with an `AbortSignal`. The engine holds the attempt's expiry as an
 engine option, judged with `ctx.now()`. It is longer than the driver's budget, so that an attempt the
 driver is still waiting on can't be abandoned under it. No retry happens inside a sale: a failure is
-an abandon, and the cashier tries again, which opens a new attempt with the same receipt number. The
+an abandon, and the cashier tries again with a new attempt key, which opens a new attempt with the
+same receipt number. The
 numbers are §6 Q5. Tests inject small values and freeze the clock (`manualClock`), so no test waits
 for the real budget.
 
@@ -319,6 +349,11 @@ not of this design. (a1) and (a2) leave the same window. (a1) merely forgets it 
 unit refuses a reused number, then an abandoned attempt has used up a number with no receipt, and
 7:1 d can't be met by **any** option without guidance on how such a number is recorded. That is §6
 Q2, and it gates the engine whichever option is chosen.
+
+Repeated sends of **one** attempt are a different problem, and the engine closes that one itself:
+§4.2 hands each attempt's request out once. If the unit's API also accepts an idempotency key, the
+driver passes the `attemptId` as a second line of defence. Correctness doesn't depend on that,
+because the ownership is the scope's, not the provider's.
 
 ### 4.5 Where the transport lives
 
@@ -333,9 +368,15 @@ noticing, since the engine only sees `request` and `answer`.
 - **Engine suite** (`engine-test-kit`): drives `openAttempt`, `recordAnswer` and `abandonAttempt`
   directly, with a frozen clock for expiry, and asserts every refusal in §4.2 plus the gapless series
   under abandon, crash (an open attempt with no outcome) and a late answer. It needs no port fake,
-  because the engine never calls out.
-- **Driver and connector:** an injected `fetch`, the pattern the first-party connectors already
-  use.
+  because the engine never calls out. For send ownership, it asserts that:
+  - two concurrent `openAttempt` calls with one key return `send` exactly once;
+  - an `openAttempt` with the key of a recorded or abandoned attempt returns that outcome, with no
+    request;
+  - a record or abandon without the token, or with another attempt's token, is refused;
+  - a `send` result the driver never receives leads to expiry and an `unknown` abandonment.
+- **Driver:** a duplicate `begin-sale` and a retry after the outcome make **zero** calls to the
+  injected `fetch`, and only the first caller sends.
+- **Connector:** an injected `fetch`, the pattern the first-party connectors already use.
 - **`adapter-sqlite` and the contract suites:** no change.
 
 ## 5. What K-62 decides, and what it leaves for later

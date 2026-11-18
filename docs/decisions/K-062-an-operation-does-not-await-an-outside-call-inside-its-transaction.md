@@ -27,8 +27,11 @@ of D-46, within a time budget. A second operation then either records the answer
 counters and its journal entries in one transaction) or abandons the attempt and journals the
 failure. A late answer to an abandoned attempt is refused and journaled, never applied.
 
-**The engine holds the order, whoever drives it.** It refuses a record without an open attempt, a
-second open attempt on the same unit, and a receipt without a code. It also abandons an expired open
+**The engine holds the order, whoever drives it.** It hands out an attempt's request **once**, with a
+send token, from the transaction that creates the attempt. A duplicate or a retry gets the attempt's
+state, never the request, so the host's idempotency replay is not used for that step. It refuses a
+record or abandon without the token, a second open attempt on the same unit, and a receipt without a
+code. It also abandons an expired open
 attempt, as "outcome unknown", before opening the next one. A driver that misbehaves can stall one
 unit until its attempt expires, but it cannot break the series or skip the journal.
 
