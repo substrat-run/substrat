@@ -24,6 +24,8 @@ const NOT_THE_PLANES: Record<string, string> = {
   'dashboard/resume-app status': OWN_APP_ROW,
   'dashboard/get-app-integrations providers[].connectFlow': 'the worker advertises only the redirect flow it can serve on this deployment',
   'dashboard/list-team-integrations providers[].connectFlow': 'the worker advertises only the redirect flow it can serve on this deployment',
+  'dashboard/get-app-integrations providers[].fields[].input': 'a field kind the dashboard’s own door declares (`integrations.ts`, #3281)',
+  'dashboard/list-team-integrations providers[].fields[].input': 'a field kind the dashboard’s own door declares (`integrations.ts`, #3281)',
   'dashboard/fleet-health rows[].state': 'the worker derives each verdict itself (`fleet-health.ts`) from the reads it made',
   'dashboard/list-app-connect-links links[].source': 'the worker labels where it read each link: its own scope or the plane',
   'dashboard/get-app-install-steps [].status': 'an install step the dashboard scope records itself',

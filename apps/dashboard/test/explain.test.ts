@@ -11,6 +11,7 @@ import {
   processFacts,
   processProvenance,
   redact,
+  redactDocument,
   sweepsOf,
 } from '../src/explain.js';
 
@@ -53,6 +54,13 @@ describe('redact', () => {
   it('removes a PEM block cut off before its END line, base64 slashes and all (#3281)', () => {
     const cut = '-----BEGIN ' + 'RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nMIIEow/IBAAKC+AQEAu3/Xq9\nab/cd/ef';
     expect(redact(`Unexpected token in "${cut}`)).toBe('Unexpected token in "[key]');
+  });
+
+  it('stops a cut-off PEM block at a blank line, and takes a JSON-escaped one whole (#3281)', () => {
+    const cut = '-----BEGIN ' + 'PRIVATE KEY-----\nMIIEow/IBAAKC+AQEAu3/Xq9\nab/cd/ef';
+    expect(redactDocument(`${cut}\n\nRetry after 502.`)).toBe('[key]\n\nRetry after 502.');
+    const escaped = '-----BEGIN ' + 'PRIVATE KEY-----\\nMIIEow/IBAAKC+AQEAu3/Xq9\\nab/cd';
+    expect(redact(`{"detail":"${escaped}"}`)).toBe('{"detail":"[key]"}');
   });
 
   it('keeps what a reader needs to find the occurrence: ids, timestamps, statuses, paths, versions', () => {

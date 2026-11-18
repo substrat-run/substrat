@@ -180,7 +180,8 @@ async function probeWith(
   // probe can say about it is which senders have sent.
   const { verified, unverified } = mailLines(mail);
   const facts = [
-    { label: 'Signs in with', value: signsInWith(secret) },
+    // The credential that signs: once a supplied certificate lapses mid-switch, that is the generated successor.
+    { label: 'Signs in with', value: signsInWith(signing) },
     { label: 'Sends as', value: sendersOf(secret).join(', ').slice(0, 400) },
     ...(verified ? [{ label: 'Mail verified', value: verified.slice(0, 400) }] : []),
     ...(unverified ? [{ label: 'Mail not verified', value: unverified.slice(0, 400) }] : []),

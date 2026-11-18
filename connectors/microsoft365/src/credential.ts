@@ -461,13 +461,17 @@ export async function requestToken(
   if (res.ok && body.access_token) return { ok: true, accessToken: body.access_token };
   const refused = classifyTokenError(res.status, body);
   // The generated certificate's advice is to download it here; the owner's own one (#3281) is
-  // theirs to have uploaded, and there is nothing here to download that they do not hold.
+  // theirs to have uploaded, and there is nothing here to download that they do not hold. And it is
+  // a refusal, not "not yet": the owner gives a pair whose certificate Entra already holds, so one it
+  // does not hold is the wrong pair or the wrong app, and saving it must not replace a working
+  // credential. A generated certificate stays "not yet", since it cannot be uploaded before the save.
   if (refused.notRegistered && isSuppliedCertificate(secret)) {
     return {
       ...refused,
+      refused: true,
       error:
-        'your certificate is not on the app registration yet — have it uploaded under Certificates & secrets ' +
-        '(the thumbprint Entra shows should match the one here), then test the connection again',
+        'your certificate is not on this app registration — have it uploaded under Certificates & secrets ' +
+        '(the thumbprint Entra shows should match the one here), then save or test the connection again',
     };
   }
   return refused;

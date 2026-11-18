@@ -221,6 +221,23 @@ describe("signing in with the owner's own certificate", () => {
     expect(await refusalOf(prepare(own(key(), pair.certPem)))).toContain(says);
   });
 
+  it('a TBSCertificate without its signature, or a validity date that does not exist, is not a certificate', async () => {
+    const pair = await ownerPair();
+    const der = Buffer.from(pair.minted.certificate, 'base64');
+    // The outer sequence's first element alone, re-wrapped: what a hand-cut "certificate" might be.
+    const lenBytes = der[1]! & 0x80 ? 2 + (der[1]! & 0x7f) : 2;
+    const tbsLen = (der[lenBytes + 1]! & 0x80 ? 2 + (der[lenBytes + 1]! & 0x7f) : 2) +
+      (der[lenBytes + 1]! & 0x80 ? der.readUIntBE(lenBytes + 2, der[lenBytes + 1]! & 0x7f) : der[lenBytes + 1]!);
+    const tbs = der.subarray(lenBytes, lenBytes + tbsLen);
+    const tbsOnly = Buffer.concat([Buffer.from([0x30, 0x82, tbs.length >> 8, tbs.length & 0xff]), tbs]).toString('base64');
+    expect(await refusalOf(prepare(own(pair.keyPem, tbsOnly)))).toContain('the certificate could not be read');
+    // notAfter as February 30th: the second UTCTime's month and day digits, rewritten in place.
+    const times = [...der.entries()].filter(([i, b]) => b === 0x17 && der[i + 1] === 13).map(([i]) => i);
+    const feb30 = Buffer.from(der);
+    feb30.write('0230', times[1]! + 4, 'ascii');
+    expect(await refusalOf(prepare(own(pair.keyPem, feb30.toString('base64'))))).toContain('the certificate could not be read');
+  });
+
   it('the halves swapped, one missing, or an expired certificate are each refused in words', async () => {
     const pair = await ownerPair();
     expect(await refusalOf(prepare(own(pair.certPem, pair.certPem)))).toContain('holds a certificate, not a private key');
@@ -246,8 +263,10 @@ describe("signing in with the owner's own certificate", () => {
       await microsoft365Certificate(host, conn),
     ];
     expectNoKey(outputs, material);
-    expect(outputs[0]).toMatchObject({ ok: false, refused: false });
-    expect((outputs[0] as { error: string }).error).toContain('your certificate is not on the app registration');
+    // Not on the app registration is a refusal for a pair the owner says Entra holds: saving it must
+    // not replace a working credential (the relay refuses a refused probe before it writes).
+    expect(outputs[0]).toMatchObject({ ok: false, refused: true });
+    expect((outputs[0] as { error: string }).error).toContain('your certificate is not on this app registration');
     expectNoKey(logged.flatMap((s) => s.mock.calls), material);
   });
 
@@ -328,6 +347,10 @@ describe('a supplied certificate and the rotation', () => {
     const { secret } = await supplied();
     const asked = (await prepare({ ...base, signInWith: 'certificate' }, secret)).secret;
     const lapsed = new Date(Date.parse(secret.certificateNotAfter!) + 1000);
+    // Before that save, Test connection already signs with the successor, and says so.
+    const ms = entra([await thumbprintS256(asked.nextCertificate!)]);
+    const probe = await probeMicrosoft365Secret(asked, { fetch: ms.fetchImpl, now: () => lapsed });
+    expect(probe.facts).toContainEqual({ label: 'Signs in with', value: 'certificate' });
     const { secret: after } = await prepare(base, asked, { now: lapsed });
     expect(after.certificate).toBe(asked.nextCertificate);
     expect(after).not.toHaveProperty('certificateSupplied');

@@ -163,8 +163,9 @@ shown again, by the dashboard or anywhere else.
 
 **Then delete your local copy of the key.** Once **Test connection** signs in, the platform holds
 everything it needs, and any other copy is one more place the key can leak from. Delete the
-unencrypted export you made (`rm key-unencrypted.pem`, or move it to the trash and empty it), and
-any copy in Downloads, email or chat. Keep the certificate if you like: it is public. If your
+unencrypted file you made: `key-unencrypted.pem` from the `openssl pkcs8` export, or `key.pem` from
+splitting a `.pfx` (`rm` it, or move it to the trash and empty it). Delete any copy in Downloads,
+email or chat too. Keep the certificate if you like: it is public. If your
 organisation needs the key kept, keep it only in the encrypted form it came in.
 
 **Test connection** signs in and reads the site. "The certificate is not on the app registration

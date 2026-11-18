@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { Button, Checkbox, Dialog, Input, RadioGroup, Select, Textarea } from '@substrat-run/ui/wa';
 import {
   api,
@@ -713,6 +713,9 @@ function ConnectDialog({
    * switching method unmounts the field, and a remounted one that forgot would draw the key.
    */
   const [loadedFrom, setLoadedFrom] = useState<Record<string, string | null>>({});
+  /** #3281: fields whose file is still being read; Connect waits for them, so it never sends the file before. */
+  const [reading, setReading] = useState<Record<string, boolean>>({});
+  const form: FormState = { values, rotate, held, fields: provider.fields };
   const [target, setTarget] = useState<string>(scopeId ?? pickTarget?.[0]?.scopeId ?? '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -726,7 +729,9 @@ function ConnectDialog({
   const [minted, setMinted] = useState<{ url: string; expiresAt: string; copied: boolean } | null>(null);
   const shown = (f: ProviderField) => fieldShown(f, values);
   const complete =
-    provider.fields.every((f) => !fieldRequired(f, values, rotate) || (values[f.key] ?? '').trim() !== '') && target !== '';
+    provider.fields.every((f) => !fieldRequired(f, form) || (values[f.key] ?? '').trim() !== '') &&
+    !Object.values(reading).some(Boolean) &&
+    target !== '';
 
   useEffect(() => {
     if (!redirect || DEV_MOCK || target === '') return;
@@ -977,9 +982,10 @@ function ConnectDialog({
               <FileField
                 key={f.key}
                 field={f}
-                suffix={fieldSuffix(f, values, rotate)}
+                suffix={fieldSuffix(f, form)}
                 value={values[f.key] ?? ''}
                 loaded={loadedFrom[f.key] ?? null}
+                onReading={(on) => setReading((prev) => ({ ...prev, [f.key]: on }))}
                 onChange={(v, from) => {
                   setValues((prev) => ({ ...prev, [f.key]: v }));
                   setLoadedFrom((prev) => ({ ...prev, [f.key]: from }));
@@ -995,7 +1001,7 @@ function ConnectDialog({
             ) : (
               <Input
                 key={f.key}
-                label={`${f.label}${fieldSuffix(f, values, rotate)}`}
+                label={`${f.label}${fieldSuffix(f, form)}`}
                 type={f.input === 'date' ? 'date' : f.secret ? 'password' : 'text'}
                 placeholder={f.placeholder ?? (f.secret ? '••••••••' : '')}
                 value={values[f.key] ?? ''}
@@ -1036,21 +1042,46 @@ function fieldShown(f: ProviderField, values: Record<string, string>): boolean {
   return !f.showWhen || f.showWhen.values.includes(values[f.showWhen.field] ?? '');
 }
 
+/** What the dialog's requirement rules read: the form, and the connection it was opened on. */
+interface FormState {
+  values: Record<string, string>;
+  rotate: boolean;
+  /** The stored credential's summary keys, when the dialog was opened on a connection. */
+  held?: string[];
+  fields: ProviderField[];
+}
+
 /**
  * Whether the dialog holds Connect until the field is filled. A `requiredWhen` field (a client
- * secret, the owner's own key and certificate) is required on a new connection; when rotating,
- * left empty keeps what the connection holds, so it is not.
+ * secret, the owner's own key and certificate) is required, except when rotating a connection that
+ * holds the chosen method already: left empty there, the connector keeps what it holds. A pair of
+ * files is replaced whole, so once one of them is given, the other is required too.
  */
-function fieldRequired(f: ProviderField, values: Record<string, string>, rotate: boolean): boolean {
-  if (!fieldShown(f, values) || f.toggle || f.choices) return false;
+function fieldRequired(f: ProviderField, form: FormState): boolean {
+  if (!fieldShown(f, form.values) || f.toggle || f.choices) return false;
   if (!f.optional) return true;
-  return !rotate && f.showWhen !== undefined && (f.requiredWhen ?? []).includes(values[f.showWhen.field] ?? '');
+  if (!f.showWhen) return false;
+  const chosen = form.values[f.showWhen.field] ?? '';
+  if (!(f.requiredWhen ?? []).includes(chosen)) return false;
+  if (!keepsChosen(f.showWhen.field, chosen, form)) return true;
+  return f.file !== undefined && form.fields.some(
+    (g) => g.file && g.showWhen?.field === f.showWhen!.field && (g.requiredWhen ?? []).includes(chosen) && (form.values[g.key] ?? '').trim() !== '',
+  );
+}
+
+/** Is the dialog rotating a connection that already signs in the chosen way, so empty keeps it? */
+function keepsChosen(choiceField: string, chosen: string, form: FormState): boolean {
+  if (!form.rotate) return false;
+  const choice = form.fields.find((g) => g.key === choiceField)?.choices?.find((c) => c.value === chosen);
+  return choice?.heldWhen?.some((k) => form.held?.includes(k)) ?? false;
 }
 
 /** What follows a field's label: nothing when required, what empty means otherwise. */
-function fieldSuffix(f: ProviderField, values: Record<string, string>, rotate: boolean): string {
-  if (fieldRequired(f, values, rotate)) return '';
-  return rotate && f.requiredWhen ? ' (empty keeps the one stored)' : ' (optional)';
+function fieldSuffix(f: ProviderField, form: FormState): string {
+  if (fieldRequired(f, form)) return '';
+  return f.requiredWhen && f.showWhen && keepsChosen(f.showWhen.field, form.values[f.showWhen.field] ?? '', form)
+    ? ' (empty keeps the one stored)'
+    : ' (optional)';
 }
 
 /** #3281: one choice between alternatives — Microsoft 365's sign-in method — and what it means. */
@@ -1097,6 +1128,7 @@ function FileField({
   suffix,
   value,
   loaded,
+  onReading,
   onChange,
 }: {
   field: ProviderField;
@@ -1105,9 +1137,22 @@ function FileField({
   value: string;
   /** The file the value was read from, held by the dialog so it outlives this field; null when typed or pasted. */
   loaded: string | null;
+  /** Whether a file is being read for this field, so the dialog can hold Connect until it is. */
+  onReading: (reading: boolean) => void;
   onChange: (value: string, loadedFrom: string | null) => void;
 }) {
   const [problem, setProblem] = useState<string | null>(null);
+  /**
+   * The current read. Every pick, paste, clear and unmount starts a new one, so a slow read that
+   * finishes after a newer choice is dropped instead of overwriting it.
+   */
+  const attempt = useRef(0);
+  const supersede = () => {
+    attempt.current += 1;
+    onReading(false);
+  };
+  // Hidden by another method: a read still running must neither land nor hold Connect.
+  useEffect(() => () => supersede(), []); // eslint-disable-line react-hooks/exhaustive-deps
   const read = async (file: File | undefined) => {
     setProblem(null);
     if (!file) return;
@@ -1115,9 +1160,22 @@ function FileField({
       setProblem(`${file.name} is larger than 64 KB — that is not one key or certificate.`);
       return;
     }
-    onChange(fileValue(new Uint8Array(await file.arrayBuffer())), file.name);
+    const mine = ++attempt.current;
+    onReading(true);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (mine === attempt.current) onChange(fileValue(bytes), file.name);
+    } catch {
+      if (mine === attempt.current) setProblem(`${file.name} could not be read — choose it again, or paste its contents below.`);
+    } finally {
+      if (mine === attempt.current) onReading(false);
+    }
   };
-  const clear = () => onChange('', null);
+  const clear = () => {
+    supersede();
+    setProblem(null);
+    onChange('', null);
+  };
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       <div style={{ fontSize: 12.5, color: 'var(--text-primary)' }}>
@@ -1128,6 +1186,7 @@ function FileField({
         <label style={{ fontSize: 12, cursor: 'pointer' }}>
           <input
             type="file"
+            aria-label={`${field.label}: choose a file`}
             accept={field.file?.accept}
             style={{ fontSize: 12 }}
             onChange={(e) => {
@@ -1154,7 +1213,11 @@ function FileField({
           mono
           spellCheck={false}
           value={value}
-          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onChange(e.target.value, null)}
+          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => {
+            supersede();
+            setProblem(null);
+            onChange(e.target.value, null);
+          }}
         />
       )}
       {field.secret && (
@@ -1447,8 +1510,16 @@ export function Integrations({ teamId }: { teamId: string }) {
   const [view, setView] = useState<AccountIntegration[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [dialog, setDialog] = useState<AccountIntegration | null>(null);
-  /** The stored credential's summary keys when the dialog was opened from a connection (#3281). */
-  const [held, setHeld] = useState<string[] | undefined>(undefined);
+  /**
+   * #3281: set when the dialog rotates a connection opened in Details — its app, and its stored
+   * credential's summary keys, so the dialog starts on its method and keeps what is left empty.
+   * Unset for Connect, which is a new connection.
+   */
+  const [rotation, setRotation] = useState<{ scopeId: string; held: string[] } | null>(null);
+  const openConnect = (p: AccountIntegration) => {
+    setRotation(null);
+    setDialog(p);
+  };
   const [detail, setDetail] = useState<{ provider: AccountIntegration; scopeId: string; connection: ConnectionView } | null>(null);
   // Addressed by the connection's own id at the team's door, which needs no serving app: a
   // connection can outlive every app it served, and the page lists it all the same.
@@ -1573,7 +1644,7 @@ export function Integrations({ teamId }: { teamId: string }) {
                       const first = p.connections[0];
                       const scope = first?.apps[0]?.scopeId ?? p.connectTargets.find((t) => t.connected)?.scopeId;
                       if (first && scope) setDetail({ provider: p, scopeId: scope, connection: first });
-                      else setDialog(p);
+                      else openConnect(p);
                     }}
                     disabled={p.connectTargets.length === 0 && !connected}
                   >
@@ -1582,7 +1653,7 @@ export function Integrations({ teamId }: { teamId: string }) {
                   {/* A fleet provider (#1267) keeps growing: Manage opens one company, so
                       adding the next one needs its own door. */}
                   {p.multiAccount && connected && p.connectTargets.length > 0 && (
-                    <Button variant="ghost" size="sm" onClick={() => setDialog(p)}>
+                    <Button variant="ghost" size="sm" onClick={() => openConnect(p)}>
                       Connect another
                     </Button>
                   )}
@@ -1600,7 +1671,7 @@ export function Integrations({ teamId }: { teamId: string }) {
           scopeId={detail.scopeId}
           connection={detail.connection}
           onRotate={(keys) => {
-            setHeld(keys);
+            setRotation({ scopeId: detail.scopeId, held: keys });
             setDialog(detail.provider);
             setDetail(null);
           }}
@@ -1646,9 +1717,10 @@ export function Integrations({ teamId }: { teamId: string }) {
         <ConnectDialog
           teamId={teamId}
           provider={dialog}
-          rotate={false}
-          held={held}
-          pickTarget={dialog.connectTargets}
+          rotate={rotation !== null}
+          held={rotation?.held}
+          // A rotation is of the connection it was opened on; a new connection picks its app.
+          {...(rotation ? { scopeId: rotation.scopeId } : { pickTarget: dialog.connectTargets })}
           onDone={() => {
             setDialog(null);
             setNonce((n) => n + 1);

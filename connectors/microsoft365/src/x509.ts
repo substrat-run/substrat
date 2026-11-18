@@ -153,6 +153,11 @@ export function readCertificateFacts(der: Uint8Array): CertificateFacts | undefi
     if (!cert || cert.end !== der.length) return undefined;
     const tbs = readTlv(der, cert.body, 0x30);
     if (!tbs || tbs.end > cert.end) return undefined;
+    // A certificate, not a TBSCertificate alone: the signature algorithm and value follow it and end
+    // the outer sequence. Their content is not judged — the issuer's signature is not ours to verify.
+    const signatureAlgorithm = readTlv(der, tbs.end, 0x30);
+    const signatureValue = signatureAlgorithm && readTlv(der, signatureAlgorithm.end, 0x03);
+    if (!signatureValue || signatureValue.end !== cert.end) return undefined;
     // tbs: [0] version (absent on a v1 certificate), serial, signature, issuer, validity, subject, spki, …
     let at = tbs.body;
     const version = readTlv(der, at, 0xa0);
@@ -190,8 +195,17 @@ function readTime(b: Uint8Array, t: { start: number; body: number; end: number }
   if (!m) return undefined;
   let year = Number(m[1]);
   if (b[t.start] === 0x17) year += year >= 50 ? 1900 : 2000; // RFC 5280 §4.1.2.5.1
-  const d = new Date(Date.UTC(year, Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])));
-  return Number.isNaN(d.getTime()) ? undefined : d;
+  const [month, day, hour, minute, second] = [m[2], m[3], m[4], m[5], m[6]].map(Number) as [number, number, number, number, number];
+  const d = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  // Date.UTC rolls an impossible date over (February 30 → March 1); a certificate that says one is malformed.
+  const same =
+    d.getUTCFullYear() === year &&
+    d.getUTCMonth() === month - 1 &&
+    d.getUTCDate() === day &&
+    d.getUTCHours() === hour &&
+    d.getUTCMinutes() === minute &&
+    d.getUTCSeconds() === second;
+  return same ? d : undefined;
 }
 
 /**
