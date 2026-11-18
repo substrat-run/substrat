@@ -1,5 +1,18 @@
 # @substrat-run/connector-bolagsverket
 
+## 0.1.0
+
+### Minor Changes
+
+- d38eed2: A vertical can look an organisation number up in Bolagsverket's register: it emits `bolagsverket.organisation-lookup-requested`, declares a `connections` landing for `bolagsverket`, and the platform looks the number up with the tenant's connection and lands the answer through that operation within seconds.
+
+### Patch Changes
+
+- Updated dependencies [dd3c1ad]
+- Updated dependencies [0e9e717]
+  - @substrat-run/contracts@0.204.0
+  - @substrat-run/kernel@0.204.0
+
 ## 0.0.26
 
 ### Patch Changes
