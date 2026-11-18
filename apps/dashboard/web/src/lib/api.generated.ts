@@ -796,6 +796,13 @@ export interface DashboardClient {
   disconnectAppIntegration(input: { scopeId: string; provider: string }): Promise<{ disconnected: string }>;
 
   /**
+   * Revoke one addressed live connection the team Integrations page lists, whether or not an app still serves it
+   *
+   * `DELETE /integrations/connections/{connectionId}` — `dashboard/disconnect-team-connection`
+   */
+  disconnectTeamConnection(input: { connectionId: string }): Promise<{ disconnected: string }>;
+
+  /**
    * Whether this deployment writes AI text, and the caller’s budget for today
    *
    * `GET /explanations` — `dashboard/explanations-status`
@@ -1716,6 +1723,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/connections/${encodeURIComponent(String(input.connectionId))}`, "DELETE", undefined, omit(input, ["scopeId","provider","connectionId"])),
     disconnectAppIntegration: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}`, "DELETE", undefined, omit(input, ["scopeId","provider"])),
+    disconnectTeamConnection: (input: Args) =>
+      send(`/integrations/connections/${encodeURIComponent(String(input.connectionId))}`, "DELETE", undefined, omit(input, ["connectionId"])),
     explanationsStatus: (input: Args) =>
       send("/explanations", "GET", undefined, input),
     exportInstalledApp: (input: Args) =>

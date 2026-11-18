@@ -108,6 +108,10 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
   let tokenTenants: string[];
   // What this vertical's latest push declares; a test empties it to model a push that dropped one.
   let declared: (typeof DOC_CONNECTOR)[];
+  // What acme/other's latest push declares: by default a connector of its own.
+  // The team's owner — the person the `sb_session=sub-owner` cookie signs in as.
+  let owner: ReturnType<typeof principalId.parse>;
+  let otherDeclared: Array<Omit<typeof DOC_CONNECTOR, 'fields'> & { fields: Array<Record<string, unknown>> }>;
   let env: Record<string, unknown>;
 
   const row = (over: Partial<Row>): Row => ({
@@ -140,8 +144,9 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     planeCalls = [];
     tokenTenants = [];
     declared = [DOC_CONNECTOR];
+    otherDeclared = [{ ...DOC_CONNECTOR, provider: 'acme.other', label: 'Other archive' }];
 
-    const owner = principalId.parse(ulid());
+    owner = principalId.parse(ulid());
     const node = await provisionDashboard(host, { tenantId: tenant, scopeId: dashScope, owner, slug: 'bureau', name: 'Bureau' });
     await host.admin.registerIdentityPool(staff, { provider: 'authhero', topology: 'central', tenantId: null });
     await host.admin.linkIdentity(staff, {
@@ -187,7 +192,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
                 // Another vertical's own connector: not a door on this app.
                 {
                   slug: 'acme/other', name: 'Other', source: 'registry', ownerTenant: null, listed: true,
-                  connectors: [{ ...DOC_CONNECTOR, provider: 'acme.other', label: 'Other archive' }],
+                  connectors: otherDeclared,
                 },
               ],
               nextCursor: null,
@@ -589,6 +594,93 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     expect((await req('/acme.other', 'DELETE')).status).toBe(404);
     expect((await req('/acme.docbox', 'DELETE')).status).toBe(200);
     expect(revoked).toEqual([live.id]);
+  });
+
+  it("the team-wide page lists the connectors its apps' verticals declare, and a live undeclared one formless", async () => {
+    type TeamProvider = { provider: string; fields: unknown[]; connections: { id: string }[]; connectTargets: { scopeId: string }[] };
+    const teamWide = async () =>
+      ((await (await app.request(`/api/teams/${tenant}/integrations`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).json()) as {
+        providers: TeamProvider[];
+      }).providers;
+    const live = row({ provider: 'acme.docbox', label: 'Docbox' });
+    rows.push(live);
+    const docbox = (await teamWide()).find((p) => p.provider === 'acme.docbox');
+    expect(docbox).toMatchObject({ fields: DOC_CONNECTOR.fields, connections: [{ id: live.id }], connectTargets: [{ scopeId: appScope }] });
+    // acme/other declares its own, but no app of this team runs that vertical.
+    expect((await teamWide()).some((p) => p.provider === 'acme.other')).toBe(false);
+
+    declared = [];
+    expect((await teamWide()).find((p) => p.provider === 'acme.docbox')).toMatchObject({
+      fields: [],
+      connections: [{ id: live.id }],
+      connectTargets: [],
+    });
+  });
+
+  it('two verticals declaring one provider differently get a card each, with their own form, apps and connections', async () => {
+    // acme/other declares the same dotted provider with the archive field left out.
+    otherDeclared = [{ ...DOC_CONNECTOR, fields: [DOC_CONNECTOR.fields[0]!] }];
+    const otherApp = scopeId.parse(ulid());
+    await (await host.getScope(owner, tenant, dashScope)).invoke('dashboard/provision-app', { appScopeId: otherApp, verticalSlug: 'acme/other', name: 'Ledger' });
+    const mine = row({ provider: 'acme.docbox', label: 'Books docbox' });
+    const theirs = row({ vertical: 'acme/other', provider: 'acme.docbox', label: 'Ledger docbox' });
+    rows.push(mine, theirs);
+
+    const res = await app.request(`/api/teams/${tenant}/integrations`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+    const { providers } = (await res.json()) as {
+      providers: { provider: string; fields: { key: string }[]; connections: { id: string }[]; connectTargets: { scopeId: string }[] }[];
+    };
+    const docboxes = providers.filter((p) => p.provider === 'acme.docbox');
+    expect(docboxes.map((p) => ({
+      fields: p.fields.map((f) => f.key),
+      targets: p.connectTargets.map((t) => t.scopeId),
+      connections: p.connections.map((c) => c.id),
+    })).sort((a, b) => b.fields.length - a.fields.length)).toEqual([
+      { fields: ['apiKey', 'archive'], targets: [appScope], connections: [mine.id] },
+      { fields: ['apiKey'], targets: [otherApp], connections: [theirs.id] },
+    ]);
+
+    // acme/books drops it while acme/other keeps it: the books row moves to the formless card
+    // (withdraw only), never onto acme/other's card, whose Details door would refuse it.
+    declared = [];
+    const after = ((await (await app.request(`/api/teams/${tenant}/integrations`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).json()) as {
+      providers: { provider: string; fields: { key: string }[]; connections: { id: string }[]; connectTargets: { scopeId: string }[] }[];
+    }).providers.filter((p) => p.provider === 'acme.docbox');
+    expect(after.map((p) => ({ fields: p.fields.length, targets: p.connectTargets.length, connections: p.connections.map((c) => c.id) }))).toEqual([
+      { fields: 1, targets: 1, connections: [theirs.id] },
+      { fields: 0, targets: 0, connections: [mine.id] },
+    ]);
+    declared = [DOC_CONNECTOR];
+
+    // The second card's form is what that app's door parses against: no archive asked for.
+    const post = await app.request(`/api/teams/${tenant}/apps/${otherApp}/integrations/acme.docbox`, {
+      method: 'POST',
+      headers: { cookie: 'sb_session=sub-owner', 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: { apiKey: 'k-2' } }),
+    }, env);
+    expect(post.status).toBe(200);
+    expect(upserts).toEqual([expect.objectContaining({ scopeId: otherApp, provider: 'acme.docbox', secret: { apiKey: 'k-2' } })]);
+  });
+
+  it("the team page's door withdraws a live connection no app serves, and only a live one it lists", async () => {
+    const del = (id: string, cookie = 'sb_session=sub-owner') =>
+      app.request(`/api/teams/${tenant}/integrations/connections/${id}`, { method: 'DELETE', headers: { cookie } }, env);
+    // Fortnox for acme/other: this team runs no app of that vertical, so no app door reaches it.
+    const orphan = byLabel('Other AB');
+    const mailIn = row({ provider: 'mail-in', label: 'Mail in' });
+    rows.push(mailIn);
+
+    expect((await del(orphan.id, '')).status).toBe(401);
+    expect((await del(ulid())).status).toBe(404);
+    expect((await del(byLabel('Gone AB').id)).status).toBe(404);
+    // Not a provider the page lists: mail-in's own door also deletes the mail it holds.
+    expect((await del(mailIn.id)).status).toBe(404);
+    expect(revoked).toEqual([]);
+
+    const res = await del(orphan.id);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ disconnected: orphan.id });
+    expect(revoked).toEqual([orphan.id]);
   });
 
   it('the addressed revoke reaches an undeclared connection of this vertical too', async () => {

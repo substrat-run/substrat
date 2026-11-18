@@ -3075,6 +3075,32 @@ async function actOnAppMailInIn(
  * above refuses to guess for. The id only selects among this app's own live rows for this
  * provider (`inspectableConnection`), so it can never reach another vertical's connection.
  */
+/**
+ * The team page's withdrawal door: one live connection the team Integrations page lists, addressed
+ * by its id alone. The app-addressed doors resolve through a serving app, and a connection can
+ * outlive every app it served — deleting an app revokes nothing, and a tenant connection of a
+ * vertical no app runs any more is served by none — so without this the page would list a live
+ * credential nobody can withdraw. The id is resolved among the tenant's live rows of a provider the
+ * page lists (first-party or vertical-defined), never trusted on its own; mail-in is not one of
+ * them, since its revoke must also delete the mail it holds. Gated by the same in-scope check as
+ * every other connection act.
+ */
+async function disconnectTeamConnectionIn(ctx: TeamContext, wantedId: string) {
+  const { c, node } = ctx;
+  const dash = await teamScope(ctx);
+  const rows = await connectionsFor(c.env, node.tenantId, node.principal);
+  const row = rows.find(
+    (r) =>
+      r.id === wantedId &&
+      r.status !== 'revoked' &&
+      (Object.hasOwn(PROVIDERS, r.provider) || isVerticalConnectorProvider(r.provider)),
+  );
+  if (!row) throw new HTTPException(404, { message: 'no such connection' });
+  await dash.invoke('dashboard/begin-connection', { provider: row.provider });
+  await controlPlaneFor(c.env, node.tenantId, node.principal).revokeConnection(row.id);
+  return { disconnected: row.id };
+}
+
 async function disconnectAppConnectionIn(ctx: TeamContext, appScopeId: string, provider: string, wantedId: string) {
   const { connectionId, cp } = await inspectableConnection(ctx, appScopeId, provider, wantedId, { revoke: true });
   await cp.revokeConnection(connectionId);
@@ -3280,34 +3306,68 @@ async function teamIntegrationsIn({ c, host, node }: TeamContext) {
     if (list.length < 20) list.push({ id: r.id, outcome: r.outcome, at: r.at, error: r.error, elapsedMs: r.elapsedMs });
     sweepByConnection.set(r.connectionId, list);
   }
+  // Every first-party provider, always — then each vertical-defined one an app of this team
+  // declares (vertical-connectors.md §7.2), and a live one no vertical declares any more (formless,
+  // for withdrawing only, as on the app panel). Each connect goes through the target app's own door,
+  // which parses against that app's vertical's declaration — so listing a provider here offers
+  // nothing the app panel does not.
+  //
+  // Two verticals may declare the same dotted provider differently (another field, another grant),
+  // so a vertical-defined card is one DECLARATION, not one provider name: its targets and
+  // connections are only those of the verticals that declare exactly that spec, and the form the
+  // dialog renders is always the one the chosen app's door will parse against.
+  const cards: Array<{ spec: ProviderSpec; verticals: Set<string> | null }> = Object.values(PROVIDERS).map((spec) => ({
+    spec,
+    verticals: null,
+  }));
+  for (const [slug, specs] of offeredBy) {
+    for (const s of specs) {
+      if (!isVerticalConnectorProvider(s.provider)) continue;
+      const same = cards.find((k) => k.verticals !== null && JSON.stringify(k.spec) === JSON.stringify(s));
+      if (same) same.verticals!.add(slug);
+      else cards.push({ spec: s, verticals: new Set([slug]) });
+    }
+  }
+  const declares = (provider: string, vertical: string) =>
+    cards.some((k) => k.spec.provider === provider && k.verticals?.has(vertical));
+  for (const r of rows) {
+    if (r.status === 'revoked' || !isVerticalConnectorProvider(r.provider) || declares(r.provider, r.vertical)) continue;
+    if (cards.some((k) => k.spec.provider === r.provider && k.verticals?.size === 0)) continue;
+    cards.push({ spec: undeclaredConnectorSpec(r.provider), verticals: new Set() });
+  }
+  // First-party: every vertical requiring it. Declared: the verticals of that declaration. The
+  // undeclared card: whatever live row of the provider no declaration here claims.
+  const covers = ({ spec, verticals }: (typeof cards)[number], vertical: string) =>
+    verticals === null
+      ? (offeredBy.get(vertical) ?? []).some((s) => s.provider === spec.provider)
+      : verticals.size > 0
+        ? verticals.has(vertical)
+        : !declares(spec.provider, vertical);
   return {
-    // First-party only, deliberately: this view is per provider ACROSS apps, and a
-    // vertical-defined provider means nothing outside the one vertical that declares it.
-    // Its door is that app's own Integrations panel.
-    providers: Object.values(PROVIDERS).map((spec) => {
+    providers: cards.map((card) => {
+      const { spec } = card;
+      const live = rows.filter(
+        (r) => r.provider === spec.provider && r.status !== 'revoked' && (card.verticals === null || covers(card, r.vertical)),
+      );
       const targets = apps
-        .filter((a) => (offeredBy.get(a.vertical_slug) ?? []).some((s) => s.provider === spec.provider))
+        .filter((a) => card.verticals?.size !== 0 && covers(card, a.vertical_slug))
         .map((a) => ({
           scopeId: a.app_scope_id,
           name: a.name,
           vertical: a.vertical_slug,
-          connected: rows.some(
-            (r) => r.provider === spec.provider && r.status !== 'revoked' && r.vertical === a.vertical_slug && servesApp(r, a.app_scope_id),
-          ),
+          connected: live.some((r) => r.vertical === a.vertical_slug && servesApp(r, a.app_scope_id)),
         }));
       return {
         ...providerForm(spec, c.env),
-        connections: rows
-          .filter((r) => r.provider === spec.provider && r.status !== 'revoked')
-          .map((r) => ({
-            ...connectionView(r),
-            vertical: r.vertical,
-            // #3201: a scope's own connection is that one app's, not every app of its vertical's.
-            apps: apps
-              .filter((a) => a.vertical_slug === r.vertical && servesApp(r, a.app_scope_id))
-              .map((a) => ({ scopeId: a.app_scope_id, name: a.name })),
-            sweepRuns: sweepByConnection.get(r.id) ?? [],
-          })),
+        connections: live.map((r) => ({
+          ...connectionView(r),
+          vertical: r.vertical,
+          // #3201: a scope's own connection is that one app's, not every app of its vertical's.
+          apps: apps
+            .filter((a) => a.vertical_slug === r.vertical && servesApp(r, a.app_scope_id))
+            .map((a) => ({ scopeId: a.app_scope_id, name: a.name })),
+          sweepRuns: sweepByConnection.get(r.id) ?? [],
+        })),
         connectTargets: targets,
       };
     }),
@@ -5963,6 +6023,7 @@ const routeHandlers = {
   'dashboard/get-app-mail-in': async (ctx, { scopeId: app }) => appMailInIn(ctx, app),
   'dashboard/set-app-mail-in': async (ctx, { scopeId: app, action, allowlist }) => actOnAppMailInIn(ctx, app, { action, allowlist }),
   'dashboard/list-team-integrations': async (ctx) => teamIntegrationsIn(ctx),
+  'dashboard/disconnect-team-connection': async (ctx, { connectionId: id }) => disconnectTeamConnectionIn(ctx, id),
   'dashboard/connect-app-integration': async (ctx, { scopeId: app, provider, secret, label }) =>
     connectAppIntegrationIn(ctx, app, provider, { secret, label }),
   'dashboard/disconnect-app-integration': async (ctx, { scopeId: app, provider }) =>

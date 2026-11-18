@@ -1236,7 +1236,45 @@ export function Integrations({ teamId }: { teamId: string }) {
   const [err, setErr] = useState<string | null>(null);
   const [dialog, setDialog] = useState<AccountIntegration | null>(null);
   const [detail, setDetail] = useState<{ provider: AccountIntegration; scopeId: string; connection: ConnectionView } | null>(null);
+  // Addressed by the connection's own id at the team's door, which needs no serving app: a
+  // connection can outlive every app it served, and the page lists it all the same.
+  const [disconnect, setDisconnect] = useState<{
+    provider: AccountIntegration;
+    connection: AccountIntegration['connections'][number];
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [disconnectErr, setDisconnectErr] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
+
+  const confirmDisconnect = async () => {
+    if (!disconnect || busy) return;
+    const id = disconnect.connection.id;
+    setBusy(true);
+    setDisconnectErr(null);
+    let failure: string | null = null;
+    try {
+      await teamApi(teamId).disconnectTeamConnection({ connectionId: id });
+    } catch (e) {
+      failure = e instanceof TeamApiError ? e.message : String(e);
+    }
+    if (failure !== null) {
+      // The plane may have revoked it before its answer was lost, so a failed request is a
+      // failure only while the row is still live. Unreadable counts as still live: say so and
+      // let the person retry, rather than close on a guess.
+      const stillLive = await api
+        .integrations(teamId)
+        .then((v) => v.providers.some((p) => p.connections.some((c) => c.id === id)))
+        .catch(() => true);
+      if (stillLive) {
+        setBusy(false);
+        setDisconnectErr(failure);
+        return;
+      }
+    }
+    setBusy(false);
+    setDisconnect(null);
+    setNonce((n) => n + 1);
+  };
 
   useEffect(() => {
     if (DEV_MOCK) {
@@ -1265,10 +1303,13 @@ export function Integrations({ teamId }: { teamId: string }) {
       {!err && !view && <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading integrations…</div>}
       {view && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
-          {view.map((p) => {
+          {view.map((p, i) => {
             const connected = p.connections.length > 0;
+            // A vertical-defined provider no vertical declares any more: no form to connect or
+            // rotate with, and nothing to inspect — the one thing left is withdrawing it.
+            const formless = p.fields.length === 0;
             return (
-              <div key={p.provider} style={{ ...card, padding: 16, display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <div key={`${p.provider}:${i}`} style={{ ...card, padding: 16, display: 'flex', gap: 12, alignItems: 'flex-start' }}>
                 <Monogram text={p.monogram} />
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1286,11 +1327,17 @@ export function Integrations({ teamId }: { teamId: string }) {
                         </span>
                         {/* Detail is per-APP because the routes are: a connection is keyed to a
                             vertical, and any app of that vertical is a valid door to it. */}
-                        {c.apps[0] && (
+                        {c.apps[0] && !formless && (
                           <Button variant="ghost" size="sm" onClick={() => setDetail({ provider: p, scopeId: c.apps[0]!.scopeId, connection: c })}>
                             Details
                           </Button>
                         )}
+                        <Button variant="ghost" size="sm" onClick={() => {
+                            setDisconnectErr(null);
+                            setDisconnect({ provider: p, connection: c });
+                          }}>
+                          Disconnect
+                        </Button>
                       </div>
                       <HealthLine conn={c} />
                       <SweepStrip runs={c.sweepRuns ?? []} skippedNote="nothing polls this connection" />
@@ -1304,8 +1351,8 @@ export function Integrations({ teamId }: { teamId: string }) {
                   {/* Manage used to open the empty connect form, which read as "your
                       credentials are gone". A connected provider opens its detail; the
                       rotate form is one click further in, where replacing a credential
-                      belongs. */}
-                  <Button
+                      belongs. A formless card has neither: its rows' Disconnect is all. */}
+                  {!formless && <Button
                     variant="secondary"
                     size="sm"
                     onClick={() => {
@@ -1317,7 +1364,7 @@ export function Integrations({ teamId }: { teamId: string }) {
                     disabled={p.connectTargets.length === 0 && !connected}
                   >
                     {connected ? 'Manage' : 'Connect'}
-                  </Button>
+                  </Button>}
                   {/* A fleet provider (#1267) keeps growing: Manage opens one company, so
                       adding the next one needs its own door. */}
                   {p.multiAccount && connected && p.connectTargets.length > 0 && (
@@ -1348,6 +1395,37 @@ export function Integrations({ teamId }: { teamId: string }) {
           }}
         />
       )}
+
+      <Dialog
+        open={!!disconnect}
+        title={disconnect ? `Disconnect ${disconnect.connection.label}` : ''}
+        confirmLabel={busy ? 'Disconnecting…' : disconnectErr ? 'Try again' : 'Disconnect'}
+        danger
+        busy={busy}
+        onCancel={() => {
+          setDisconnect(null);
+          setDisconnectErr(null);
+        }}
+        onConfirm={confirmDisconnect}
+      >
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.55 }}>
+          {disconnectErr && (
+            <div style={{ color: 'var(--status-danger-fg)', marginBottom: 8 }}>
+              Couldn’t disconnect — the connection is still live: {disconnectErr}
+            </div>
+          )}
+          {disconnect && (
+            <>
+              The stored {disconnect.provider.name} credential is deleted and every grant it carried is revoked — this cannot
+              be undone.{' '}
+              {disconnect.connection.apps.length > 0
+                ? `Every app it serves loses it (${disconnect.connection.apps.map((a) => a.name).join(', ')}).`
+                : 'No app of this team uses it any more.'}{' '}
+              Deliveries already queued stay queued and resume if it is connected again.
+            </>
+          )}
+        </div>
+      </Dialog>
 
       {dialog && (
         <ConnectDialog
