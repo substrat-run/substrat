@@ -71,6 +71,15 @@ describe('redact', () => {
     for (const text of [blankFirst, legacy]) expect(redact(text)).not.toMatch(/MIIEow|ab\/cd/);
   });
 
+  it('takes a cut-off PEM serialized as JSON, LF or CRLF, and keeps what follows a serialized blank line (#3281)', () => {
+    for (const eol of ['\n', '\r\n']) {
+      const pem = ['-----BEGIN ' + 'PRIVATE KEY-----', 'MIIEow/IBAAKC+AQEAu3/Xq9', 'ab/cd'].join(eol);
+      expect(redact(JSON.stringify({ detail: pem }))).toBe('{"detail":"[key]"}');
+      const withParagraph = JSON.stringify({ detail: `${pem}${eol}${eol}Retry after 502.` });
+      expect(redact(withParagraph)).toBe(`{"detail":"[key]${JSON.stringify(eol + eol).slice(1, -1)}Retry after 502."}`);
+    }
+  });
+
   it('keeps what a reader needs to find the occurrence: ids, timestamps, statuses, paths, versions', () => {
     const text = 'POST /internal/lifecycle-flow answered 502 at 2026-10-23T09:14:02.120Z for 01JZ8F3K2M4N6P8Q0R2S4T6V8W (v1.4.12, port 8443)';
     expect(redact(text)).toBe(text);

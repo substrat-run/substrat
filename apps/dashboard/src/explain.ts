@@ -68,13 +68,14 @@ const RULES: ReadonlyArray<readonly [RegExp, string | ((match: string) => string
   // upstream). Two parts, so a blank line means one thing in each:
   // - the header part: blank lines and RFC 1421 header lines (`Proc-Type: …`, `DEK-Info: …`),
   //   however many, since a blank line before the body belongs to the block;
-  // - the body: base64, spaces and line breaks, a JSON-escaped `\n` included, up to a blank line —
+  // - the body: base64, spaces and line breaks — real or JSON-escaped, LF or CRLF (`\n`, `\r\n`) —
+  //   up to a blank line, again of either kind —
   //   which after the body is a paragraph that survives.
   // Each part's alternatives start on disjoint characters and the body can match empty, so the
   // match never backtracks out of a part: linear whatever follows. A base64 run with `/` in it
   // would otherwise reach the opaque-run rules below in pieces short enough to pass.
   [
-    /-----BEGIN [A-Z ]+-----(?:[ \t]*(?:\r?\n|\\n)|[A-Za-z-]+:[^\r\n\\]*)*(?:[A-Za-z0-9+/= \t]|(?:\r?\n|\\n)(?![ \t]*(?:\r?\n|\\n)))*/g,
+    /-----BEGIN [A-Z ]+-----(?:[ \t]*(?:\r?\n|(?:\\r)?\\n)|[A-Za-z-]+:[^\r\n\\]*)*(?:[A-Za-z0-9+/= \t]|(?:\r?\n|(?:\\r)?\\n)(?![ \t]*(?:\r?\n|(?:\\r)?\\n)))*/g,
     '[key]',
   ],
   // Credentials in a URL: the user and password before the `@` become `[credentials]`.
