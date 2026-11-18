@@ -708,6 +708,11 @@ function ConnectDialog({
   const unit = fleetUnit(provider);
   const [manual, setManual] = useState(!redirect);
   const [values, setValues] = useState<Record<string, string>>(() => initialValues(provider.fields, held));
+  /**
+   * #3281: which file a field's value was read from, kept with the value rather than in the field:
+   * switching method unmounts the field, and a remounted one that forgot would draw the key.
+   */
+  const [loadedFrom, setLoadedFrom] = useState<Record<string, string | null>>({});
   const [target, setTarget] = useState<string>(scopeId ?? pickTarget?.[0]?.scopeId ?? '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -974,7 +979,11 @@ function ConnectDialog({
                 field={f}
                 suffix={fieldSuffix(f, values, rotate)}
                 value={values[f.key] ?? ''}
-                onChange={(v) => setValues((prev) => ({ ...prev, [f.key]: v }))}
+                loaded={loadedFrom[f.key] ?? null}
+                onChange={(v, from) => {
+                  setValues((prev) => ({ ...prev, [f.key]: v }));
+                  setLoadedFrom((prev) => ({ ...prev, [f.key]: from }));
+                }}
               />
             ) : f.toggle ? (
               <Checkbox
@@ -1087,15 +1096,17 @@ function FileField({
   field,
   suffix,
   value,
+  loaded,
   onChange,
 }: {
   field: ProviderField;
   /** What follows the label: nothing when required, what empty means otherwise. */
   suffix: string;
   value: string;
-  onChange: (value: string) => void;
+  /** The file the value was read from, held by the dialog so it outlives this field; null when typed or pasted. */
+  loaded: string | null;
+  onChange: (value: string, loadedFrom: string | null) => void;
 }) {
-  const [loaded, setLoaded] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const read = async (file: File | undefined) => {
     setProblem(null);
@@ -1104,13 +1115,9 @@ function FileField({
       setProblem(`${file.name} is larger than 64 KB — that is not one key or certificate.`);
       return;
     }
-    onChange(fileValue(new Uint8Array(await file.arrayBuffer())));
-    setLoaded(file.name);
+    onChange(fileValue(new Uint8Array(await file.arrayBuffer())), file.name);
   };
-  const clear = () => {
-    setLoaded(null);
-    onChange('');
-  };
+  const clear = () => onChange('', null);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       <div style={{ fontSize: 12.5, color: 'var(--text-primary)' }}>
@@ -1147,7 +1154,7 @@ function FileField({
           mono
           spellCheck={false}
           value={value}
-          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onChange(e.target.value)}
+          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onChange(e.target.value, null)}
         />
       )}
       {field.secret && (

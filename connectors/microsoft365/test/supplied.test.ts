@@ -312,6 +312,18 @@ describe('a supplied certificate and the rotation', () => {
     expect(promoted.secret).not.toHaveProperty('nextCertificate');
   });
 
+  it('once it lapses with no switch under way, a save naming no method refuses rather than minting one unasked', async () => {
+    const { secret } = await supplied();
+    const lapsed = new Date(Date.parse(secret.certificateNotAfter!) + 1000);
+    for (const candidate of [base, { ...base, signInWith: 'own-certificate' }]) {
+      expect(await refusalOf(prepare(candidate, secret, { now: lapsed }))).toContain('the certificate you supplied expired on');
+    }
+    // Named, the platform's certificate replaces it.
+    const generated = await prepare({ ...base, signInWith: 'certificate' }, secret, { now: lapsed });
+    expect(generated.secret).not.toHaveProperty('certificateSupplied');
+    expect(generated.secret.certificate).not.toBe(secret.certificate);
+  });
+
   it('once the supplied certificate lapses mid-switch, the generated one takes its place', async () => {
     const { secret } = await supplied();
     const asked = (await prepare({ ...base, signInWith: 'certificate' }, secret)).secret;

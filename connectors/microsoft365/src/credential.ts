@@ -242,6 +242,14 @@ export async function prepareMicrosoft365Candidate(
       return { secret: { ...secret, ...slot(own, 'current') }, expiresAt: own.notAfter };
     }
     if (current?.supplied) return { secret: { ...secret, ...slot(current, 'current') }, expiresAt: current.notAfter };
+    // The method is the stored one even once its certificate has lapsed: a save never swaps the
+    // owner's certificate for a generated one unasked, so it says what to do instead.
+    const end = previous?.certificateSupplied === 'yes' ? previous.certificateNotAfter : undefined;
+    if (end && !(Date.parse(end) > opts.now.getTime())) {
+      throw new Microsoft365CertificateRefusal(
+        `the certificate you supplied expired on ${end.slice(0, 10)}: give a new private key and certificate, or choose a platform-generated certificate`,
+      );
+    }
     throw new Microsoft365CertificateRefusal(
       'to sign in with your own certificate, give both the private key and the certificate — this connection holds none of yours to keep',
     );
