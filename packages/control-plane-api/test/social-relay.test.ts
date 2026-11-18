@@ -293,6 +293,8 @@ describe('the pieces it is built from', () => {
 
   it('is for the platform’s auth-server only, never a builder’s vertical of the same name', () => {
     expect(isSocialRelayVertical('auth-server')).toBe(true);
+    // The platform workspace's lineage, which the standard Auth Server's installs are bound to.
+    expect(isSocialRelayVertical('substrat-9yjbbn/auth-server')).toBe(true);
     expect(isSocialRelayVertical('acme/auth-server')).toBe(false);
     expect(isSocialRelayVertical(null)).toBe(false);
   });
