@@ -188,8 +188,10 @@ exchanged for them. What the receiving app declares it may delegate is a ceiling
 vertical declares, with a driver the platform registers. It is not part of the scope's own
 database (chapter 2).
 
-**Request id.** The one id a request carries everywhere: on its response header, on every event
-and log line it caused, and on every outbound call it made (chapter 12).
+**Request id.** The id a request carries throughout its own app: on its response header, on every
+event and log line it caused there, and on every outbound call it made (chapter 12). A peer call
+into another app is a request of its own there, with its own id, and names the caller's id as its
+parent.
 
 ## Two pictures, one system
 

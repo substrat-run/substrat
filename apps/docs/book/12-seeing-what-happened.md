@@ -150,7 +150,10 @@ out. Every response a routed request gets carries `x-substrat-request-id`, and e
 document carries the same value as `requestId`. Nothing new was minted: it is the
 `invocationId` the line already carried, the id on every event the request emitted, on every
 `ctx.log` line, on its deliveries and denials, and on every outbound call it made. An operation
-reads it as `ctx.requestId` (chapter 4).
+reads it as `ctx.requestId` (chapter 4). The id stays inside one app. A peer call into
+another app (chapter 8) is a request there with its own id, and its line records the caller's id
+as `parentInvocationId` and the caller's scope beside it. So searching for one id finds what a
+request did in its own app; following a call into another app means following that parent link.
 
 That turns "it failed, here is a screenshot" into a lookup. The dashboard finds a request by
 id, shows the requests related to it, and puts the id on a failure so the person reporting it
