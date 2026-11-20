@@ -89,8 +89,11 @@ and wrong in a way that surfaces months later.
   matches" is a different message from "nothing here". A refused action keeps its rows on screen
   rather than clearing them.
 - **Reading a list properly.** Sorting, filtering, search and paging happen on the server, and
-  paging stays a keyset walk, so rows neither drop nor repeat while someone else writes.
-  Chapter 4's opaque cursor is the reason that works.
+  paging stays a keyset walk, so an insert or a delete elsewhere does not shift a page and
+  make a row drop or repeat, as an offset would. That holds while a row's sort value stays put
+  between pages: a row whose sorted column changes mid-walk can be skipped or seen twice,
+  depending on which way it moved. A walk sorted by id is not affected. The cursor (chapter 4)
+  only carries the position; it does not freeze the rows.
 - **Stale views.** When an action finds its row changed or gone (`409` or `404`), the table reads
   the view again instead of showing what it remembered.
 - **Who is signed in.** One session read per page, shared by every element on it. Nothing shows
@@ -202,8 +205,9 @@ that.
 
 A deployed worker serves a file **as the signed-in person**. `workerDoor({ attachments: true })`
 mounts `GET /api/attachments/:id`, which streams the file and answers one byte range, and
-`DELETE` beside it. A file the person may not read is a `404`, the same as one that does not
-exist. The response is hardened before anything can go wrong: `nosniff`, a sandbox content
+`DELETE` beside it. An id that names no file is a `404`. A file that exists but the person may
+not read is refused with `403`, after the read permission is checked, so the two are
+distinguishable today. The response is hardened before anything can go wrong: `nosniff`, a sandbox content
 policy, no caching, and always `Content-Disposition: attachment`. A media element ignores the
 disposition, so `<audio src>` plays the file while navigating to it saves it instead of rendering
 it.

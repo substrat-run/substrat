@@ -24,10 +24,12 @@ no mapping is a person who has authenticated perfectly and may do **nothing**. T
 halves are genuinely independent: proving who you are gets you no authority at all.
 
 The mapping is made at the vertical's door (chapter 3), in one of a few ways: the owner
-takes the owner seat, an invited person is admitted by the address the issuer verified, a
-plugin asks the app that owns its people (chapter 8), or the vertical's own join runs on first
-arrival. None of them happens inside an operation, and none of them is decided by an address
-the caller typed.
+takes the owner seat, an invited person is admitted by the address the issuer verified, or a
+plugin asks the app that owns its people (chapter 8). Only once the door has a principal does
+the vertical's own join run, on that person's first arrival; a join gives a principal its
+record and shapes, it does not map a login. None of this happens inside an operation, and none
+of it is decided by an address the caller typed.
+
 Every demo vertical in the repo is OIDC-only, and the local development story is a real
 OIDC provider (`@substrat-run/dev-issuer`) whose only shortcut is that `/authorize` lists
 names instead of asking for a password. So the local login *is* the production round-trip,
@@ -103,6 +105,7 @@ One thing sits outside the algebra and above it. A call another app makes **as a
 carries a delegation, and the delegated keys are a ceiling applied to every decision: the
 checker answers as usual, and then refuses anything the delegation does not list. It cannot
 widen what the person holds. Chapter 8 follows where that call comes from.
+
 The fixed algebra is the point. A policy language rich enough to express anything is rich
 enough to express a policy nobody can predict the behaviour of, and "why can this person
 see this?" stops having an answer. Four rules have an answer, always.
@@ -249,6 +252,7 @@ joins, a **consumer** of the join event turns their open invitations into shares
 a consumer rather than the join handler, because `ctx.grant` delegates: the person arriving
 holds nothing on the list, so they cannot grant themselves in. The consumer runs as a system
 actor, and the invitation the owner wrote is its authority.
+
 ## Sharing by link: authority held by a secret
 
 Sharing with a named principal and sharing with whoever holds a link are different

@@ -112,8 +112,9 @@ paid invoice to settle a basis writes that join itself.
 
 ### Meter, don't bill
 
-The platform's rule is **count everything exactly, store no bill**. Usage is recorded as
-facts. Prices and margins are applied when someone reads, and nothing stores a computed
+The platform's rule is **count what can be counted exactly, label what cannot, store no
+bill**. Usage is recorded as facts, and a figure that comes from sampling, such as requests,
+says it is an estimate. Prices and margins are applied when someone reads, and nothing stores a computed
 charge. So a pricing change never requires a data migration, and a count is never tangled
 with a number that was a commercial decision.
 
@@ -248,8 +249,9 @@ outside the product.
 
 ## The shape, once more
 
-In both halves the count is exact, deduplicated, and written in the same transaction or intent
-as the thing it counts. The price is applied later, by whoever owns the commercial decision:
+In both halves a billable count is exact, deduplicated, and written in the same transaction or
+intent as the thing it counts; what is sampled, like requests, is labelled an estimate and kept
+off an invoice. The price is applied later, by whoever owns the commercial decision:
 the vertical for its customers, the platform for its tenants. What is missing is also the same
 in both halves: the hand-off from a closed count to a document someone pays.
 

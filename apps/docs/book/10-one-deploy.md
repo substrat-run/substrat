@@ -45,10 +45,11 @@ The list of things judged before anything leaves the machine has grown:
 - **Code that names a host `substrat.outbound` does not declare** is warned about, because it
   would otherwise fail as a platform refusal at run time.
 
-The control plane then checks the build against what you declared. It evaluates the pushed
-bundle in a sealed isolate, with an empty environment, no outbound and a CPU cap, to read the
-migrations it registers. A push whose declared migrations differ from the bundle's is refused
-before anything is uploaded.
+The control plane then checks the build against what you declared. Your source has been
+submitted and built by this point. The control plane evaluates the built bundle in a sealed
+isolate, with an empty environment, no outbound and a CPU cap, to read the migrations it
+registers. A push whose declared migrations differ from the bundle's is refused before the
+bundle is uploaded to the runtime and recorded as a version.
 
 Two checks run earlier, when you write a change rather than when you push it. `substrat
 changeset` computes the semver bump from the diff of the vertical's checked-in artifacts.
@@ -206,14 +207,18 @@ A loss you intend is declared on the migration, beside the SQL:
 ```
 
 `discards` needs a reason. `moves: { source: target }` is the other declaration, and it is
-**verified**: the target must gain what its sources held, so a lossy "move" is still refused.
+**verified by counts**: the target must gain, per storage class, as many values as its sources
+held, so a move that drops values is refused. It does not compare the values themselves, so a
+move that keeps the counts and changes the values passes.
 "Data" means rows that exist in that table in that scope. An empty table may be dropped freely,
 which keeps a development scope cheap to reshape.
 
 If a promoted migration is refused in a scope, it rolls back inside its own transaction and
 that scope fails closed, as any failed migration does. Promote moves a pointer and each scope
-migrates on wake, so this happens a scope at a time. The data is intact, and promoting the
-previous version back works, because the migration never ran. Two things a count cannot see
+migrates on wake, so this happens a scope at a time. Each migration commits on its own, so the
+migrations before the refused one in the same promote stay applied; the refused one never ran,
+and the data it would have lost is intact. Promoting the previous version back works only if
+that version can read the schema those earlier migrations left. Two things a count cannot see
 are stated rather than hidden: values rewritten in place at the same count and storage class,
 and rows replaced by as many other rows.
 

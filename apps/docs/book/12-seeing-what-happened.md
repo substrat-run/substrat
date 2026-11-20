@@ -149,7 +149,8 @@ Everything above was joined by an id the platform minted and kept to itself. Now
 out. Every response a routed request gets carries `x-substrat-request-id`, and every problem
 document carries the same value as `requestId`. Nothing new was minted: it is the
 `invocationId` the line already carried, the id on every event the request emitted, on every
-`ctx.log` line, on its deliveries and denials, and on every outbound call it made. An operation
+`ctx.log` line, on its deliveries and the denials its operation raised, and on every outbound
+call it made. An operation
 reads it as `ctx.requestId` (chapter 4). The id stays inside one app. A peer call into
 another app (chapter 8) is a request there with its own id, and its line records the caller's id
 as `parentInvocationId` and the caller's scope beside it. So searching for one id finds what a
@@ -236,8 +237,9 @@ That join has limits, and they are exact:
   internal calls and events from before the column existed carry `null`.
 - The router's datapoint carries Cloudflare's `rayId`, not the `invocationId`, so traffic does
   not join to events.
-- **Deliveries and denials carry it now**, so a refusal and a consumer's attempt join to the
-  request behind them. Rows written before the column read `null`.
+- **Deliveries, and denials raised inside an operation, carry it now**, so those refusals and
+  a consumer's attempt join to the request behind them. Denials from the attachment and
+  capability paths, and rows written before the column, read `null`.
 
 **Facets.** `facetEvents` is a small group-and-count over one scope's outbox. It filters by type
 and time window, groups by type, actor, operation, version, entity type, PII class, invocation,

@@ -92,9 +92,12 @@ as its own rows. Rollback removes the request too. After commit, the platform de
 it at-least-once, using the request id as the idempotency key. The returned id is an
 enqueue receipt; read the platform-request journal for the outcome.
 
-There is a timing detail worth making explicit: **a queued call resolves its target
-when it executes**. If an admin changes the binding between enqueue and delivery,
-the queued call goes to the newly selected instance. A workflow that spans both apps
+There is a timing detail worth making explicit: **a queued call resolves its target on
+each delivery attempt**. If an admin changes the binding between enqueue and delivery, the
+queued call goes to the newly selected instance. The request id deduplicates only on the
+instance that recorded it: if the first instance ran the operation and the attempt then
+failed before the platform recorded success, a retry after a rebinding can run the operation
+again on the new instance. A workflow that spans both apps
 must represent pending, successful and failed work in its own records; there is no
 distributed rollback if the second app refuses.
 
@@ -203,9 +206,12 @@ small:
 - **Out:** a person, or nobody. A person is the first app's id for them, a status (`invited`,
   `active` or `blocked`) and the first app's role keys.
 
-No name and no address come back. The copy the plugin keeps therefore holds nothing an
-erasure has to reach, which matters because chapter 13's erasure stops at the scope that
-holds the data.
+No name and no address come back. That keeps the copy small, not free of personal data. The
+plugin stores, per login, the issuer's subject beside the person id and their status, and a
+subject is the issuer's identifier for a person, which some issuers make an address. The person
+id is pseudonymous personal data too. Those rows outlive the answer's expiry, and nothing erases
+them when the person is erased in the first app yet: chapter 13's erasure stops at the scope that
+holds the data, and the plugin's scope is another one.
 
 The app that owns the people implements one operation with that input and output, declares
 its key `holder: 'system'` so no person's role can carry it (chapter 6), and allowlists the
@@ -318,7 +324,7 @@ event's own authorization chain already say it.
 |---|---|
 | The person is banned at the issuer | At the next exchange |
 | The person is blocked, or loses access, in the first app | Within the person contract's TTL |
-| The person signs out of the first app | At once: the refresh token is deleted |
+| The person signs out of the first app | No new exchange: the refresh token is deleted. A token already exchanged still works until it expires |
 | The person signs out at the issuer only | Not stopped, as for the first app's own session |
 | A token already exchanged | Usable for the rest of its five minutes |
 
@@ -390,7 +396,7 @@ not own, and a ceiling on what another app may do as a person.
 | Peer call | The calling app | Separate | Yes, in the answer, under the target's checks |
 | Queued peer call | The calling app | Enqueued in yours; executed in theirs | Yes, as above |
 | Exported event | The producing app | Separate; at-least-once transport, one effect per event | No: `piiClass: 'none'` only |
-| Person contract | The plugin, asking | None: a read, kept for a TTL | No: an id, a status, role keys |
+| Person contract | The plugin, asking | None: a read, kept for a TTL | Pseudonymous: an id, a status, role keys, kept beside the login's subject; not erased with the person yet |
 | Delegated call | The person, capped by the delegation | Separate | Yes, under the person's own checks |
 | `provision-tenant` | The manager, by intent | Separate; outcome written back | The owner address, until claimed |
 
