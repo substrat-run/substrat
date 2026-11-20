@@ -153,7 +153,8 @@ describe('GitHub import acts on the team the request names (#2170)', () => {
       },
       GITHUB_REPO_LINK: {
         idFromName: (name: string) => name,
-        get: () => ({ setLink: async (link: { tenantId: string; repo: string }) => void links.push(link) }),
+        // A repo never set up before: no stored link, so setup resolves its preview mode afresh.
+        get: () => ({ getLink: async () => null, setLink: async (link: { tenantId: string; repo: string }) => void links.push(link) }),
       },
     };
   });
@@ -179,10 +180,11 @@ describe('GitHub import acts on the team the request names (#2170)', () => {
   it('one-click CI set up from a tab on team A wires the repo to A, whichever team the cookie pins', async () => {
     const res = await fromTab(teamB, 'POST', `/api/teams/${teamA}/github/setup-ci`, { repo: 'acme/helpdesk', branch: 'main' });
     expect(res.status, await res.clone().text()).toBe(200);
-    expect(await res.json()).toMatchObject({ ok: true, vertical: 'team-a/helpdesk' });
+    // A repo set up for the first time (no link, no workflow file yet) previews on request.
+    expect(await res.json()).toMatchObject({ ok: true, vertical: 'team-a/helpdesk', previews: 'on-request' });
     expect(installations).toEqual(['inst-a']);
     expect(minted).toEqual([teamA]);
-    expect(links).toEqual([{ tenantId: teamA, slug: 'helpdesk', repo: 'acme/helpdesk' }]);
+    expect(links).toEqual([{ tenantId: teamA, slug: 'helpdesk', repo: 'acme/helpdesk', previews: 'on-request' }]);
   });
 
   /** Nothing reached GitHub, the push-token mint or a repo link. */
