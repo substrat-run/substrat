@@ -67,7 +67,7 @@ describe('subject access (D-74)', () => {
       migrations: [
         {
           version: '0001-init',
-          sql: 'CREATE TABLE sa_visits (id TEXT PRIMARY KEY, guest TEXT NOT NULL, host TEXT, note TEXT); CREATE TABLE sa_loose (id TEXT PRIMARY KEY, memo TEXT);',
+          sql: 'CREATE TABLE sa_visits (id TEXT PRIMARY KEY, guest TEXT NOT NULL, host, note TEXT); CREATE TABLE sa_loose (id TEXT PRIMARY KEY, memo TEXT);',
         },
       ],
       ...undeclaredOperations('a test fixture, built to drive the host rather than declared', {
@@ -95,6 +95,8 @@ describe('subject access (D-74)', () => {
     await put('INSERT INTO sa_visits (id, guest, host, note) VALUES (?, ?, ?, ?)', [ulid(), who, other, 'asked about parking']);
     await put('INSERT INTO sa_visits (id, guest, host, note) VALUES (?, ?, ?, ?)', [ulid(), other, who, 'hosted them']);
     await put('INSERT INTO sa_visits (id, guest, host, note) VALUES (?, ?, ?, ?)', [ulid(), other, other, 'not theirs']);
+    // A co-subject stored as a number: the untyped column keeps it an integer, not text.
+    await put('INSERT INTO sa_visits (id, guest, host, note) VALUES (?, ?, 4242, ?)', [ulid(), who, 'a numbered host']);
     await stub.invoke('visits/note', { subject: who, said: 'their words' });
     await stub.invoke('visits/note', { subject: other, said: 'someone else' });
 
@@ -112,7 +114,10 @@ describe('subject access (D-74)', () => {
     const pkg = answer.package;
     expect(pkg).toMatchObject({ kind: 'substrat.subject-access/v1', subjectId: who, reference: 'DSAR-2026-014', jurisdiction: 'global' });
     const visits = pkg.records.find((r) => r.entityType === 'visit')!;
-    expect(visits.rows.map((r) => r.note).sort()).toEqual(['asked about parking', 'hosted them']);
+    expect(visits.rows.map((r) => r.note).sort()).toEqual(['a numbered host', 'asked about parking', 'hosted them']);
+    const numbered = visits.rows.find((r) => r.note === 'a numbered host')!;
+    expect(typeof numbered.host).toBe('string');
+    expect(String(numbered.host)).not.toContain('4242');
     expect(visits.maskedColumns).toEqual(['guest', 'host']);
     // The other person's id never appears; the subject's own does, where it is theirs.
     expect(JSON.stringify(pkg)).not.toContain(other);
@@ -124,6 +129,7 @@ describe('subject access (D-74)', () => {
     expect(pkg.recipients.status).toBe('not-available');
     expect(pkg.unreached.entities).toEqual([{ module: '@test/visits', entityType: 'loose' }]);
     expect(answer.html).toContain('asked about parking');
+    expect(answer.html).toContain('Events: direct.');
     expect(answer.html).not.toContain('<script');
   });
 
@@ -146,15 +152,15 @@ describe('subject access (D-74)', () => {
       residencyExempt: false,
       events: 1,
       erasedEvents: 0,
-      records: [{ module: '@test/visits', entityType: 'visit', rows: 2 }],
+      records: [{ module: '@test/visits', entityType: 'visit', rows: 3 }],
       recipients: 'not-available',
     });
     expect(JSON.stringify(row?.after)).not.toContain('parking');
-    // Read from this host: its one page logged itself, and the receipt adds no second row.
+    // Read from this host: its one page logged itself, and the receipt adds no access row.
     expect(await reads()).toEqual({ readSubject: 1, subjectAccess: 0 });
   });
 
-  it("logs a read a deployment served once, as subjectAccess, since no host page logged it", async () => {
+  it('logs a page a deployment served as readSubject, as the host logs its own, and nothing more', async () => {
     const before = await reads();
     let reached = 0;
     const deployed = new VerticalClient({
@@ -170,7 +176,7 @@ describe('subject access (D-74)', () => {
     );
     expect(res.status).toBe(200);
     expect(reached).toBe(1);
-    expect(await reads()).toEqual({ readSubject: before.readSubject, subjectAccess: before.subjectAccess + 1 });
+    expect(await reads()).toEqual({ readSubject: before.readSubject + 1, subjectAccess: before.subjectAccess });
   });
 
   it('refuses a reaped scope before reading, even when its deployment still resolves, and records nothing', async () => {

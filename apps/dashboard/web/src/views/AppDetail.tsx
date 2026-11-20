@@ -3230,7 +3230,8 @@ export function Data({ teamId, app, section, onSection, canRestore }: { teamId: 
       {section === 'previews' && <Previews teamId={teamId} app={app} canClaimOwnerSeat={canRestore} />}
       {section === 'export' && <ExportImport teamId={teamId} app={app} canRestore={canRestore} />}
       {/* Owner and admin hold both restore and subject access, so the same hint draws both. */}
-      {section === 'personal-data' && <PersonalData teamId={teamId} app={app} canRequest={canRestore} />}
+      {/* Keyed, so a package collected for one app never stays downloadable under another's heading. */}
+      {section === 'personal-data' && <PersonalData key={`${teamId}/${app.app_scope_id}`} teamId={teamId} app={app} canRequest={canRestore} />}
     </div>
   );
 }

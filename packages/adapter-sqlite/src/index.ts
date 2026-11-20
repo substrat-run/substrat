@@ -12592,19 +12592,13 @@ export class SqliteScopeHost implements ScopeHost {
         );
         return read;
       },
-      recordSubjectAccess: async (actor, tenantId, scopeId, receipt, options) => {
+      recordSubjectRead: async (actor, tenantId, scopeId, subjectId, count) => {
         this.assertScope(tenantId, scopeId);
-        const after = subjectAccessReceipt.parse(receipt);
-        this.recordAdmin(actor, 'subjectAccess', { tenantId, scopeId }, null, after);
-        // Pages read through `readSubject` logged themselves; a second row would count the read twice.
-        if (options?.pagesAccessLogged) return;
-        this.recordAccess(
-          actor,
-          'subjectAccess',
-          { tenantId, scopeId },
-          { subjectId: after.subjectId },
-          after.events + after.records.reduce((n, r) => n + r.rows, 0),
-        );
+        this.recordAccess(actor, 'readSubject', { tenantId, scopeId }, { subjectId }, count);
+      },
+      recordSubjectAccess: async (actor, tenantId, scopeId, receipt) => {
+        this.assertScope(tenantId, scopeId);
+        this.recordAdmin(actor, 'subjectAccess', { tenantId, scopeId }, null, subjectAccessReceipt.parse(receipt));
       },
       shredSubject: async (
         actor,

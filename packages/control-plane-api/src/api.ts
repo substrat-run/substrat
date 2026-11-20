@@ -7530,23 +7530,42 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     try {
       // A scope store may hold the subject, and no driver can answer `substrat.access` yet (P3). An
       // incomplete answer that does not say it is incomplete is the failure worth avoiding, so the
-      // request is refused, naming the binding, rather than answered without it.
-      const running = await runningVersionOf(c.var.admin, actor, scope);
-      const reach = await platformStoresOf(c, scope, running);
-      const store = reach?.stores[0];
-      if (store) {
-        throw new ControlPlaneError(
-          501,
-          `scope ${scopeId}'s store '${store.binding}' runs driver '${store.driver}', which cannot answer a subject access request yet; nothing was read`,
-        );
+      // request is refused, naming the binding, rather than answered without it. That covers every
+      // store the running version declares, and one an earlier version declared that still holds
+      // rows: the export path's reach (`platformStoreReach`), judged before any read.
+      const storeCaller = options.platformScopeStores;
+      if (storeCaller && scope.vertical) {
+        const { running, all } = await scopeStoreReachOf(c.var.admin, actor, scope, options.storeDrivers);
+        const live = running[0];
+        if (live) {
+          throw new ControlPlaneError(
+            501,
+            `scope ${scopeId}'s store '${live.binding}' runs driver '${live.driver}', which cannot answer a subject access request yet; nothing was read`,
+          );
+        }
+        const place = { tenantId: scope.tenantId, scopeId: scope.id, vertical: scope.vertical };
+        for (const dropped of all) {
+          if (!(await storeHoldsRows(storeCaller, place, dropped))) continue;
+          throw new ControlPlaneError(
+            501,
+            `scope ${scopeId}'s store '${dropped.binding}' was declared by an earlier version of '${scope.vertical}' and still ` +
+              'holds data, which a subject access request cannot read yet; nothing was read',
+          );
+        }
       }
       // The serving deployment's copy, when the scope's data lives in one; else this host's own.
       const vertical = await verticalForScope(c, scope);
-      const readPage = (cursor: string | undefined) => {
+      // Every page is access-logged as it is read, whichever side serves it: the host logs its own,
+      // and a page a deployment served is logged here before the next one is asked for, so a request
+      // that fails part-way (a 413, a broken page) still leaves a row for each page it read.
+      const readPage = async (cursor: string | undefined): Promise<SubjectReadPage> => {
         const page = { limit: SUBJECT_READ_PAGE_MAX, ...(cursor ? { cursor } : {}) };
-        return vertical
-          ? vertical.readSubject(scopeId, subjectId, page)
-          : c.var.admin.readSubject(actor, tenantId, scopeId, subjectId, page).catch(relayHostRefusal);
+        if (!vertical) return c.var.admin.readSubject(actor, tenantId, scopeId, subjectId, page).catch(relayHostRefusal);
+        const read = await vertical.readSubject(scopeId, subjectId, page);
+        await c.var.admin
+          .recordSubjectRead(actor, tenantId, scopeId, subjectId, read.events.length + read.records.reduce((n, r) => n + r.rows.length, 0))
+          .catch(relayHostRefusal);
+        return read;
       };
       const pages: SubjectReadPage[] = [];
       let cursor: string | undefined;
@@ -7572,11 +7591,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         pages,
         salt: crypto.randomUUID(),
       });
-      // The admin row (with `onBehalfOf` from the attributed view, #977). The read is access-logged
-      // once: by the host for each page it served, or here for pages a deployment served.
-      await c.var.admin
-        .recordSubjectAccess(actor, tenantId, scopeId, receipt, { pagesAccessLogged: !vertical })
-        .catch(relayHostRefusal);
+      // The admin row, with `onBehalfOf` from the attributed view (#977). The read is already in the
+      // access log, one `readSubject` row per page.
+      await c.var.admin.recordSubjectAccess(actor, tenantId, scopeId, receipt).catch(relayHostRefusal);
       return c.json({ package: pkg, receipt, html: renderSubjectAccessHtml(pkg) });
     } catch (e) {
       if (e instanceof ControlPlaneError) return relayRefusal(c, e);

@@ -107,6 +107,13 @@ export interface SubjectAccessInput {
   salt: string;
 }
 
+/**
+ * A subject column's value as an id, or null when it holds none. Not only strings: the match compares
+ * the column with the id as text, so a column of any affinity can match, and another person's id
+ * stored as a number must be masked as surely as one stored as text.
+ */
+const idIn = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
+
 /** Fold the pages: events in order, each entity's rows concatenated under its first listing. */
 function fold(pages: readonly SubjectReadPage[]) {
   const events: SubjectEvent[] = [];
@@ -153,8 +160,8 @@ export async function assembleSubjectAccess(
   for (const r of folded.records) {
     for (const row of r.rows) {
       for (const col of r.subjects) {
-        const v = row[col];
-        if (typeof v === 'string' && v !== subjectId) others.add(v);
+        const id = idIn(row[col]);
+        if (id !== null && id !== subjectId) others.add(id);
       }
     }
   }
@@ -166,9 +173,9 @@ export async function assembleSubjectAccess(
     const rows = r.rows.map((row) => {
       const out = { ...row };
       for (const col of r.subjects) {
-        const v = out[col];
-        if (typeof v === 'string' && v !== subjectId) {
-          out[col] = mask.valueFor('external_id', v);
+        const id = idIn(out[col]);
+        if (id !== null && id !== subjectId) {
+          out[col] = mask.valueFor('external_id', id);
           masked.add(col);
         }
       }
@@ -281,7 +288,8 @@ th{background:#f5f5f7}.none{color:#86868b}h1{font-size:1.5rem}h2{margin-top:2rem
       ? `<table><thead><tr><th>When</th><th>What</th><th>About</th><th>By</th><th>Recorded</th></tr></thead><tbody>${events}</tbody></table>`
       : '<p>No events.</p>'
   }
-<h2>Categories of data</h2><p>${escapeHtml(pkg.categories.entities.map((c) => `${c.entityType}: ${c.fields.join(', ')}`).join('; ') || 'none')}</p>
+<h2>Categories of data</h2><p>${escapeHtml(pkg.categories.entities.map((c) => `${c.entityType}: ${c.fields.join(', ')}`).join('; ') || 'No records.')}</p>
+<p>Events: ${escapeHtml(pkg.categories.events.join(', ') || 'none')}.</p>
 <h2>Where copies are kept</h2><ul>${storage}</ul>
 <h2>Recipients</h2><p>Not available from the platform: ${escapeHtml(pkg.recipients.reason)}.</p>
 <h2>Not covered by this copy</h2>${unreached ? `<ul>${unreached}</ul>` : ''}<p>${escapeHtml(pkg.unreached.limits.join(', '))}</p>
