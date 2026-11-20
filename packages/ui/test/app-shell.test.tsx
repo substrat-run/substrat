@@ -24,14 +24,19 @@ afterEach(() => {
   delete (window as { matchMedia?: unknown }).matchMedia;
 });
 
-function render() {
+function render(active = 'apps') {
   act(() =>
     root.render(
       <AppShell
         brand={<span>brand</span>}
         groups={[{ items: [{ key: 'apps', label: 'Apps', icon: null, href: '/apps' }] }]}
-        active="apps"
+        active={active}
         onNav={() => {}}
+        beneath={(_key, close) => (
+          <button type="button" data-child onClick={close}>
+            child
+          </button>
+        )}
         footer={null}
         crumbs={[{ label: 'Team' }, { label: 'Apps' }]}
         drawerBelow={767}
@@ -42,11 +47,14 @@ function render() {
   );
 }
 
+const phone = () => {
+  window.matchMedia = ((query: string) => ({ matches: true, media: query, addEventListener() {}, removeEventListener() {} })) as never;
+};
 const hamburger = () => container.querySelector<HTMLButtonElement>('button[aria-label="Open navigation"]');
 const page = () => container.querySelector('main')!.parentElement!;
 
 it('opens a drawer that makes the page inert, and Escape gives the page and focus back', () => {
-  window.matchMedia = ((query: string) => ({ matches: true, media: query, addEventListener() {}, removeEventListener() {} })) as never;
+  phone();
   render();
   // A phone shows where you are, not the trail.
   expect(container.querySelector('header')!.textContent).not.toContain('Team');
@@ -58,6 +66,20 @@ it('opens a drawer that makes the page inert, and Escape gives the page and focu
   act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
   expect(page().hasAttribute('inert')).toBe(false);
   expect(document.activeElement).toBe(hamburger());
+});
+
+// Navigation that does not pass through the nav rows must not leave the new page under the
+// drawer: a link in the `beneath` slot closes it, and so does a new `active` set from outside.
+it.each([
+  ['a link in the beneath slot', () => act(() => container.querySelector<HTMLButtonElement>('[data-child]')!.click())],
+  ['a new active page', () => render('team')],
+])('closes the drawer after %s', (_name, navigate) => {
+  phone();
+  render();
+  act(() => hamburger()!.click());
+  expect(page().hasAttribute('inert')).toBe(true);
+  navigate();
+  expect(page().hasAttribute('inert')).toBe(false);
 });
 
 it('keeps the wide layout where matchMedia does not exist', () => {

@@ -137,7 +137,17 @@ export function DashShell(props: DashShellProps) {
       drawerBelow={DRAWER_BELOW}
       navLabel="Dashboard"
       onNav={(k) => props.onNav(k as NavKey)}
-      beneath={(k) => (k === 'observability' && obsOpen ? <ObsChildren active={props.obsSection} onNav={props.onObsNav} /> : null)}
+      beneath={(k, close) =>
+        k === 'observability' && obsOpen ? (
+          <ObsChildren
+            active={props.obsSection}
+            onNav={(s) => {
+              props.onObsNav(s);
+              close();
+            }}
+          />
+        ) : null
+      }
       brand={
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '4px 10px 0' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

@@ -44,8 +44,11 @@ export interface AppShellProps {
    */
   parent?: string | null;
   onNav: (key: string) => void;
-  /** Rendered directly under an item, e.g. the dashboard's Observability children. */
-  beneath?: (key: string) => ReactNode;
+  /**
+   * Rendered directly under an item, e.g. the dashboard's Observability children. A link in
+   * it navigates without passing through the shell, so it calls `close` to dismiss the drawer.
+   */
+  beneath?: (key: string, close: () => void) => ReactNode;
   /** The bottom of the sidebar — normally an `AccountMenu`. */
   footer: ReactNode;
   crumbs: AppShellCrumb[];
@@ -81,6 +84,12 @@ export function AppShell(props: AppShellProps) {
   useEffect(() => {
     if (!compact) setNavOpen(false);
   }, [compact]);
+
+  // Navigation that did not come through the nav rows (an account-menu item, a page's own
+  // link) still lands on a page the open drawer would cover; a new `active` closes it.
+  useEffect(() => {
+    setNavOpen(false);
+  }, [props.active, props.parent]);
 
   // An opened drawer takes focus, Escape closes it, and closing gives focus back to the
   // trigger. The drawer sits BEFORE the hamburger in DOM order, so without the first a Tab
@@ -174,7 +183,7 @@ export function AppShell(props: AppShellProps) {
               {group.items.map((it) => (
                 <div key={it.key} style={{ display: 'contents' }}>
                   <NavRow item={it} active={props.active === it.key} parent={props.parent === it.key} onNav={nav} />
-                  {props.beneath?.(it.key)}
+                  {props.beneath?.(it.key, () => setNavOpen(false))}
                 </div>
               ))}
             </div>
