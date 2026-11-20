@@ -1,12 +1,12 @@
 ---
 status: proposed
 layer: plan
-description: Art. 15 subject access, the half the platform has not built. Reads what erasure already reaches, through one shared plan, so the two cannot drift. Staff-only in v1, exempt from the residency gate the bulk exports carry, and shipped without the recipients section until the disclosure register's P1 lands. D-74 proposed.
+description: Art. 15 subject access, the half the platform has not built. Reads what erasure already reaches, through one shared plan, so the two cannot drift. A team's owner or admin runs it from the dashboard's Data tab, every request lands in the admin log under their name, it is exempt from the residency gate the bulk exports carry, and it ships without the recipients section until the disclosure register's P1 lands. D-74 proposed.
 ---
 
 # RFC: subject access — what the platform holds about one person (GDPR Art. 15)
 
-**Status: proposed. Nothing here is agreed.** [D-74](../decisions/D-074-a-subject-access-export-reads-what-erasure-reaches-staff-only-and-outside-the-residency-gate.md)
+**Status: proposed. Nothing here is agreed.** [D-74](../decisions/D-074-a-subject-access-export-reads-what-erasure-reaches-from-the-dashboard-data-tab-audited-and-outside-the-residency-gate.md)
 records the recommendation as proposed. A human ratifies by rewriting this into `architecture/`
 and accepting D-74, or by closing it.
 
@@ -73,11 +73,22 @@ publishes the rest as numbered limits.
 
 **Two exports exist, and neither is an access request.** The governed scope pull
 (`api.ts:8029`) and the tenant export (`api.ts:8094`, #36, labelled "GDPR Art. 20
-portability") both hand out whole databases. Both are staff-only, K-24 access-logged, masked by
-default with a shared pseudonymizer (`packages/control-plane-api/src/pseudonymize.ts`, #1034),
-and refused for any scope pinned to a jurisdiction other than `global` (`api.ts:8038`, `:8110`).
-Filtering one of them down to a person after the fact would mean pulling every person to find
-one.
+portability") both hand out whole databases. The scope pull is on the tenant credential's
+allowlist (`api.ts:1815`), so a team reaches it from the dashboard's Data › Export & import
+(`apps/dashboard/src/authority.ts:2148`). The tenant export is staff-only. Both are K-24
+access-logged, masked by default with a shared pseudonymizer
+(`packages/control-plane-api/src/pseudonymize.ts`, #1034), and refused for any scope pinned to a
+jurisdiction other than `global` (`api.ts:8038`, `:8110`). Filtering one of them down to a person
+after the fact would mean pulling every person to find one.
+
+**The dashboard already has everything a door needs** ([architecture/dashboard.md](../architecture/dashboard.md)
+§4). A dashboard operation checks a `dashboard:*` key in the team's own scope. The plane is called
+with a tenant token whose route allowlist is default-deny (`TENANT_ROUTES`, `api.ts:1742`), and
+every admin row it writes records the signed-in member as `onBehalfOf` beside the service that
+executed (#977). The team's Audit › Activity page shows that row under the member's name, with the
+staff impersonation stamp when there is one (`apps/dashboard/web/src/views/Audit.tsx:490`–`:491`).
+Restore is the precedent for a sensitive data action there: it sits in the Data tab behind
+`dashboard:restore-app-data`, which `owner` and `admin` hold (`apps/dashboard/PERMISSIONS.md`).
 
 **The disclosure register is designed and unbuilt.** [rfc/disclosure-register.md](disclosure-register.md)
 §8.3 recommends a derived read of connector deliveries about a subject, and §8.9 lists it as P1
@@ -196,31 +207,55 @@ second customer on a shared booking.
 - **Event payloads are returned as recorded.** An event is keyed to one subject (limit 1), and
   its payload has no per-field owner the kernel can read.
 
-**The controller reviews before anything reaches the person.** The package goes to the controller
-through staff (§3.5), never straight to the subject. That review is the real Art. 15(4) safeguard.
-The masking keeps the obvious cases from depending on it.
+**The controller reviews before anything reaches the person.** The package is downloaded by the
+controller's own owner or admin (§3.5), never sent straight to the subject. That review is the real
+Art. 15(4) safeguard. The masking keeps the obvious cases from depending on it.
 
-### 3.5 The route, and who may call it
+### 3.5 The door: the dashboard's Data tab
 
 ```
 POST /tenants/:tenantId/scopes/:scopeId/subjects/:subjectId/access
+  { reference: string, requesterVerified: true }
 → 200 { package, receipt }
 ```
 
-**Staff-only in v1, recommended.** Not in `BUILDER_ROUTES` (`api.ts:2394`), the same as
-`…/shred` (`api.ts:7402`). The request arrives the way an erasure does: the builder forwards the
-DSAR, staff run it, and the package goes back to the builder.
+**A team's owner or admin runs it from the dashboard, in v1, recommended.** The controller is the
+one who answers the person, so the package goes straight to them. A staff relay would add a hop, a
+delay against a one-month deadline, and a copy of the person passing through us.
 
-- **One workflow.** A DSAR is often access then erasure. Two doors with two audiences for one
-  request would make the controller learn both.
-- **The most concentrated personal-data artefact the platform produces.** Everything about one
-  person in one file. A builder-facing door needs an authority model the platform does not have
-  yet: which role in a team may pull a person, under what recorded reason.
-- **Identity verification is the controller's** (Art. 12(6)). A staff step keeps a human between
-  a forwarded request and the bytes until the builder side can carry that check.
+**Where.** A fifth section of the app's Data tab, **Personal data**, beside Tables, Schema,
+Previews and Export & import (`apps/dashboard/web/src/views/AppDetail.tsx:3093`). It is a section
+of an existing tab, not a new tab. The form takes the person's id, a reference for the request,
+and a confirmation that the requester's identity was checked. It downloads the JSON package and its
+HTML page. Erasure can later join the same section, so one request reads as one place.
 
-D-45 kept erasure staff-only because it destroys evidence. Access destroys nothing, so the
-argument for opening it later is stronger. §7's phase 5 is that door.
+**Who: a new key, `dashboard:subject-access`**, "Download everything an app holds about one person,
+to answer their access request". `owner` and `admin` hold it, as they hold
+`dashboard:restore-app-data`; `member` and `viewer` do not. A check-only dashboard operation,
+`dashboard/authorize-subject-access`, asks it before the plane is called, the way
+`dashboard/authorize-restore` does (`apps/dashboard/src/module.ts:813`, bound at `:2266`).
+Adding the key changes `apps/dashboard/PERMISSIONS.md`, so the PR that adds it carries the
+permission-diff checkpoint (CLAUDE.md).
+
+**Reach: the tenant token.** The route joins `TENANT_ROUTES` with `pin: 'path'`, and the dashboard
+reaches it through `TenantNarrowedControlPlane`, so its `credential-reach` test holds the two
+together. It stays out of `BUILDER_ROUTES` (`api.ts:2394`): the CLI has no reason to pull a person.
+Staff keep the same route for a request a customer forwards to us.
+
+**What the door gathers is not new reach.** An owner or admin can already read every row of the
+app in Data › Tables. What is new is that one person's rows, unmasked, are put into one file. The
+dashboard's own export is masked and calls full fidelity "a CLI/staff affordance"
+(`AppDetail.tsx:2134`). This door makes a full-fidelity copy of one person a team affordance, and
+this RFC asks for that on purpose. It is bounded by:
+
+- **one person per call**, named by id;
+- **a key only owners and admins hold**, checked in the team's own scope;
+- **a recorded reference and identity confirmation** on every call (Art. 12(6) leaves the check to
+  the controller, and the form makes them say they did it);
+- **an admin-log row under the member's name** that every team member who can read Audit sees (§3.8).
+
+D-45 kept erasure staff-only because it destroys evidence. Access destroys nothing, so the same
+argument does not carry over. Erasure keeps its own decision.
 
 **`POST`, not `GET`.** The call writes two audit entries and a receipt. It is neither cached nor
 safe to prefetch.
@@ -274,18 +309,39 @@ is additive to the package, so shipping it later changes no consumer.
 
 ### 3.8 The receipt, the audit, and size
 
-**Audited in both logs**, like shred. The K-24 access log records the read, and the admin log
-records `subjectAccess` with the receipt as `after`. The receipt holds counts, never content, for
-the reason the shred receipt does (`control-plane.ts:355`–`:361`): an admin log that kept a copy of
-what a person was sent would be a second copy of that person.
+**Every request is recorded, under the name of the person who made it.** The call writes to both
+logs, like shred:
+
+- **The admin log** records `subjectAccess`, with the receipt as `after`. Through the dashboard,
+  the row keeps `actor` (the service that executed) and carries `onBehalfOf`: the signed-in
+  member, their tenant, and the staff impersonation stamp when staff acted as them (#977, K-42).
+  The member comes from the signed tenant token, never from a header or the body, so the name on
+  the row is not one the caller chose. The admin log is the compliance witness and is never swept
+  (kernel-design §13.1, limit 5).
+- **The K-24 access log** records the read, as it does for every route that hands out scope data.
+
+**The team sees it.** Audit › Activity reads the admin log for the tenant (`/admin-log`, pinned
+by query, `api.ts:1870`) and shows the row as the member, "via Dashboard"
+(`apps/dashboard/web/src/views/Audit.tsx:490`–`:491`). Its sentence is written for the action:
+"<member> downloaded personal data about one person from <app>", not the generic "admin action: …"
+`actionWords` falls back to (`apps/dashboard/web/src/lib/audit-activity.ts:47`). Any member who
+can open Audit sees it, so a pull by one admin is visible to the others. A request staff run for a
+customer is recorded against the same tenant, with staff as the actor, so it shows there too.
+
+**The receipt holds counts, a reference and the confirmation, never content**, for the reason the
+shred receipt does (`control-plane.ts:355`–`:361`): an admin log that kept a copy of what a person
+was sent would be a second copy of that person. For the same reason the form asks for a
+*reference* (a ticket number, the date of the request) and says not to type the person's name:
+the row it lands in is never swept.
 
 ```jsonc
-{ "subjectId": "01J…", "generatedAt": "…", "jurisdiction": "global", "residencyExempt": false,
+{ "subjectId": "01J…", "generatedAt": "…", "reference": "DSAR-2026-014", "requesterVerified": true,
+  "jurisdiction": "global", "residencyExempt": false,
   "events": 41, "erasedEvents": 0, "records": [{ "module": "…", "entityType": "…", "rows": 3 }],
   "intents": 0, "jobRuns": 1, "stores": [], "unreachedEntities": [ … ], "recipients": "not-available" }
 ```
 
-The receipt is what lets a controller prove it answered, and when.
+The receipt is what lets a controller prove it answered, when, and who on their team did it.
 
 **No index serves the read today.** Neither adapter indexes `_substrat_outbox.subject_id`
 (`index.ts:1466`–`:1475`, `scope-do.ts:773`–`:782`), so erasure's own redaction scans the outbox.
@@ -305,7 +361,16 @@ a link. Nothing in v1 depends on that.
 - **Search every table for the id.** It finds the id in columns nobody declared as a subject link,
   and misses rows linked in ways only a hook knows. It also disagrees with erasure by construction.
   Rejected: the declared reach is the one place where "this is the person's" is stated.
-- **A builder-facing door from day one.** Argued against in §3.5. Deferred, not rejected.
+- **Staff-only in v1, the way erasure is.** A builder forwards the request, staff run it, and the
+  package goes back. It keeps a human between the request and the bytes, but it adds a hop
+  against a one-month deadline and passes a copy of the person through us, and the dashboard
+  already holds the permission, reach and attribution a team door needs (§2). Not taken: staff
+  keep the route for forwarded requests, and the team runs its own.
+- **The door in Data › Export & import.** That section is the whole-app masked export and restore.
+  A person's request is a different act with a different audience, and erasure can later join a
+  section of its own. Not taken.
+- **A new key for every member.** `member` can provision apps, but a person's whole record is a
+  narrower trust than running the app. Not taken: `owner` and `admin` only, as for restore.
 - **Keep the residency gate, and add an `eu` path later.** It would block the requests from the
   region that makes the most of them, for a promise that does not cover this case (§3.6).
 - **Wait for the disclosure register.** Argued against in §3.7.
@@ -320,7 +385,7 @@ erasure's limits read from the other side.
    manifests (kernel-design §13.1, limit 2). Adoption of `erasure: { subjects }` brings a model
    inside both guarantees at once.
 2. **One id, one scope per call.** A person known by a contact id and a principal id is two calls.
-   A tenant with many scopes is one call per scope. The fan-out is phase 5.
+   A tenant with many apps is one call per app. The fan-out is phase 5.
 3. **Free text that names a person without their id is not found** (limit 9).
 4. **Attachments are not read.** They carry no subject (`packages/kernel/src/attachment-text.ts:73`).
 5. **Events emitted without a `subjectId` are not found.**
@@ -335,11 +400,12 @@ erasure's limits read from the other side.
 
 ## 6. Open questions for the human
 
-1. **Ratify the three recommendations**: staff-only in v1 (§3.5), the residency exemption (§3.6),
-   v1 without recipients (§3.7).
-2. **Confirm §3.6's Chapter V reading with counsel** before the first `eu` scope is provisionable.
+1. **Ratify the three recommendations**: the dashboard door for owners and admins, recorded under
+   the member's name (§3.5, §3.8), the residency exemption (§3.6), v1 without recipients (§3.7).
+2. **The permission diff** when P2 lands: `dashboard:subject-access`, held by `owner` and `admin`.
+3. **Confirm §3.6's Chapter V reading with counsel** before the first `eu` scope is provisionable.
    If it does not hold, the exemption narrows to delivery through the controller inside the region.
-3. **Is `readSubject` a kernel read or a `HostAdmin` method?** This RFC places the read in the
+4. **Is `readSubject` a kernel read or a `HostAdmin` method?** This RFC places the read in the
    kernel, the route in the control plane, and the audit on `HostAdmin`, as `shredSubject` does.
 
 ## 7. Phased plan
@@ -349,10 +415,13 @@ Each phase is its own PR, and each is useful if the next never ships.
 - **P1 — the read.** `readSubject` on both adapters over the outbox and the declared entities, the
   shared match predicate, the partial `subject_id` index, and the parity contract test against
   `shredSubject`.
-- **P2 — the route and the page.** The staff-only route with its receipt and both audit entries,
-  the residency exemption, `recipients: not-available`, and the HTML render.
+- **P2 — the route and the door.** The route with its receipt and both audit entries, on
+  `TENANT_ROUTES` and for staff; the residency exemption; `recipients: not-available`; the HTML
+  render. In the dashboard: `dashboard:subject-access` for `owner` and `admin` (the
+  `PERMISSIONS.md` diff), `dashboard/authorize-subject-access`, the Data › Personal data section,
+  and the Activity sentence for `subjectAccess`.
 - **P3 — the rest of the reach.** `onSubjectAccess`, bindings, intents and job runs, and
   `substrat.access` with `access: 'pending'` on driver registrations.
 - **P4 — recipients**, once the disclosure register's P1 lands.
-- **P5 — beyond staff.** A builder-facing door with its own permission and a recorded reason, and
-  the tenant-wide fan-out over scopes (which erasure wants too).
+- **P5 — across apps.** One request fanned out over every app in the team, recorded as one row per
+  app. Erasure wants the same fan-out.
