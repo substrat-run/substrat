@@ -31,6 +31,8 @@ That is representative, not simplified. `ctx` is the entire capability surface:
 | | |
 |---|---|
 | `ctx.tenantId` / `scopeId` / `principal` | where this runs and on whose behalf, read-only |
+| `ctx.verifiedEmail` | the address the caller's issuer verified, or `null` |
+| `ctx.requestId` | the id of the request, delivery or run this invocation belongs to |
 | `ctx.sql` | `query` / `exec` against **this scope's** database |
 | `ctx.now()` | the operation's instant, and the only clock |
 | `ctx.check(perm, entity?)` | a permission decision |
@@ -47,6 +49,7 @@ That is representative, not simplified. `ctx` is the entire capability surface:
 | `ctx.requestPlatform(req)` | ask the platform for a privileged effect |
 | `ctx.platformRequests(filter)` | read back what the platform did with those |
 | `ctx.sealToConnection(provider, value)` | encrypt a value so only that connector can open it |
+| `ctx.attachments` | files on entities: upload, open as a stream, mint an upload or download link |
 
 **An ordinary read still needs the operation's permission check.** `page`, `search` and
 `versionOf` do not supply it. Some narrower helpers now enforce checks of their own:
@@ -59,6 +62,37 @@ That handle is host code's, not an operation's, and it appears later in this cha
 There is no `env`. No `fetch`. No database handle. No `process`. No import of anything
 that could provide one. Capabilities come from `ctx` and from nowhere else, and that is
 the single sentence the rest of this chapter unpacks.
+
+## Who is asking, and which address is theirs
+
+`ctx.principal` is who the operation runs as. Two newer fields say more about the request
+behind it.
+
+**`ctx.verifiedEmail`** is the address the identity provider verified for this person, or
+`null`. Only the door that mints a person's stub can supply it (chapter 3). A connection, a
+capability link or a peer call cannot, by construction, and a delegated call from another app
+answers `null` because a delegated token is not a person claiming an address.
+
+It exists because the alternative was an `email` field in the input. A vertical that shares
+by address, or joins a person by the address they were invited at, needs to know who is
+asking, and an operation used to see only what the caller typed. So the platform now refuses
+the tempting shape outright: **an operation named `join` or `sign-up` that takes an `email`
+input does not load.** The refusal is in `defineOperations`, so the builder's gate,
+`substrat push` and every test meet it before anything runs. It judges the operation's
+*name*, because `customer/register` taking an address is staff recording someone else, and
+only the name tells the two apart. The same mistake under another name still gets through,
+which is why the references and the scaffold all read `ctx.verifiedEmail` instead.
+
+An unverified address gets a person signed in, never joined. Be clear about who refuses,
+though: the platform hands the handler `null` and the hosted door skips its automatic join,
+but a caller holding the permission can invoke an exposed join directly, over REST or MCP. A
+handler that needs a verified address checks for `null` itself.
+
+**`ctx.requestId`** is the request's id in an operation, or `null` on an in-process call that
+passed none. In a consumer it is the **delivery's** id, which is the originating request's
+when the event is delivered inside that call. In a schedule run it is the run's. It is the
+same id the response header carries and every event and log line records, so a handler that
+writes its own diagnostic row can join it to everything else (chapter 12).
 
 ## `ctx.sql` — and why it is the only way in
 
@@ -150,6 +184,35 @@ from a scope's SQL to another file on the same disk.
 Why plain SQL at all: a migration is a human checkpoint, and SQL is what a reviewer can read.
 A query in a diff is a query, not a builder chain whose SQL you have to imagine.
 
+### Two things a four-row test will not catch
+
+A Durable Object refuses a statement binding more than 100 parameters. So a hand-built list
+passes every test with a small fixture and fails on the first hosted call whose list outgrew
+it:
+
+```ts
+// fine with 4 ids; a refused statement with 120
+`WHERE id IN (${ids.map(() => '?').join(', ')})`
+```
+
+`inList` from `@substrat-run/contracts` makes the whole list **one** parameter, a JSON array
+read back with SQLite's own `json_each`, which runs the same on both adapters:
+
+```ts
+const list = inList(ids);
+ctx.sql.query(`SELECT id, title FROM notes WHERE id IN ${list.sql}`, list.params);
+```
+
+An empty list matches nothing, where `IN ()` is a syntax error. The hand-built form is
+boundary-lint **R12** in module code. The node test runs also apply the Durable Object's other
+limits to every statement the adapter prepares, and its 50-byte `LIKE` pattern ceiling, so a
+node suite fails where production would rather than passing where production refuses.
+
+The second is an export. Correctly quoted CSV still runs a formula: a contact named
+`=HYPERLINK('http://example.net','x')` executes in the spreadsheet that opens the file. Quoting
+does not stop that; a leading apostrophe does. `csvTable` does both halves, and a hand-rolled CSV
+join in module code is boundary-lint **R13**.
+
 ## `ctx.now()` — the only clock
 
 `new Date()` and `Date.now()` are boundary-lint violations (R6), the same class of ban as
@@ -220,6 +283,13 @@ assertAllowed(await ctx.check('workorder:create'));
 Not "usually". The reason to make it unconditional is that the alternative is a judgement
 call at every handler, and judgement calls are where the missing check comes from six
 months later.
+
+The rule is no longer only a convention. Both scope hosts count each invocation's checks. A
+check counts wherever it was made: in a helper, caught after a refusal, inside `ctx.atomic`,
+or inside a kernel verb that re-checks the caller. An operation that declares a permission
+and made none writes a `warn` line in production. In every node test run, the same operation
+throws and rolls back. One that deliberately checks nothing has to say so in its declaration,
+`narrows: { reason, checks: [], unchecked: true }`, where a reviewer reads it.
 
 Portal-style walks — "which of these can this person see?" — use the entity-scoped form,
 `ctx.check(perm, entityRef)`, per row. Chapter 6 is how those are answered without a
@@ -399,7 +469,23 @@ schedule, with one entity per transaction and the cutoff re-checked inside it.
 [archive and trash](/concepts/archive-and-trash) for the state model. These are entity
 states inside a live scope; archiving the entire scope is the lifecycle from chapter 2.
 
-### Searchable attachments and live screens
+### Attachments: streamed, searchable, and handed out by link
+
+A file moves as a **stream** now, in both directions. A connector landing a provider's file,
+an upload, and a file handed back out to a signing provider all pass a sized stream rather
+than a buffer, so memory stays bounded whatever the file's size. Time is not bounded the same
+way: a transfer runs under its connection's timeout, so a file that cannot finish inside it
+lands nothing. The length is declared before the first byte and enforced as the bytes pass,
+and the hash and size on the record come from what was actually written.
+
+Two kinds of link let a file cross where a session cannot. **An upload link** lets a caller
+with no session, such as an agent's shell or a `curl`, put one file on one entity, once. The
+entity's write permission is checked when it is minted, as the caller, and again when it is
+redeemed, as the minter. **A download link** reads one file, as its minter, until it expires.
+It is asked the file's read permission on every read, so losing the key ends every link that
+principal minted. Only each secret's SHA-256 is stored, and a copy of the scope starts with no
+links, so a preview never honours production's. An entity opts in to upload links per target,
+and the opt-in renders in `PERMISSIONS.md` where widening it is reviewed.
 
 Attachment text is extracted by a background job and indexed inside the scope. An
 upload can succeed while extraction is pending, unsupported or failed. The host supplies
@@ -436,6 +522,19 @@ The distinction is not stylistic. If parsing were the handler's job, a declared 
 nobody validated would be an ordinary oversight. Because it is the host's job, it is not
 possible.
 
+The declaration is also judged before anything runs. `defineOperations` refuses, at module
+load, shapes that have turned out to be bugs in practice, and it reports every problem at
+once rather than the first. Two of them are worth knowing by heart:
+
+- **An entity-narrowed operation cannot take its id twice.** An operation whose permission is
+  `{ entity, idFrom }` may not also take a second field spelling the same id, such as
+  `dealId` beside `deal_id`. A derived list read checked the parent named by one field and then
+  filtered on the other, so `GET /deals/D2/history?deal_id=D1` checked access to `D2` and
+  returned `D1`'s history. The platform now keeps a derived list inside the parent it checked
+  whatever the input says, and refuses the shape besides. A second id under a different name,
+  such as a merge's `targetDealId`, still loads, and is still the handler's to check.
+- **A `join` or `sign-up` may not take an `email`**, as above.
+
 ## Why all of it is worth the inconvenience
 
 Each rule in this chapter closes a specific failure that is otherwise silent:
@@ -453,6 +552,9 @@ Each rule in this chapter closes a specific failure that is otherwise silent:
 | kernel-stamped envelopes | an event that lies about who did it |
 | `ctx.atomic` to catch | committing an engine's half-finished state |
 | host-side input parse | a declared schema nobody applied |
+| `ctx.verifiedEmail`, no `email` on a join | a person claiming an address they typed |
+| `inList`, `csvTable` | a list that outgrows a statement; a cell that runs as a formula |
+| a counted `ctx.check` | an operation that declares a key and never asks |
 
 None of these is enforced by asking nicely. Most are linted, several are runtime
 mechanisms, and the ones that are only conventions are named as such in

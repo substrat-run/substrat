@@ -18,7 +18,7 @@ browser
 [2] dispatch                 env.DISPATCH.get(deploymentRef)
   │
   ▼
-[3] the vertical's worker    readRoutedNode → authenticate → principal
+[3] the vertical's door      readRoutedNode → authenticate → principal → join
   │
   ▼
 [4] CloudflareScopeHost      lifecycle gates → lazy migrate → mint stub
@@ -30,7 +30,7 @@ browser
 [6] post-commit              outbox → consumers
   │
   ▼
-response
+response                      x-substrat-request-id: <the request's id>
 ```
 
 ## [1] The router finds the door
@@ -113,50 +113,73 @@ egress worker enforces it. Chapter 5 picks this up where connectors do.
 Two facts fall out of dispatching on `deploymentRef` rather than on the vertical's name.
 Each scope is bound to a *version*, so two scopes of the same vertical can be running
 different code at the same time — which is what makes previews and staged rollouts
-possible at all (chapter 8). And the router does not re-check jurisdiction: residency is
+possible at all (chapter 10). And the router does not re-check jurisdiction: residency is
 pinned by configuration ahead of this worker and by the scope's DO placement below it,
 and a third enforcement point here could only ever disagree with those two.
 
-## [3] The vertical authenticates a person
+## [3] The vertical's door lets a person in
 
 Now we are inside the vertical's own worker, an ordinary Hono app. The first thing registered
-on it is the invocation log, which writes one tenant-stamped line for this request and mints the
-**invocation id** that every event the request emits will carry (chapter 10). It is first
-because Hono runs handlers in registration order, and a log mounted below a route cannot see
-that route.
+on it is the invocation log, which writes one tenant-stamped line for this request under the
+request's **request id**: the id every event the request emits will carry, and the one its
+response hands back in an `x-substrat-request-id` header (chapter 12). The log is first because
+Hono runs handlers in registration order, and a log mounted below a route cannot see that route.
 
-Then the worker does three things before any Substrat API is involved.
+Everything between that line and the scope is the **door**. A worker no longer writes it: it
+composes `workerDoor` from `@substrat-run/vertical-host` and supplies only what is its own, its
+bindings, how a request routes to a `(tenant, scope)`, and its settings. The door then does the
+same few things for every vertical, in order.
 
 **It reads the asserted node.** `readRoutedNode(request.headers, { expectedSecret })`
 returns `(tenantId, scopeId, surface, verticalSlug)` or throws. This is the vertical's
-side of the router contract, and it lives in the kernel because every vertical needs it
+side of the router contract, and it lives in shared code because every vertical needs it
 and none of them should re-derive how to trust it.
 
-**It authenticates the caller.** This is where OIDC happens — a session cookie, or a
-sign-in redirect to the issuer and back. The vertical is a relying party; it runs no
-credential store of its own. What it gets back is a `sub`.
+**It authenticates the caller.** This is where OIDC happens: a session cookie, or a sign-in
+redirect to the issuer the dashboard delivered for this install, and back. The vertical is a
+relying party and runs no credential store of its own. What it gets back is a subject, and,
+when the issuer verified one, an email address.
 
-**It maps that `sub` to a principal.** The authenticated subject is not yet an identity in
-this scope. The per-tenant identity directory resolves it to a `PrincipalId`, or to
-nothing — in which case this person has authenticated successfully and is still allowed to
-do nothing at all. Chapter 6 is about that line.
+**It maps that subject to a principal.** The authenticated subject is not yet an identity in
+this scope. The tenant's identity directory resolves it to a `PrincipalId`, or to nothing, in
+which case this person has authenticated successfully and may still do nothing at all. Chapter
+6 is about that line. Three ways a person gets from "nobody" to a principal now happen here,
+at the door, rather than in each vertical's own code:
 
-The important thing about this step is that it is the *vertical's* code, not the kernel's.
+- **The owner** takes the owner seat, once, with the address provisioning reserved it for or a
+  claim link from the dashboard.
+- **An invited person** is admitted by the address their issuer verified. The door finds the
+  open member invite naming that address in this scope, and binds the login to the principal
+  the invite was written for. No secret is mailed, because none is needed: the issuer's
+  verification is the proof.
+- **A person owned by another app** is admitted by asking that app who they are. That is the
+  plugin's door, and chapter 8 follows it.
+
+**It joins a person the first time they arrive.** If the vertical names its join operation,
+`workerDoor({ join })`, the door runs it the first time a person reaches the scope, then gives
+them the entity-grant shapes the vertical declares for a person's own record, once. This was
+invisible locally for a long time, because the dev server's seed did it, so a deployed owner
+could sign in and then create nothing. The builder studio's gates now refuse a generated vertical
+that declares a join and does not name it in the door. The join must be idempotent. "First time" is remembered per
+isolate, so it can run twice for one person.
+
+The important thing about all of this is that it is the *vertical's* worker, not the kernel.
 Substrat has an opinion about authorization and only a seam for authentication.
-[Authentication & identity](/concepts/identity) is that seam.
+[Authentication & identity](/concepts/identity) is that seam, and the door is the one shared
+implementation of it.
 
-The same declared operations are served twice over, with no extra declaration: as REST routes
-described by an OpenAPI document, and as an **MCP server at `/api/mcp`**, with one tool per
-operation that faces HTTP. An agent holding a user's token can do exactly what that user could
-do with `curl`, behind the same authentication and the same `ctx.check` inside the operation.
-Exposing an operation is not authorizing it. A refused tool call comes back as a tool error the
-agent can read, not as a failed session.
+The same declared operations are then served three times over, with no extra declaration: as
+REST routes described by an OpenAPI document, as a reference page at `/api/docs`, and as an
+**MCP server at `/api/mcp`**, with one tool per operation that faces HTTP. An agent holding a
+user's token can do exactly what that user could do with `curl`, behind the same door and the
+same `ctx.check` inside the operation. Exposing an operation is not authorizing it. A refused
+tool call comes back as a tool error the agent can read, not as a failed session.
 
-Alongside this, the platform's own management routes are mounted in one call —
-`mountPlatformSurface(app, deps)` — which owns every `/internal/*` route the control plane
-calls to provision, reconcile, snapshot, export, restore and configure this install,
-behind a platform-secret gate that fails closed when the secret is unset. Those are not on
-the request path a user takes; they are how chapters 8 and 13 reach in.
+Alongside this, the platform's own management routes are mounted in one call,
+`mountPlatformSurface(app, deps)`, whose hooks the door fills. It owns every `/internal/*` route
+the control plane calls to provision, reconcile, snapshot, export, restore and configure this
+install, behind a platform-secret gate that fails closed when the secret is unset. Those are not
+on the request path a user takes; they are how chapters 10 and 15 reach in.
 
 ## [4] Getting a scope stub
 
@@ -185,6 +208,11 @@ what stops it from rendering as healthy in the console.
 Only then is the stub minted. **Holding the stub is the authorization to talk to that
 scope** — but it is not the authorization to do anything in particular, and the scope
 re-validates every call regardless.
+
+`getScope` is also the only door that can hand an operation the address the issuer verified
+for the caller, through a parameter no other door has. The operation reads it as
+`ctx.verifiedEmail` (chapter 4). A door that forgets to pass it gets `null`, and an operation
+that needs it fails closed rather than falling back to an address somebody typed.
 
 ## [5] Inside the Durable Object
 
@@ -229,6 +257,15 @@ router can ask the control plane to act on them straight away (chapter 5, "the k
 
 Then the result travels back out: clone boundary, coordinator, vertical worker, JSON,
 router, browser.
+
+A refusal travels the same way, as a **problem document**: `application/problem+json` with a
+`code` from one closed list, the request id, and a `type` URI that resolves to a page about that
+code. Every platform surface answers in that shape now, not only the ones that happened to
+throw. The exceptions are bodies another specification owns, such as OAuth and JSON-RPC, and a
+gate keeps that list exact. An uncaught throw becomes `internal` with no detail rather
+than a text 500. When the reason came from somewhere the caller has no business reading, such as another tenant's
+deployment or an upstream service, the caller gets a fixed sentence and a reference, and the
+text stays where only the platform's staff can read it (chapter 13).
 
 ## What the local runtime does differently
 

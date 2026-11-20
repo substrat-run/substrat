@@ -49,14 +49,16 @@ querying. The most common multi-tenancy bug in the industry has no syntax here.
 — each is contained to one customer's one domain. There is no lock contention between
 tenants because there is no shared lock.
 
-**"Give me a copy of production" is a file copy.** Snapshots, forks and preview
-environments (chapter 8) are cheap because a scope's entire state is one self-contained
-thing. On a shared cluster this is a export-filter-import project; here it is a copy.
+**"Give me a copy of production" is a copy of one thing.** Snapshots, forks and preview
+environments (chapter 10) are cheap because a scope's entire state is one self-contained
+thing. On a shared cluster this is an export-filter-import project; here it is a copy. A
+large scope is copied a page at a time, and one that keeps taking writes while it is copied
+is caught up rather than waited on, but it is still one scope's rows and nobody else's.
 
 **Deleting a customer is deleting databases.** Reaping one scope destroys one file;
 reaping a tenant walks every scope beneath it and then clears the tenant's own PII and
 configuration rows. Which is a real property when somebody invokes a right to erasure, and
-a real hazard too — chapter 13 covers what actually frees those bytes, because the answer
+a real hazard too — chapter 15 covers what actually frees those bytes, because the answer
 is less automatic than you would expect, and because the tombstones and the admin log are
 built to survive it.
 
@@ -65,6 +67,49 @@ work orders did this tenant complete this quarter, across all forty branches" is
 reads and a fold, not one `GROUP BY`. [Reads & scaling](/concepts/reads) is the page on
 how that is handled — projections, per-tenant D1, and what is honestly still open.
 
+## A second kind of storage, attached rather than contained
+
+One scope, one database is the rule. There is now one deliberate addition beside it, and it is
+worth meeting here so it does not look like an exception later.
+
+A **store** is an object the platform runs for a scope, for a kind of data the scope's SQLite
+is the wrong shape for. The first is a graph. A vertical declares it in its package manifest
+and never constructs it:
+
+```ts
+// substrat.runtimeNeeds
+scopeStores: [{ binding: 'GRAPH', driver: 'graph' }]
+```
+
+Its code reaches it with `getScopeStore('GRAPH')`, which is deliberately not a field on the
+scope stub: a store is not part of a scope's data. It is a separate thing the scope is
+connected to, with a lifecycle the platform runs.
+
+The interesting part is what the vertical does **not** choose, because each one is a way a
+shared object could be turned against another tenant:
+
+- **The object's name.** The host builds it from facts it asserts itself: the tenant, the
+  vertical, the scope, the binding. A caller that could name its own object could write
+  somebody else's.
+- **The script.** There is one store script per driver per vertical, so a driver's code
+  cannot see across verticals at all.
+- **Whether a call is genuine.** Every call carries a signed envelope, checked before the
+  driver's own code runs, and admitted once. Holding the binding without the key gets you
+  nothing.
+- **Which code runs.** A driver is registered in the platform's repository, and a release of
+  it runs only once a person on the platform's staff has approved that release's bytes.
+
+A store also has to take part in everything a scope does: erasure reaches it, a scope dump
+carries it, a copy keeps it, the storage gauge measures it, and deleting a scope **fences** its
+stores first, so a deleted store answers `410` to every later call however it was signed. A
+driver cannot be registered until it answers every one of those reserved operations, which is
+how the lifecycle is guaranteed rather than hoped for.
+
+The status is the honest part. The `graph` driver is registered and no release of it is
+approved, so no vertical's store holds a byte yet. A store shared by several verticals of one
+tenant, as named instances a tenant admin connects, is an accepted design and not built.
+[Scope stores](/concepts/scope-stores) has the contract.
+)
 ## Strict serialization
 
 Inside one scope, **one operation runs at a time, to completion**, before the next one
@@ -175,11 +220,13 @@ Tenants have a parallel ladder — `active`, `suspended`, `deleting`, `reaped` �
 `deleting` is a reversible grace state that makes every scope under it inert without
 reclaiming anything.
 
-What is worth flagging here, and what chapter 13 returns to: **nothing moves a scope from
+What is worth flagging here, and what chapter 15 returns to: **nothing moves a scope from
 `archived` to `reaped` on its own unless you have configured it to**. Cloudflare never
 garbage-collects a Durable Object. An archived scope's bytes persist indefinitely until
 something explicitly wipes them, and the sweep that can do that is opt-in because the
-operation is irreversible.
+operation is irreversible. Deleting an app from the dashboard is the explicit path: it wipes
+the scope and every copy of it, where it once only archived the scope and promised a deletion
+nothing performed.
 
 ---
 

@@ -23,6 +23,13 @@ anything. The per-tenant identity directory maps `sub` → `PrincipalId`, and a 
 no mapping is a person who has authenticated perfectly and may do **nothing**. The two
 halves are genuinely independent: proving who you are gets you no authority at all.
 
+The mapping is made at the vertical's door (chapter 3), in one of a few ways: the owner
+takes the owner seat, an invited person is admitted by the address the issuer verified, or a
+plugin asks the app that owns its people (chapter 8). Only once the door has a principal does
+the vertical's own join run, on that person's first arrival; a join gives a principal its
+record and shapes, it does not map a login. None of this happens inside an operation, and none
+of it is decided by an address the caller typed.
+
 Every demo vertical in the repo is OIDC-only, and the local development story is a real
 OIDC provider (`@substrat-run/dev-issuer`) whose only shortcut is that `/authorize` lists
 names instead of asking for a password. So the local login *is* the production round-trip,
@@ -94,6 +101,11 @@ Internally the checker compiles those three things into relationship tuples
 
 No negation. No configurable rewrite rules. Verticals never see or author tuples.
 
+One thing sits outside the algebra and above it. A call another app makes **as a person**
+carries a delegation, and the delegated keys are a ceiling applied to every decision: the
+checker answers as usual, and then refuses anything the delegation does not list. It cannot
+widen what the person holds. Chapter 8 follows where that call comes from.
+
 The fixed algebra is the point. A policy language rich enough to express anything is rich
 enough to express a policy nobody can predict the behaviour of, and "why can this person
 see this?" stops having an answer. Four rules have an answer, always.
@@ -128,6 +140,35 @@ reconciliation sweep.
 And the failure direction is safe: **an absent or empty projection is a deny**, byte for
 byte the normal deny path. Missing data can only ever remove authority, never grant it.
 
+## Keys only the platform may hold
+
+Some keys are not a person's to hold. An engine's own scheduled work runs as a system
+principal, and the assistant engine's `assistant:run` is what lets a run write the assistant's
+side of a conversation. If a person could hold it, they could append events to their own
+thread that the record then attributes to the assistant.
+
+That used to be a line in a lint tool's table. It is now a fact the key declares about
+itself, `holder: 'system'` on its manifest entry, and one module marking a key is enough,
+so a vertical cannot lift an engine's reservation by declaring the same key again. Because
+it is a declaration, it can be enforced everywhere a key could be handed out:
+
+- **`substrat push`** refuses a role, an entity-grant shape or an owner grant carrying a
+  reserved key, before anything is uploaded, and the control plane refuses it again from the
+  registry it received rather than trusting the client that built it.
+- **The scope host** refuses at run time, from the modules it actually registers: every door
+  a person's role goes through, every raw grant, `ctx.grant` whoever calls it, a connection
+  grant (a connection acts for an outside provider, so it is judged like a person), and a
+  role the host defines or seats itself.
+- **A role may be declared system-held.** That is the one shape allowed to carry a reserved
+  key, and a person's door refuses to seat it. A role is stored with its holder, so it reads
+  back as what it was defined to be.
+
+Nothing already seated is revoked. `PERMISSIONS.md` gains a column marking each reserved
+key, so dropping a reservation shows as a line in the reviewed diff. The host also now takes
+the `permissions` value the vertical declares and **refuses to register a module that value
+leaves out**, which closes the gap where the list a reviewer read was not the list the host
+ran.
+
 ## Revocation tombstones
 
 Access is withdrawn by **tombstoning** a tuple: it keeps its row, gains a `revokedAt`, and
@@ -139,7 +180,7 @@ neither that access was revoked nor that it was ever granted.
 
 "Ever" means for as long as the scope does. Reaping is the one thing that takes a tuple
 away, because reaping takes the whole database the projection lives in; what outlives it is
-the admin log, which is never swept (chapter 11).
+the admin log, which is never swept (chapter 13).
 
 Liveness is therefore one predicate applied identically everywhere: a tuple grants only
 while it is **unexpired and unrevoked**. Expiry and revocation are siblings, not separate
@@ -205,6 +246,13 @@ is a known anti-pattern with an issue number attached to it.
 `demos/todo/src/module.ts` shows both in one line each, and is worth reading before you
 design any sharing feature.
 
+The same demo shows the rule's sharpest consequence. Sharing a list with an address that has
+not joined yet records an invitation and queues a mail in one transaction. When that person
+joins, a **consumer** of the join event turns their open invitations into shares. It has to be
+a consumer rather than the join handler, because `ctx.grant` delegates: the person arriving
+holds nothing on the list, so they cannot grant themselves in. The consumer runs as a system
+actor, and the invitation the owner wrote is its authority.
+
 ## Sharing by link: authority held by a secret
 
 Sharing with a named principal and sharing with whoever holds a link are different
@@ -222,13 +270,23 @@ The secret travels in the URL fragment. Fetching the page does not send that fra
 to a server or spend the link, which matters when mail scanners fetch invitations.
 Use the capability surface rather than putting a privileged API token in a URL.
 
-An invite can use a **become** capability: its claim establishes the authenticated
-person's own membership or binds them to their own record. A binding invite is not
-delegation of the inviter's access to somebody else's record. The
-[permission reference](/concepts/permissions) covers the two modes and their limits.
-Where an email address decides identity or invite access, the issuer must assert
-`email_verified: true`; a valid sign-in without that claim does not prove ownership
-of the address.
+A capability has three modes. **`act`** lets the holder act on the subtree, as above.
+**`become`** establishes the authenticated person's own membership or binds them to their own
+record, which is what an invite is, and is not delegation of the inviter's access to somebody
+else's record. **`bind`** binds a named member who is already in the scope to a record, when
+their own session presents it, and is revoked in the same transaction as an unbind of that
+record or the erasure of that member. The [permission reference](/concepts/permissions)
+covers each mode's limits.
+
+**A member invite no longer needs a link at all.** It is filed in the tenant's identity
+directory under its scope with the address it names, and the door admits the person whose
+issuer verified that address (chapter 3), with the same judgements a link's exchange makes:
+expiry, withdrawal, single use, and the invited principal's holdings unchanged since it was
+written. It expires after 14 days unless the vertical opts out. Wherever an address decides
+identity or invite access, the issuer must assert `email_verified: true`, and a link that
+names an address opens only for a session whose issuer verified that same address. That
+refuses more than it used to, on purpose: without it, anyone could sign up unverified and use
+a forwarded link.
 
 ## Permission shapes evolve with existing users
 
@@ -248,8 +306,9 @@ grant cannot accidentally carry it into every customer's record below. This clos
 gap between “everyone has a customer record” and “everyone can read every customer.”
 
 App-to-app authority is a third case. A peer is an app identity, with the receiving
-app's declared grants; it does not inherit a person's session. Chapter 7 walks that
-boundary and its off switch.
+app's declared grants; it does not inherit a person's session. Chapter 8 walks that
+boundary and its off switch, and the newer case beside it: one app calling another as the
+signed-in person.
 
 ## The permission checkpoint
 
@@ -259,8 +318,11 @@ self-approve. The mechanism: each vertical exports `MODULES` and `ROLES` from it
 is checked in, and CI re-emits with `--check`.
 
 So a widened role cannot merge without appearing in the PR diff as a table of key →
-description → which roles hold it. CI going red is what makes the reading unskippable; it
-is not itself the approval. A human reads the diff.
+description → which roles hold it. The file has grown to cover every way authority is handed
+out, not only roles: which key each operation checks, the keys reserved to a system
+principal, the peers and delegations another app holds, the keys a provider connection
+lands with, and which entities accept upload links. CI going red is what makes the reading
+unskippable; it is not itself the approval. A human reads the diff.
 
 ---
 

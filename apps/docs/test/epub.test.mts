@@ -146,7 +146,10 @@ describe('the figures', () => {
   });
 
   it('keeps all four communication diagrams distinct in the EPUB and printable edition', () => {
-    const chapter = text('EPUB/text/07-engines-and-verticals.xhtml');
+    // The two cross-app diagrams live in chapter 8 and the two engine ones in chapter 7.
+    const chapter =
+      text('EPUB/text/07-engines-and-verticals.xhtml') +
+      text('EPUB/text/08-apps-made-of-apps.xhtml');
     const printable = bookHtml(SRC, rendered);
     for (const title of [
       'One peer call · one tenant',

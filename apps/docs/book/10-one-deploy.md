@@ -1,4 +1,4 @@
-# 8. The life of one deploy
+# 10. The life of one deploy
 
 A change is committed. This chapter follows it from a laptop to a scope's database.
 
@@ -11,10 +11,16 @@ acts, deliberately not fused.**
 substrat push
 ```
 
-The CLI collects a source snapshot and POSTs it to the control plane. The platform installs
-it with `pnpm install --frozen-lockfile` (so a `pnpm-lock.yaml` must be committed at the
-source root) and builds it, then records an **immutable version**: a `deploymentRef`, a
-permission digest, a migration digest.
+The CLI collects a source snapshot and submits it. It does not upload a bundle it built
+itself: **every release is built by the platform, from a persisted revision.** The builder
+studio, a connected GitHub repository and the CLI all feed the same pipeline. The platform
+installs the revision in a fresh container as an unprivileged user, with
+`pnpm install --frozen-lockfile` (so a `pnpm-lock.yaml` must be committed at the source root)
+and temporary repository credentials, builds it, records provenance for both the source and
+the toolchain, and records an **immutable version**: a `deploymentRef`, a permission digest,
+a migration digest. Promotion and rollback reuse that build output rather than building again.
+A submit refused because the builder is busy is retried with backoff for several minutes
+rather than failing at once.
 
 That is all. Nothing is serving the new code. A push is cheap and reversible — it adds a
 row to a registry. The reason for the split is that "here is a new build" and "run this
@@ -27,10 +33,36 @@ preflight that derives your declared surface and refuses a drifted one. Both run
 wrangler build, because a refusal is worth more in a second than at the end of a build that
 was going to ship broken.
 
+The list of things judged before anything leaves the machine has grown:
+
+- **Your migrations are replayed through the data-loss fence** described below, using your
+  vertical's own pinned kernel, so a migration that would lose populated data is refused at
+  push rather than at promote.
+- **A role or grant carrying a key reserved to the platform** is refused (chapter 6).
+- **A Worker that imports a Node builtin its compatibility flags do not give it** is refused,
+  with the import path in the message. Such a bundle passes every local check and then fails
+  to start.
+- **Code that names a host `substrat.outbound` does not declare** is warned about, because it
+  would otherwise fail as a platform refusal at run time.
+
+The control plane then checks the build against what you declared. Your source has been
+submitted and built by this point. The control plane evaluates the built bundle in a sealed
+isolate, with an empty environment, no outbound and a CPU cap, to read the migrations it
+registers. A push whose declared migrations differ from the bundle's is refused before the
+bundle is uploaded to the runtime and recorded as a version.
+
+Two checks run earlier, when you write a change rather than when you push it. `substrat
+changeset` computes the semver bump from the diff of the vertical's checked-in artifacts.
+Removing or narrowing anything is major, adding is minor, any permission change is at least
+minor and flagged, and anything it cannot rank is major. `substrat plan` renders the concept
+delta a design review should read, and its `--approve` refuses when the model changed after
+the person read it. Both turn a judgement an agent makes confidently, and often wrongly, into
+a computation.
+
 The push carries more than code. It flattens what each module **declares**, including the events
 it emits and consumes, its schedules and its freshness expectations, onto the version's manifest.
 That is what lets the dashboard later draw declared behaviour against observed behaviour
-(chapter 10). It also refuses a manifest that declares a binding in the `SUBSTRAT_*` namespace,
+(chapter 12). It also refuses a manifest that declares a binding in the `SUBSTRAT_*` namespace,
 because the platform injects names there, such as the version id every event is stamped with,
 and a vertical must not be able to shadow them.
 
@@ -100,7 +132,12 @@ Two things a promotion always respects:
 **The surface checkpoint.** A promotion whose permission or migration digest differs from
 what is live is **refused** until the diff is acknowledged. This is the same two-checkpoint
 discipline the kernel applies to modules, applied at the deploy boundary, with the owner as
-the human at their own checkpoint.
+the human at their own checkpoint. The acknowledgement is **bound to the review it
+answers**: it covers one specific set of pending migrations and one permission diff, and a
+different set needs a new one. The review shows each pending migration's declared moves and
+discards with their reasons, so the person is reading declarations rather than version
+numbers. A deploy from CI can read the same review without promoting, with `substrat promote
+--review-only`, which prints the diffs and the exact command line a promote needs.
 
 **Channel history.** Every promotion appends a row: what went live, what it replaced, who
 did it, exactly when. That history is the dashboard's rollback picker, and each timestamp is
@@ -128,7 +165,7 @@ serves nothing, which is what stops it from rendering as healthy.
 
 Stragglers are not left to chance: the platform sweep reconciles migrations as its first
 phase, walks scopes that are behind the frontier, and flags the ones that keep failing.
-Chapter 9 is that pass.
+Chapter 11 is that pass.
 
 ### A promote repairs its own installs
 
@@ -143,6 +180,56 @@ time a release changes what it mints.
 
 A version is badged **code-only** or **schema-change** at publish, so you know before you
 promote whether the schema is involved.
+
+### A migration cannot quietly lose data
+
+The model planner has always refused a destructive *diff* when it generates a migration.
+Nothing used to judge what **authored** SQL does to rows that already exist. A hand-written
+`DROP TABLE`, a `DELETE`, or a create-copy-rename rebuild that forgot a column ran unchecked
+against a populated scope.
+
+Now one check runs inside every authored migration's transaction, on both adapters. **It
+measures; it does not parse.** A migration made only of `CREATE` and `ALTER TABLE … ADD` costs
+nothing. Anything else counts every module table before the first statement and after the
+last: rows, and each column's values per storage class. Counting every table rather than the
+named ones is what makes a trigger or a cascade visible. For a table that held rows, it refuses
+the table gone or shrunk, a column that held values gone or emptier, or values changing
+storage class, which is a narrowing retype such as `'1.50'` becoming `1`.
+
+A loss you intend is declared on the migration, beside the SQL:
+
+```ts
+{
+  version: '0003-drop-legacy-notes',
+  statements: ['DROP TABLE notes'],
+  discards: { notes: 'superseded by entries; exported before this release' },
+}
+```
+
+`discards` needs a reason. `moves: { source: target }` is the other declaration, and it is
+**verified by counts**: the target must gain, per storage class, as many values as its sources
+held, so a move that drops values is refused. It does not compare the values themselves, so a
+move that keeps the counts and changes the values passes.
+"Data" means rows that exist in that table in that scope. An empty table may be dropped freely,
+which keeps a development scope cheap to reshape.
+
+If a promoted migration is refused in a scope, it rolls back inside its own transaction and
+that scope fails closed, as any failed migration does. Promote moves a pointer and each scope
+migrates on wake, so this happens a scope at a time. Each migration commits on its own, so the
+migrations before the refused one in the same promote stay applied; the refused one never ran,
+and the data it would have lost is intact. Promoting the previous version back works only if
+that version can read the schema those earlier migrations left. Two things a count cannot see
+are stated rather than hidden: values rewritten in place at the same count and storage class,
+and rows replaced by as many other rows.
+
+### Migrations keep their identity and their derived protections
+
+An applied migration is held to the digest of the SQL that actually ran. Editing that
+SQL under the same migration identity fails closed; write a new migration instead.
+An authored table rebuild must also preserve the columns the journal says exist.
+The migration pass re-establishes derived archive/trash guards, list indexes and search
+triggers, or refuses the migration inside its transaction. A create-copy-rename cannot
+quietly remove the kernel's enforcement.
 
 ## Previews: a fork of the data, bound to the new version
 
@@ -165,6 +252,30 @@ version leaves the prior one still runnable at its correct frontier.
 A preview or fork is barred from outward side effects and recurring schedules. Preview
 URLs are non-public: gated code running against real-shaped data.
 
+**A copy of any size, even a busy one.** A copy used to move a scope as one value, one
+Durable Object message of at most 32 MiB, so a production-sized scope simply could not be
+forked. Now the export answers a few MiB at a time and the destination stages the pages and
+commits them through the same load path a whole dump takes. A scope that keeps taking writes
+while it is copied used to be refused after three tries. Now the first page opens a capture on
+the source, a log of changed rows kept by triggers, and the copy catches up from it until a
+batch comes back final. That moment is the one the copy is true at. A capture is invisible
+from outside and expires by itself if the copy stops. A copy over the size limit is refused
+before its first page.
+
+**A preview you can sign in to.** A clean-room preview, with no production data, used to
+have no login at all. Now a vertical can name a sample world, `src/world.ts`, and seat it,
+personas included, inside a clean-room preview. The platform runs a small OpenID provider per
+preview, so a token minted for one preview names an issuer no other preview trusts. Its picker
+answers only someone signed in to Substrat who is on the preview's team, and logs each persona
+sign-in with the person who made it. A persona's principal is derived from the scope and its
+subject, so it survives a push that brings an empty identity directory.
+
+**A fork of production is judged as the person asking.** The platform checks that person in
+the app's own scope before copying anything. They must be the owner of record, or hold every
+role the owner holds there. A team role confers nothing, because "admin" is not a platform
+concept when every app names its own roles. A credential that names nobody, such as a CI push
+token, keeps its old rule, since it can already push code onto the production scope itself.
+
 There is a broader rule underneath this: **a copy keeps history without re-running the
 source's work**. Loading a dump into a different scope id drops the source's capability
 links, settles copied pending intents and jobs as failed with a reason, and terminates
@@ -175,15 +286,6 @@ which preserves its work. Unknown provenance is treated as a copy.
 Keep that separate from preview isolation. An ordinary copy can create new work of its
 own; it is the preview/fork classification that bars outward effects. A source share
 link never becomes authority to open its copy.
-
-### Migrations keep their identity and their derived protections
-
-An applied migration is held to the digest of the SQL that actually ran. Editing that
-SQL under the same migration identity fails closed; write a new migration instead.
-An authored table rebuild must also preserve the columns the journal says exist.
-The migration pass re-establishes derived archive/trash guards, list indexes and search
-triggers, or refuses the migration inside its transaction. A create-copy-rename cannot
-quietly remove the kernel's enforcement.
 
 ## Backout
 
@@ -206,10 +308,17 @@ coordinated rewinds, with no atomicity between them.
 existing hosted scope, replacing its data: a pulled `.sqlite`, a local scope file, or a
 dump. This is the deliberate recovery when a time-boxed rewind is not the right tool.
 
+Backups, restores, snapshots and copies now all move a page at a time, so they keep working
+when a scope outgrows one call. A restore also puts back each module table's own indexes and
+guard triggers, which it had been dropping. The directory's own backup was the case that
+mattered most. Its dump had outgrown the control plane's memory, so for two months each
+scheduled backup restarted the directory's object, failed whatever was in flight, and stored
+no copy, and the next pass tried again. It is paged now.
+
 ## The whole shape
 
-Push uploads a version. Admission asks whether it may run here, mechanically when you are
-the only tenant exposed and with a human when you list it. Promotion points the one channel
+Push submits source and the platform builds a version from it. Admission asks whether it may
+run here, mechanically when you are the only tenant exposed and with a human when you list it. Promotion points the one channel
 and serves **in place**, so data carries forward and migrations run forward against it, each
 scope on wake. Previews rehearse a risky version against a fork. PITR rewind and
 backup/restore are the backout.
@@ -219,4 +328,4 @@ their data — and nowhere else in the loop.
 
 ---
 
-**Next:** [The two clocks →](/book/09-the-two-clocks)
+**Next:** [The two clocks →](/book/11-the-two-clocks)

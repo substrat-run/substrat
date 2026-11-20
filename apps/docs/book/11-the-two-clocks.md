@@ -1,4 +1,4 @@
-# 9. The two clocks
+# 11. The two clocks
 
 Everything so far has been driven by a request. This chapter is the work nothing asks for:
 retries, recurring jobs, reconciliation, reaping.
@@ -109,7 +109,7 @@ handler straight at the pass, on a fifteen-minute cron.
 This is the fleet-wide maintenance pass. The main phases below each record
 per-unit outcomes and **step over** failures rather than letting one sink the pass. Every
 unit of work also leaves a durable **sweep run** record, which is how "this schedule never ran"
-becomes a visible verdict rather than an absence (chapter 10):
+becomes a visible verdict rather than an absence (chapter 12):
 
 **1. Migration reconciliation.** First, deliberately. The drain phase below wakes scopes,
 and waking migrates lazily — so running this after it would count every failed scope's
@@ -125,7 +125,7 @@ makes, here for deployments the platform drives.
 chapter 5. Injected, because the kernel cannot reach a vertical's DO — the control plane
 supplies a function that goes over the vertical's `/internal` surface.
 
-**4. Provision reconcile.** The phase chapter 8 described: re-run `/internal/reconcile` on
+**4. Provision reconcile.** The phase chapter 10 described: re-run `/internal/reconcile` on
 every active install whose provision receipt is behind the version it now serves.
 
 **5. Recurring schedules.** For each vertical that declares them, enumerate live scopes and
@@ -149,9 +149,11 @@ produces no row anywhere.
 gone before its row becomes a tombstone.
 
 **10. Event drain to the lake.** Ship each active scope's undrained outbox rows to the event sink
-(Tier 2, chapter 11), up to 200 per scope per pass, then stamp them drained. With no sink bound,
-the phase does not run and nothing is marked. Draining copies events and never prunes the
-outbox.
+(Tier 2, chapter 13), up to 200 per scope per pass, then stamp them drained. With no sink bound,
+the phase does not run and nothing is marked. Draining copies events; a drained row is pruned
+from the outbox only 90 days later (chapter 13). An active scope whose deployment turns out not
+to hold it is judged against the directory rather than read as "nothing to ship", which is what
+it silently looked like before.
 
 **11. Access-log drain and prune.** Ship staff access rows to durable storage, stamp them
 drained, then prune what was shipped. The sink must be **durable before it resolves** —
@@ -160,14 +162,33 @@ directory, so a sink that buffers and returns early turns a retention policy int
 
 Two newer phases matter to this book. **Cross-vertical event delivery** reads imports
 and their consumer-held watermarks, resolves both apps, and transfers permitted exports
-(chapter 7). Its state is visible per edge. A router kick runs a narrowed pass sooner;
+(chapter 8). Its state is visible per edge. A router kick runs a narrowed pass sooner;
 an absent kick leaves this sweep responsible for progress.
 
 The **storage gauge** runs just after the drains, sampling eligible scope databases
 already reached in that pass and retained non-serving scopes, within its budget. It
 keeps dated measurements and their coverage, rather than presenting a partial sum as
-a total (chapter 12). Maintenance also prunes bounded telemetry and resolves quiet
+a total (chapter 14). Maintenance also prunes bounded telemetry and resolves quiet
 Findings as stale. These phases are separate from the vertical's business schedules.
+
+### A failure is news once, not noise every pass
+
+A sweep that runs every fifteen minutes can turn one stuck scope into thousands of identical
+reports. One production failure reached 52,000 occurrences before this was fixed, because a
+scope whose deployment could never accept a lifecycle delivery filed a fresh failure on every
+pass.
+
+The directory now keeps one row per failing scope. The first failure is retried on the next
+pass, and each repeat doubles the wait, up to one attempt a day. A waiting scope is left out of
+the passes with fixed limits, so it no longer takes a slot from scopes that can make progress.
+A row is filed only for **news**: the first failure against a given receipt and deployment, or
+an error different from the last. A delivery that lands, or a changed version, clears it and
+tries again at once.
+
+The same instinct fixed an accounting bug in the intent drain. The pass's second drain re-ran
+every intent the first had left pending, and both counted toward the attempt ceiling, so a
+flaky intent was given up after about twelve hours instead of about a day. Each intent is now
+counted once per pass.
 
 ## Reaping: the part that is not automatic
 
@@ -229,4 +250,4 @@ about the reading.
 
 ---
 
-**Next:** [Seeing what happened →](/book/10-seeing-what-happened)
+**Next:** [Seeing what happened →](/book/12-seeing-what-happened)

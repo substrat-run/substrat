@@ -109,7 +109,7 @@ transition is validated (an illegal one fails closed) and audited:
   The reap wipes the scope's database, and the directory row stays as a tombstone, with the
   audit trail and the burned slug. The event history already shipped to the history tier is
   not touched. Reaped is terminal.
-- **Storage is metered until reap.** The [storage gauge](/book/12-metering-and-billing) counts every
+- **Storage is metered until reap.** The [storage gauge](/book/14-metering-and-billing) counts every
   scope that holds data, archived and suspended ones included, because their bytes are still
   there. A scope archived straight from `provisioning` never held data and is not counted.
 - **Jurisdiction is immutable.** Fixed at provisioning; a scope's execution domain can never

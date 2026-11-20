@@ -1,8 +1,8 @@
 ---
-description: "Sampled router traffic, tenant-stamped invocation logs, opt-in traces, and the event spine read through history, cause, effects and same-call — and which question each answers."
+description: "Sampled router traffic, tenant-stamped request lines, the request id every response carries, opt-in traces, and the event spine read through history, cause and effects."
 ---
 
-# 10. Seeing what happened
+# 12. Seeing what happened
 
 The last chapter ended on reports that background work returns so that something can read
 them. This chapter is about the reading. It covers what the platform records about a running
@@ -29,21 +29,25 @@ returns, in a `finally` so errors count too, the router writes one Analytics Eng
 ```
 index:   [tenantId]
 blobs:   [verticalSlug, scopeId, surface, statusClass, rayId,
-          operation, problemCode, principalKind, level]
+          operation, problemCode, principalKind, level,
+          entityTypes, route, processStates]
 doubles: [durationMs, status]
 ```
 
 The router knows the tenant, scope, surface and status by itself. Which operation ran, how it
-failed and who it ran as are known only inside the vertical, so the platform's entry hands them
+failed, who it ran as, which entity types it touched, which declared route answered and which
+lifecycle moves it made are known only inside the vertical, so the platform's entry hands them
 back on a response header, which the router writes into the datapoint and removes before the
-response leaves. The Requests histogram and its facet counts are read from these fields.
+response leaves. The Requests histogram and its facet counts are read from these fields. The
+route is the vertical's declared route, never the raw path, so ids in a path cannot explode a
+facet.
 
 The index is the tenant, so every read of this dataset is a read of one tenant. The dashboard's
 chart is a sampling-weighted `sum(_sample_interval)` with weighted quantiles for latency, run
 through the Analytics Engine SQL API.
 
 **The data is sampled.** It is the right instrument for "is this app getting slower", and the
-wrong one for anything that has to be exact, such as an invoice (chapter 12) or proof that a
+wrong one for anything that has to be exact, such as an invoice (chapter 14) or proof that a
 particular request happened. A sampled count is an estimate, and it presents itself as one.
 
 ## Logs: the vertical writes its own line
@@ -82,11 +86,13 @@ cannot be written is dropped rather than thrown, so logging can never fail the r
 substrat: 'invocation'
 tenantId, scopeId, vertical, surface
 method, path          // the path only; the query string is dropped, so no OIDC code is logged
-invocationId          // a ULID minted for this request
+invocationId          // the request id: a ULID, also on the response header
 status, threw, durationMs
 level                 // error (5xx or a crash), warn (refused), info
 operation, problemCode, principalKind
 eventCount, eventTypes, entities   // what the operation itself emitted
+logLines              // how many ctx.log lines it wrote
+entityTypes, transitions, processStates   // what it touched, and the lifecycle moves it made
 versionId             // the pushed version that served it
 ```
 
@@ -133,8 +139,57 @@ The host stamps that line with the same tenant, scope, operation and invocation 
 template it was written from. Every line from that call site shares the template whatever the
 values were. Those two facts are what a log read needs to find a line's tenant without
 correlating it, to filter it by operation like a request, and to group lines into patterns
-exactly rather than by guessing which free-text lines look alike. The dashboard's log reads do
-not use them yet; that is the next step.
+exactly rather than by guessing which free-text lines look alike. The Logs view counts these
+lines together with request lines in its Level, Operation and Who facets, and a request's line
+count says which request was noisy without opening it.
+
+## One id, handed out
+
+Everything above was joined by an id the platform minted and kept to itself. Now it hands it
+out. Every response a routed request gets carries `x-substrat-request-id`, and every problem
+document carries the same value as `requestId`. Nothing new was minted: it is the
+`invocationId` the line already carried, the id on every event the request emitted, on every
+`ctx.log` line, on its deliveries and the denials its operation raised, and on every outbound
+call it made. An operation
+reads it as `ctx.requestId` (chapter 4). The id stays inside one app. A peer call into
+another app (chapter 8) is a request there with its own id, and its line records the caller's id
+as `parentInvocationId` and the caller's scope beside it. So searching for one id finds what a
+request did in its own app; following a call into another app means following that parent link.
+
+That turns "it failed, here is a screenshot" into a lookup. The dashboard finds a request by
+id, shows the requests related to it, and puts the id on a failure so the person reporting it
+has something to quote. The CLI prints a failed control-plane call's request id as its last
+line. Outbound calls appear on the request's timeline with host, path, status and timing, and
+the egress hop marks a refusal of its own, so "the call never left" and "the call failed" stop
+looking alike. The header is opaque, a ULID and nothing else, with no tenant or scope in it.
+
+### The Logs view, as built
+
+The dashboard's Logs page reads those lines in two modes. **Requests** draws a histogram you
+can brush to zoom, with each version that went live in the window drawn as a dashed line, and
+facets beside the stream:
+
+| Facet | What it filters |
+|---|---|
+| Level, Operation, Who | request lines and `ctx.log` lines counted together |
+| Path | the declared route that answered |
+| Entity | the entity types a request touched |
+| Process state | the lifecycle moves it made, such as `ticket: open → resolved` |
+| Problem code | shown as "None in this window" rather than disappearing |
+
+Free text matches the request id at either grain. An opened line links each record the request
+touched to that record's own history, so a request and the rows it changed are one click apart.
+
+The lifecycle moves come from `assertTransition`. Given the operation's context, it notes each
+legal move, and the host reports at most eight entities per call after the commit, each from the
+first state it left to the last it reached. Read `null` as **not recorded**, not "moved nothing":
+a module that does not pass its context cannot be told apart from one that moved nothing. The
+workorder and booking engines pass theirs, so a vertical composing them gets the moves free.
+
+**Locally, `substrat dev` records the same shape.** It runs the project's own dev script, prints
+one compact line per completed request (id, operation, principal, outcome, problem code,
+permission decision), and keeps the newest 256 as files under `.data/substrat-traces/`. SQL
+parameter values and request and response bodies are deliberately not stored.
 
 ## Traces: opt-in, and narrower than the word suggests
 
@@ -143,7 +198,7 @@ is on in the test environment and off in production. Nothing in the platform emi
 operation, permission check or engine call. What reaches the trace data is what the runtime
 generates on its own, mainly outbound `fetch` and the Durable Object entry hop. The platform
 reads it for one purpose: comparing a version's *observed* egress with its *declared*
-allowlist (chapter 8).
+allowlist (chapter 10).
 
 A per-operation waterfall is designed and not built. That is part of why the next section
 matters.
@@ -174,8 +229,7 @@ a raw table of deliveries but the delivery rows hanging off the event that cause
 `invocationId` that the log line carries, passes it into `invoke`, and the kernel stamps it
 on every event the call emits, including events that consumers emit in that call's
 post-commit tail. `readInvocation` returns everything one call did. The same id is on the log
-line, so a record's call can be matched to the request that made it. That match is by hand
-today: the Logs view does not yet filter by invocation id.
+line and on the response, so a record's call and the request that made it are one search apart.
 
 That join has limits, and they are exact:
 
@@ -183,8 +237,9 @@ That join has limits, and they are exact:
   internal calls and events from before the column existed carry `null`.
 - The router's datapoint carries Cloudflare's `rayId`, not the `invocationId`, so traffic does
   not join to events.
-- **Denials and deliveries carry no invocation id.** A delivery joins through its event, and a
-  denial joins to nothing but its time and actor.
+- **Deliveries, and denials raised inside an operation, carry it now**, so those refusals and
+  a consumer's attempt join to the request behind them. Denials from the attachment and
+  capability paths, and rows written before the column, read `null`.
 
 **Facets.** `facetEvents` is a small group-and-count over one scope's outbox. It filters by type
 and time window, groups by type, actor, operation, version, entity type, PII class, invocation,
@@ -197,7 +252,7 @@ field, so an event classed `none` that carries personal data anyway is still gro
 **Events** explorer. It is not the only way to read the outbox: the SQL console and the table
 browse sit behind the same access and are deliberately not narrowed this way. They read the app's
 data as stored, personal event payloads included, for the team that owns it, and every query is
-recorded in the access log (chapter 11). Grouping by actor lists principals, which are
+recorded in the access log (chapter 13). Grouping by actor lists principals, which are
 pseudonymous ids (#1821).
 
 **Flow.** `substrat push` records what each module *declares* it emits and consumes. The dashboard
@@ -226,7 +281,7 @@ ran, because that failure leaves no row anywhere.
 Two mechanisms produce the row:
 
 - **Freshness expectations.** A manifest can declare
-  `freshness: [{ eventType, within: { hours } }]`. The platform sweep (chapter 9) checks each one
+  `freshness: [{ eventType, within: { hours } }]`. The platform sweep (chapter 11) checks each one
   and records a verdict. "No `invoice.sent` in 26 hours" becomes a fact instead of a hunch.
 - **Sweep runs.** Every unit of sweep work is recorded, whether it was a schedule, a freshness
   check or a connector poll. The Schedules panel turns those records into four verdicts: *On
@@ -247,6 +302,24 @@ the version under which it regressed. Suppress rules have a scope and an expiry,
 changes are audited. Retention resolves quiet findings as stale rather than deleting
 their history. This is the useful next stop after “the logs show it failed”: who has
 seen the problem, and whether it has been dealt with.
+
+### A model reads the evidence, on request
+
+A finding has an **AI explanation** toggle: a few sentences written from that finding's own
+evidence, saying whose side the problem is on, the app's, the platform's or a supplier's. The
+process map gets the same kind of note under its diagram. The interesting part is what does not
+happen. A page load never calls a model, and writing happens only when someone asks. What
+reaches the model is a field allowlist (kinds, severities, codes, counts, timestamps, versions,
+up to three messages), never a row and never a tenant, scope, person or record id, and messages
+are redacted first. Each paragraph carries an **AI** marker and a provenance line naming the
+records it read, computed by the dashboard rather than claimed by the model.
+
+**Ask**, in the dashboard's command overlay, goes further and stays read-only by construction.
+Every declared GET route of the dashboard is one of its tools, called through the route's own
+handler, as the person asking, with the route's own input schema. Because each handler checks
+its own permission, the assistant has exactly that person's access, and a read the dashboard
+adds later becomes a tool without anyone wiring it. Only GET routes are offered, and a test pins
+the list to them.
 
 ## Where each one surfaces
 
@@ -281,4 +354,4 @@ which is where the next chapter starts.
 
 ---
 
-**Next:** [The audit trail and the lake →](/book/11-audit-and-the-lake)
+**Next:** [The audit trail and the lake →](/book/13-audit-and-the-lake)

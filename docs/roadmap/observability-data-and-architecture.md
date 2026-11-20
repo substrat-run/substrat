@@ -14,7 +14,7 @@ The linked issues and design documents retain the detailed questions and accepta
 - Idea: saved, parameterised audit queries in the console, restricted to staff and access-logged.
 - State: the [tenant-scoped lake gateway](../architecture/control-plane.md) exists in code but is off pending a real-lake check; no console page calls it.
 - Parked pending a real-lake gateway check and an owner for the staff workflow; lake erasure still blocks any payload view.
-- Reopen for a named audit need once the gateway is verified. Keep results envelope-only until erasure reaches the lake; start with the questions in [the lake guide](../../apps/docs/book/11-audit-and-the-lake.md).
+- Reopen for a named audit need once the gateway is verified. Keep results envelope-only until erasure reaches the lake; start with the questions in [the lake guide](../../apps/docs/book/13-audit-and-the-lake.md).
 
 ### [#1751 — Personal-data activity and request handling](https://github.com/substrat-run/substrat/issues/1751)
 

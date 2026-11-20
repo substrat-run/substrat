@@ -100,7 +100,7 @@ inability to reach another scope.
 outbox row, which the next round picks up. Fifty rounds is the cascade limit, and the loop
 exits as soon as a round delivers nothing. An event emitted this way records **`causedBy`**, the
 id of the event whose delivery emitted it. It also inherits the originating request's
-**invocation id**, because the drain is part of the same call. Chapter 10 walks both links.
+**invocation id**, because the drain is part of the same call. Chapter 12 walks both links.
 
 **All of this happens inside the scope's turn.** The drain runs after the commit, but before the
 queue lets the next operation in. A slow consumer therefore delays the next operation on its
@@ -189,7 +189,49 @@ Where it runs depends on the host, and the difference matters:
   credential, runs the connector when it drains that intent.
 
 A third kind of connector subscribes to no event. An accounting or planning integration that
-*pulls* data runs as a sweeper inside the platform sweep (chapter 9), on a schedule.
+*pulls* data runs as a sweeper inside the platform sweep (chapter 11), on a schedule.
+
+### Who declares a connection, and where its code runs
+
+A connector is the platform's code and a connection is the tenant's credential. Four things
+about how the two meet a vertical changed this edition, and each one moved a decision out of
+somebody's goodwill and into a declaration.
+
+**A connection lands by declaration.** A company that approved a connect link used to land
+nothing: the connection held no permission key, nothing bound it, and the sweep said `ok`
+anyway. Now a module manifest declares how a provider's connections land: the operation to
+call and the key to grant. The connector pass seats it, because the pass is the only clock
+that sees a connection arrive days after a deploy. Consent does not confer the key. The running
+version's declaration does, so it is lifted into the permission registry, appears in
+`PERMISSIONS.md` under *Provider connections*, and a promote that changes it needs an
+acknowledgement.
+
+**A scope can own its connection.** By default a connection belongs to the tenant. A vertical
+whose spaces each connect their own account, one folder of a file store each, say, declares
+its landing `bind: 'on-request'`. Then the scope upserts, binds and unbinds its own connection
+through the platform relay, from the worker's request path. The operation and key come from the
+version the scope is running, never from the request body.
+
+**A vertical can ship its own connector.** A provider named `<namespace>.<name>`, such as
+`acme.docbox`, is defined by the vertical and shipped with `substrat push`. First-party names
+never contain a dot, so the two cannot collide. The platform keeps everything it holds for a
+first-party connector: the sealed credential, the bindings, the state, the sweep, the intent
+drain. What changes is where the provider code runs. A call is dispatched **into the vertical's
+own worker**, bounded by its declared outbound hosts, and handed a context for one connection,
+with no `HostAdmin` and no tenant argument. State is applied only when the call succeeds, so a
+cursor never moves past work that did not land. The trade-off is stated in its decision record,
+D-64, which is still proposed: that deployment holds the plaintext credential, including one a
+tenant typed into the dashboard. A follow-on proposal, D-73, would make every connector its own
+deployable unit behind one call contract. One first-party connector is piloted that way, behind
+a flag.
+
+**Mail can be an inbound connection.** A scope can be given an address on the platform's
+receiving domain, and each message to it lands through an operation the vertical declares,
+attachments stored as files on the entity that operation answers. The declaration joins the
+permission registry like any other landing. Unknown addresses, oversized messages and senders
+that are not allowlisted and proven by DMARC or SPF are refused at SMTP time with nothing
+stored. After acceptance the message is durable: stored once per `Message-ID`, delivered in
+steps that resume, and dead-lettered after eight attempts.
 
 ### Executors retry, and the ordering is the point
 
@@ -242,7 +284,7 @@ The backstop needs something to run it, and this is where the reference splits a
 in a way that genuinely confuses people. It is the **scope sweeper** — an alarm-driven
 singleton Durable Object in the vertical's own deployment, calling `drainDue` over its
 roster of scopes. Not the platform sweeper, which is a different clock doing different
-work in a different place. Chapter 9 is both of them and the distinction.
+work in a different place. Chapter 11 is both of them and the distinction.
 
 ### The trail joins
 
@@ -268,9 +310,9 @@ isolation is the platform's. And it applies backpressure: a scope holding the ma
 pending intents throws rather than queueing without limit.
 
 Intent kinds are a closed set: provisioning a sibling scope or a whole tenant, archiving a
-scope, reconciling a managed tenant's entitlements, recording a model-usage line (chapter 12),
+scope, reconciling a managed tenant's entitlements, recording a model-usage line (chapter 14),
 email sends, queued peer calls, and the `connector:<provider>` family. Chapter 7 follows
-the new notifications engine and a call into another app through those paths.
+the notifications engine through those paths, and chapter 8 a call into another app.
 The platform uses one more kind for its own sweep
 records, and module code is refused it, so a vertical cannot forge a verdict about its own
 schedules.
@@ -278,7 +320,7 @@ schedules.
 ### How fast an intent runs, and the kick
 
 An intent is **pulled**, never pushed, and by default the pull is the platform sweep: a
-fifteen-minute cron on the hosted control plane (chapter 9). An intent raised at 10:01 can
+fifteen-minute cron on the hosted control plane (chapter 11). An intent raised at 10:01 can
 therefore sit until 10:15. For an intent a user is waiting on, such as "provision my new
 branch", that is too slow.
 
@@ -354,7 +396,7 @@ most a kick can do is make a scope's own work happen sooner.
 
 The invoicing engine consumes `workorder.completed` *and* `commerce.order-placed`, events from
 two different domains, without importing a single type from either producer. From them it
-builds a customer's **billing basis**, the lines an invoice will be issued from (chapter 12). It has
+builds a customer's **billing basis**, the lines an invoice will be issued from (chapter 14). It has
 deliberately **no in-scope exports**: the vertical emits, the engine consumes, and the
 vertical reads results back through the engine's own operations or by consuming its events.
 
@@ -372,7 +414,7 @@ The reason is mechanical rather than philosophical. Consumer dispatch selects on
 *type* alone (`WHERE o.type = ?`), and the `schemaVersion` a manifest's `consumes` entry
 carries is discarded at registration. So emitting both versions delivers **both** to the
 same consumer. The invoicing engine's export event is meant to be consumed by an accounting
-connector. None consumes it yet (chapter 12), but once one does, a dual-emit is a double
+connector. None consumes it yet (chapter 14), but once one does, a dual-emit is a double
 invoice in production, silently. The rule is not hypothetical either: the export event has
 been through exactly one version bump, and it was shipped as a replace.
 
@@ -381,7 +423,7 @@ dead-letters where somebody sees it. Loud and stopped beats quiet and doubled.
 
 This limitation is about **in-scope dispatch**. Cross-vertical imports already match on
 `(type, schemaVersion)`, withholding a mismatch with a dead letter. That newer transport
-does not change how local consumers select their events. Chapter 7 follows the exported
+does not change how local consumers select their events. Chapter 8 follows the exported
 event across the second database and explains its separate version contract.
 
 ## The event stream is the audit log
@@ -398,8 +440,10 @@ The same events also leave for a longer-lived store. The sweep drawn above ships
 unshipped events to the platform's Tier-2 event lake, where history across scopes and over
 long periods can be queried, and marks each one shipped only after the lake has confirmed it.
 A failure in between sends the same events again, which the event `id` makes harmless; marking
-first would risk a gap nothing could detect. Shipping removes nothing from the scope — the
-outbox still serves consumers, entity history, and each entity's version.
+first would risk a gap nothing could detect. Shipping itself removes nothing from the scope:
+the outbox still serves consumers, entity history, and each entity's version. A shipped event
+is pruned from the scope 90 days later, so "complete by construction" describes the stream as
+a whole, scope and lake together. Chapter 13 says which reads see which part of it.
 
 ---
 

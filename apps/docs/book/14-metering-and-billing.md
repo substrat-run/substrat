@@ -2,7 +2,7 @@
 description: "A vertical metering and invoicing its own customers, and the platform metering a tenant: what is counted, what is priced, and what (like storage) is measured but not yet priced."
 ---
 
-# 12. Metering and billing
+# 14. Metering and billing
 
 Two different subjects share these words, and mixing them up leads to wrong designs in both
 directions:
@@ -99,15 +99,22 @@ Two gaps are worth stating plainly:
   emit them as a billable event. On the invoicing side that is an additive new consumed event,
   designed and not built.
 - **Nothing consumes the export event.** No accounting connector takes an exported basis today.
-  The one accounting connector that exists reads bookkeeping *from* the ledger and has no write
-  path.
+  The accounting connector that exists reads bookkeeping *from* the ledger and writes back only
+  decisions about supplier invoices, and its write-back has a measured limit written down
+  beside it.
+
+Taking the money is a separate piece, and a first one exists. A Stripe connector opens a hosted
+checkout through the **tenant's own** Stripe account and lands the outcome in the vertical as a
+provider-neutral payment change. It is not connected to a billing basis: a vertical that wants a
+paid invoice to settle a basis writes that join itself.
 
 ## Part two: the platform meters a tenant
 
 ### Meter, don't bill
 
-The platform's rule is **count everything exactly, store no bill**. Usage is recorded as
-facts. Prices and margins are applied when someone reads, and nothing stores a computed
+The platform's rule is **count what can be counted exactly, label what cannot, store no
+bill**. Usage is recorded as facts, and a figure that comes from sampling, such as requests,
+says it is an estimate. Prices and margins are applied when someone reads, and nothing stores a computed
 charge. So a pricing change never requires a data migration, and a count is never tangled
 with a number that was a commercial decision.
 
@@ -120,11 +127,23 @@ The commercial design names four meters. Here is the state of each:
 | **3. Usage** | platform-provided model calls, with tokens and list price | **counted**, and priced when read |
 | | event history retained | measurable in the lake, and nothing reads it yet |
 | | storage (scope databases) | **sampled daily** and read on demand, per tenant. Not priced |
-| | API calls | **not counted** |
+| | API calls | **estimated** per day, per tenant, vertical and scope, from sampled traffic. Not priced |
+| | hosted build time | **counted** per successful build, per tenant and vertical |
+| | code reviews | **counted**, priced at zero beside what each would cost, with a daily spend limit per tenant |
 | **4. Network transactions** | orders flowing between tenants | not countable, because that flow does not exist |
 
 Meters 1 and 2 are folds over the directory, computed on read and never stored. Operators see
 them, and model usage, in the console's **Meters** view, with a per-tenant card on each tenant.
+
+"Computed on read" has one hole, and it is about time: a fold over the directory answers for now,
+not for a past day. So the platform now also **captures usage day by day**, because a past day
+cannot be recovered later. One row per UTC day, tenant, vertical and scope counts requests, split
+by status class and marked as estimates. One snapshot per UTC day and tenant records the meters:
+status, scopes by status and by vertical, and every entitlement with its expiry. Both are taken
+by the first pass of the day in one directory transaction. A vertical's **ownership** is kept as
+a history of periods rather than a current owner, so a slug deleted and registered again by
+someone else still bills the builder who owned it then. Nothing in billing rollups is pruned until
+a retention period is decided.
 
 ### Entitlements: the licence, not the enforcement
 
@@ -150,6 +169,13 @@ Platform-provided models are the one part of usage that is complete from call to
    directory. The write is idempotent on the request id and kept for 400 days.
 5. When staff read the summary, a margin is applied, 20% unless configured otherwise. Nothing
    stores the result.
+
+Two attribution bugs were found by looking at the ledger and finding it empty. A hosted
+vertical's usage line was labelled with its package name while the directory knows a scope by
+its slug, so every hosted line failed the check in step 4 and nothing reached the ledger. And a
+builder studio turn was metered in the studio's own scope rather than against the team it ran
+for. Both are fixed: the line is filed under the scope's vertical, and a turn counts against its
+team.
 
 Two numbers exist, and both are correct. The platform's list price plus margin is what the
 platform charges the tenant. The vertical's own rate card is what the tenant charges *its*
@@ -183,7 +209,7 @@ What both leave out, and say they leave out:
   blob store rather than in the scope. The stored figure keeps what those rows sum to beside
   it, as its own number per scope per day, never added into it.
 - **Per-tenant D1 databases.** They are separate databases.
-- **The lake's `bytes` column** (chapter 11), which records every event's serialized size as
+- **The lake's `bytes` column** (chapter 13), which records every event's serialized size as
   shipped. Summed per tenant after dedupe, it is exact, but it measures **event history
   volume**, not database size. It excludes a scope's current rows, its indexes, its
   attachments, and every row an update overwrote. It is a defensible basis for billing history
@@ -196,25 +222,39 @@ directory can change between pages. The daily samples are what a GB-month figure
 built from, but a storage line on an invoice still needs a decision: how to price days the
 pass did not sample, or whether event-history bytes are the unit being sold instead.
 
-### Requests are not billable either
+### Requests are estimated, not billable
 
-The router's per-request datapoints (chapter 10) are sampled. They are good enough to draw a
-chart and not good enough to put on an invoice. And a read emits no event, so the spine cannot
-count API calls either. That is why "API calls" sits uncounted next to storage.
+The router's per-request datapoints (chapter 12) are sampled. The daily capture above turns them
+into a figure per day, and every such figure says it is an estimate. That is good enough to draw
+a chart and not good enough to put on an invoice. A read emits no event, so the spine cannot count
+API calls exactly either.
 
 ### What a tenant sees
 
-The dashboard has a **Billing** page, and today it is a placeholder, marked as not yet enabled.
-No payment provider is integrated, no invoice is generated, and nothing takes payment. The
-platform counts, and the operator bills from those counts outside the product.
+The dashboard's **Billing** page shows a team its real entitlements and its metered usage, to
+owners and admins: sampled database bytes, estimated daily requests, and model calls with the
+tokens the provider reported, plus a chart by day with requests and tokens stacked by app. It
+shows **no prices**, which is the standing decision: meter, don't bill.
+
+The care is in how each figure describes itself. Every number names its coverage, whether it is
+an estimate, how fresh it is and whether it is a lower bound. **Absent data is never drawn as
+zero.** A model call whose provider reported no tokens adds to the call count and adds no tokens,
+and a day with no reading is hatched rather than plotted at zero, because those are different
+facts. Empty, unavailable, truncated, loading, failed and "you are not an owner" are six distinct
+states on the page.
+
+No payment provider is integrated on the platform's side, no invoice is generated, and nothing
+takes payment from a tenant. The platform counts, and the operator bills from those counts
+outside the product.
 
 ## The shape, once more
 
-In both halves the count is exact, deduplicated, and written in the same transaction or intent
-as the thing it counts. The price is applied later, by whoever owns the commercial decision:
+In both halves a billable count is exact, deduplicated, and written in the same transaction or
+intent as the thing it counts; what is sampled, like requests, is labelled an estimate and kept
+off an invoice. The price is applied later, by whoever owns the commercial decision:
 the vertical for its customers, the platform for its tenants. What is missing is also the same
 in both halves: the hand-off from a closed count to a document someone pays.
 
 ---
 
-**Next:** [Operating it →](/book/13-operating-it)
+**Next:** [Operating it →](/book/15-operating-it)
