@@ -226,6 +226,8 @@ import {
   seededPersonas,
   type SeedWorldBody,
   type SeededPersona,
+  type SubjectReadPage,
+  type SubjectReadRequest,
 } from '@substrat-run/contracts';
 
 /**
@@ -240,6 +242,8 @@ export interface VerticalScopeHost {
 
   /** Redact the scope-side data in this deployment before the coordinator destroys the key. */
   redactSubjectLocal?(scopeId: ScopeId, subjectId: string): Promise<SubjectRedactionCounts>;
+  /** One page of what a scope in this deployment holds about one data subject (D-74). Writes nothing. */
+  readSubjectLocal?(scopeId: ScopeId, subjectId: string, page?: SubjectReadRequest): Promise<SubjectReadPage>;
   provisionScopeLocal(input: {
     tenantId: TenantId;
     scopeId: ScopeId;
@@ -2140,6 +2144,29 @@ export function mountPlatformSurface<Env extends object>(
     const host = deps.hostFor(c.env);
     if (!host.redactSubjectLocal) return refuseStatus(c, 501, 'subject redaction is unavailable in this deployment');
     return c.json(await host.redactSubjectLocal(body.scopeId, body.subjectId));
+  });
+
+  // Subject access (D-74): one page of what a scope here holds about one person. Scope bytes cross the
+  // boundary, as in /internal/export: the control plane's route in front of it is the gate, and it
+  // is what audits the request.
+  app.post('/internal/read-subject', async (c) => {
+    const body = z
+      .object({
+        scopeId: scopeIdOf,
+        subjectId: z.string().min(1),
+        cursor: z.string().min(1).optional(),
+        limit: z.number().int().positive().optional(),
+      })
+      .strict()
+      .parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.readSubjectLocal) return refuseStatus(c, 501, 'subject access is unavailable in this deployment');
+    return c.json(
+      await host.readSubjectLocal(body.scopeId, body.subjectId, {
+        ...(body.cursor ? { cursor: body.cursor } : {}),
+        ...(body.limit ? { limit: body.limit } : {}),
+      }),
+    );
   });
 
   // Read-only introspection of a scope's OWN database (kernel-design §5.4) — what the

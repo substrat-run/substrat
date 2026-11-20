@@ -28,6 +28,15 @@ const PAST: Record<string, string> = {
   walk: 'walked',
 };
 
+/**
+ * Actions whose sentence is written for them rather than tensed from the key, and the word that
+ * joins the app's name. `subjectAccess` (D-74): a team member's download of one person's data is
+ * the act every other member who can open Audit should be able to read for what it was.
+ */
+export const WRITTEN_SENTENCES: ReadonlyMap<string, { words: string; app: string }> = new Map([
+  ['subjectAccess', { words: 'downloaded personal data about one person', app: 'from' }],
+]);
+
 /** An action key split into lower-case words: `bindScopeVersion` → `['bind', 'scope', 'version']`. */
 export function actionKeyWords(action: string): string[] {
   return action
@@ -45,6 +54,8 @@ export function actionKeyWords(action: string): string[] {
  * labelled, "admin action: frobnicate scope", rather than guessed at.
  */
 export function actionWords(action: string): string {
+  const written = WRITTEN_SENTENCES.get(action);
+  if (written) return written.words;
   const [verb, ...rest] = actionKeyWords(action);
   if (!verb) return action;
   // Own keys only: an action starting `constructor` must not find Object's.
@@ -126,7 +137,8 @@ export function entrySentence(e: Pick<AuditEntry, 'action' | 'scopeId'> & Partia
   const app = e.scopeId ? appName(e.scopeId) : null;
   const phase = scopePermissionPhase(e);
   const prefix = phase === 'intent' ? 'requested: ' : phase === 'unknown' ? 'outcome unknown: ' : phase === 'refused' ? 'refused: ' : phase === 'failed' ? 'failed: ' : '';
-  return `${prefix}${actionWords(e.action)}${app ? ` on ${app}` : ''}`;
+  const joint = WRITTEN_SENTENCES.get(e.action)?.app ?? 'on';
+  return `${prefix}${actionWords(e.action)}${app ? ` ${joint} ${app}` : ''}`;
 }
 
 /** The Overview's link into one entry: the app narrowing it was already linked with, plus the entry. */

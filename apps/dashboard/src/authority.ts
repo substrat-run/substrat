@@ -78,7 +78,7 @@ import { logsIncompleteOf } from '@substrat-run/control-plane-api';
 import type { DeclaredSchedule } from './flow-graph.js';
 import type { MeteredUsageOut } from './routes.js';
 import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
-import type { MailInAddress, MailInAddressAct, MailInStanding } from '@substrat-run/contracts';
+import type { MailInAddress, MailInAddressAct, MailInStanding, SubjectAccessBody, SubjectAccessReceipt } from '@substrat-run/contracts';
 import { FINDINGS_LIMIT_DEFAULT, LIST_PAGE_MAX, denialQuery, manifestDelegation, substratError, type BindAcknowledgement, type ExportBreak, type ManifestDelegation, type VerticalConnectorDeclaration } from '@substrat-run/contracts';
 import { z } from 'zod';
 import {
@@ -2142,6 +2142,18 @@ export class TenantNarrowedControlPlane {
   // the break-glass stays a staff/CLI affordance) and jurisdiction-gated; the
   // restore is audited on the shared plane and delegated into the deployment that
   // actually serves the scope.
+
+  /**
+   * Everything one app holds about one person (D-74), unmasked for that person, with other people
+   * in it masked by the plane. The plane records the request under the signed-in member's name.
+   */
+  subjectAccess(
+    scopeId: ScopeId,
+    subjectId: string,
+    body: SubjectAccessBody,
+  ): Promise<{ package: { kind: string } & Record<string, unknown>; receipt: SubjectAccessReceipt; html: string }> {
+    return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/subjects/${encodeURIComponent(subjectId)}/access`, body);
+  }
 
   /** The scope's data as a dump — always the masked form from this seam. */
   exportScope(scopeId: ScopeId): Promise<ScopeDump & { masked: boolean }> {

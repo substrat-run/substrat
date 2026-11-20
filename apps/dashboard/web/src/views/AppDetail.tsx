@@ -2215,6 +2215,114 @@ function ExportImport({ teamId, app, canRestore }: { teamId: string; app: AppRow
   );
 }
 
+/**
+ * Personal data (D-74, GDPR Art. 15): everything this app holds about one person, downloaded to
+ * answer their access request. The package is the person's rows and events, with everyone else in
+ * them masked by the platform; the page is the same package as one HTML file for the person.
+ *
+ * Each request is recorded in Audit › Activity under the signed-in member's name, with its
+ * reference and the identity confirmation, and never its content. Owner and admin only: the
+ * dashboard scope refuses anyone else, and this only decides what to draw.
+ */
+function PersonalData({ teamId, app, canRequest }: { teamId: string; app: AppRow; canRequest: boolean }) {
+  const [subjectId, setSubjectId] = useState('');
+  const [reference, setReference] = useState('');
+  const [verified, setVerified] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  // The collected package, kept until the next request: every request writes a permanent audit row,
+  // so a download the browser dropped is fetched again from here, never by asking again.
+  const [result, setResult] = useState<{ stem: string; json: string; html: string } | null>(null);
+  const ready = subjectId.trim() !== '' && reference.trim() !== '' && !/[\r\n]/.test(reference) && verified;
+
+  const save = (name: string, body: string, type: string) => {
+    const url = URL.createObjectURL(new Blob([body], { type }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    // Some browsers start the download after `click()` returns; revoking now can cancel it.
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
+
+  const request = async () => {
+    setBusy(true);
+    setNote(null);
+    setResult(null);
+    try {
+      if (DEV_MOCK) {
+        setNote('Personal data requests are not available in the preview.');
+        return;
+      }
+      const r = await teamApi(teamId).subjectAccess({
+        scopeId: app.app_scope_id,
+        subjectId: subjectId.trim(),
+        reference: reference.trim(),
+        requesterVerified: true,
+      });
+      const collected = {
+        stem: `personal-data__${subjectId.trim()}__${r.receipt.generatedAt.slice(0, 10)}`,
+        json: JSON.stringify(r.package, null, 2),
+        html: r.html,
+      };
+      setResult(collected);
+      // One download started for the member; the page, and the package again, are buttons below.
+      save(`${collected.stem}.json`, collected.json, 'application/json');
+      const receipt = r.receipt as { events?: number; records?: { rows: number }[]; unreachedEntities?: unknown[]; hookEntities?: unknown[] };
+      const rows = (receipt.records ?? []).reduce((n, x) => n + x.rows, 0);
+      const unreached = (receipt.unreachedEntities?.length ?? 0) + (receipt.hookEntities?.length ?? 0);
+      setNote(
+        `Collected ${receipt.events ?? 0} events and ${rows} records about this person. The JSON package is downloading; ` +
+          'download the HTML page for them below, and either file again if one did not arrive. ' +
+          (unreached > 0 ? `${unreached} kinds of record this app keeps could not be searched by person; the package names them. ` : '') +
+          'Review it before you send it: the platform masks other people it can recognize, and the rest is yours to check. The request is recorded in Audit under your name.',
+      );
+      setSubjectId('');
+      setReference('');
+      setVerified(false);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <Eyebrow>Personal data</Eyebrow>
+        <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          Download everything {app.name} holds about one person, to answer their request for a copy of their data.
+        </span>
+      </div>
+      {!canRequest ? (
+        <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Answering a personal data request needs an owner or admin of the team.</div>
+      ) : (
+        <>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <Input label="Person’s id in this app" mono value={subjectId} onChange={(e) => setSubjectId(e.target.value)} style={{ width: 300 }} />
+            <Input label="Request reference" placeholder="e.g. a ticket number or the date it arrived" value={reference} onChange={(e) => setReference(e.target.value)} style={{ width: 300 }} />
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+            The reference is kept in the audit log for good. Do not type the person’s name or email into it.
+          </div>
+          <Checkbox label="I have checked that the person asking is who they say they are" checked={verified} onChange={setVerified} style={{ fontSize: 12.5 }} />
+          <div>
+            <Button onClick={request} disabled={!ready || busy}>{busy ? 'Collecting…' : 'Download personal data'}</Button>
+          </div>
+        </>
+      )}
+      {note && <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>{note}</div>}
+      {result && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Button variant="secondary" onClick={() => save(`${result.stem}.json`, result.json, 'application/json')}>Download package (JSON)</Button>
+          <Button variant="secondary" onClick={() => save(`${result.stem}.html`, result.html, 'text/html')}>Download page (HTML)</Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const DATA_PAGE = 50;
 
 /**
@@ -3095,6 +3203,7 @@ const DATA_SECTIONS = [
   { value: 'schema', label: 'Schema' },
   { value: 'previews', label: 'Previews' },
   { value: 'export', label: 'Export & import' },
+  { value: 'personal-data', label: 'Personal data' },
 ];
 
 /**
@@ -3120,6 +3229,9 @@ export function Data({ teamId, app, section, onSection, canRestore }: { teamId: 
       )}
       {section === 'previews' && <Previews teamId={teamId} app={app} canClaimOwnerSeat={canRestore} />}
       {section === 'export' && <ExportImport teamId={teamId} app={app} canRestore={canRestore} />}
+      {/* Owner and admin hold both restore and subject access, so the same hint draws both. */}
+      {/* Keyed, so a package collected for one app never stays downloadable under another's heading. */}
+      {section === 'personal-data' && <PersonalData key={`${teamId}/${app.app_scope_id}`} teamId={teamId} app={app} canRequest={canRestore} />}
     </div>
   );
 }

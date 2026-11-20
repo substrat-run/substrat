@@ -24,7 +24,7 @@ import { pricedModelCatalog } from '@substrat-run/model-providers';
 import { refuseUnlistedModels } from './model-setting.js';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { MAIL_IN_PROVIDER } from '@substrat-run/contracts';
+import { MAIL_IN_PROVIDER, type SubjectAccessBody } from '@substrat-run/contracts';
 import { grantableEntitlements, FINDINGS_LIMIT_MAX, findingKind, findingStatus, isSubstratError, type EdgeHealth, type FindingEntry, type ModelUsageLine, type OpsFailureEntry, type SweepRunEntry, type VerticalConnectorDeclaration, isVerticalConnectorProvider } from '@substrat-run/contracts';
 import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, promoteReviewReasonIn, substratError, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type BindAcknowledgement, type ScopeDumpTable, type ScopeStoreDump, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery, type Page, type PromotionReviewBinding } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type DirectoryInventory, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
@@ -2680,6 +2680,18 @@ async function exportInstalledAppIn(ctx: TeamContext, appScopeId: string) {
     node, appScopeId: scopeId.parse(appRow.app_scope_id),
     controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
   });
+}
+
+/**
+ * One person's data from one app (D-74): the owner/admin key first, then the plane, which reads,
+ * masks the other people in it and records the request under the signed-in member's name.
+ */
+async function subjectAccessIn(ctx: TeamContext, appScopeId: string, subjectId: string, body: SubjectAccessBody) {
+  const { c, node } = ctx;
+  const { dash, appRow } = await teamAppTarget(ctx, appScopeId);
+  await dash.invoke('dashboard/authorize-subject-access', {});
+  return controlPlaneFor(c.env, node.tenantId, node.principal)
+    .subjectAccess(scopeId.parse(appRow.app_scope_id), subjectId, body);
 }
 
 /** The helper checks restore permission before its safety copy and data replacement. */
@@ -6048,6 +6060,8 @@ const routeHandlers = {
   'dashboard/get-app-release-comparison': async (ctx, { scopeId: app }) => appReleaseComparisonIn(ctx, app),
   'dashboard/rewind-app': async (ctx, { scopeId: app, bookmark }) => rewindAppIn(ctx, app, bookmark),
   'dashboard/export-installed-app': async (ctx, { scopeId: app }) => exportInstalledAppIn(ctx, app),
+  'dashboard/subject-access': async (ctx, { scopeId: app, subjectId, reference, requesterVerified }) =>
+    subjectAccessIn(ctx, app, subjectId, { reference, requesterVerified }),
   'dashboard/restore-installed-app': async (ctx, { scopeId: app, tables, stores, sourceScopeId }) => restoreInstalledAppIn(ctx, app, tables, stores, sourceScopeId),
   'dashboard/app-peers': async (ctx, { scopeId: app }) => appPeersIn(ctx, app),
   'dashboard/switch-app-peer': async (ctx, { scopeId: app, vertical, to, reason }) => switchAppPeerIn(ctx, app, { vertical, to, reason }),

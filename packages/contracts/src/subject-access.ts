@@ -66,3 +66,50 @@ export interface SubjectReadRequest {
 /** The default and the ceiling of a `readSubject` page, in events plus rows. */
 export const SUBJECT_READ_PAGE_DEFAULT = 200;
 export const SUBJECT_READ_PAGE_MAX = 1000;
+
+/**
+ * What a controller sends to ask for one subject's package (D-74): a reference for the request
+ * and their word that they checked who asked (Art. 12(6) leaves that check to them).
+ *
+ * The reference lands in the admin log, which is never swept, so it is held to a short line: a
+ * ticket number or a date, never the person's name (the form says so).
+ */
+export const subjectAccessBody = z
+  .object({
+    reference: z.string().trim().min(1).max(80).regex(/^[^\r\n]*$/, 'one line'),
+    requesterVerified: z.literal(true),
+  })
+  .strict();
+export type SubjectAccessBody = z.infer<typeof subjectAccessBody>;
+
+/** One entity's line on an access receipt: how many of the subject's rows the package carries. */
+export const accessedEntityCount = z.object({
+  module: z.string().min(1),
+  entityType: z.string().min(1),
+  rows: z.number().int().nonnegative(),
+});
+
+/**
+ * What a subject access request did (D-74), kept as the admin log's `after`: counts, the request's
+ * reference and the identity confirmation, never content. An admin log that kept a copy of what a
+ * person was sent would be a second copy of that person. It is what lets a controller prove they
+ * answered, when, and (through the row's `onBehalfOf`) who on their team did it.
+ */
+export const subjectAccessReceipt = z.object({
+  subjectId: z.string().min(1),
+  generatedAt: z.string().min(1),
+  reference: z.string().min(1),
+  requesterVerified: z.literal(true),
+  jurisdiction: z.string().min(1),
+  /** The scope is pinned tighter than `global`, and this route hands its data out anyway (D-74). */
+  residencyExempt: z.boolean(),
+  events: z.number().int().nonnegative(),
+  erasedEvents: z.number().int().nonnegative(),
+  records: z.array(accessedEntityCount),
+  /** The scope stores read. Empty: a scope with a store is refused until a driver can answer. */
+  stores: z.array(z.object({ binding: z.string().min(1), rows: z.number().int().nonnegative() })),
+  unreachedEntities: z.array(unreachedEntity),
+  hookEntities: z.array(unreachedEntity),
+  recipients: z.literal('not-available'),
+});
+export type SubjectAccessReceipt = z.infer<typeof subjectAccessReceipt>;

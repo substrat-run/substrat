@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, type AppRow, type AuditEntry } from '../src/lib/api';
 import { adminAction } from '@substrat-run/contracts';
-import { actionKeyWords, actionWords, actorOf, entryActorOf, entryDiff, entrySentence, entryVia, filterActivity, filterEntries, groupByDay } from '../src/lib/audit-activity';
+import { actionKeyWords, actionWords, actorOf, entryActorOf, entryDiff, entrySentence, entryVia, filterActivity, filterEntries, groupByDay, WRITTEN_SENTENCES } from '../src/lib/audit-activity';
 import { actionWords as overviewActionWords, activityRows } from '../src/lib/overview-status';
 import { AuditLog, DEEP_LINK_PAGES } from '../src/views/Audit';
 import { button, choose } from './wa';
@@ -112,6 +112,7 @@ describe('audit activity derivations (#1825)', () => {
   it('puts every admin action into the past tense', () => {
     const same = new Set(['set', 'reset', 'put']);
     for (const v of adminAction.options) {
+      if (WRITTEN_SENTENCES.has(v)) continue;
       const words = actionKeyWords(v);
       const out = actionWords(v);
       expect(out, v).not.toMatch(/^admin action:/);
@@ -124,6 +125,10 @@ describe('audit activity derivations (#1825)', () => {
     expect([actionWords('approveStoreDriverRelease'), actionWords('revokeStoreDriverRelease')]).toEqual([
       'approved store driver release', 'revoked store driver release',
     ]);
+  });
+
+  it('reads a subject access request as the act it was, from the app it was made in (D-74)', () => {
+    expect(entrySentence({ action: 'subjectAccess', scopeId: 'a' }, appName)).toBe('downloaded personal data about one person from Acme HR');
   });
 
   it('leaves an action it does not know untensed, and labelled', () => {

@@ -1526,6 +1526,13 @@ export interface DashboardClient {
   setupGithubCi(input: { repo: string; branch: string; account?: string; path?: string; previews?: "every-pr" | "on-request" }): Promise<{ ok: true; workflowPath: string; workflowUpdated: boolean; branch: string; vertical: string; previews: "every-pr" | "on-request" } | { ok: false; needsPermissions: true }>;
 
   /**
+   * Download everything this app holds about one person, to answer their access request
+   *
+   * `POST /apps/{scopeId}/subjects/{subjectId}/access` — `dashboard/subject-access`
+   */
+  subjectAccess(input: { reference: string; requesterVerified: true; scopeId: string; subjectId: string }): Promise<{ package: { kind: string }; receipt: { subjectId: string; reference: string; generatedAt: string }; html: string }>;
+
+  /**
    * Switch one peer's access to this app on or off
    *
    * `POST /apps/{scopeId}/peers/switch` — `dashboard/switch-app-peer`
@@ -1952,6 +1959,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/findings/${encodeURIComponent(String(input.id))}/status`, "PUT", omit(input, ["id"]), undefined),
     setupGithubCi: (input: Args) =>
       send("/github/setup-ci", "POST", input, undefined),
+    subjectAccess: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/subjects/${encodeURIComponent(String(input.subjectId))}/access`, "POST", omit(input, ["scopeId","subjectId"]), undefined),
     switchAppPeer: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/peers/switch`, "POST", omit(input, ["scopeId"]), undefined),
     teamTraffic: (input: Args) =>

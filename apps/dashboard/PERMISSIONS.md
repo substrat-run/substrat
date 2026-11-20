@@ -5,7 +5,7 @@
 
 # Permission snapshot — @substrat-run/dashboard
 
-11 keys · 2 modules · 4 roles
+12 keys · 2 modules · 4 roles
 
 ## 1. Registry — every key a registered manifest declares
 
@@ -19,6 +19,7 @@
 | `dashboard:read-event-lake` | Read the team’s events across all its apps from the event lake | `@substrat-run/dashboard` |
 | `dashboard:read-findings` | Read the tenant’s findings and suppress rules | `@substrat-run/dashboard` |
 | `dashboard:restore-app-data` | Replace an app’s data, and its permission state, with an uploaded dump | `@substrat-run/dashboard` |
+| `dashboard:subject-access` | Download everything an app holds about one person, to answer their access request | `@substrat-run/dashboard` |
 | `invites:read` | List invitations and their state | `@substrat-run/engine-invites` |
 | `invites:revoke` | Withdraw an invitation before it is accepted | `@substrat-run/engine-invites` |
 | `invites:send` | Invite someone to an organization | `@substrat-run/engine-invites` |
@@ -29,9 +30,9 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 
 | Role | Permissions |
 | --- | --- |
-| `admin` | `dashboard:manage-findings`, `dashboard:manage-integrations`, `dashboard:manage-members`, `dashboard:provision-app`, `dashboard:read`, `dashboard:read-event-lake`, `dashboard:read-findings`, `dashboard:restore-app-data`, `invites:read`, `invites:revoke`, `invites:send` |
+| `admin` | `dashboard:manage-findings`, `dashboard:manage-integrations`, `dashboard:manage-members`, `dashboard:provision-app`, `dashboard:read`, `dashboard:read-event-lake`, `dashboard:read-findings`, `dashboard:restore-app-data`, `dashboard:subject-access`, `invites:read`, `invites:revoke`, `invites:send` |
 | `member` | `dashboard:manage-findings`, `dashboard:provision-app`, `dashboard:read`, `dashboard:read-findings` |
-| `owner` | `dashboard:manage-findings`, `dashboard:manage-integrations`, `dashboard:manage-members`, `dashboard:provision-app`, `dashboard:read`, `dashboard:read-event-lake`, `dashboard:read-findings`, `dashboard:restore-app-data`, `invites:read`, `invites:revoke`, `invites:send` |
+| `owner` | `dashboard:manage-findings`, `dashboard:manage-integrations`, `dashboard:manage-members`, `dashboard:provision-app`, `dashboard:read`, `dashboard:read-event-lake`, `dashboard:read-findings`, `dashboard:restore-app-data`, `dashboard:subject-access`, `invites:read`, `invites:revoke`, `invites:send` |
 | `viewer` | `dashboard:read`, `dashboard:read-findings` |
 
 ## 3. Coverage — which roles hold each key
@@ -46,6 +47,7 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `dashboard:read-event-lake` | `admin`, `owner` |
 | `dashboard:read-findings` | `admin`, `member`, `owner`, `viewer` |
 | `dashboard:restore-app-data` | `admin`, `owner` |
+| `dashboard:subject-access` | `admin`, `owner` |
 | `invites:read` | `admin`, `owner` |
 | `invites:revoke` | `admin`, `owner` |
 | `invites:send` | `admin`, `owner` |
@@ -68,6 +70,7 @@ shapes.
 | `dashboard/authorize-restore` | `dashboard:restore-app-data` | the scope | `@substrat-run/dashboard` |
 | `dashboard/authorize-rewind` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/authorize-scope-change` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/authorize-subject-access` | `dashboard:subject-access` | the scope | `@substrat-run/dashboard` |
 | `dashboard/begin-connection` | `dashboard:manage-integrations` | the scope | `@substrat-run/dashboard` |
 | `dashboard/bind-app-hostname` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/consume-connect-link` | `dashboard:manage-integrations` | the scope | `@substrat-run/dashboard` |
