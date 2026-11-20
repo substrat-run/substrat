@@ -364,10 +364,10 @@ export function ReleasesCard({ ledger, onPick }: { ledger: Ledger | null; onPick
               style={{ display: 'grid', gridTemplateColumns: RELEASE_COLS, gap: '0 10px', alignItems: 'center', height: 40, padding: '0 16px', borderTop: '1px solid var(--border-subtle)', color: 'var(--text-primary)', textDecoration: 'none', cursor: 'pointer' }}
             >
               <span style={{ ...mono, fontSize: 12.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.version}>{r.version}</span>
-              <span style={{ ...mono, fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{r.pushedAt ? instant(r.pushedAt) : '—'}</span>
-              <span data-live style={{ ...mono, fontSize: 12, color, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{text}</span>
-              <span style={{ ...mono, fontSize: 12, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.actor ?? undefined}>{r.actor ?? '—'}</span>
-              <span data-installs style={{ ...mono, fontSize: 12, textAlign: 'right' }}>{r.installs ? `${r.installs.on} / ${r.installs.total}` : '—'}</span>
+              <span data-label="Pushed" style={{ ...mono, fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{r.pushedAt ? instant(r.pushedAt) : '—'}</span>
+              <span data-live data-label="Went live" style={{ ...mono, fontSize: 12, color, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{text}</span>
+              <span style={{ ...mono, fontSize: 12, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} data-label="By" title={r.actor ?? undefined}>{r.actor ?? '—'}</span>
+              <span data-installs data-label="Installs" style={{ ...mono, fontSize: 12, textAlign: 'right' }}>{r.installs ? `${r.installs.on} / ${r.installs.total}` : '—'}</span>
             </a>
           );
         })}
@@ -470,9 +470,9 @@ export function SchemaHistoryCard({ teamId, app }: { teamId: string; app: AppRow
                 <span style={{ ...mono, fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={m.version}>{m.version}</span>
                 <span style={{ ...mono, fontSize: 11.5, color: 'var(--text-tertiary)' }}>{m.moduleId}</span>
               </span>
-              <span style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-tertiary)' }}>{m.rowsChanged == null ? '—' : m.rowsChanged.toLocaleString()}</span>
-              <span style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-tertiary)' }}>{m.durationMs == null ? '—' : `${m.durationMs} ms`}</span>
-              <span style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+              <span data-label="Rows" style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-tertiary)' }}>{m.rowsChanged == null ? '—' : m.rowsChanged.toLocaleString()}</span>
+              <span data-label="Duration" style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-tertiary)' }}>{m.durationMs == null ? '—' : `${m.durationMs} ms`}</span>
+              <span data-label="Applied" style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
                 {m.appliedAt ? instant(m.appliedAt) : 'before we recorded'}
               </span>
             </div>

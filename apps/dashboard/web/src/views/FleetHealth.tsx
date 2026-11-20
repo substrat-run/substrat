@@ -175,9 +175,9 @@ function FleetTableRow({ row, last, loading, onOpen, onRetry }: { row: FleetRow;
           </>
         )}
       </span>
-      <span role="cell" style={num}>{row.requests === null ? dash : compact(row.requests)}</span>
-      <span role="cell" style={{ ...num, color: hot ? 'var(--status-danger-fg)' : 'var(--text-secondary)' }}>{rate ?? dash}</span>
-      <span role="cell" style={{ ...num, color: 'var(--text-secondary)' }}>{row.p95 === null ? dash : duration(row.p95)}</span>
+      <span role="cell" data-label="Requests" style={num}>{row.requests === null ? dash : compact(row.requests)}</span>
+      <span role="cell" data-label="Errors" style={{ ...num, color: hot ? 'var(--status-danger-fg)' : 'var(--text-secondary)' }}>{rate ?? dash}</span>
+      <span role="cell" data-label="p95" style={{ ...num, color: 'var(--text-secondary)' }}>{row.p95 === null ? dash : duration(row.p95)}</span>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type PointerEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent, type ReactNode } from 'react';
 import { Button, Input } from '@substrat-run/ui/wa';
 import { api, isApiError, type ReleaseMarker, type RequestFacets, type RequestRecord, type RequestVolume } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
@@ -592,6 +592,10 @@ function RequestList({
   const head = { fontSize: 11, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--text-tertiary)' } as const;
   return (
     <div style={{ minWidth: 0 }}>
+      {/* On a phone the header and rows scroll sideways together inside the card (app.css),
+          so every column stays reachable and lined up under its heading. */}
+      <div className="m-scroll-x" style={{ '--m-scroll-min': '600px' } as CSSProperties}>
+      <div>
       <div style={{ display: 'grid', gridTemplateColumns: ROW_GRID, gap: 10, padding: '8px 16px', borderBottom: '1px solid var(--border-subtle)', ...head }}>
         <span>Time</span>
         <span>Operation</span>
@@ -636,6 +640,8 @@ function RequestList({
           </button>
         );
       })}
+      </div>
+      </div>
       <div style={{ padding: '10px 16px', fontSize: 12, color: 'var(--text-tertiary)' }}>
         Showing the latest <span style={{ fontFamily: 'var(--font-mono)' }}>{rows.length}</span>
         {total !== null && (

@@ -185,7 +185,7 @@ export function Team({
               </span>
               <span><MonoTag>{m.role_key}</MonoTag></span>
               <span><Pill kind={s.kind}>{s.label}</Pill></span>
-              <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{fmtDate(m.joined_at ?? m.invited_at)}</span>
+              <span data-label="Added" style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{fmtDate(m.joined_at ?? m.invited_at)}</span>
               <span style={{ textAlign: 'right' }}>
                 {canManage && m.status === 'invited' && m.invitation_id && (
                   <span style={{ display: 'inline-flex', gap: 4, justifyContent: 'flex-end' }}>

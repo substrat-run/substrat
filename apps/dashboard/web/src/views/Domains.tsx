@@ -259,7 +259,7 @@ function DomainRowView({
             </span>
           )}
         </span>
-        <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{relativeTime(d.createdAt)}</span>
+        <span data-label="Added" style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{relativeTime(d.createdAt)}</span>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 4 }}>
           {hasRecords && (
             <IconButton label="Show DNS records" size="sm" onClick={() => setOpen((o) => !o)} style={{ ...ROW_ICON, transform: open ? 'rotate(180deg)' : 'none' }}>

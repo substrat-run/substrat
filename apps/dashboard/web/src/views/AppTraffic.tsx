@@ -510,11 +510,11 @@ function SurfaceTable({
               <span style={{ fontSize: 13, fontWeight: 500 }}>{r.name}</span>
               {r.sub && <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.sub}</span>}
             </span>
-            <span style={num}>{r.requests}</span>
-            <span style={num}>{r.errors}</span>
-            <span style={{ ...num, color: r.rateHigh ? 'var(--status-danger-fg)' : 'var(--text-primary)' }}>{r.rate}</span>
-            <span style={{ ...num, color: 'var(--text-secondary)' }}>{r.p50}</span>
-            <span style={{ ...num, color: r.p95Slow ? 'var(--status-warning-fg)' : 'var(--text-secondary)' }}>{r.p95}</span>
+            <span data-label="Requests" style={num}>{r.requests}</span>
+            <span data-label="Errors" style={num}>{r.errors}</span>
+            <span data-label="Error rate" style={{ ...num, color: r.rateHigh ? 'var(--status-danger-fg)' : 'var(--text-primary)' }}>{r.rate}</span>
+            <span data-label="p50" style={{ ...num, color: 'var(--text-secondary)' }}>{r.p50}</span>
+            <span data-label="p95" style={{ ...num, color: r.p95Slow ? 'var(--status-warning-fg)' : 'var(--text-secondary)' }}>{r.p95}</span>
           </a>
         ))
       )}

@@ -101,9 +101,24 @@ a:hover {
      sideways instead of stacking. The class goes on a wrapper, so the table keeps its width
      whole and anything positioned against it stays where it was drawn. */
   .m-scroll-x { overflow-x: auto; }
-  .m-scroll-x > * { min-width: 880px; }
-  /* A table's column-header row: with the columns gone it labels nothing. */
-  .m-hide { display: none !important; }
+  .m-scroll-x > * { min-width: var(--m-scroll-min, 880px); }
+  /* A table's column-header row: with the columns gone it labels nothing on screen, so it is
+     hidden visually only, and a screen reader still has its headers. Each cell whose value
+     does not say what it is carries `data-label`, drawn in front of the value instead. */
+  .m-hide {
+    position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important;
+    margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important; border: 0 !important;
+  }
+  .m-row > [data-label]::before {
+    content: attr(data-label);
+    margin-right: 6px;
+    font-family: var(--font-sans), system-ui, sans-serif;
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
   /* A fixed-width toolbar field takes the row instead. */
   .m-fill { width: 100% !important; min-width: 0 !important; max-width: 100% !important; flex: 1 1 100% !important; }
 }

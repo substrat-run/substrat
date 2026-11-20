@@ -1073,7 +1073,7 @@ export function Deployments({ teamId, app, canManageApp }: { teamId: string; app
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {chans.length === 0 ? <span style={{ color: 'var(--text-tertiary)' }}>—</span> : chans.map((ch) => <Pill key={ch} kind={ch === 'prod' ? 'success' : 'neutral'}>{ch}</Pill>)}
                 </span>
-                <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{v.createdAt ? relativeTime(v.createdAt) : '—'}</span>
+                <span data-label="Pushed" style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{v.createdAt ? relativeTime(v.createdAt) : '—'}</span>
                 {/* Pin THIS scope to an exact version (#509 (c)) — a canary/rollback distinct from
                     "Update to latest". Only an admitted version that isn't already running. */}
                 <span style={{ textAlign: 'right', display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
@@ -2074,8 +2074,8 @@ function Previews({ teamId, app, canClaimOwnerSeat }: { teamId: string; app: App
                   </span>
                 )}
               </span>
-              <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{s.forkedAt ? relativeTime(s.forkedAt) : '—'}</span>
-              <span style={{ fontSize: 12 }}>
+              <span data-label="Taken" style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{s.forkedAt ? relativeTime(s.forkedAt) : '—'}</span>
+              <span data-label="Retention" style={{ fontSize: 12 }}>
                 <Pill kind={s.expiresAt ? 'warning' : 'neutral'}>{expiresIn(s.expiresAt)}</Pill>
               </span>
               <span style={{ display: 'flex', justifyContent: 'flex-end' }}>
@@ -2991,7 +2991,7 @@ function AppDomains({ teamId, app, authServers }: { teamId: string; app: AppRow;
                     </span>
                   )}
                 </span>
-                <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{h.createdAt ? shortDate(h.createdAt) : '—'}</span>
+                <span data-label="Added" style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{h.createdAt ? shortDate(h.createdAt) : '—'}</span>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 4 }}>
                   {hasRecords && (
                     <IconButton
