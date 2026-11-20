@@ -372,12 +372,14 @@ Usage:
                                               delta is no longer the one <digest> named
   substrat init --ci github [dir]             write .github/workflows/substrat-deploy.yml —
                     [--branch <b>] [--path <packageDir>] [--release trunk|changesets]
-                    [--out <path>] [--force]
+                    [--previews every-pr|on-request] [--out <path>] [--force]
                                               the same workflow the dashboard's one-click CI
                                               setup commits: merge deploys prod, a PR gets a
                                               preview + its URL commented, closing it reaps.
                                               --release changesets when the repo owns its
-                                              version (only a version move releases)
+                                              version (only a version move releases);
+                                              --previews on-request previews only a PR
+                                              labelled 'preview'
 
 'substrat push' defaults everything from the vertical's package.json — run it from inside the
 directory with no flags. Override any of: --slug, --name, --version. The slug/name come from a
@@ -1425,7 +1427,7 @@ async function cmdInit(): Promise<void> {
     console.error(
       'usage: substrat init --ci github [dir] [--slug <slug>] [--branch <branch>]\n' +
         '                                [--path <packageDir>] [--release trunk|changesets]\n' +
-        '                                [--out <path>] [--force]\n' +
+        '                                [--previews every-pr|on-request] [--out <path>] [--force]\n' +
         (ci ? `\n'--ci ${ci}' is not supported — GitHub Actions is the only generator today.` : ''),
     );
     process.exit(1);
@@ -1446,19 +1448,28 @@ async function cmdInit(): Promise<void> {
     console.error(`--release must be 'trunk' or 'changesets' (got '${releaseFlag}')`);
     process.exit(1);
   }
+  // `every-pr` is the file this command always wrote. `on-request` previews only a PR labelled
+  // `preview`; without the dashboard's GitHub App there is no Build preview link, so the label
+  // is added by hand.
+  const previewsFlag = flag('previews') ?? 'every-pr';
+  if (previewsFlag !== 'every-pr' && previewsFlag !== 'on-request') {
+    console.error(`--previews must be 'every-pr' or 'on-request' (got '${previewsFlag}')`);
+    process.exit(1);
+  }
   const branch = flag('branch') ?? detectDefaultBranch(dir);
   const cpUrl = (flag('cp') ?? loadConfig().controlPlaneUrl ?? 'https://console.substrat.net/api').replace(/\/$/, '');
 
   const { file, overwritten } = writeCiWorkflow({
     dir, slug, branch, cpUrl,
     release: releaseFlag,
+    previews: previewsFlag,
     force: argv.includes('--force'),
     ...(flag('out') ? { path: flag('out')! } : {}),
     ...(packageDir ? { packageDir } : {}),
   });
   console.log(`✓ ${overwritten ? 'replaced' : 'wrote'} ${file}`);
   console.log(`  ${slug}${packageDir ? ` (${packageDir})` : ''} · deploys on push to '${branch}' · control plane ${cpUrl}`);
-  process.stdout.write(nextStepsMessage(slug, releaseFlag));
+  process.stdout.write(nextStepsMessage(slug, releaseFlag, previewsFlag));
 }
 
 /**

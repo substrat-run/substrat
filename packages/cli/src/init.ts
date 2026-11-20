@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { deployWorkflowYaml, type ReleaseMode } from '@substrat-run/contracts';
+import { deployWorkflowYaml, type PreviewMode, type ReleaseMode } from '@substrat-run/contracts';
 
 /**
  * `substrat init --ci github` — write the deploy workflow into the repo.
@@ -27,6 +27,8 @@ export interface InitCiOptions {
   /** Control-plane API base baked into the workflow. */
   cpUrl: string;
   release: ReleaseMode;
+  /** Which PRs preview; omitted, every PR (the file this command always wrote). */
+  previews?: PreviewMode;
   /** Overwrite an existing file (default: refuse, so a customized workflow is never clobbered). */
   force: boolean;
   /** Where to write, relative to `dir`. */
@@ -71,6 +73,7 @@ export function writeCiWorkflow(opts: InitCiOptions): InitCiResult {
       slug: opts.slug,
       cpUrl: opts.cpUrl,
       release: opts.release,
+      ...(opts.previews ? { previews: opts.previews } : {}),
       ...(opts.packageDir ? { path: opts.packageDir } : {}),
     }),
   );
@@ -94,7 +97,7 @@ export function detectDefaultBranch(dir: string): string {
 }
 
 /** The follow-up a generated workflow needs before its first run can authenticate. */
-export function nextStepsMessage(slug: string, release: ReleaseMode): string {
+export function nextStepsMessage(slug: string, release: ReleaseMode, previews: PreviewMode = 'every-pr'): string {
   const lines = [
     '',
     'Next:',
@@ -114,6 +117,15 @@ export function nextStepsMessage(slug: string, release: ReleaseMode): string {
     '                              each PR push, alongside the sticky one',
     '',
   ];
+  if (previews === 'on-request') {
+    lines.push(
+      "Previews: on request — only a PR labelled 'preview' builds one, and every push to it",
+      'updates it. Add the label on GitHub; removing it stops updating the preview. To',
+      'preview every PR, run this again with `--previews every-pr --force` (it replaces the',
+      'file, local edits included).',
+      '',
+    );
+  }
   if (release === 'changesets') {
     lines.push(
       'Release mode: changesets — a merge releases ONLY when package.json version changed,',

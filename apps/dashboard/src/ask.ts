@@ -197,6 +197,8 @@ export const ASK_UNEXPOSED: Readonly<Record<string, string>> = {
   'dashboard/fleet-health': 'fleet health was not an assistant tool before this route moved',
   'dashboard/identity-mirror': 'identity links were not an assistant tool before this route moved',
   'dashboard/github-workflow-preview': 'the deploy workflow was not an assistant tool before this route moved',
+  'dashboard/github-repo-link': 'each read asks a repo’s link for its GitHub settings; the setup card reads it, not a question',
+  'dashboard/github-preview-request': 'each read calls GitHub with the App’s token; the Build preview page polls it, not an assistant tool',
   'dashboard/list-app-snapshots': 'app preview copies were not an assistant tool before this route moved',
   'dashboard/get-app-env': 'configuration values were not an assistant tool before this route moved',
   'dashboard/list-catalog': 'the install catalog was not an assistant tool before this route moved',

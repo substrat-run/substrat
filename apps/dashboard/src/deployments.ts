@@ -184,6 +184,27 @@ export async function assertOwnedFromCp(
   return mine;
 }
 
+/**
+ * The row of the team's own vertical a BARE name (`helpdesk`) refers to. The registry keys a
+ * vertical by `<tenantSlug>/<name>`, and the control plane resolves a bare name to that id
+ * from the tenant header, but one-click setup stores only the bare name on a repo's link, so
+ * a gate that compares it with the registry id refuses every vertical the team owns. Matched
+ * on the name after the tenant prefix, inside the list already narrowed to this tenant.
+ */
+export function ownedByBareName<V extends { slug: string }>(owned: readonly V[], name: string): V | undefined {
+  return owned.find((v) => v.slug === name || v.slug.slice(v.slug.indexOf('/') + 1) === name);
+}
+
+/** `assertOwnedFromCp` for a bare name, as a repo link stores it. */
+export async function assertOwnedBareFromCp(
+  cp: TenantNarrowedControlPlane,
+  name: string,
+): Promise<Awaited<ReturnType<TenantNarrowedControlPlane['listVerticals']>>[number]> {
+  const mine = ownedByBareName(await cp.listVerticals(), name);
+  if (!mine) throw notOwned(name);
+  return mine;
+}
+
 /** `ownedDeploymentFromCp`, for a route that must refuse an unowned slug rather than read null. */
 export async function ownedDeploymentOrThrow(cp: TenantNarrowedControlPlane, slug: string): Promise<Deployment> {
   const deployment = await ownedDeploymentFromCp(cp, slug);

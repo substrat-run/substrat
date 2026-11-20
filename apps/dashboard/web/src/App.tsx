@@ -33,10 +33,17 @@ import { Billing } from './views/Billing';
 import { Observability } from './views/Observability';
 import { AuditLog } from './views/Audit';
 import { Settings } from './views/Settings';
+import { PreviewRequest } from './views/PreviewRequest';
 
 /** The path route, parsed. `section` maps to the sidebar; `app`/`tab`/`vertical` drive detail. */
 interface Route {
-  section: NavKey | 'new';
+  section: NavKey | 'new' | 'preview-request';
+  /**
+   * For `preview-request`, the pull request a "No preview yet" comment links to. `team` is
+   * the team's id: the link is written by the repo's link DO, which knows the team's id and
+   * not its URL slug, so it rides the query string.
+   */
+  request?: { team?: string; repo: string; pr: number };
   /** For `apps`, the scope id in the path. For `audit` and `observability`, the OPTIONAL
    *  app filter the query string carries — the page is team-level, so the app narrows it,
    *  not addresses it. */
@@ -80,11 +87,18 @@ function parsePath(): Route {
   // `/analytics` would otherwise be read as a team called "analytics" and land on the
   // overview, and the alias would be unreachable.
   let team: string | undefined;
-  if (parts[0] && !SECTIONS.includes(parts[0] as NavKey) && !['invite', 'deployments', 'analytics', 'api'].includes(parts[0])) {
+  if (parts[0] && !SECTIONS.includes(parts[0] as NavKey) && !['invite', 'deployments', 'analytics', 'api', 'preview-request'].includes(parts[0])) {
     team = parts[0];
     parts = parts.slice(1);
   }
   if (parts[0] === 'apps' && parts[1] === 'new') return { section: 'new', team };
+  if (parts[0] === 'preview-request') {
+    const q = new URLSearchParams(window.location.search);
+    const pr = Number(q.get('pr'));
+    const repo = q.get('repo') ?? '';
+    if (repo && Number.isInteger(pr) && pr > 0) return { section: 'preview-request', team, request: { team: q.get('team') ?? undefined, repo, pr } };
+    return { section: 'verticals', team };
+  }
   // The tab may carry a sub-section (settings/environment); AppDetail parses it.
   if (parts[0] === 'apps' && parts[1]) return { section: 'apps', app: parts[1], tab: parts.slice(2).join('/') || 'overview', team };
   // A vertical's slug (acme-co/helpdesk) carries a slash. In-app links URI-encode it into one
@@ -1026,7 +1040,7 @@ export function App() {
 
   const currentTeam = me.teams?.find((t) => t.id === me.currentTeamId);
   const org = currentTeam?.name ?? orgFrom(me.email);
-  const activeNav: NavKey = route.section === 'new' ? 'apps' : route.section;
+  const activeNav: NavKey = route.section === 'new' ? 'apps' : route.section === 'preview-request' ? 'verticals' : route.section;
 
   const authServers = apps.filter((a) => oidcProviderSlugs.has(a.vertical_slug) && a.status === 'active' && a.hostname);
 
@@ -1034,6 +1048,7 @@ export function App() {
   if (route.section === 'apps' || route.section === 'new') crumbs.push({ label: 'Apps', onClick: () => go('/apps') });
   if (route.section === 'new') crumbs.push({ label: 'New app' });
   if (route.section === 'apps' && openApp) crumbs.push({ label: openApp.name });
+  if (route.section === 'preview-request') crumbs.push({ label: 'Verticals', onClick: () => go('/verticals') }, { label: 'Build preview' });
   if (route.section === 'verticals') {
     crumbs.push({ label: 'Verticals', onClick: route.vertical ? () => go('/verticals') : undefined });
     if (openVertical) crumbs.push({ label: openVertical.name });
@@ -1178,6 +1193,14 @@ export function App() {
           onNav={(q) => go(obsPath(q))}
           teamId={me.currentTeamId}
           canManageFindings={canManageFindings(members, me.principal)}
+        />
+      ) : route.section === 'preview-request' && route.request ? (
+        // Keyed by the request: another PR is another page, never this one's state and polls.
+        <PreviewRequest
+          key={`${route.request.team ?? me.currentTeamId}/${route.request.repo}#${route.request.pr}`}
+          teamId={route.request.team ?? me.currentTeamId}
+          repo={route.request.repo}
+          pr={route.request.pr}
         />
       ) : route.section === 'settings' ? (
         <Settings org={org} teamId={me.currentTeamId} slug={currentTeam?.slug ?? ''} name={me.name} email={me.email} isTeamAdmin={isTeamAdmin} />

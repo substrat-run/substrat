@@ -222,7 +222,8 @@ substrat preview create . --tag pr-$PR-$RUN --empty --ttl 24h   # per-build: fre
 
 You do not have to write that yourself — [`substrat init --ci github`](/reference/cli#init) and the
 dashboard's [one-click CI setup](/guide/deploying#deploy-from-ci) generate the same workflow, which
-creates the sticky preview on every PR push and comments the URL back. The per-build call is **opt-in**,
+creates the sticky preview on each push to a previewed PR ([which PRs those are](#which-pull-requests-get-a-preview))
+and comments the URL back. The per-build call is **opt-in**,
 because a frozen scope per build is a real cost: set the repository variable `SUBSTRAT_PER_BUILD_PREVIEW`
 to `1` and the same workflow adds it, with the PR comment then naming **both** URLs — the one that
 follows the PR and the one frozen to this build.
@@ -230,6 +231,44 @@ follows the PR and the one frozen to this build.
 The per-build preview is deliberately `--empty` rather than a fork: it is thrown away within a day, so
 copying prod data into it on every push would be pure cost. If you need a frozen copy *with* data,
 that is a snapshot of the sticky preview, not a per-build one.
+
+## Which pull requests get a preview
+
+Hosted builds run **one at a time per vertical**: a preview build, a deploy from `main` and a
+builder-studio turn for the same vertical queue behind each other. A preview of every push to every PR
+puts every one of those builds in front of the merge that deploys prod. So the generated workflow has two
+modes:
+
+| Mode | Which PRs preview | How a PR asks |
+|---|---|---|
+| **On request** (`on-request`) | only a PR carrying the `preview` label | press **Build preview** in the PR comment, or add the label on GitHub |
+| **Every PR** (`every-pr`) | every PR, on every push | nothing to ask: opening the PR is enough |
+
+**A repo you set up in the dashboard for the first time previews on request.** A repo set up before the
+choice existed keeps previewing every PR. Change it where the repo is set up (Verticals → **Deploy from
+GitHub**, pick the repo, **Preview every PR**): updating the deployment commits the workflow again in the
+new mode. `substrat init --ci github` writes `every-pr` unless you pass `--previews on-request`.
+
+On request, it works like this:
+
+1. **A PR opens.** The platform comments on it: *no preview yet*, with a **Build preview** link. In a
+   monorepo, only a PR that changes the vertical's directory, a workflow, or the root `package.json` or
+   `pnpm-lock.yaml` gets the comment: the workflow is filtered to those paths, so any other PR could never
+   build a preview, label or not.
+2. **Build preview.** The link opens a dashboard page that shows the PR and a button; opening the page
+   changes nothing. Pressing the button checks you may deploy this vertical (the same role that promotes
+   it), then the GitHub App adds the `preview` label to the PR, creating the label in the repo if it has
+   none. The page says *building…*.
+3. **CI builds it.** The label starts the workflow's preview job. When the preview exists, the comment
+   shows its URL as it does in every-PR mode, and the page sends you to it.
+4. **Every later push** to the labelled PR updates the preview, as in every-PR mode.
+
+Adding the label by hand does the same thing, and is the only way in for a repo whose workflow came from
+`substrat init` rather than the dashboard (no GitHub App, so no comment and no button).
+
+**Removing the label stops updating the preview; it does not delete it.** The preview keeps serving the
+last build until the PR closes or its TTL lapses, and adding the label again rebuilds it. **Closing the
+PR reaps the preview**, labelled or not.
 
 ## A long-lived test environment
 

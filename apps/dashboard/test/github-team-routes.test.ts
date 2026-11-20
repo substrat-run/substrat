@@ -74,6 +74,8 @@ describe('GitHub import acts on the team the request names (#2170)', () => {
   let installations: string[];
   let minted: string[];
   let links: Array<{ tenantId: string; repo: string }>;
+  /** Whether the fake repo already carries the deploy workflow on its branch. */
+  let workflowCommitted: boolean;
 
   /** A new team owned by the login `sub`; answers its dashboard scope. */
   const seat = async (team: TenantId, slug: string, sub = OWNER) => {
@@ -112,6 +114,7 @@ describe('GitHub import acts on the team the request names (#2170)', () => {
     installations = [];
     minted = [];
     links = [];
+    workflowCommitted = false;
 
     vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) => {
       const path = new URL(String(url)).pathname;
@@ -124,7 +127,10 @@ describe('GitHub import acts on the team the request names (#2170)', () => {
       if (installation) return Response.json({ account: { login: `acct-${installation[1]}` } });
       if (path.endsWith('/actions/secrets/public-key')) return Response.json({ key: btoa(String.fromCharCode(...new Uint8Array(32).fill(7))), key_id: 'k1' });
       if (path.includes('/actions/secrets/')) return new Response(null, { status: 201 });
-      if (path.includes('/contents/')) return new Response(null, { status: init?.method === 'PUT' ? 201 : 404 });
+      if (path.includes('/contents/')) {
+        if (init?.method === 'PUT') return new Response(null, { status: 201 });
+        return workflowCommitted ? Response.json({ sha: 'blob-1' }) : new Response(null, { status: 404 });
+      }
       if (path === '/installation/repositories') return Response.json({ repositories: [] });
       return new Response('unexpected GitHub call', { status: 500 });
     });
@@ -153,7 +159,8 @@ describe('GitHub import acts on the team the request names (#2170)', () => {
       },
       GITHUB_REPO_LINK: {
         idFromName: (name: string) => name,
-        get: () => ({ setLink: async (link: { tenantId: string; repo: string }) => void links.push(link) }),
+        // A repo never set up before: no stored link, so setup resolves its preview mode afresh.
+        get: () => ({ getLink: async () => null, setLink: async (link: { tenantId: string; repo: string }) => void links.push(link) }),
       },
     };
   });
@@ -179,10 +186,26 @@ describe('GitHub import acts on the team the request names (#2170)', () => {
   it('one-click CI set up from a tab on team A wires the repo to A, whichever team the cookie pins', async () => {
     const res = await fromTab(teamB, 'POST', `/api/teams/${teamA}/github/setup-ci`, { repo: 'acme/helpdesk', branch: 'main' });
     expect(res.status, await res.clone().text()).toBe(200);
-    expect(await res.json()).toMatchObject({ ok: true, vertical: 'team-a/helpdesk' });
+    // A repo set up for the first time (no link, no workflow file yet) previews on request.
+    expect(await res.json()).toMatchObject({ ok: true, vertical: 'team-a/helpdesk', previews: 'on-request' });
     expect(installations).toEqual(['inst-a']);
     expect(minted).toEqual([teamA]);
-    expect(links).toEqual([{ tenantId: teamA, slug: 'helpdesk', repo: 'acme/helpdesk' }]);
+    expect(links).toEqual([{ tenantId: teamA, slug: 'helpdesk', repo: 'acme/helpdesk', previews: 'on-request', path: null }]);
+  });
+
+  it('the setup card shows the preview mode setup then commits, whether or not the workflow is already there', async () => {
+    // A repo set up by hand (or before repo links existed) keeps previewing every PR; one set
+    // up for the first time previews on request. The card must not show the other one.
+    for (const [committed, mode] of [[true, 'every-pr'], [false, 'on-request']] as const) {
+      workflowCommitted = committed;
+      links = [];
+      const card = await fromTab(teamB, 'GET', `/api/teams/${teamA}/github/repo-link?repo=acme/helpdesk&branch=main`);
+      expect(card.status, await card.clone().text()).toBe(200);
+      expect(await card.json()).toEqual({ linked: false, slug: null, previews: mode });
+      const setup = await fromTab(teamB, 'POST', `/api/teams/${teamA}/github/setup-ci`, { repo: 'acme/helpdesk', branch: 'main' });
+      expect(await setup.json()).toMatchObject({ ok: true, previews: mode });
+      expect(links).toEqual([expect.objectContaining({ previews: mode })]);
+    }
   });
 
   /** Nothing reached GitHub, the push-token mint or a repo link. */

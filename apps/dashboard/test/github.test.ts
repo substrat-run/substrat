@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
 import nacl from 'tweetnacl';
 import { blake2b } from '@noble/hashes/blake2b';
-import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, setupRepoCi } from '../src/github.js';
+import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, labelPullRequest, listInstallationRepos, listRepoBranches, setupRepoCi } from '../src/github.js';
 import { sealForGithub } from '../src/github-seal.js';
 
 /**
@@ -239,6 +239,16 @@ describe('GitHub App client', () => {
       expect(wf.sha).toBe('abc123');
     });
 
+    it('tells a workflow function whether the file already existed, and commits what it returns', async () => {
+      // What keeps a repo that already previewed every PR doing so (resolvePreviewMode).
+      for (const existingSha of [undefined, 'abc123']) {
+        const { writes, fetchImpl } = fakeCiGithub(existingSha ? { existingSha } : {});
+        await setupRepoCi(cfgFor(fetchImpl), '987', { ...input, workflowContent: (existed) => `existed: ${existed}\n` });
+        const wf = writes[1]!.body as { content: string };
+        expect(Buffer.from(wf.content, 'base64').toString()).toBe(`existed: ${Boolean(existingSha)}\n`);
+      }
+    });
+
     const wf = (release?: 'trunk' | 'changesets') =>
       deployWorkflowYaml({ branch: 'main', slug: 'hr-portal', cpUrl: 'https://console.example/api', ...(release ? { release } : {}) });
 
@@ -436,6 +446,27 @@ describe('GitHub App client', () => {
       expect(yaml).toContain('set -euo pipefail');
     });
 
+    it('previews on request only a PR carrying the preview label, and every PR otherwise', () => {
+      const base = { branch: 'main', slug: 'hr-portal', cpUrl: 'https://console.example/api' };
+      // `every-pr` is the file this generator always produced, byte for byte.
+      expect(deployWorkflowYaml({ ...base, previews: 'every-pr' })).toBe(deployWorkflowYaml(base));
+      const yaml = deployWorkflowYaml({ ...base, previews: 'on-request' });
+      const previewJob = yaml.split('\n  preview:\n')[1]!.split('\n  preview_cleanup:\n')[0]!;
+      // The label is added by an event of its own, so `labeled` has to start the workflow.
+      expect(yaml).toContain('types: [opened, synchronize, reopened, labeled, closed]');
+      // On the PR (a push to a labelled PR rebuilds; an unlabelled one builds nothing), and on a
+      // `labeled` delivery only when it is this label.
+      expect(previewJob).toContain("contains(github.event.pull_request.labels.*.name, 'preview') &&");
+      // A closed PR can still be labelled; only `closed` reaps, so that preview would outlive it.
+      expect(previewJob).toContain(
+        "(github.event.action != 'labeled' || (github.event.label.name == 'preview' && github.event.pull_request.state == 'open'))",
+      );
+      expect(previewJob).toContain("github.event.action != 'closed' &&");
+      // Closing still reaps, labelled or not: a PR whose label was removed may hold a preview.
+      expect(yaml).toContain("if: github.event_name == 'pull_request' && github.event.action == 'closed'");
+      expect(yaml).not.toContain('unlabeled');
+    });
+
     it('offers an opt-in per-build preview that is fresh, frozen and short-lived', () => {
       const yaml = wf();
       expect(yaml).toContain("if: vars.SUBSTRAT_PER_BUILD_PREVIEW != ''");
@@ -512,6 +543,28 @@ describe('GitHub App client', () => {
       for (const bad of ['../sibling', '/abs', 'a//b', 'a/./b', 'a/../b']) {
         expect(() => deployWorkflowYaml({ ...base, path: bad })).toThrow(/repo-relative/);
       }
+    });
+
+    it('labels a PR, creating the label first and taking an existing one as it is', async () => {
+      const label = { name: 'preview', color: '1f6feb', description: 'Build a Substrat preview' };
+      for (const createStatus of [201, 422]) {
+        const writes: Array<{ url: string; body: unknown }> = [];
+        const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+          const u = String(url);
+          if (u.includes('/access_tokens')) return json({ token: 'ghs_installation_token' });
+          writes.push({ url: u.split('/repos/')[1]!, body: JSON.parse(String(init?.body)) });
+          return json({}, u.endsWith('/labels') && !u.includes('/issues/') ? createStatus : 200);
+        }) as unknown as typeof globalThis.fetch;
+        expect(await labelPullRequest(cfgFor(fetchImpl), '987', 'acme-inc/hr-portal', 42, label)).toEqual({ ok: true });
+        expect(writes).toEqual([
+          { url: 'acme-inc/hr-portal/labels', body: label },
+          { url: 'acme-inc/hr-portal/issues/42/labels', body: { labels: ['preview'] } },
+        ]);
+      }
+      // An installation that may not write labels: a re-approve, never a retry.
+      const denied = (async (url: string | URL | Request) =>
+        String(url).includes('/access_tokens') ? json({ token: 't' }) : json({}, 403)) as unknown as typeof globalThis.fetch;
+      expect(await labelPullRequest(cfgFor(denied), '987', 'acme-inc/hr-portal', 42, label)).toEqual({ needsPermissions: true });
     });
 
     it('surfaces missing App write-permissions as needsPermissions, before any write', async () => {

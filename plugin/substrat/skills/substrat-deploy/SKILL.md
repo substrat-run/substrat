@@ -143,6 +143,6 @@ settles it.
   land pending and prod promotion is a staff decision again. `--promote prod` will not
   complete it. Say so rather than retrying.
 - **CI.** `substrat init --ci github` writes the workflow that deploys prod on merge and
-  gives every PR a preview URL. If the user wants deploys to stop being something a person
+  gives every PR a preview URL (`--previews on-request`: only a PR labelled `preview`). If the user wants deploys to stop being something a person
   runs, that is the answer — and the ack checkpoints still apply there, which is why the
   workflow does not carry the flags either.
