@@ -98,8 +98,9 @@ properties of the substrate rather than as projects.
 ## What is not in the box
 
 Substrat is not a BaaS, not an ORM, and not a low-code builder. It does not generate your
-UI, though it will generate your API client. It has opinions about tenancy and none about
-CSS.
+screens. It generates your API client, and publishes a few optional web components for the
+parts of a business app's screens that are hard and the same everywhere (chapter 9). It has
+opinions about tenancy and none about which framework draws your screens.
 
 It is also not finished. [What Substrat doesn't have (yet)](/guide/what-substrat-lacks)
 is the current list, and this book flags the relevant gaps where they arise rather than
@@ -130,7 +131,14 @@ booking, and has no screens and no vocabulary.
 
 **Vertical.** A module that owns everything a user touches in one trade: the words, roles,
 prices and workflow. It composes engines. It also ships the worker around the module: HTTP
-routes, authentication and the app.
+routes, the sign-in door and the app. What an author writes for a module and for a vertical is
+already close. The line that matters is between code sharing one scope and apps that each own
+one, and chapter 8 draws it.
+
+**Door.** The part of a vertical's worker that signs a person in and maps their login to a
+principal in the scope, before any operation runs: `workerDoor` (chapter 3). It is where a person
+is joined on first arrival, where an invited person is admitted, and where a plugin asks another
+app who someone is.
 
 **Harness.** Code in the vertical's worker that is *not* module code: the server, the seed, the
 routes, the tests. The rules in chapter 4 bind module code, and harness code is where the
@@ -160,14 +168,28 @@ executes it later and writes the outcome back.
 tenants and scopes exist, where they route, who holds which role, and the admin log.
 
 **Peer.** Another app in the same tenant, calling as an app identity under permissions
-the receiving app declares. Its scope remains a separate transaction (chapter 7).
+the receiving app declares. Its scope remains a separate transaction (chapter 8).
 
 **Export, import, watermark.** A producer declares which event types may leave its
 scope. A consumer declares which it accepts from that producer and saves its position
-in the stream as a watermark in its own database (chapter 7).
+in the stream as a watermark in its own database (chapter 8).
 
 **Capability link.** A secret carrying bounded authority over an entity subtree,
 checked on every use. It is distinct from a grant to a named person (chapter 6).
+
+**Plugin.** A vertical that owns no people of its own. It signs people in at the same issuer as
+another app in the tenant and asks that app who each login is (chapter 8).
+
+**Delegated call.** One app calling another *as the signed-in person*, with a token the issuer
+exchanged for them. What the receiving app declares it may delegate is a ceiling on every check
+(chapter 8).
+
+**Store.** A platform-run object attached to a scope or a tenant, reached through a binding the
+vertical declares, with a driver the platform registers. It is not part of the scope's own
+database (chapter 2).
+
+**Request id.** The one id a request carries everywhere: on its response header, on every event
+and log line it caused, and on every outbound call it made (chapter 12).
 
 ## Two pictures, one system
 

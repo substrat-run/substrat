@@ -1,8 +1,8 @@
 ---
-description: "The four audit witnesses — outbox, denials, admin log, access log — and how events drain from every scope into an Iceberg table in R2 that R2 SQL can query."
+description: "The four audit witnesses (outbox, denials, admin log, access log), what a refusal may say to whom, and how events drain from every scope into an Iceberg table in R2."
 ---
 
-# 11. The audit trail and the lake
+# 13. The audit trail and the lake
 
 "Audit log" is one phrase for several records, kept in different places, by different code,
 under different retention. Asking which one is *the* audit log is how a compliance question
@@ -14,10 +14,10 @@ fleet.
 
 | Record | Lives in | Written by | Witnesses | Kept |
 |---|---|---|---|---|
-| **The outbox** | each scope | the kernel, inside the operation's transaction | every *allowed* mutation, with actor, authorization chain, impersonation, operation, version, and the call it belonged to | 90 days after it is drained to the lake, then in the lake |
-| **The denial log** | each scope | the kernel, after the rollback | every *enforced refusal*: actor, permission, node, operation, impersonation | for the life of the scope |
+| **The outbox** | each scope | the kernel, inside the operation's transaction | every *allowed* mutation, with actor, authorization chain, impersonation, delegation, operation, version, and the request it belonged to | 90 days after it is drained to the lake, then in the lake |
+| **The denial log** | each scope | the kernel, after the rollback | every *enforced refusal*: actor, permission, node, operation, impersonation, delegation, request | for the life of the scope |
 | **The admin log** | the control-plane directory | every audited `HostAdmin` verb | every *privileged change*: who provisioned, suspended, granted, admitted, rewound, reaped, with before and after | **never swept**, and it outlives a reaped tenant |
-| **The access log** | the directory, then R2 | every staff or delegated read | every *look*: who read what in which tenant, with how many rows | drained to R2, pruned per retention |
+| **The access log** | the directory, then R2 | every staff or delegated read | every *look*: who read what in which tenant, for whom, with how many rows | drained to R2, pruned per retention |
 
 The delivery journal (chapter 5) is a fifth record, but it is an operational one. It says what
 happened to an event, not who did something.
@@ -47,22 +47,48 @@ and a cursor walks the whole thing. When a tenant is reaped, its scope data and 
 directory rows are destroyed and its admin-log rows are **kept**. The record of what was done to
 a tenant has to outlive the tenant.
 
-**The row follows the mutation, in a separate write.** An audited verb commits its change and
-then writes its row. A failed log write fails the verb, but the change already stands, and a
-crash between the two leaves a change with no row. That window is accepted and documented rather
-than hidden. Two verbs deliberately reverse the order, because for them the missing row is the
-harmful half-state: a point-in-time rewind records its intent *before* it destroys anything, and
-an impersonation session is logged before the session is handed back.
+**The row commits with the change.** An audited directory write now writes its state and its
+admin row in one transaction, on both adapters, so a refused row can no longer leave a change
+unrecorded. That used to be a documented window: the verb committed, then wrote its row, and a
+crash between the two left a change with no row. A change that crosses into a scope cannot share
+the directory's transaction, so it writes an **intent** row before the scope change and an
+**outcome** row after it, and a change that failed halfway is legible rather than absent. The
+same ordering has always been the rule for the two verbs where a missing row is the harmful
+half-state: a point-in-time rewind records its intent *before* it destroys anything, and an
+impersonation session is logged before the session is handed back.
 
 In the dashboard this is the **Audit** page. It is a team page rather than an app tab, because
 some entries, such as role changes and entitlements, name no app at all.
 
+## A failure's text stays where it came from
+
+One more record is new, and it exists so an answer does not become a leak. A promote, a
+provision or a store call can fail for a reason that came from somewhere else: another
+tenant's deployment, an object store, an upstream service. That text used to go back in the
+response.
+
+Now a confined caller, such as a tenant credential or the builder, is answered with a fixed
+sentence and a **reference**. The text goes to the platform's own log line and to a staff-only
+row under the same reference, so an operator can find it from anything the caller quotes.
+Whether a caller is confined is decided by the request's principal alone, never by a tenant
+or scope the request names. The reference is always the platform's own id. An upstream
+service's trace handle is kept on the staff row only. The same rule reaches the platform-intent
+journal, which withholds another deployment's text from the scope that reads its outcome.
+
+The entitlement refusal had a quieter version of the same leak. Its detail listed every key
+the tenant held, which are the names of its other apps, to any signed-in member, in a sentence
+apps tend to print on screen. The list is gone from the answer, and the diagnosis moved to a
+server-side line keyed by the request id.
+
 ## The access log: looking is an act
 
 Every read the control plane makes into a scope on someone else's behalf writes a row. That
-covers the history, facet, cause, effect and same-call reads from chapter 10 and the denial
+covers the history, facet, cause, effect and same-call reads from chapter 12 and the denial
 summary. This includes the dashboard's own delegated reads. A tenant's admin opening
-a record in their own app is recorded, not just staff doing it.
+a record in their own app is recorded, not just staff doing it. A delegated read now also names
+the person it was made for: the dashboard reads with its team's credential, which carries the
+signed-in person, and a row used to name only the platform service. Rows written before that
+column read as "not recorded", not as nobody.
 
 The access log does not stay in the directory. The platform sweep's last phase ships unshipped
 rows to R2 as newline-delimited JSON, stamps them as drained, and only then prunes them from the
@@ -81,7 +107,7 @@ So the platform keeps three tiers of data:
 
 1. **Operational**: each scope's own SQLite. Live, exact, one scope at a time.
 2. **Exact history**: every event from every scope, in one table, queryable with SQL.
-3. **Telemetry**: sampled request data (chapter 10). Cheap, approximate, never evidence.
+3. **Telemetry**: sampled request data (chapter 12). Cheap, approximate, never evidence.
 
 Tier 2 is **the lake**.
 
@@ -122,10 +148,10 @@ more than ten times its batch, so a scope whose next few thousand rows are *all*
 ships nothing until the dump is repaired, and the report says so.
 
 **Draining copies first, then lets go.** A drained event stays in the scope for 90 days, so
-`readHistory` and every chapter 10 view still read it there. After that the sweep prunes it, as long
+`readHistory` and every chapter 12 view still read it there. After that the sweep prunes it, as long
 as nothing in the scope still needs it: a consumer that has not taken it yet (or gave up on it), a
 type another vertical imports, an entity's newest event, which its version is read from, or a type's
-newest event, which freshness reads. Older history is the lake's, and so is every chapter 10 view
+newest event, which freshness reads. Older history is the lake's, and so is every chapter 12 view
 beyond 90 days: a process map over a pruned scope sees an older entity as found mid-life. A consumer
 added later starts from what the scope still holds. An offline mirror resuming from before the pruned range is told to resync rather than
 handed a gap.
@@ -145,7 +171,7 @@ bytes
 ```
 
 `drained_at` is not shipped, since it is a fact about the scope, not the event. `bytes` is added
-by the shipper and is the row's serialized size. Chapter 12 explains why that column exists.
+by the shipper and is the row's serialized size. Chapter 14 explains why that column exists.
 
 **Files roll on size or time**: parquet with zstd, at most 100 MB or 300 seconds, whichever comes
 first. At real outbox volumes the timer always wins, so history reaches the lake about five
@@ -225,6 +251,11 @@ The declaration still needs to identify the subject correctly; it cannot discove
 personal data hidden in an unlinked free-text field or in another app's derived copy.
 The lake limitation above remains a separate boundary.
 
+An erasure request also fans out to every **store** a scope is connected to (chapter 2), and is
+fenced against a store being attached mid-erasure. A binding a vertical has since dropped stays
+reachable from every version that declared it, which is what makes the fan-out complete rather
+than best-effort.
+
 ## Exports
 
 A tenant's data can be exported in full: every scope's dump, plus directory rows and, in
@@ -234,10 +265,10 @@ route today, not a self-service one.
 ## Denials stay home
 
 The denial log has a `drained_at` column and no drain. Denials stay in their scope. They are
-readable per scope, summarized by operation in the dashboard's Flow view (chapter 10), and
+readable per scope, summarized by operation in the dashboard's Flow view (chapter 12), and
 listed in the console's per-scope panel, but they do not reach the lake. A fleet-wide
 "what was refused" question is still a fold over scopes.
 
 ---
 
-**Next:** [Metering and billing →](/book/12-metering-and-billing)
+**Next:** [Metering and billing →](/book/14-metering-and-billing)

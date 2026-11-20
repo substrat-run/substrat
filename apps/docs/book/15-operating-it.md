@@ -1,6 +1,6 @@
-# 13. Operating it
+# 15. Operating it
 
-The last twelve chapters were how the system works and what it records. This one is how it
+The last fourteen chapters were how the system works and what it records. This one is how it
 behaves when something is wrong, which is a different subject.
 
 ## Four surfaces, and three more
@@ -25,20 +25,24 @@ tenancy model either works for the platform's own product or it does not.
 
 Its shape is worth knowing before you go looking for something in it. Each app has **four
 tabs**: *Overview*, *Deployments*, *Data* and *Settings*. Anything about more than one app is a
-team page in the left menu, narrowed with an app filter: *Observability* (chapter 10) and
-*Audit* (chapter 11) sit under **Operate**, next to Domains, Integrations, Team and Billing under
+team page in the left menu, narrowed with an app filter: *Observability* (chapter 12) and
+*Audit* (chapter 13) sit under **Operate**, next to Domains, Integrations, Team and Billing under
 **Configure**. The rule is deliberate: a fifth tab on the app is almost always a filter on a team
 page instead.
 
-Three more deployments sit beside those four:
+Four more deployments sit beside those four:
 
 - **The builder studio**: where a vertical is written with an agent, against its own workspace
   and snapshots.
 - **The egress worker**: the hop every outbound call from a dispatched vertical takes, which
-  enforces the version's declared allowlist (chapter 8).
+  enforces the version's declared allowlist (chapter 10).
 - **The hosted issuer**: an OIDC provider that verticals can sign users in against. It runs as
   a vertical, with its own admin console and sign-in log, rather than as a special platform
   component, because authentication is a seam and not something the kernel owns (chapter 6).
+- **The social relay**: the platform's sign-in relay. It holds one OAuth client per upstream
+  provider, such as GitHub, where no tenant can reach it, so an install offers social sign-in
+  without registering a client of its own. It is also the one place that can present a client
+  certificate, which is how BankID reaches an install that has no certificate binding of its own.
 
 ## The lifecycle states, operationally
 
@@ -64,14 +68,15 @@ request.
 
 Suspension also holds scheduled and background work. A router lifecycle declaration
 can make that traffic gate platform-owned. For narrower intervention, staff can stop
-one module's system work on one scope (chapter 9), while the tenant can switch off
-one peer's access between its own apps (chapter 7). Those levers have different owners
+one module's system work on one scope (chapter 11), while the tenant can switch off
+one peer's access between its own apps (chapter 8). Those levers have different owners
 and different reach; choose the one matching the work you need to stop.
 
 **`archived` is not `deleted`.** The bytes are still there and cost money. Moving to `reaped`
-is what frees them, it is irreversible, and — per chapter 9 — nothing does it automatically
+is what frees them, it is irreversible, and — per chapter 11 — nothing does it automatically
 unless a retention window has been configured. If your mental model is "archiving cleans up",
-it does not.
+it does not. Deleting an app from the dashboard is the other path: it wipes the scope and
+every copy of it.
 
 ## Four failures, four instruments
 
@@ -102,6 +107,13 @@ reading the newest stored copy rather than from a separate timer, so a missed ru
 on the next pass rather than skipped. And retention is pruned only **after** a new copy lands,
 so a failed backup can never be the thing that deletes the last good one.
 
+The third detail was learnt the hard way. The dump outgrew the control plane's memory, and for
+two months each scheduled backup restarted the directory's object and stored nothing, while the
+cadence rule above dutifully tried again every pass. The backup now moves a page at a time, and
+a failed copy is waited out rather than retried at once. The lesson generalises: a self-healing
+retry turns a backup that cannot fit into a recurring outage, so size the copy before you trust
+the schedule.
+
 RPO ≤ 24h, RTO ≤ 1h for a directory loss, and the restore is rehearsed rather than merely
 designed — the round trip runs in the contract suite against both adapters: capture, diverge,
 restore, keep serving.
@@ -119,14 +131,15 @@ secrets, or the key any sealed credential was sealed with.
 
 ## Where to look when something is wrong
 
-Chapters 10 and 11 describe the instruments. What matters when something is wrong is which one
+Chapters 12 and 13 describe the instruments. What matters when something is wrong is which one
 witnessed the thing you are asking about, because reaching for the wrong one is the usual
 reason an investigation stalls:
 
 | Question | Instrument | In the dashboard |
 |---|---|---|
 | Is it slow, or failing, for everyone? | router traffic (sampled) | Observability → Traffic, Health |
-| What did this request do, and what did it print? | invocation log | Observability → Logs |
+| What did this request do, and what did it print? | request line and `ctx.log` lines | Observability → Logs, searched by request id |
+| What does this refusal mean? | the problem document's `type` | the page at that URI, under `/errors/` |
 | What happened to this record, and who did it? | the outbox, via `readHistory` | the app's Data tab → a record |
 | Why does this event exist? | `causedBy` | a record's event → *Why?* |
 | Did the consumer ever handle it? | the delivery journal | a record's event → *What did it do?* |
@@ -134,10 +147,10 @@ reason an investigation stalls:
 | Has this job stopped running? | sweep runs, freshness | Observability → Schedules |
 | Why was this person refused? | the denial log | Observability → Flow (per-operation health) |
 | Who changed this app's configuration? | the admin log | Audit |
-| Who looked at this tenant's data? | the access log | no view yet: it drains to R2 (chapter 11) |
+| Who looked at this tenant's data? | the access log | no view yet: it drains to R2 (chapter 13) |
 | Did the platform act on what the app asked for? | the platform-request journal | Settings → Integrations |
 
-Add to those the sweep reports from chapter 9 (`retrying`, `deadLettered`, and per-unit
+Add to those the sweep reports from chapter 11 (`retrying`, `deadLettered`, and per-unit
 `errors`), which are the signal that background work is degrading rather than failing loudly.
 
 ## A short diagnostic index
@@ -166,7 +179,7 @@ it, with the last error kept.
 
 **"Observability shows no traffic for an app that is clearly in use."** Either the version
 predates the invocation log, or the log is mounted below some routes, or it has no
-`routerSecret` and verifies nothing. All three produce silence rather than an error (chapter 10).
+`routerSecret` and verifies nothing. All three produce silence rather than an error (chapter 12).
 
 **"Recurring work stopped."** Check the scope sweeper's roster. The alarm **lapses on an empty
 roster**, and the roster is maintained by `/internal/provision` and `/internal/delete-scope`
@@ -175,6 +188,26 @@ includes every scope provisioned before its vertical wired a sweeper, until a re
 re-run provisioning notes it. And a scope on the roster can still record every run as
 `failed`: a schedule an **engine** declares runs as that engine's module, so the tenant must
 hold the engine's entitlement, not only the vertical's.
+
+**"A user quotes an error and I cannot find it."** Ask for the request id. Every response carries
+it as `x-substrat-request-id` and every problem document as `requestId`, and the Logs view finds
+the request, the lines it wrote and the records it touched from that one value (chapter 12). A
+failure whose text came from another tenant or an upstream service shows the caller only a
+reference; the text is on the staff row under the same reference (chapter 13).
+
+**"The owner can sign in and create nothing."** The deployed door never joined them. A vertical
+with a join operation names it in `workerDoor({ join })`. Locally the dev server joins people
+itself, which is why this only shows deployed (chapter 3).
+
+**"An invited person signs in and is refused."** The door admits an invite by the address the
+issuer *verified*. An issuer that sends no `email_verified`, or a person who signs in with a
+different address from the one invited, is refused on purpose. The remedy is an invite that
+names no address, or the right sign-in (chapter 6).
+
+**"A panel shows an error where it used to show nothing."** An introspection read addressed to
+a scope the deployment does not hold, because it was never provisioned there, was reaped or was
+carried away, answers `conflict` now instead of an empty history. The empty answer looked like
+data; the error says you are asking the wrong place.
 
 **"Permission denied and I do not know why."** The denial log gives the key and the node.
 `explain` gives the chain. If the permission is tenant-level, remember it reaches the scope by
@@ -211,17 +244,25 @@ edges.
 - **Cross-scope reads are a fold, not a join.** Fleet-wide questions cost a read per scope.
   Projections and per-tenant D1 are the current answers, and the many-scope fan-out cost of
   permission projection for a very large tenant is an explicit open question.
-- **The lake gateway is implemented but off until configured.** It is staff-only,
-  tenant-scoped and envelope-only, and has not been exercised against the real lake.
-  The console and dashboard do not use it yet. Lake erasure remains unfinished
-  (chapter 11).
+- **The lake gateway is implemented but off until configured.** It is tenant-scoped and
+  envelope-only, staff can read any tenant and a team its own over a 31-day window, and it has
+  not been exercised against the real lake. No screen uses it yet. Lake erasure remains
+  unfinished (chapter 13).
 - **Storage is measured but not priced, and quotas are not enforced.** Daily samples and
   on-demand readings report bytes with coverage and freshness. They are not yet a
   storage invoice, and an entitlement's quota is still information a module may act
-  on rather than a platform-enforced limit (chapter 12).
-- **The assistant engine is only the first part.** Its record, lease and approval
-  contract exist; a host runner and a vertical composing it still need to arrive
-  (chapter 7).
+  on rather than a platform-enforced limit (chapter 14).
+- **The assistant engine has one user, the platform.** It is published, and the builder
+  studio records its turns in it. No demo vertical composes it yet (chapter 7).
+- **Stores are built and not live.** The graph driver is registered and no release of it is
+  approved, and a store shared across a tenant's verticals is designed and not built
+  (chapter 2).
+- **A plugin cannot ship screens, and extensions do not exist.** A second app can take its
+  people from the first and be called as the person, but how its screens reach the app it
+  belongs to is open, and there is no extension surface, consent or catalogue (chapter 8).
+- **A vertical's own connectors rest on a proposed decision.** They work when shipped privately.
+  The deployment holds the plaintext credential, and the listed tier, where another vertical
+  binds your connector, is not built (chapter 5).
 - **Executors hold the scope's turn on the local SQLite adapter** and not on Durable Objects.
   The two hosts differ only under a slow connector, but they do differ.
 - **Grant expiry transitions and facet recency are contract-tested on SQLite only**, because
@@ -238,6 +279,8 @@ You now have the shape. The reference is the right tool from here:
 - Building something — [Getting started](/guide/getting-started), then the [todo
   walkthrough](/guide/walkthrough-todo), then [The model](/concepts/model).
 - Choosing an engine — [What is an engine?](/engines/) and the five pages each one carries.
+- Drawing screens — [Building screens](/elements/).
+- Selling your product to many businesses — [Building a platform](/guide/building-a-platform).
 - Shipping — [Deploying a vertical](/guide/deploying) and [Environments &
   previews](/guide/environments-and-previews).
 - Billing your own customers — the [metering](/engines/metering/) and

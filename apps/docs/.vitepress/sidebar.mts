@@ -122,19 +122,21 @@ export function bookChapters(): { text: string; link: string }[] {
     { text: '5. The life of one event', link: '/book/05-one-event' },
     { text: '6. Permissions and identity', link: '/book/06-permissions-and-identity' },
     { text: '7. Engines, verticals, composition', link: '/book/07-engines-and-verticals' },
-    { text: '8. The life of one deploy', link: '/book/08-one-deploy' },
-    { text: '9. The two clocks', link: '/book/09-the-two-clocks' },
-    { text: '10. Seeing what happened', link: '/book/10-seeing-what-happened' },
-    { text: '11. The audit trail and the lake', link: '/book/11-audit-and-the-lake' },
-    { text: '12. Metering and billing', link: '/book/12-metering-and-billing' },
-    { text: '13. Operating it', link: '/book/13-operating-it' },
+    { text: '8. Apps made of other apps', link: '/book/08-apps-made-of-apps' },
+    { text: '9. Screens', link: '/book/09-screens' },
+    { text: '10. The life of one deploy', link: '/book/10-one-deploy' },
+    { text: '11. The two clocks', link: '/book/11-the-two-clocks' },
+    { text: '12. Seeing what happened', link: '/book/12-seeing-what-happened' },
+    { text: '13. The audit trail and the lake', link: '/book/13-audit-and-the-lake' },
+    { text: '14. Metering and billing', link: '/book/14-metering-and-billing' },
+    { text: '15. Operating it', link: '/book/15-operating-it' },
   ];
 }
 
 /**
  * The sidebar on the book's own pages, and nowhere else. The book is offered from the
  * landing page as the ebook rather than sitting in the docs' nav, so a reader in the
- * reference is not handed a thirteen-chapter detour; a reader inside the book sees only
+ * reference is not handed a fifteen-chapter detour; a reader inside the book sees only
  * its chapters, in order.
  */
 export function bookSidebar() {

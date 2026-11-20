@@ -168,7 +168,7 @@ function titlePage(): string {
 <body epub:type="frontmatter">
 <section epub:type="titlepage" class="titlepage">
 <h1 class="booktitle">Substrat,<br/>end to end</h1>
-<p class="subtitle">How the pieces join — thirteen chapters, front to back.</p>
+<p class="subtitle">How the pieces join — fifteen chapters, front to back.</p>
 <p class="imprint">${xml(SITE)}</p>
 </section>
 </body>

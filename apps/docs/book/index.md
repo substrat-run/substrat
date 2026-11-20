@@ -6,18 +6,18 @@ system, and badly before. Nothing in a reference tells you how the pieces *join*
 thing calls which, what happens between the moment a request lands and the moment a row
 is written, who retries what when it fails.
 
-So this section is the other thing. Thirteen chapters, meant to be read in order, front to
+So this section is the other thing. Fifteen chapters, meant to be read in order, front to
 back, in a long afternoon. It assumes nothing except that you have written server software
 before. It repeats very little — where a reference page already says a thing well, this
 book links to it and moves on.
 
 ## What you will know at the end
 
-- What the words mean: tenant, scope, module, engine, vertical, the spine, consumer, executor,
-  connector, platform intent.
+- What the words mean: tenant, scope, module, engine, vertical, door, plugin, the spine,
+  consumer, executor, connector, platform intent, store, request id.
 - What a scope is, why every one of them is its own database, and what that buys.
 - The complete path of one HTTP request, from hostname to SQL and back, with every hop
-  named.
+  named, including the door that decides who a signed-in person is in this app.
 - What a handler can reach, what it cannot, and why each ban exists. Also why plain SQL with
   no query builder is safe enough, why timestamps are text, and what a slow `await` blocks.
 - How an event gets from `ctx.emit` to a consumer in another module, what happens when
@@ -25,15 +25,18 @@ book links to it and moves on.
   gets run in seconds instead of at the next sweep.
 - How permission checks are answered without a network call.
 - Why engines never call each other, and what they do instead.
-- How separate apps communicate through peer calls and exported events, who authorizes
-  each direction, and what a pause, failure or replay does.
-- How notifications turn an occasion into durable email, and how the new assistant
-  engine separates conversation history, a running model and approval of a change.
-- What `substrat push` actually does, and what happens to data across a version change.
+- How notifications turn an occasion into durable email or a daily digest, and how the
+  assistant engine separates conversation history, a running model and approval of a change.
+- Where the line between a module and another app falls, and what crosses it: peer calls and
+  exported events, a plugin that takes its people from another app, a call made as the
+  signed-in person, and an app that creates tenants.
+- What the platform supplies for screens, and what it deliberately does not.
+- What `substrat push` actually does, who builds the release, and what happens to data across a
+  version change, including a migration that would lose it.
 - What the two background clocks are, what each sweeps, and why both are alarms rather
   than crons.
 - What the platform records about a running app, from sampled traffic to exact event history,
-  and how a record joins to the request that changed it.
+  and how one request id joins a response, its log lines, its events and the records it touched.
 - Which log is the audit log for which question, and how events leave their scope for a lake
   you can query with SQL.
 - How a vertical meters and bills its own customers, how the platform meters a tenant, and
@@ -43,13 +46,14 @@ book links to it and moves on.
 ## How to read it
 
 Straight through. Each chapter ends where the next begins, and later chapters lean on
-earlier ones — chapter 5 assumes chapter 4's picture of a handler, chapter 9 assumes
-chapter 5's outbox, and chapters 10 to 12 assume both. If a word stops you, the glossary is
+earlier ones — chapter 5 assumes chapter 4's picture of a handler, chapter 11 assumes
+chapter 5's outbox, chapter 8 leans on chapters 3 and 6, and chapters 12 to 14 assume
+chapters 4 and 5. If a word stops you, the glossary is
 at the end of chapter 1. The **Next** link at the foot of every page is the intended path.
 
 Two chapters are worth reading even out of order, because they are the ones the
 reference genuinely does not cover anywhere: [The life of one
-event](/book/05-one-event) and [The two clocks](/book/09-the-two-clocks).
+event](/book/05-one-event) and [The two clocks](/book/11-the-two-clocks).
 
 ## Read it in one file
 
@@ -81,28 +85,35 @@ book — that is [llms-full.txt](/llms-full.txt), and the index agents read firs
 
 ## What changed in this edition
 
-**Updated 15 October 2026.** This edition reviews the three complete weeks
-[21–27 September](/changelog/2026-w39), [28 September–4 October](/changelog/2026-w40)
-and [5–11 October](/changelog/2026-w41). It also covers the assistant engine's first
-implementation, which landed on 15 October, with its remaining integration work stated
-explicitly. The chapter numbers and reading order stay the same.
+**Third edition, 20 November 2026.** This edition reviews the five complete weeks
+[12–18 October](/changelog/2026-w42), [19–25 October](/changelog/2026-w43),
+[26 October–1 November](/changelog/2026-w44), [2–8 November](/changelog/2026-w45) and
+[9–15 November](/changelog/2026-w46), and what merged from 16 to 20 November. Two chapters are
+new, so the book has fifteen and the chapters from the old chapter 8 onwards moved up by two.
+Their addresses changed with their numbers.
 
 | If you read the previous edition | Where to return |
 |---|---|
-| Peer calls, exported events, permissions in both directions, instance selection, watermarks and replay | [Chapter 7](/book/07-engines-and-verticals), with two new diagrams |
-| Notifications and transactional email; the assistant's record, lease and approvals | [Chapter 7](/book/07-engines-and-verticals), with two more diagrams |
-| Derived creates and stamps, archive/trash, attachment text search, live reads and opaque paging cursors | [Chapter 4](/book/04-inside-an-operation) |
-| Capability links, binding invites, verified email and permission shapes that reach existing users | [Chapter 6](/book/06-permissions-and-identity) |
-| Copies that keep history without re-running the source's work, and migration integrity | [Chapter 8](/book/08-one-deploy) |
-| The supplied sweeper, durable off switches and cross-app delivery in the sweep | [Chapter 9](/book/09-the-two-clocks) |
-| Findings as an inbox of problems to resolve, and the current Observability navigation | [Chapter 10](/book/10-seeing-what-happened) |
-| Erasure reaching a module's own tables | [Chapter 11](/book/11-audit-and-the-lake) |
+| Peer calls and exported events, moved out of chapter 7; a plugin that takes its people from another app; a call made as the signed-in person; an app that creates tenants; where the module and vertical line falls | [Chapter 8](/book/08-apps-made-of-apps), new |
+| Web components for screens, the generated client from the browser's side, files served as the person | [Chapter 9](/book/09-screens), new |
+| The worker door: joining on arrival, invites admitted by verified address, request ids and problem documents on the way out | [Chapter 3](/book/03-one-request) |
+| `ctx.verifiedEmail` and `ctx.requestId`, `inList` and `csvTable`, unchecked operations, declarations refused at load, streamed attachments and upload and download links | [Chapter 4](/book/04-inside-an-operation) |
+| Connections that land by declaration, a scope's own connection, connectors a vertical ships, mail as an inbound connection | [Chapter 5](/book/05-one-event) |
+| Keys reserved to the platform, system-held roles, bind links, member invites without a link | [Chapter 6](/book/06-permissions-and-identity) |
+| Platform-built releases, the migration data-loss fence, bound promote reviews, previews you can sign in to, copies of any size | [Chapter 10](/book/10-one-deploy) |
+| Request ids handed out, the Logs view, local traces, AI explanations and Ask | [Chapter 12](/book/12-seeing-what-happened) |
+| A failure's text kept from other tenants, admin writes that commit with their row, erasure reaching stores | [Chapter 13](/book/13-audit-and-the-lake) |
+| Usage captured by day, the Billing page, builds and reviews metered | [Chapter 14](/book/14-metering-and-billing) |
 
-The review also checks what the book already covered: the platform-written request log,
-background invocation lines and the daily storage gauge remain in chapters 10 and 12.
-Chapter 13's old statements that storage was unmeasured and denials had no invocation id
-have been corrected. The lake gateway's restricted, unconfigured status is kept consistent
-with chapter 11. Smaller demo and UI fixes remain in the weekly changelog.
+Stores, a second kind of storage attached to a scope, are introduced in chapter 2, and the
+glossary in chapter 1 gains the door, plugin, delegated call, store and request id. Chapter 11
+covers a sweep that reports a failure once rather than every pass, and chapter 15 adds
+symptoms for the new failure shapes and refreshes what is not solved.
+
+One subject is deliberately left open. What an author writes for a module and for a vertical
+is already close, and the platform may not keep two words for it. Chapter 8 describes the
+boundary as it is built today, and names the property any future shape has to keep: code
+someone else wrote runs in its own deployment.
 
 ## A note on honesty
 
