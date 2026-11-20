@@ -10402,7 +10402,9 @@ export class CloudflareScopeHost implements ScopeHost {
       readSubject: async (actor, tenantId, scopeId, subjectId, page): Promise<SubjectReadPage> => {
         // A reaped scope is refused before its ScopeDO is addressed: waking one would recreate the
         // spine an irreversible reap destroyed, and read back "nothing held" about a scope that is gone.
-        await this.scopeRecordForRead(tenantId, scopeId);
+        // And one served by a vertical's deployment is refused on the shared control plane: its data
+        // lives there, and this host's namespace would answer from a placeholder, incompletely.
+        this.assertServedHere(await this.scopeRecordForRead(tenantId, scopeId), scopeId, 'readSubject');
         const read = await this.readSubjectLocal(scopeId, subjectId, page);
         await this.recordAccess(
           actor,

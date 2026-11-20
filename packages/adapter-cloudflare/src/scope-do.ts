@@ -9372,8 +9372,9 @@ export function defineScopeDO(
      * answered as data, as `redactSubject` answers one, so its code survives the RPC.
      */
     async readSubject(subjectId: string, page?: SubjectReadRequest): Promise<SubjectReadPage | { failure: WireFailure }> {
-      await this.ensureMigrations();
       try {
+        // Inside the envelope: a migration refusal is an answer too, and keeps its code across the RPC.
+        await this.ensureMigrations();
         return readSubjectPage({ sql: doSpineSql(this.sql), plans: this.erasurePlans, subjectId, ...(page ? { page } : {}) });
       } catch (err) {
         return { failure: toWireFailure(err) };

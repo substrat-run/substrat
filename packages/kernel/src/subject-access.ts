@@ -116,7 +116,8 @@ export function readSubjectPage(input: {
       const { moduleId, entity } = entities[index]!;
       const { where, params } = subjectMatchOf(entity, subjectId);
       const rows = sql.query<Record<string, unknown>>(
-        `SELECT * FROM ${erasureTableOf(entity)} WHERE ${where} LIMIT ? OFFSET ?`,
+        // `main.`: a TEMP object named like the declared table would otherwise answer in its place.
+        `SELECT * FROM main.${erasureTableOf(entity)} WHERE ${where} LIMIT ? OFFSET ?`,
         [...params, budget + 1, offset],
       );
       const taken = rows.slice(0, budget);
