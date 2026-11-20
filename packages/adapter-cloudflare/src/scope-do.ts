@@ -100,6 +100,7 @@ import {
   intentPayloadCarriesSubject,
   redactSubjectJobRuns,
   eraseSubjectFromModules,
+  readSubjectPage,
   moduleErasurePlan,
   type ModuleErasurePlan,
   redactSubjectScopeText,
@@ -502,6 +503,8 @@ import type {
   LifecycleDelivery,
   ScopeLifecycle,
   StoredScopeLifecycle,
+  SubjectReadPage,
+  SubjectReadRequest,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, scopeTupleReader, type ControlPlaneReader } from './checker.js';
 import { settlePlatformRequestIn, type PlatformRequestSettle } from '@substrat-run/kernel';
@@ -780,6 +783,10 @@ const KERNEL_DDL = `
   -- range, and the trailing id gives the ORDER BY for free. IF NOT EXISTS in the spine
   -- DDL, which every wake re-runs, so existing scopes get it too.
   CREATE INDEX IF NOT EXISTS _substrat_outbox_drained ON _substrat_outbox (drained_at, id);
+  -- D-74: subject access reads every event keyed to one person, and erasure redacts them, both by
+  -- subject_id. Partial, so the many events with no subject pay nothing; the trailing id gives the
+  -- access read its ORDER BY. IF NOT EXISTS in the spine DDL, so existing scopes get it on wake.
+  CREATE INDEX IF NOT EXISTS _substrat_outbox_subject ON _substrat_outbox (subject_id, id) WHERE subject_id IS NOT NULL;
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
   -- to drain and execute with HostAdmin authority -- the sandbox-clean way a vertical asks for a
   -- privileged action. Written by the kernel (spine), settled by the platform drain.
@@ -9352,6 +9359,23 @@ export function defineScopeDO(
       // the safe reading.
       try {
         return this.revision.transactionSync(() => this.redactSubjectInTransaction(subjectId, at));
+      } catch (err) {
+        return { failure: toWireFailure(err) };
+      }
+    }
+
+    /**
+     * One page of what this scope holds about one data subject (GDPR Art. 15, D-74): the kernel's
+     * `readSubjectPage` over the same erasure plans `redactSubject` runs, so access reads exactly
+     * what erasure writes. Writes nothing and runs no module code; one synchronous body, so no
+     * other request interleaves with the page. A refusal (a cursor this read never issued) is
+     * answered as data, as `redactSubject` answers one, so its code survives the RPC.
+     */
+    async readSubject(subjectId: string, page?: SubjectReadRequest): Promise<SubjectReadPage | { failure: WireFailure }> {
+      try {
+        // Inside the envelope: a migration refusal is an answer too, and keeps its code across the RPC.
+        await this.ensureMigrations();
+        return readSubjectPage({ sql: doSpineSql(this.sql), plans: this.erasurePlans, subjectId, ...(page ? { page } : {}) });
       } catch (err) {
         return { failure: toWireFailure(err) };
       }

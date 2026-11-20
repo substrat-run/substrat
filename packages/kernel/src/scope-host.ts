@@ -139,6 +139,8 @@ import type {
   ScopeDump,
   ScopeDumpInput,
   SubjectShredReceipt,
+  SubjectReadPage,
+  SubjectReadRequest,
   ScopeQueryResult,
   ScopeId,
   ScopeStatus,
@@ -3972,6 +3974,22 @@ export interface HostAdmin {
     subjectId: string,
     fence?: SubjectErasureFence,
   ): Promise<SubjectShredReceipt>;
+  /**
+   * One page of what this host's copy of a scope holds about one data subject (GDPR Art. 15,
+   * D-74): every outbox event keyed to them, and the whole rows of each declared entity whose
+   * subject columns name them, matched by the predicate `shredSubject` erases by. Writes nothing
+   * and runs no module code. Walk it by handing `nextCursor` back until it is null.
+   *
+   * Access-logged as `readSubject` with the subject id and the page's count. The request's admin
+   * row is the caller's, written once the pages are assembled.
+   */
+  readSubject(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    subjectId: string,
+    page?: SubjectReadRequest,
+  ): Promise<SubjectReadPage>;
   /**
    * Subjects whose key row is tombstoned (`shredded_at` set), in subject-id order.
    * A page is at most 100. `cursor` is the last id the caller already has.

@@ -514,6 +514,7 @@ import {
   intentPayloadCarriesSubject,
   redactSubjectJobRuns,
   eraseSubjectFromModules,
+  readSubjectPage,
   moduleRowsErased,
   moduleErasurePlan,
   type ModuleErasurePlan,
@@ -1473,6 +1474,10 @@ const KERNEL_DDL = `
   -- range, and the trailing id gives the ORDER BY for free. IF NOT EXISTS in
   -- KERNEL_DDL, which every runtime() re-runs, so existing scopes get it on next wake.
   CREATE INDEX IF NOT EXISTS _substrat_outbox_drained ON _substrat_outbox (drained_at, id);
+  -- D-74: subject access reads every event keyed to one person, and erasure redacts them, both by
+  -- subject_id. Partial, so the many events with no subject pay nothing; the trailing id gives the
+  -- access read its ORDER BY. IF NOT EXISTS, so existing scopes get it on next wake.
+  CREATE INDEX IF NOT EXISTS _substrat_outbox_subject ON _substrat_outbox (subject_id, id) WHERE subject_id IS NOT NULL;
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
   -- to drain and execute with HostAdmin authority — the sandbox-clean way a vertical asks for a
   -- privileged action. Written by the kernel (spine), settled by the platform drain.
@@ -12563,6 +12568,28 @@ export class SqliteScopeHost implements ScopeHost {
         const nextCursor = rows.length > 100 ? (subjects[99] ?? null) : null;
         this.recordAccess(actor, 'listShreddedSubjects', { tenantId, scopeId }, null, subjects.length);
         return { subjects, nextCursor };
+      },
+      readSubject: async (actor, tenantId, scopeId, subjectId, page) => {
+        // Before the database is opened: a reaped scope's file must not be recreated by a read.
+        this.assertScopeReachable(tenantId, scopeId);
+        const db = this.scopeDbFor(tenantId, scopeId);
+        // The declared entities are the scope's own tables, so they have to exist — the same
+        // migrations an invoke, or an erasure, applies first.
+        const rt = this.runtime(tenantId, scopeId);
+        await this.applyPendingMigrations(rt);
+        // One read transaction on the scope actor, so the page is consistent and no invoke's open
+        // transaction is read half-written.
+        const read = await rt.actor.turn(() =>
+          db.transaction(() => readSubjectPage({ sql: spineSql(db), plans: this.erasurePlans, subjectId, ...(page ? { page } : {}) }))(),
+        );
+        this.recordAccess(
+          actor,
+          'readSubject',
+          { tenantId, scopeId },
+          { subjectId },
+          read.events.length + read.records.reduce((n, r) => n + r.rows.length, 0),
+        );
+        return read;
       },
       shredSubject: async (
         actor,

@@ -113,6 +113,7 @@ export * from './email-intent.js';
 export * from './entity-state.js';
 export * from './entity-stamps.js';
 export * from './subject-erasure.js';
+export * from './subject-access.js';
 export * from './model.js';
 export * from './operations.js';
 export * from './lifecycle.js';

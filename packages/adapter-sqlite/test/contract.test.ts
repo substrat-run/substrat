@@ -77,6 +77,7 @@ import {
   updatedStampsContractSuite,
   TRASH_MODULE_ID,
   subjectErasureContractSuite,
+  subjectAccessContractSuite,
   migrationCommentsContractSuite,
   moduleObjectsContractSuite,
   manyMigrationsContractSuite,
@@ -1126,6 +1127,23 @@ subjectErasureContractSuite(
     return internals.runtime(tenant, scope).db.prepare(sql).all(...params);
   },
 );
+
+// D-74: subject access reads what erasure reaches, proven against this host's own erasure.
+subjectAccessContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-access-'));
+  const host = new SqliteScopeHost({
+    dir,
+    checker: UNSAFE_allowAllChecker,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
 
 // #2817: bind links — an existing member bound to a record by a link their own session presents.
 let bindLinkHost: SqliteScopeHost | undefined;

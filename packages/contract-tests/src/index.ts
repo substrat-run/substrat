@@ -50,6 +50,7 @@ export { derivedMod, DERIVED_MODULE_ID } from './derived-module.js';
 export { derivedHandlersContractSuite } from './derived-suite.js';
 export { updatedStampsContractSuite } from './stamps-suite.js';
 export { subjectErasureContractSuite, type RawScopeQuery } from './subject-erasure-suite.js';
+export { subjectAccessContractSuite } from './subject-access-suite.js';
 export { erasureOtherMod, erasureSquatterMod } from './erasure-module.js';
 export { scheduleContractSuite } from './schedule-suite.js';
 // #2005: forks and previews cause no outbound effects — the in-scope doors.

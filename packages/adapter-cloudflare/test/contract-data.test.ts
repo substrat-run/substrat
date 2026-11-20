@@ -97,6 +97,7 @@ import {
   updatedStampsContractSuite,
   TRASH_MODULE_ID,
   subjectErasureContractSuite,
+  subjectAccessContractSuite,
   migrationCommentsContractSuite,
   moduleObjectsContractSuite,
   manyMigrationsContractSuite,
@@ -1705,6 +1706,17 @@ subjectErasureContractSuite(
       state.storage.sql.exec(sql, ...(params as SqlStorageValue[])).toArray(),
     ),
 );
+
+// D-74: subject access reads what erasure reaches, proven against the DO host's own erasure.
+subjectAccessContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
 
 // #2068 r5: commented migration DDL, then a DROP COLUMN of the last column — the case workerd's
 // SQLite refused while comments were executed. `commentedDdlMod` is in `contractTestModules`.

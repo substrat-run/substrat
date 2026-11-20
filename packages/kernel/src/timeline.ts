@@ -229,6 +229,34 @@ function mapHistoryRow(row: HistoryRow): HistoryEntry {
 }
 
 /**
+ * Every event keyed to one data subject, oldest first, after `after` (D-74) — subject access's
+ * event half. Up to `limit + 1` rows are read so the caller can tell whether more follow.
+ *
+ * Wider than erasure's predicate on purpose: `piiClass: 'none'` rows are returned too, because
+ * access answers whether data about the person is processed at all. `erased` is read off the
+ * stored column, so an erased payload (NULL) is never confused with one that failed to decode.
+ * Served by the partial `_substrat_outbox_subject` index. The caller checks; this does not.
+ */
+export function readSubjectEvents(
+  ctx: TimelineReader,
+  subjectId: string,
+  after: string | undefined,
+  limit: number,
+): (ScopeHistoryEntry & { erased: boolean })[] {
+  const rows = ctx.sql.query<HistoryRow & ScopeRow>(
+    `SELECT ${HISTORY_COLUMNS}, ${SCOPE_COLUMNS} FROM _substrat_outbox WHERE subject_id = ?` +
+      (after === undefined ? '' : ' AND id > ?') +
+      ' ORDER BY id ASC LIMIT ?',
+    after === undefined ? [subjectId, limit + 1] : [subjectId, after, limit + 1],
+  );
+  return rows.map((row) => {
+    const { entry } = decodeHistoryRow(row);
+    const d = rowDecoder(`outbox row ${JSON.stringify(row.id)}`, 'ScopeHistoryEntry');
+    return { ...d.finish<ScopeHistoryEntry>({ ...entry, entity: entityOfRow(d, row) }), erased: row.payload === null };
+  });
+}
+
+/**
  * An entity's timeline — WHAT happened to it, WHEN, and BY WHOM.
  *
  * The envelope only: no payload, so there is no disclosure decision to make and

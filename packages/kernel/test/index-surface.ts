@@ -661,6 +661,7 @@ export const INDEX_VALUE_EXPORTS = [
   'readScopeHistory',
   'readScopeTimeline',
   'readStoreDump',
+  'readSubjectPage',
   'readTenantRequestMeterRows',
   'readTimeline',
   'readUndrainedOutbox',
