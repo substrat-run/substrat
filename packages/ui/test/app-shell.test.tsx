@@ -62,10 +62,15 @@ it('opens a drawer that makes the page inert, and Escape gives the page and focu
   act(() => hamburger()!.click());
   expect(page().hasAttribute('inert')).toBe(true);
   expect(document.activeElement?.getAttribute('href')).toBe('/apps');
+  // Announced as the modal it is, with the navigation landmark inside it.
+  const dialog = container.querySelector('[role="dialog"]')!;
+  expect(dialog.getAttribute('aria-modal')).toBe('true');
+  expect(dialog.querySelector('nav')).not.toBeNull();
 
   act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
   expect(page().hasAttribute('inert')).toBe(false);
   expect(document.activeElement).toBe(hamburger());
+  expect(container.querySelector('[role="dialog"]')).toBeNull();
 });
 
 // Navigation that does not pass through the nav rows must not leave the new page under the

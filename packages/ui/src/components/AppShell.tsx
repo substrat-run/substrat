@@ -123,6 +123,13 @@ export function AppShell(props: AppShellProps) {
       {compact && navOpen && (
         <div onClick={() => setNavOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.4)', zIndex: 30 }} />
       )}
+      {/* An open drawer is a modal: the page behind it is inert, so it is announced as a named
+          dialog with the navigation landmark inside. One wrapper at every width, so crossing the
+          breakpoint never remounts the nav; as a column it is just the sidebar's flex item. */}
+      <div
+        style={compact ? undefined : { display: 'flex', flexShrink: 0 }}
+        {...(compact && navOpen ? { role: 'dialog', 'aria-modal': true, 'aria-label': props.navLabel ?? 'Navigation' } : {})}
+      >
       <nav
         ref={navRef}
         aria-label={props.navLabel}
@@ -192,6 +199,7 @@ export function AppShell(props: AppShellProps) {
         <div style={{ flex: 1 }} />
         {props.footer}
       </nav>
+      </div>
 
       {/* While the drawer is open the rest of the shell is `inert`: the scrim already blocks the
           pointer, and this blocks Tab, so focus stays in the drawer the way a dialog's does. */}
