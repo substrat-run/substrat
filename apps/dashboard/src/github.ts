@@ -66,7 +66,12 @@ export interface SetupRepoCiInput {
   branch: string;
   /** e.g. `.github/workflows/substrat-deploy.yml` */
   workflowPath: string;
-  workflowContent: string;
+  /**
+   * The file to commit. A function is handed whether the file already existed on the branch,
+   * which is how setup keeps a repo that already previewed every PR doing so
+   * (`resolvePreviewMode`); it is read after the existence check and before the commit.
+   */
+  workflowContent: string | ((existed: boolean) => string);
   /** e.g. `SUBSTRAT_SERVICE_TOKEN` */
   secretName: string;
   secretValue: string;
@@ -119,8 +124,9 @@ export async function setupRepoCi(
     `token ${token}`,
   );
   const sha = existing.ok ? ((await existing.json()) as { sha?: string }).sha : undefined;
+  const content = typeof input.workflowContent === 'function' ? input.workflowContent(Boolean(sha)) : input.workflowContent;
 
-  const bytes = new TextEncoder().encode(input.workflowContent);
+  const bytes = new TextEncoder().encode(content);
   const put = await gh(cfg, `/repos/${repo}/contents/${path}`, `token ${token}`, {
     method: 'PUT',
     body: JSON.stringify({
@@ -211,4 +217,71 @@ export async function listInstallationRepos(cfg: GithubConfig, installationId: s
     if (body.repositories.length < 100) break;
   }
   return repos;
+}
+
+/** One pull request, trimmed to what the Build preview page shows. */
+export interface GithubPullRequest {
+  number: number;
+  title: string;
+  htmlUrl: string;
+  state: 'open' | 'closed';
+  labels: string[];
+}
+
+/** Read one PR with the installation's token; null when GitHub answers 404 (no such PR, or not granted). */
+export async function getPullRequest(
+  cfg: GithubConfig,
+  installationId: string,
+  repoFullName: string,
+  prNumber: number,
+): Promise<GithubPullRequest | null> {
+  const token = await installationToken(cfg, installationId);
+  const res = await gh(cfg, `/repos/${encodeRepo(repoFullName)}/pulls/${prNumber}`, `token ${token}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`github: read pull request failed (${res.status})`);
+  const pr = (await res.json()) as { number: number; title: string; html_url: string; state: string; labels?: Array<{ name: string }> };
+  return {
+    number: pr.number,
+    title: pr.title,
+    htmlUrl: pr.html_url,
+    state: pr.state === 'open' ? 'open' : 'closed',
+    labels: (pr.labels ?? []).map((l) => l.name),
+  };
+}
+
+/**
+ * Put `label` on a PR, creating the label in the repo first when it has none by that name.
+ * Labels ride the issues API, and both writes are allowed by the App's `pull_requests: write`
+ * — the permission the preview comment already needs — so no new permission is asked for.
+ * Creating first, rather than relying on GitHub to create a missing label on add, gives the
+ * label its colour and description; a 422 there means it already exists, which is the
+ * common case. A 403/404 from the add is an installation approved before that permission:
+ * `needsPermissions`, which re-approving the App fixes and a retry cannot.
+ *
+ * Labelled by the App, the `pull_request` `labeled` event DOES start workflows (only the
+ * workflow's own GITHUB_TOKEN is barred from doing that), which is the whole point.
+ */
+export async function labelPullRequest(
+  cfg: GithubConfig,
+  installationId: string,
+  repoFullName: string,
+  prNumber: number,
+  label: { name: string; color: string; description: string },
+): Promise<{ ok: true } | { needsPermissions: true }> {
+  const token = await installationToken(cfg, installationId);
+  const repo = encodeRepo(repoFullName);
+  const json = { 'content-type': 'application/json' };
+  const create = await gh(cfg, `/repos/${repo}/labels`, `token ${token}`, { method: 'POST', body: JSON.stringify(label), headers: json });
+  // A refused create is not the verdict: adding a label the repo lacks creates it too (in
+  // GitHub's default colour), and the add below is the call whose refusal means the App may
+  // not label this repo.
+  if (!create.ok && ![403, 404, 422].includes(create.status)) throw new Error(`github: create label failed (${create.status})`);
+  const add = await gh(cfg, `/repos/${repo}/issues/${prNumber}/labels`, `token ${token}`, {
+    method: 'POST',
+    body: JSON.stringify({ labels: [label.name] }),
+    headers: json,
+  });
+  if (add.status === 403 || add.status === 404) return { needsPermissions: true };
+  if (!add.ok) throw new Error(`github: add label failed (${add.status})`);
+  return { ok: true };
 }

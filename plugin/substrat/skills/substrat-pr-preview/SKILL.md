@@ -54,8 +54,14 @@ been read.
 
 ## 3. Create or reuse the PR preview
 
-Once the PR number is known, run this from the affected vertical's directory, after
-confirming the intended workspace and vertical with the owner:
+This repository's deploy workflows preview a PR only when it carries the `preview` label,
+so a PR without it gets no CI preview at all. To have CI build and update one, label it
+(`gh pr edit <number> --add-label preview`); removing the label stops updates, and closing
+the PR still reaps it. A labelled PR that changes nothing the vertical uploads is still
+skipped.
+
+To build one by hand instead, once the PR number is known, run this from the affected
+vertical's directory, after confirming the intended workspace and vertical with the owner:
 
 ```sh
 substrat preview create . --tag pr-<number>

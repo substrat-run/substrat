@@ -65,6 +65,7 @@ import {
   peerSwitchResult,
   teamLakeEventsInput,
   previewAuth,
+  PREVIEW_MODES,
   REBIND_REVIEW_REASONS,
   scopeDump,
   scopeQueryResult,
@@ -310,6 +311,8 @@ const processNoteInput = z.object({
 
 /** A GitHub repo as `owner/name`. */
 const githubRepo = z.string().regex(/^[^/\s]+\/[^/\s]+$/, 'repo is owner/name');
+/** Which PRs of a repo preview (`PreviewMode` in contracts' ci.ts). */
+const previewMode = z.enum(PREVIEW_MODES);
 
 /** A suppress rule (contracts `findingRuleEntry`). Its `kind` and `code` are the plane's, as on a finding. */
 export const findingRuleRow = findingRuleEntry.extend({ kind: z.string().nullable(), code: z.string().nullable() });
@@ -2016,10 +2019,15 @@ export const dashboardRoutes = defineRoutes({
       account: z.string().min(1).optional(),
       /** The vertical's directory inside the repo (monorepo); omitted, the repo root. */
       path: z.string().min(1).max(300).optional(),
+      /**
+       * Which PRs preview. Omitted: what the repo's link holds, else `every-pr` for a repo that
+       * already carried the workflow, else `on-request` for one set up for the first time.
+       */
+      previews: previewMode.optional(),
     }),
     // `ok: false` is an installation approved before the App's write permissions: re-approve, or set it up by hand.
     output: z.union([
-      z.object({ ok: z.literal(true), workflowPath: z.string(), workflowUpdated: z.boolean(), branch: z.string(), vertical: z.string() }),
+      z.object({ ok: z.literal(true), workflowPath: z.string(), workflowUpdated: z.boolean(), branch: z.string(), vertical: z.string(), previews: previewMode }),
       z.object({ ok: z.literal(false), needsPermissions: z.literal(true) }),
     ]),
     http: { method: 'POST', path: '/github/setup-ci' },
@@ -2027,9 +2035,44 @@ export const dashboardRoutes = defineRoutes({
   'dashboard/github-workflow-preview': {
     summary: "The deploy workflow to commit by hand, from the same generator one-click setup uses",
     // Omitted, `repo` reads `owner/app` and `branch` `main`; `path` is checked as setup-ci checks it.
-    input: z.object({ repo: z.string().optional(), branch: z.string().optional(), path: z.string().optional() }),
+    // `previews` omitted reads `every-pr`, the file this route always rendered.
+    input: z.object({ repo: z.string().optional(), branch: z.string().optional(), path: z.string().optional(), previews: previewMode.optional() }),
     output: z.object({ workflowPath: z.string(), workflow: z.string() }),
     http: { method: 'GET', path: '/github/workflow-preview' },
+  },
+  'dashboard/github-repo-link': {
+    summary: "Whether one-click setup linked a repo to this team, and which of its PRs preview",
+    // A repo linked to another team reads as not linked: this answer names no other team.
+    // `previews` is then what setup would choose for a repo set up for the first time.
+    input: z.object({ repo: githubRepo }),
+    output: z.object({ linked: z.boolean(), slug: z.string().nullable(), previews: previewMode }),
+    http: { method: 'GET', path: '/github/repo-link' },
+  },
+  'dashboard/github-preview-request': {
+    summary: "One PR of a linked repo and its preview: what the Build preview page shows",
+    input: z.object({ repo: githubRepo, pr: z.coerce.number().int().positive() }),
+    output: z.object({
+      repo: z.string(),
+      pr: z.number().int(),
+      slug: z.string(),
+      title: z.string(),
+      htmlUrl: z.string(),
+      state: z.enum(['open', 'closed']),
+      /** The PR carries the `preview` label, so the repo's CI is (or was) building its preview. */
+      requested: z.boolean(),
+      /** The preview's URL once one exists. */
+      previewUrl: z.string().nullable(),
+      /** Whether the caller may press Build preview (`dashboard:provision-app`). */
+      canRequest: z.boolean(),
+    }),
+    http: { method: 'GET', path: '/github/preview-request' },
+  },
+  'dashboard/request-github-preview': {
+    summary: "Build a PR's preview: label it `preview` through the GitHub App, which starts the repo's preview job",
+    input: z.object({ repo: githubRepo, pr: z.number().int().positive() }),
+    // `ok: false` is an installation that may not write labels: re-approve the App, or add the label by hand.
+    output: z.union([z.object({ ok: z.literal(true) }), z.object({ ok: z.literal(false), needsPermissions: z.literal(true) })]),
+    http: { method: 'POST', path: '/github/preview-request' },
   },
 
   // -- findings (#1748) ------------------------------------------------------

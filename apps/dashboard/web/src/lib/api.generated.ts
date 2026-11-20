@@ -1013,11 +1013,25 @@ export interface DashboardClient {
   getPromotionReview(input: { slug: string; versionId: string }): Promise<PromotionReviewRow>;
 
   /**
+   * One PR of a linked repo and its preview: what the Build preview page shows
+   *
+   * `GET /github/preview-request` — `dashboard/github-preview-request`
+   */
+  githubPreviewRequest(input: { repo: string; pr: number }): Promise<{ repo: string; pr: number; slug: string; title: string; htmlUrl: string; state: "open" | "closed"; requested: boolean; previewUrl: string | null; canRequest: boolean }>;
+
+  /**
+   * Whether one-click setup linked a repo to this team, and which of its PRs preview
+   *
+   * `GET /github/repo-link` — `dashboard/github-repo-link`
+   */
+  githubRepoLink(input: { repo: string }): Promise<{ linked: boolean; slug: string | null; previews: "every-pr" | "on-request" }>;
+
+  /**
    * The deploy workflow to commit by hand, from the same generator one-click setup uses
    *
    * `GET /github/workflow-preview` — `dashboard/github-workflow-preview`
    */
-  githubWorkflowPreview(input: { repo?: string; branch?: string; path?: string }): Promise<{ workflowPath: string; workflow: string }>;
+  githubWorkflowPreview(input: { repo?: string; branch?: string; path?: string; previews?: "every-pr" | "on-request" }): Promise<{ workflowPath: string; workflow: string }>;
 
   /**
    * Whether this team's identity links in the dashboard and the shared directory agree
@@ -1379,6 +1393,13 @@ export interface DashboardClient {
   removeMember(input: { memberId: string }): Promise<{ removed: boolean; pending: boolean }>;
 
   /**
+   * Build a PR's preview: label it `preview` through the GitHub App, which starts the repo's preview job
+   *
+   * `POST /github/preview-request` — `dashboard/request-github-preview`
+   */
+  requestGithubPreview(input: { repo: string; pr: number }): Promise<{ ok: true } | { ok: false; needsPermissions: true }>;
+
+  /**
    * Re-send a pending invite's email (a lapsed invitation is renewed); 404 when there is no such pending invite
    *
    * `POST /members/invites/{invitationId}/resend` — `dashboard/resend-invite`
@@ -1502,7 +1523,7 @@ export interface DashboardClient {
    *
    * `POST /github/setup-ci` — `dashboard/setup-github-ci`
    */
-  setupGithubCi(input: { repo: string; branch: string; account?: string; path?: string }): Promise<{ ok: true; workflowPath: string; workflowUpdated: boolean; branch: string; vertical: string } | { ok: false; needsPermissions: true }>;
+  setupGithubCi(input: { repo: string; branch: string; account?: string; path?: string; previews?: "every-pr" | "on-request" }): Promise<{ ok: true; workflowPath: string; workflowUpdated: boolean; branch: string; vertical: string; previews: "every-pr" | "on-request" } | { ok: false; needsPermissions: true }>;
 
   /**
    * Switch one peer's access to this app on or off
@@ -1785,6 +1806,10 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/processes/note`, "GET", undefined, omit(input, ["scopeId"])),
     getPromotionReview: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/promote-review`, "GET", undefined, omit(input, ["slug"])),
+    githubPreviewRequest: (input: Args) =>
+      send("/github/preview-request", "GET", undefined, input),
+    githubRepoLink: (input: Args) =>
+      send("/github/repo-link", "GET", undefined, input),
     githubWorkflowPreview: (input: Args) =>
       send("/github/workflow-preview", "GET", undefined, input),
     identityMirror: () =>
@@ -1889,6 +1914,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/domains/${encodeURIComponent(String(input.hostname))}`, "DELETE", undefined, omit(input, ["hostname"])),
     removeMember: (input: Args) =>
       send(`/members/${encodeURIComponent(String(input.memberId))}`, "DELETE", undefined, omit(input, ["memberId"])),
+    requestGithubPreview: (input: Args) =>
+      send("/github/preview-request", "POST", input, undefined),
     resendInvite: (input: Args) =>
       send(`/members/invites/${encodeURIComponent(String(input.invitationId))}/resend`, "POST", omit(input, ["invitationId"]), undefined),
     restoreInstalledApp: (input: Args) =>

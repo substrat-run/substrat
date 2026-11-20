@@ -715,6 +715,9 @@ export const isApiError = (error: unknown): error is GeneratedApiError | Account
  */
 const teamClients = new Map<string, DashboardClient>();
 
+/** Which PRs of a GitHub-deployed repo get a preview (contracts' `PreviewMode`). */
+export type PreviewMode = 'every-pr' | 'on-request';
+
 export function teamApi(teamId: string): DashboardClient {
   const cached = teamClients.get(teamId);
   if (cached) return cached;
@@ -933,8 +936,8 @@ export const api = {
   appRequests: (teamId: string, scopeId: string, query: RequestReadQuery): Promise<RequestRecord[]> =>
     teamApi(teamId).appRequests({ scopeId, ...query }),
   /** The manual path's workflow YAML (same generator the one-click commit uses). */
-  workflowPreview: (teamId: string, repo: string, branch: string, path?: string): Promise<WorkflowPreview> =>
-    teamApi(teamId).githubWorkflowPreview({ repo, branch, path }),
+  workflowPreview: (teamId: string, repo: string, branch: string, path?: string, previews?: PreviewMode): Promise<WorkflowPreview> =>
+    teamApi(teamId).githubWorkflowPreview({ repo, branch, path, ...(previews ? { previews } : {}) }),
   /**
    * One record's event history (#1235) — payload, authorization chain, impersonation, PII class.
    *

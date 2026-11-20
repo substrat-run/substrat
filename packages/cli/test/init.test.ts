@@ -57,6 +57,13 @@ describe('init --ci github', () => {
     expect(readFileSync(file, 'utf8')).toContain('name: Deploy to Substrat');
   });
 
+  it('threads --previews on-request into the file, and writes every-pr by default', () => {
+    const labelled = readFileSync(writeCiWorkflow({ ...base(), release: 'trunk', previews: 'on-request', force: true }).file, 'utf8');
+    expect(labelled).toContain('types: [opened, synchronize, reopened, labeled, closed]');
+    const every = readFileSync(writeCiWorkflow({ ...base(), release: 'trunk', force: true }).file, 'utf8');
+    expect(every).toContain('types: [opened, synchronize, reopened, closed]');
+  });
+
   it('reads the default branch from .git/HEAD, and falls back to main', () => {
     expect(detectDefaultBranch(dir)).toBe('main'); // no checkout at all
     mkdirSync(join(dir, '.git'), { recursive: true });

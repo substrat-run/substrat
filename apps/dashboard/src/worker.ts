@@ -95,8 +95,8 @@ import { listDeploymentsFromCp, ownedDeploymentFromCp, ownedDeploymentOrThrow, a
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type ListRead, type PreviewRecord, type SweepRunRead } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
-import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, normalizeWorkflowDir, setupRepoCi, upsertPrComment } from './github.js';
-import { parsePullRequestWebhook, verifyGithubSignature, previewCommentBody, previewReapedBody, previewTag, buildPreviewTagPrefix, PREVIEW_COMMENT_MARKER } from './github-webhook.js';
+import { deployWorkflowYaml, getPullRequest, githubConfig, installUrl, installationAccount, labelPullRequest, listInstallationRepos, listRepoBranches, normalizeWorkflowDir, setupRepoCi, upsertPrComment } from './github.js';
+import { parsePullRequestWebhook, verifyGithubSignature, previewActionFor, resolvePreviewMode, previewCommentBody, previewReapedBody, previewRequestBody, previewRequestUrl, previewTag, buildPreviewTagPrefix, PREVIEW_COMMENT_MARKER, PREVIEW_LABEL, type PreviewMode } from './github-webhook.js';
 import { sealForGithub } from './github-seal.js';
 import { b64urlToBytes } from './b64.js';
 import { cachedTelemetry, telemetryKey, type TelemetryStore } from './telemetry-cache.js';
@@ -416,6 +416,28 @@ interface RepoLink {
   slug: string;
   /** `owner/name` in GitHub's casing — comment calls use it verbatim. */
   repo: string;
+  /**
+   * Which PRs preview (`PreviewMode`). Added after the first links were written, so a link
+   * stored without it was set up when every PR previewed, and reads as `every-pr`
+   * ({@link previewModeOf}): a repo linked before the mode existed never silently loses its
+   * previews. A link written now always carries it.
+   */
+  previews?: PreviewMode;
+}
+
+/** A stored link's preview mode — `every-pr` for a link written before the field existed. */
+const previewModeOf = (link: RepoLink): PreviewMode => link.previews ?? 'every-pr';
+
+/** One PR event, as the webhook route hands it to the repo's link DO. */
+interface PrEvent {
+  action: 'sync' | 'closed' | 'labeled';
+  prNumber: number;
+  installationId: string;
+  opened: boolean;
+  labels: string[];
+  label?: string;
+  /** The dashboard origin the delivery reached — where the Build preview link points. */
+  origin: string;
 }
 
 /** One PR's preview watch: who to comment as, and when to give up. */
@@ -427,7 +449,8 @@ interface PrPoll {
 /** The RPC surface of GithubRepoLinkDO, for the worker-side stub cast. */
 interface RepoLinkStub {
   setLink(link: RepoLink): Promise<void>;
-  onPullRequest(evt: { action: 'sync' | 'closed'; prNumber: number; installationId: string }): Promise<{ handled: boolean }>;
+  getLink(): Promise<RepoLink | null>;
+  onPullRequest(evt: PrEvent): Promise<{ handled: boolean }>;
 }
 
 const PR_POLL_INTERVAL_MS = 60_000;
@@ -449,13 +472,33 @@ export class GithubRepoLinkDO extends DurableObject<Env> {
     await this.ctx.storage.put('link', link);
   }
 
-  async onPullRequest(evt: { action: 'sync' | 'closed'; prNumber: number; installationId: string }): Promise<{ handled: boolean }> {
+  /** The stored link, or null for a repo never set up — what the settings and the Build preview page read. */
+  async getLink(): Promise<RepoLink | null> {
+    return (await this.ctx.storage.get<RepoLink>('link')) ?? null;
+  }
+
+  async onPullRequest(evt: PrEvent): Promise<{ handled: boolean }> {
     const link = await this.ctx.storage.get<RepoLink>('link');
     if (!link) return { handled: false };
     const key = `poll:${evt.prNumber}`;
-    if (evt.action === 'closed') {
+    const action = previewActionFor(previewModeOf(link), evt);
+    if (action === 'ignore') return { handled: true };
+    if (action === 'reap') {
       await this.ctx.storage.delete(key);
       await this.reap(link, evt.prNumber, evt.installationId);
+      return { handled: true };
+    }
+    if (action === 'ask') {
+      // The comment IS the trigger in an `on-request` repo: its link opens the page whose
+      // button labels the PR. Best-effort like every comment here — a GitHub refusal leaves the
+      // label, which the comment also names, as the way in.
+      const cfg = githubConfig(this.env);
+      if (cfg) {
+        await upsertPrComment(
+          cfg, evt.installationId, link.repo, evt.prNumber, PREVIEW_COMMENT_MARKER,
+          previewRequestBody(previewRequestUrl(evt.origin, link.tenantId, link.repo, evt.prNumber)),
+        ).catch(() => {});
+      }
       return { handled: true };
     }
     await this.ctx.storage.put<PrPoll>(key, { installationId: evt.installationId, deadline: Date.now() + PR_POLL_WINDOW_MS });
@@ -6103,6 +6146,9 @@ const routeHandlers = {
   'dashboard/list-github-branches': async (ctx, { repo, account }) => githubBranchesIn(ctx, repo, account),
   'dashboard/setup-github-ci': async (ctx, body) => setupGithubCiIn(ctx, body),
   'dashboard/github-workflow-preview': async (ctx, input) => workflowPreviewIn(ctx, input),
+  'dashboard/github-repo-link': async (ctx, { repo }) => githubRepoLinkIn(ctx, repo),
+  'dashboard/github-preview-request': async (ctx, input) => githubPreviewRequestIn(ctx, input),
+  'dashboard/request-github-preview': async (ctx, input) => requestGithubPreviewIn(ctx, input),
 } satisfies RouteImpl<typeof dashboardRoutes, TeamContext>;
 
 mountRoutes(app, dashboardRoutes, { basePath: '/api/teams/:teamId', context: teamContext })(routeHandlers);
@@ -6299,11 +6345,18 @@ async function setupGithubCiIn(
   const path = packageDirOrThrow(body.path);
   const slug = slugify((path ? path.split('/').pop() : undefined) ?? body.repo.split('/').pop() ?? 'app');
   const workflowPath = '.github/workflows/substrat-deploy.yml';
+  const link = repoLinkStub(c.env, body.repo);
+  const stored = await link.getLink();
+  // Settled once the file's existence is known (setupRepoCi reads it before committing).
+  let previews: PreviewMode = 'on-request';
   const result = await setupRepoCi(cfg, installationId, {
     repoFullName: body.repo,
     branch: body.branch,
     workflowPath,
-    workflowContent: deployWorkflowYaml({ branch: body.branch, slug, cpUrl, ...(path ? { path } : {}) }),
+    workflowContent: (workflowExisted) => {
+      previews = resolvePreviewMode({ requested: body.previews, stored: stored ? previewModeOf(stored) : undefined, workflowExisted });
+      return deployWorkflowYaml({ branch: body.branch, slug, cpUrl, previews, ...(path ? { path } : {}) });
+    },
     secretName: 'SUBSTRAT_SERVICE_TOKEN',
     secretValue: token,
     seal: sealForGithub,
@@ -6315,12 +6368,14 @@ async function setupGithubCiIn(
   // The durable repo → app link: what lets the App's webhook stream route a PR
   // event back to this tenant's app (preview comment + reap). Idempotent; re-running
   // setup refreshes it. Repos wired before this existed link on their next re-run.
-  await repoLinkStub(c.env, body.repo).setLink({ tenantId: node.tenantId, slug, repo: body.repo });
+  // The mode is stored only beside a committed workflow, so the two never disagree.
+  await link.setLink({ tenantId: node.tenantId, slug, repo: body.repo, previews });
   return {
     ok: true as const,
     workflowPath,
     workflowUpdated: result.workflowUpdated,
     branch: body.branch,
+    previews,
     // What the pushed versions will be registered under (builder-plane.md §5).
     vertical: `${tenantSlug}/${slug}`,
   };
@@ -6395,12 +6450,99 @@ app.post('/api/github/webhook', async (c) => {
     action: evt.action,
     prNumber: evt.prNumber,
     installationId: evt.installationId,
+    opened: evt.opened,
+    labels: evt.labels,
+    ...(evt.label !== undefined ? { label: evt.label } : {}),
+    origin: new URL(c.req.url).origin,
   });
   return c.json({ ok: true, handled });
 });
 
+/**
+ * The repo's link when THIS team set it up, else null — a link another team holds reads as
+ * none, so nothing here says which team that is.
+ */
+async function teamRepoLink({ c, node }: TeamContext, repo: string): Promise<RepoLink | null> {
+  const link = await repoLinkStub(c.env, repo).getLink();
+  return link && link.tenantId === node.tenantId ? link : null;
+}
+
+/**
+ * The installation that holds `repo`: the connected account named like the repo's owner, else
+ * the team's oldest connection (a repo granted to it under another name still reads; one that
+ * is not answers GitHub's 404).
+ */
+async function githubInstallationForRepo(host: ReturnType<typeof hostFor>, tenantId: DashboardNode['tenantId'], repo: string): Promise<string | null> {
+  const owner = repo.split('/')[0]!.toLowerCase();
+  const { conns } = await githubConnectionFor(host, tenantId);
+  const named = conns.find((x) => x.externalAccountRef?.toLowerCase() === owner)?.externalAccountRef ?? undefined;
+  return githubInstallationFor(host, tenantId, named);
+}
+
+/** Whether this team linked a repo, and which of its PRs preview — the setup card's toggle reads it. */
+async function githubRepoLinkIn(ctx: TeamContext, repo: string) {
+  const link = await teamRepoLink(ctx, repo);
+  return { linked: link !== null, slug: link?.slug ?? null, previews: link ? previewModeOf(link) : ('on-request' as const) };
+}
+
+/** The repo's link, its installation and the PR — or the 4xx a Build preview page reads as a message. */
+async function linkedPullRequest(ctx: TeamContext, repo: string, pr: number) {
+  const cfg = githubOrThrow(ctx.c.env);
+  const link = await teamRepoLink(ctx, repo);
+  if (!link) throw new HTTPException(404, { message: `${repo} does not deploy to this team — set it up under Verticals → Deploy from GitHub` });
+  const installationId = await githubInstallationForRepo(ctx.host, ctx.node.tenantId, repo);
+  if (!installationId) throw new HTTPException(409, { message: 'GitHub is not connected' });
+  const pull = await getPullRequest(cfg, installationId, link.repo, pr);
+  if (!pull) throw new HTTPException(404, { message: `no pull request #${pr} in ${link.repo}` });
+  return { cfg, link, installationId, pull };
+}
+
+/**
+ * What the Build preview page shows (GET, so it changes nothing): the PR, whether it already
+ * asked for a preview, and the preview's URL once the repo's CI has built it. The page polls
+ * this after its button, and sends the person to `previewUrl` when one appears.
+ */
+async function githubPreviewRequestIn(ctx: TeamContext, { repo, pr }: { repo: string; pr: number }) {
+  const { link, pull } = await linkedPullRequest(ctx, repo, pr);
+  // No preview yet (or a plane hiccup) reads as none; the page keeps polling.
+  const previews: PreviewRecord[] = await teamPlane(ctx).listPreviews(link.slug).catch(() => []);
+  const row = previews.find((p) => p.tag === previewTag(pr) && p.url);
+  return {
+    repo: link.repo,
+    pr,
+    slug: link.slug,
+    title: pull.title,
+    htmlUrl: pull.htmlUrl,
+    state: pull.state,
+    requested: pull.labels.includes(PREVIEW_LABEL),
+    previewUrl: row?.url ?? null,
+    canRequest: await assertMayManageApps(ctx.host, ctx.node).then(() => true, () => false),
+  };
+}
+
+/**
+ * Build preview (POST): label the PR `preview` through the GitHub App, which is the event the
+ * generated workflow's preview job waits for. The person must be allowed to deploy this
+ * vertical — the gate `create-preview` and `promote` use: may manage apps, and the vertical is
+ * this team's. The App's label write also triggers the repo-link DO's watch (the `labeled`
+ * webhook), which comments the URL on the PR once CI has built it.
+ */
+async function requestGithubPreviewIn(ctx: TeamContext, { repo, pr }: { repo: string; pr: number }) {
+  await assertMayManageApps(ctx.host, ctx.node);
+  const { cfg, link, installationId, pull } = await linkedPullRequest(ctx, repo, pr);
+  await assertOwnedFromCp(teamPlane(ctx), link.slug);
+  if (pull.state !== 'open') throw new HTTPException(409, { message: `#${pr} is closed — a closed pull request has no preview` });
+  const result = await labelPullRequest(cfg, installationId, link.repo, pr, {
+    name: PREVIEW_LABEL,
+    color: '1f6feb',
+    description: 'Build a Substrat preview of this pull request',
+  });
+  if ('needsPermissions' in result) return { ok: false as const, needsPermissions: true as const };
+  return { ok: true as const };
+}
+
 /** The manual path's copy-paste workflow — same generator as the committed one (github.ts). */
-function workflowPreviewIn({ c }: TeamContext, input: { repo?: string; branch?: string; path?: string }) {
+function workflowPreviewIn({ c }: TeamContext, input: { repo?: string; branch?: string; path?: string; previews?: PreviewMode }) {
   const repo = input.repo ?? 'owner/app';
   const branch = input.branch ?? 'main';
   const path = packageDirOrThrow(input.path || undefined);
@@ -6411,6 +6553,7 @@ function workflowPreviewIn({ c }: TeamContext, input: { repo?: string; branch?: 
       branch,
       slug,
       cpUrl: c.env.CP_PUBLIC_URL ?? 'https://console.substrat.net/api',
+      ...(input.previews ? { previews: input.previews } : {}),
       ...(path ? { path } : {}),
     }),
   };

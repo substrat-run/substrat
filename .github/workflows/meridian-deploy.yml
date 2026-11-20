@@ -46,10 +46,13 @@ on:
       - 'pnpm-lock.yaml'
       - 'yarn.lock'
       - 'package-lock.json'
-  # Per-PR previews: open/update a PR → a preview instance running the PR's code against a
-  # FORK of prod on its own URL; close the PR → it is reaped (the TTL is the GC backstop).
+  # Per-PR previews, on request: a PR labelled 'preview' gets a preview instance running the
+  # PR's code against a FORK of prod on its own URL, and every push to it updates it; close
+  # the PR → it is reaped (the TTL is the GC backstop). Removing the label stops updating the
+  # preview without reaping it. Every PR used to preview, and every preview took a slot in
+  # the platform build queue in front of the merges that deploy prod.
   pull_request:
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened, labeled, closed]
     # The outer bound: only a PR touching these can preview demos/meridian at all. Inside it, the
     # `preview_scope` job reads demos/meridian's upload closure off the workspace graph and skips
     # `preview` when nothing in it changed (another workflow, a version bump, a lockfile change
@@ -202,10 +205,15 @@ jobs:
     # that changed nothing demos/meridian uploads from taking a slot in it. No secrets, and the
     # default read-only token: it runs the PR's own code, as ci.yml does. A skip writes its
     # reason to this job's summary, so a grey `preview` reads as decided, not broken.
+    #
+    # Only for a PR labelled 'preview', and on a `labeled` event only when that label is the one
+    # added: labelling a previewed PR `bug` is not a reason to build it again.
     if: >-
       github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
-      github.event.pull_request.user.login != 'dependabot[bot]'
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      contains(github.event.pull_request.labels.*.name, 'preview') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'preview')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -238,11 +246,17 @@ jobs:
     # And only when `preview_scope` found a change in what the vertical uploads. A job-level
     # `if:` skips before the job joins the concurrency group below, so a skipped preview never
     # waits in, or holds, the platform build queue. Skipped reports as skipped, not failed.
+    #
+    # And only for a PR labelled 'preview' (the same condition as `preview_scope`, repeated so
+    # this job reads on its own): a labelled PR still skips when it changes nothing the
+    # vertical uploads.
     needs: preview_scope
     if: >-
       github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
       github.event.pull_request.user.login != 'dependabot[bot]' &&
+      contains(github.event.pull_request.labels.*.name, 'preview') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'preview') &&
       needs.preview_scope.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15

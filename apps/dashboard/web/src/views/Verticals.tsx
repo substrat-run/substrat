@@ -12,6 +12,7 @@ import {
   type Deployment,
   type DeploymentVersion,
   type GitReposResult,
+  type PreviewMode,
   type VerticalPreview,
   type WorkflowPreview,
 } from '../lib/api';
@@ -1281,10 +1282,17 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
   const [path, setPath] = useState('');
   const packageDir = path.trim().replace(/^\.\//, '').replace(/\/+$/, '') || undefined;
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState<{ workflowPath: string; workflowUpdated: boolean; vertical: string } | null>(null);
+  const [done, setDone] = useState<{ workflowPath: string; workflowUpdated: boolean; vertical: string; previews: PreviewMode } | null>(null);
   const [needsPermissions, setNeedsPermissions] = useState(false);
   const [error, setError] = useState<string>();
   const [manual, setManual] = useState(false);
+  // Preview every PR, or only the PRs somebody asks to see (the default for a repo set up for
+  // the first time: hosted builds queue per vertical, so every PR's preview delays the deploy).
+  // Read from the repo's link; sent only once changed here, so a repo set up before the choice
+  // existed keeps previewing every PR unless somebody turns that off.
+  const [previews, setPreviews] = useState<PreviewMode>('on-request');
+  const [previewsTouched, setPreviewsTouched] = useState(false);
+  const [linked, setLinked] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -1302,11 +1310,27 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
     };
   }, [teamId, repo.fullName, repo.branch, repo.account]);
 
+  useEffect(() => {
+    let live = true;
+    teamApi(teamId)
+      .githubRepoLink({ repo: repo.fullName })
+      .then((l) => {
+        if (!live) return;
+        setLinked(l.linked);
+        setPreviews(l.previews);
+      })
+      // Unread, the server decides (stored mode, else what a first setup picks).
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [teamId, repo.fullName]);
+
   const setup = async () => {
     setBusy(true);
     setError(undefined);
     try {
-      const result = await teamApi(teamId).setupGithubCi({ repo: repo.fullName, branch, account: repo.account, path: packageDir });
+      const result = await teamApi(teamId).setupGithubCi({ repo: repo.fullName, branch, account: repo.account, path: packageDir, ...(previewsTouched ? { previews } : {}) });
       if (result.ok) setDone(result);
       else setNeedsPermissions(true);
     } catch (e) {
@@ -1348,6 +1372,17 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
               <span style={{ fontFamily: 'var(--font-mono)' }}>{branch}</span> is the deploy. Roll back any time from the
               go-live history above.
             </span>
+            <span>
+              {done.previews === 'every-pr' ? (
+                <>Every pull request gets a preview, and every push to it updates the preview.</>
+              ) : (
+                <>
+                  Pull requests get a preview on request: each new one gets a comment with a <strong>Build preview</strong> link,
+                  which adds the <span style={{ fontFamily: 'var(--font-mono)' }}>preview</span> label. Labelling a PR by hand does the
+                  same.
+                </>
+              )}
+            </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
             <Button onClick={onDone}>Done</Button>
@@ -1378,6 +1413,23 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
             style={{ width: 260 }}
           />
 
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <Checkbox
+              label="Preview every PR"
+              checked={previews === 'every-pr'}
+              onChange={(on) => {
+                setPreviews(on ? 'every-pr' : 'on-request');
+                setPreviewsTouched(true);
+              }}
+              style={{ fontSize: 12.5 }}
+            />
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+              Off: a PR is previewed when someone asks — its comment carries a Build preview link, or label it{' '}
+              <span style={{ fontFamily: 'var(--font-mono)' }}>preview</span>. Builds run one at a time per vertical, so previewing
+              every push to every PR makes merges wait behind them.{linked ? ' Changing this re-commits the workflow.' : ''}
+            </div>
+          </div>
+
           {needsPermissions && (
             <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>
               The GitHub App is missing write access on this repository (an older installation). Re-approve the App's updated
@@ -1388,10 +1440,10 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
           )}
           {error && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{error}</div>}
 
-          {manual && <ManualCiSetup teamId={teamId} repo={repo.fullName} branch={branch} path={packageDir} />}
+          {manual && <ManualCiSetup teamId={teamId} repo={repo.fullName} branch={branch} path={packageDir} previews={previews} />}
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
-            <Button onClick={setup} disabled={busy || branches === null}>{busy ? 'Setting up…' : 'Set up deployment'}</Button>
+            <Button onClick={setup} disabled={busy || branches === null}>{busy ? 'Setting up…' : linked ? 'Update deployment' : 'Set up deployment'}</Button>
             <Button variant="ghost" onClick={onBack}>Back</Button>
             <div style={{ flex: 1 }} />
             {!manual && (
@@ -1407,18 +1459,18 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
 }
 
 /** The copy-paste fallback: the same workflow the one-click path would commit. */
-function ManualCiSetup({ teamId, repo, branch, path }: { teamId: string; repo: string; branch: string; path?: string }) {
+function ManualCiSetup({ teamId, repo, branch, path, previews }: { teamId: string; repo: string; branch: string; path?: string; previews: PreviewMode }) {
   const [preview, setPreview] = useState<WorkflowPreview | null>(null);
   useEffect(() => {
     let live = true;
     api
-      .workflowPreview(teamId, repo, branch, path)
+      .workflowPreview(teamId, repo, branch, path, previews)
       .then((p) => live && setPreview(p))
       .catch(() => {});
     return () => {
       live = false;
     };
-  }, [teamId, repo, branch, path]);
+  }, [teamId, repo, branch, path, previews]);
 
   if (!preview) return <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Loading workflow…</div>;
   return (

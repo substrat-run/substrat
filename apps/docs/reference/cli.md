@@ -63,6 +63,7 @@ credential), `--tenant <id-or-slug>` (which workspace to act for).
 ```bash
 substrat init --ci github                        # → .github/workflows/substrat-deploy.yml
 substrat init --ci github --release changesets   # the repo owns its version
+substrat init --ci github --previews on-request  # preview only PRs labelled `preview`
 substrat init --ci github ./apps/helpdesk --branch main --force
 ```
 
@@ -78,6 +79,14 @@ cover: you own your CI, or you want the release-train shape.
 |---|---|
 | `trunk` *(default)* | **releases.** The push carries no `--version`, so the registry patch-bumps and `--promote prod` points prod at it in the same run. |
 | `changesets` | **releases only when `package.json` version moved.** The repo owns the version, so the merge that lands a changeset just moves the test env; prod moves when the version PR lands. |
+
+`--previews` picks which pull requests get a preview
+([why it matters](/guide/environments-and-previews#which-pull-requests-get-a-preview)):
+
+| Mode | Which PRs preview |
+|---|---|
+| `every-pr` *(default)* | every PR, on every push. |
+| `on-request` | only a PR labelled `preview`; every push to it updates the preview. Removing the label stops updating it, and closing the PR still reaps it. Without the dashboard's GitHub App there is no Build preview comment, so you add the label on GitHub. |
 
 Two behaviours are opt-in through **repository variables**, so enabling them never means
 regenerating the file:

@@ -52,6 +52,29 @@ export const buildPreviewTag = (prNumber: number, runId: string | number): strin
 export const buildPreviewTagPrefix = (prNumber: number): string => `pr-${prNumber}-`;
 
 // ---------------------------------------------------------------------------
+// Preview modes
+// ---------------------------------------------------------------------------
+
+/**
+ * Which PRs get a preview.
+ *
+ * - `every-pr` — every PR push builds one (the workflow this generator always produced).
+ * - `on-request` — only a PR carrying the {@link PREVIEW_LABEL} label does. Hosted builds
+ *   are serialized per vertical (#2795), so a preview of every push to every PR queues in
+ *   front of the merge that deploys prod; asking for the previews somebody will open keeps
+ *   that queue short. The platform's PR comment carries a Build preview link that adds the
+ *   label for you.
+ *
+ * Repos linked before the mode existed keep `every-pr`; a new repo link starts `on-request`.
+ */
+export type PreviewMode = 'every-pr' | 'on-request';
+
+export const PREVIEW_MODES = ['every-pr', 'on-request'] as const satisfies readonly PreviewMode[];
+
+/** The PR label an `on-request` workflow previews. */
+export const PREVIEW_LABEL = 'preview';
+
+// ---------------------------------------------------------------------------
 // The PR sticky comment
 // ---------------------------------------------------------------------------
 
@@ -92,6 +115,22 @@ export function previewCommentBody(urls: { sticky: string; build?: string | null
 export const previewReapedBody = (): string =>
   `${PREVIEW_COMMENT_MARKER}\n🔎 **Substrat preview:** reaped — this PR is closed and the preview forks were deleted.`;
 
+/**
+ * The sticky comment on a PR in an `on-request` repo that has no preview yet. It IS the
+ * trigger: `buildUrl` is the dashboard page whose button labels the PR, which is what the
+ * generated workflow's preview job waits for. The label is named too, so a reviewer who
+ * prefers GitHub's own sidebar (or a repo whose App lacks the label permission) can do the
+ * same thing by hand. Overwritten with {@link previewCommentBody} once the preview exists.
+ *
+ * Apostrophe-free like the others, though the workflow never renders this one: the
+ * platform is its only writer, since only the platform knows where its page lives.
+ */
+export const previewRequestBody = (buildUrl: string): string =>
+  `${PREVIEW_COMMENT_MARKER}\n🔎 **Substrat preview:** no preview yet — this repo builds previews on request.\n\n` +
+  `[**Build preview**](${buildUrl}) · or add the \`${PREVIEW_LABEL}\` label to this PR. ` +
+  '_Once built, every push to this PR updates it, and it is reaped when the PR closes._';
+
+
 // ---------------------------------------------------------------------------
 // The generated workflow
 // ---------------------------------------------------------------------------
@@ -130,6 +169,11 @@ export interface DeployWorkflowOptions {
    * the file this generator always produced.
    */
   path?: string;
+  /**
+   * Which PRs get a preview ({@link PreviewMode}). Defaults to `every-pr`, the file this
+   * generator always produced; `on-request` previews only a PR labelled {@link PREVIEW_LABEL}.
+   */
+  previews?: PreviewMode;
 }
 
 /**
@@ -177,6 +221,7 @@ const printfFormat = (body: string): string => body.replace(/\n/g, '\\n');
 export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
   const { branch, slug, cpUrl } = opts;
   const release = opts.release ?? 'trunk';
+  const onRequest = (opts.previews ?? 'every-pr') === 'on-request';
   // The branch reaches the GitHub API inside a URL (the tip guard), and `#` and `&` are
   // legal in a git ref name but would truncate the query or the path there. Encoded per
   // segment, so the `/` a nested branch name needs stays a path separator
@@ -456,6 +501,36 @@ ${cpEnv}
       - 'pnpm-lock.yaml'`
     : '';
 
+  // --- which PRs preview ----------------------------------------------------------------
+  //
+  // `on-request` adds `labeled` to the PR trigger and gates the preview job on the label, so
+  // a PR nobody asked to see never takes a slot in the vertical's build queue (#2795). Two
+  // conditions, both load-bearing: the label must be ON the PR (so a push to a labelled PR
+  // keeps its preview current, and a push to an unlabelled one builds nothing), and a
+  // `labeled` event must be THIS label (adding `bug` to a labelled PR is not a reason to
+  // rebuild). There is no `unlabeled` trigger: removing the label stops updating the preview,
+  // and the preview it already built stays until the PR closes (reaped) or its TTL lapses.
+  // Re-adding the label rebuilds it.
+  const prTypes = onRequest
+    ? '[opened, synchronize, reopened, labeled, closed]'
+    : '[opened, synchronize, reopened, closed]';
+  const prTriggerNote = onRequest
+    ? `  # Per-PR previews, on request: a PR labelled '${PREVIEW_LABEL}' gets a preview instance running the
+  # PR's code against a FORK of prod on its own URL, and every push to it updates it. The
+  # platform's PR comment carries a Build preview link that adds the label. Removing the label
+  # stops updating the preview; closing the PR reaps it (the TTL is the GC backstop).`
+    : `  # Per-PR previews: open/update a PR → a preview instance running the PR's code against a
+  # FORK of prod on its own URL; close the PR → it is reaped (the TTL is the GC backstop).`;
+  const previewIf = onRequest
+    ? `    # Only a PR labelled '${PREVIEW_LABEL}' previews, and a \`labeled\` event only when it added that
+    # label. A job-level \`if:\` skips (grey, not red), so an unlabelled PR reports as skipped.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      contains(github.event.pull_request.labels.*.name, '${PREVIEW_LABEL}') &&
+      (github.event.action != 'labeled' || github.event.label.name == '${PREVIEW_LABEL}')`
+    : `    if: github.event_name == 'pull_request' && github.event.action != 'closed'`;
+
   const releaseNote = release === 'changesets'
     ? `    # Release train: the version lives in package.json and only a version PR moves it, so a
     # merge releases ONLY when that version changed. Every merge still updates the test env.`
@@ -474,7 +549,11 @@ ${cpEnv}
 #
 # Optional repository variables (Settings → Secrets and variables → Actions → Variables):
 #   SUBSTRAT_TEST_SCOPE_ID      a long-lived scope rebound to every merge (the test env)
-#   SUBSTRAT_PER_BUILD_PREVIEW  set to 1 to also mint a frozen per-build preview URL per push
+#   SUBSTRAT_PER_BUILD_PREVIEW  set to 1 to also mint a frozen per-build preview URL per push${
+    onRequest
+      ? `\n#\n# Previews are on request: only a PR carrying the '${PREVIEW_LABEL}' label builds one. To preview\n# every PR, turn on Preview every PR where this repo is set up in the dashboard (or\n# regenerate with \`substrat init --ci github --previews every-pr\`).`
+      : ''
+  }
 
 # The default GITHUB_TOKEN, narrowed to what these jobs actually use. A repository whose
 # default is read/write would otherwise hand every job below write access to issues, packages
@@ -486,10 +565,9 @@ permissions:
 on:
   push:
     branches: [${branch}]${pathsFilter}
-  # Per-PR previews: open/update a PR → a preview instance running the PR's code against a
-  # FORK of prod on its own URL; close the PR → it is reaped (the TTL is the GC backstop).
+${prTriggerNote}
   pull_request:
-    types: [opened, synchronize, reopened, closed]${pathsFilter}
+    types: ${prTypes}${pathsFilter}
 
 jobs:
   deploy:
@@ -522,7 +600,7 @@ ${release_}
 ${testEnv}
 
   preview:
-    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+${previewIf}
     runs-on: ubuntu-latest
     # Never overlap two runs for the same PR — a rapid re-push waits for the first.
     concurrency: substrat-preview-\${{ github.event.number }}

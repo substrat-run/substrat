@@ -82,8 +82,9 @@ on drift, so a widened role cannot merge without appearing in the pull request.
 
 ## How do I know a new version won't destroy my customers' data?
 
-You watch it happen first. Open a pull request and the platform forks the production scope,
-runs *that PR's code and migrations* against the copy, and posts a URL on the PR. When a bind
+You watch it happen first. Open a pull request — and, in a repo that previews on request, press
+**Build preview** on its comment — and the platform forks the production scope, runs *that PR's
+code and migrations* against the copy, and posts a URL on the PR. When a bind
 crosses a migration-digest boundary the pre-migration state is snapshotted automatically —
 the digest comparison is the gate, not a flag anyone remembers to pass. Per-scope
 point-in-time rewind covers roughly 30 days underneath all of it.

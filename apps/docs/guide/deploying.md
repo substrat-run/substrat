@@ -642,9 +642,12 @@ The committed workflow is the whole loop from this page: a push to the chosen br
 dependencies with pnpm (the repo needs a `pnpm-lock.yaml`), builds the workspace packages the
 vertical imports when it lives in a monorepo (install only *links* a sibling; its `dist/` is
 what the bundle resolves), gates the push (below), and runs
-`substrat push --promote prod` — for a private vertical, merge-to-main *is* the deploy; opening
-or updating a PR creates its [preview](#preview-a-pull-request) and comments the URL; closing
-the PR reaps it. A manual copy-paste path shows the same file if you'd rather commit it yourself.
+`substrat push --promote prod` — for a private vertical, merge-to-main *is* the deploy; a PR
+gets its [preview](#preview-a-pull-request) and the URL commented, and closing the PR reaps it.
+A repo set up for the first time previews **on request** — each PR's comment carries a **Build
+preview** button — and one set up before that keeps previewing every PR; the setup card's
+**Preview every PR** switches between them
+([which PRs get a preview](/guide/environments-and-previews#which-pull-requests-get-a-preview)). A manual copy-paste path shows the same file if you'd rather commit it yourself.
 
 ### The gate before the push
 

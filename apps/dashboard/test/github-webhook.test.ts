@@ -6,8 +6,12 @@ import {
   buildPreviewTagPrefix,
   parsePullRequestWebhook,
   previewCommentBody,
+  previewActionFor,
   previewReapedBody,
+  previewRequestBody,
+  previewRequestUrl,
   previewTag,
+  resolvePreviewMode,
   verifyGithubSignature,
 } from '../src/github-webhook.js';
 import { deployWorkflowYaml, githubConfig, upsertPrComment } from '../src/github.js';
@@ -38,32 +42,94 @@ describe('GitHub webhook verification', () => {
 });
 
 describe('pull_request event parsing', () => {
-  const payload = (action: string) =>
+  const payload = (action: string, extra: object = {}) =>
     JSON.stringify({
       action,
       number: 42,
       repository: { full_name: 'acme-inc/hr-portal' },
       installation: { id: 987654 },
-      pull_request: { title: 'irrelevant extra fields pass through' },
+      pull_request: { title: 'irrelevant extra fields pass through', labels: [{ name: 'preview' }] },
+      ...extra,
     });
 
-  it('maps opened/reopened/synchronize to a preview watch, closed to a reap', () => {
+  it('maps opened/reopened/synchronize to a preview watch, closed to a reap, carrying the labels', () => {
     for (const action of ['opened', 'reopened', 'synchronize']) {
       expect(parsePullRequestWebhook('pull_request', payload(action))).toEqual({
         action: 'sync',
         repo: 'acme-inc/hr-portal',
         prNumber: 42,
         installationId: '987654',
+        opened: action !== 'synchronize',
+        labels: ['preview'],
       });
     }
     expect(parsePullRequestWebhook('pull_request', payload('closed'))?.action).toBe('closed');
+    // A label added is how an on-request repo asks: the event names the one label.
+    expect(parsePullRequestWebhook('pull_request', payload('labeled', { label: { name: 'preview' } }))).toMatchObject({
+      action: 'labeled',
+      label: 'preview',
+    });
   });
 
   it('drops other actions, other events, and malformed payloads', () => {
+    expect(parsePullRequestWebhook('pull_request', payload('unlabeled', { label: { name: 'preview' } }))).toBeNull();
     expect(parsePullRequestWebhook('pull_request', payload('labeled'))).toBeNull();
     expect(parsePullRequestWebhook('push', payload('opened'))).toBeNull();
     expect(parsePullRequestWebhook('pull_request', 'not json')).toBeNull();
     expect(parsePullRequestWebhook('pull_request', JSON.stringify({ action: 'opened' }))).toBeNull();
+  });
+});
+
+describe('which PR events preview', () => {
+  const evt = (action: 'sync' | 'closed' | 'labeled', o: { opened?: boolean; labels?: string[]; label?: string } = {}) => ({
+    action,
+    opened: o.opened ?? false,
+    labels: o.labels ?? [],
+    ...(o.label ? { label: o.label } : {}),
+  });
+
+  it('every-pr watches every open and push, and ignores labels', () => {
+    expect(previewActionFor('every-pr', evt('sync', { opened: true }))).toBe('watch');
+    expect(previewActionFor('every-pr', evt('sync'))).toBe('watch');
+    expect(previewActionFor('every-pr', evt('labeled', { label: 'preview', labels: ['preview'] }))).toBe('ignore');
+    expect(previewActionFor('every-pr', evt('closed'))).toBe('reap');
+  });
+
+  it('on-request asks on open, watches only a labelled PR, and still reaps on close', () => {
+    // Opened without the label: the comment with the Build preview link. A later push: nothing.
+    expect(previewActionFor('on-request', evt('sync', { opened: true }))).toBe('ask');
+    expect(previewActionFor('on-request', evt('sync'))).toBe('ignore');
+    // The label, added or already there: CI builds, so watch for its URL.
+    expect(previewActionFor('on-request', evt('labeled', { label: 'preview', labels: ['preview'] }))).toBe('watch');
+    expect(previewActionFor('on-request', evt('sync', { labels: ['preview'] }))).toBe('watch');
+    expect(previewActionFor('on-request', evt('sync', { opened: true, labels: ['preview'] }))).toBe('watch');
+    // Another label on a labelled PR is not a request.
+    expect(previewActionFor('on-request', evt('labeled', { label: 'bug', labels: ['preview', 'bug'] }))).toBe('ignore');
+    // Reaped whatever its labels: a PR whose label was removed may still hold a preview.
+    expect(previewActionFor('on-request', evt('closed'))).toBe('reap');
+  });
+
+  it('keeps a repo that previewed every PR doing so, and starts a new one on request', () => {
+    // A choice made in the request wins over everything.
+    expect(resolvePreviewMode({ requested: 'every-pr', stored: 'on-request', workflowExisted: false })).toBe('every-pr');
+    expect(resolvePreviewMode({ requested: 'on-request', stored: 'every-pr', workflowExisted: true })).toBe('on-request');
+    // The link's mode (a link stored before the field existed arrives as every-pr).
+    expect(resolvePreviewMode({ stored: 'every-pr', workflowExisted: false })).toBe('every-pr');
+    expect(resolvePreviewMode({ stored: 'on-request', workflowExisted: true })).toBe('on-request');
+    // No link, but the workflow is already in the repo: it previews every PR today.
+    expect(resolvePreviewMode({ workflowExisted: true })).toBe('every-pr');
+    // A repo set up for the first time.
+    expect(resolvePreviewMode({ workflowExisted: false })).toBe('on-request');
+  });
+
+  it('links the comment to the Build preview page, naming the team, repo and PR', () => {
+    const url = new URL(previewRequestUrl('https://app.example/', '01JTEAM', 'acme-inc/hr-portal', 42));
+    expect(url.origin + url.pathname).toBe('https://app.example/preview-request');
+    expect(Object.fromEntries(url.searchParams)).toEqual({ team: '01JTEAM', repo: 'acme-inc/hr-portal', pr: '42' });
+    const body = previewRequestBody(url.toString());
+    expect(body.startsWith(PREVIEW_COMMENT_MARKER)).toBe(true);
+    expect(body).toContain(`[**Build preview**](${url.toString()})`);
+    expect(body).toContain('`preview` label');
   });
 });
 
@@ -98,7 +164,7 @@ describe('the sticky-comment contract', () => {
   it('keeps every comment body apostrophe-free — the workflow renders them into a quoted printf', () => {
     // A single apostrophe in this prose closes the workflow's single-quoted printf and
     // takes the whole preview job red on what reads as a copy-edit.
-    for (const body of [previewCommentBody({ sticky }), previewCommentBody({ sticky, build }), previewReapedBody()]) {
+    for (const body of [previewCommentBody({ sticky }), previewCommentBody({ sticky, build }), previewReapedBody(), previewRequestBody(sticky)]) {
       expect(body).not.toContain("'");
     }
   });

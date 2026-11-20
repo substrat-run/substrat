@@ -13,7 +13,7 @@
  * Kept free of Cloudflare imports so it compiles (and tests) under the node
  * tsconfig — the same split as github.ts.
  */
-import { z } from '@substrat-run/contracts';
+import { PREVIEW_LABEL, z, type PreviewMode } from '@substrat-run/contracts';
 
 export {
   PREVIEW_COMMENT_MARKER,
@@ -22,6 +22,10 @@ export {
   buildPreviewTagPrefix,
   previewCommentBody,
   previewReapedBody,
+  previewRequestBody,
+  PREVIEW_LABEL,
+  PREVIEW_MODES,
+  type PreviewMode,
 } from '@substrat-run/contracts';
 
 /**
@@ -61,11 +65,25 @@ const pullRequestPayload = z.object({
   number: z.number().int().positive(),
   repository: z.object({ full_name: z.string().regex(/^[^/\s]+\/[^/\s]+$/) }),
   installation: z.object({ id: z.union([z.number().int(), z.string()]) }),
+  // The labels decide an `on-request` repo's preview; absent reads as none, never a refusal.
+  pull_request: z.object({ labels: z.array(z.object({ name: z.string() })).optional() }).optional(),
+  // Present on a `labeled` delivery: the one label that was just added.
+  label: z.object({ name: z.string() }).optional(),
 });
 
 export interface PullRequestEvent {
-  /** `sync` = opened/reopened/synchronize (arm the preview watch); `closed` = reap. */
-  action: 'sync' | 'closed';
+  /**
+   * `sync` = opened/reopened/synchronize (arm the preview watch); `closed` = reap;
+   * `labeled` = a label was added (`label` names it), which is how an `on-request` repo
+   * asks for its preview.
+   */
+  action: 'sync' | 'closed' | 'labeled';
+  /** `opened`/`reopened`: the moment an `on-request` repo's PR gets its "No preview yet" comment. */
+  opened: boolean;
+  /** Every label on the PR as delivered, the just-added one included. */
+  labels: string[];
+  /** The label a `labeled` delivery added. */
+  label?: string;
   /** `owner/name`, exactly as GitHub reports it. */
   repo: string;
   prNumber: number;
@@ -89,13 +107,79 @@ export function parsePullRequestWebhook(eventName: string, rawBody: string): Pul
   }
   const parsed = pullRequestPayload.safeParse(json);
   if (!parsed.success) return null;
-  const { action, number, repository, installation } = parsed.data;
+  const { action, number, repository, installation, pull_request, label } = parsed.data;
   const kind =
     action === 'opened' || action === 'reopened' || action === 'synchronize'
       ? ('sync' as const)
       : action === 'closed'
         ? ('closed' as const)
-        : null;
+        : action === 'labeled' && label
+          ? ('labeled' as const)
+          : null;
   if (!kind) return null;
-  return { action: kind, repo: repository.full_name, prNumber: number, installationId: String(installation.id) };
+  return {
+    action: kind,
+    repo: repository.full_name,
+    prNumber: number,
+    installationId: String(installation.id),
+    opened: action === 'opened' || action === 'reopened',
+    labels: (pull_request?.labels ?? []).map((l) => l.name),
+    ...(kind === 'labeled' && label ? { label: label.name } : {}),
+  };
+}
+
+/** What the repo's link DO does with one PR event. */
+export type PreviewAction = 'reap' | 'watch' | 'ask' | 'ignore';
+
+/**
+ * Decide a PR event against the repo's preview mode — the whole policy, pure, so the DO
+ * only carries it out.
+ *
+ * - `reap` on close, in either mode: a PR whose label was removed may still hold a preview.
+ * - `watch`: CI is building (or rebuilding) this PR's preview, so poll the control plane
+ *   until it lands and then comment its URL. In `every-pr` that is every open/push. In
+ *   `on-request` it is a push to a PR carrying the label, or the label being added.
+ * - `ask`: an `on-request` PR without the label was opened (or reopened), so it gets the
+ *   "No preview yet" comment with the Build preview link. A later push to it does nothing.
+ * - `ignore`: everything else, an unrelated label among it.
+ */
+export function previewActionFor(
+  mode: PreviewMode,
+  evt: Pick<PullRequestEvent, 'action' | 'opened' | 'labels' | 'label'>,
+): PreviewAction {
+  if (evt.action === 'closed') return 'reap';
+  if (mode === 'every-pr') return evt.action === 'sync' ? 'watch' : 'ignore';
+  if (evt.action === 'labeled') return evt.label === PREVIEW_LABEL ? 'watch' : 'ignore';
+  if (evt.labels.includes(PREVIEW_LABEL)) return 'watch';
+  return evt.opened ? 'ask' : 'ignore';
+}
+
+/**
+ * The dashboard page a "No preview yet" comment links to. Team-less in its path because the
+ * comment is written by the repo's link DO, which knows the tenant id and not the team's URL
+ * slug; the page reads the team from `team` and every call it makes names that team in its
+ * own URL, so membership is checked where it always is.
+ */
+export function previewRequestUrl(origin: string, tenantId: string, repo: string, prNumber: number): string {
+  const q = new URLSearchParams({ team: tenantId, repo, pr: String(prNumber) });
+  return `${origin.replace(/\/+$/, '')}/preview-request?${q.toString()}`;
+}
+
+/**
+ * The preview mode one-click setup commits and stores, in order:
+ *
+ * 1. what the person chose in this request;
+ * 2. what the repo's link already holds — a link stored before the mode existed was set up
+ *    when every PR previewed, so `stored` arrives here as `every-pr` for it;
+ * 3. `every-pr` when the repo already carried the workflow file: it was set up before links
+ *    existed at all (or by hand), its PRs preview today, and re-running setup must not take
+ *    that away silently;
+ * 4. `on-request` for a repo set up for the first time.
+ */
+export function resolvePreviewMode(input: {
+  requested?: PreviewMode | undefined;
+  stored?: PreviewMode | undefined;
+  workflowExisted: boolean;
+}): PreviewMode {
+  return input.requested ?? input.stored ?? (input.workflowExisted ? 'every-pr' : 'on-request');
 }
