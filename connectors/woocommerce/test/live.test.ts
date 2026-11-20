@@ -141,9 +141,9 @@ describe.skipIf(secret === null)('woocommerce connector — live', () => {
     const client = api();
     const currency = currencyCode.parse((await client.storeInfo()).settings.currency);
     const row = (await client.changedPage('products', null, 1)).map((r) => wcProduct.parse(r)).find((p) => p.id === skuLess);
-    expect(row?.sku).toBe('GK-40');
+    expect(row?.sku).toBe('SOCK-1');
     const variations = await client.variations(row!.id);
-    expect(variations.map((v) => v.sku), 'the store fills an empty variation SKU from the product').toEqual(['GK-40', 'GK-40']);
+    expect(variations.map((v) => v.sku), 'the store fills an empty variation SKU from the product').toEqual(['SOCK-1', 'SOCK-1']);
     expect(productChange('live', currency, row!, variations).variants.map((v) => v.sku)).toEqual([null, null]);
   });
 

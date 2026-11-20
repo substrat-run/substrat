@@ -48,7 +48,7 @@ printf 'WOOCOMMERCE_TRASHED_PRODUCT=%s\nWOOCOMMERCE_DELETED_PRODUCT=%s\nWOOCOMME
 # A variable product with a SKU whose variations have none of their own. The live test checks
 # that the store fills each variation's empty SKU from the product, and that the mapping reports
 # them as having none.
-skuless=$(w product create --name='Målvaktsgummi' --type=variable --sku=GK-40 \
+skuless=$(w product create --name='Strumpor' --type=variable --sku=SOCK-1 \
   --attributes='[{"name":"Färg","options":["Svart","Vit"],"variation":true,"visible":true}]')
 w product_variation create "$skuless" --regular_price=35.00 --attributes='[{"name":"Färg","option":"Svart"}]' >/dev/null
 w product_variation create "$skuless" --regular_price=35.00 --attributes='[{"name":"Färg","option":"Vit"}]' >/dev/null

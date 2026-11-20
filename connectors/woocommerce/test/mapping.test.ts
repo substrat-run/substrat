@@ -46,7 +46,7 @@ describe('woocommerce → commerce mapping', () => {
     expect(change.variants.map((v) => [v.variantId, v.sku])).toEqual([
       ['141', null],
       ['142', null],
-      ['143', 'GK-40-R'],
+      ['143', 'SOCK-1-R'],
     ]);
   });
 

@@ -65,11 +65,11 @@ export const VARIATIONS = (): Record<number, Record<string, unknown>[]> => ({
  * below are what the store answers, not what was typed into it. The third variation has its own.
  */
 export const SKU_LESS_VARIATIONS = () => ({
-  product: product(14, '2026-11-01T12:00:00', { name: 'Målvaktsgummi', type: 'variable', sku: 'GK-40', price: '35.00', regular_price: '', variations: [141, 142, 143] }),
+  product: product(14, '2026-11-01T12:00:00', { name: 'Strumpor', type: 'variable', sku: 'SOCK-1', price: '35.00', regular_price: '', variations: [141, 142, 143] }),
   variations: [
-    { id: 141, sku: 'GK-40', price: '35.00', regular_price: '35.00', sale_price: '', manage_stock: false, stock_quantity: null, stock_status: 'instock', attributes: [{ id: 1, name: 'Färg', option: 'Svart' }] },
-    { id: 142, sku: 'GK-40', price: '35.00', regular_price: '35.00', sale_price: '', manage_stock: false, stock_quantity: null, stock_status: 'instock', attributes: [{ id: 1, name: 'Färg', option: 'Vit' }] },
-    { id: 143, sku: 'GK-40-R', price: '35.00', regular_price: '35.00', sale_price: '', manage_stock: false, stock_quantity: null, stock_status: 'instock', attributes: [{ id: 1, name: 'Färg', option: 'Röd' }] },
+    { id: 141, sku: 'SOCK-1', price: '35.00', regular_price: '35.00', sale_price: '', manage_stock: false, stock_quantity: null, stock_status: 'instock', attributes: [{ id: 1, name: 'Färg', option: 'Svart' }] },
+    { id: 142, sku: 'SOCK-1', price: '35.00', regular_price: '35.00', sale_price: '', manage_stock: false, stock_quantity: null, stock_status: 'instock', attributes: [{ id: 1, name: 'Färg', option: 'Vit' }] },
+    { id: 143, sku: 'SOCK-1-R', price: '35.00', regular_price: '35.00', sale_price: '', manage_stock: false, stock_quantity: null, stock_status: 'instock', attributes: [{ id: 1, name: 'Färg', option: 'Röd' }] },
   ],
 });
 
