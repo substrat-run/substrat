@@ -16,7 +16,7 @@ import {
   type SubjectAccessReceipt,
   z,
 } from '@substrat-run/contracts';
-import { createControlPlaneApi, DEV_ACTOR_HEADER, UNSAFE_devPlatformActorAuth } from '../src/index.js';
+import { createControlPlaneApi, DEV_ACTOR_HEADER, UNSAFE_devPlatformActorAuth, VerticalClient } from '../src/index.js';
 import type { SubjectAccessPackage } from '../src/subject-access.js';
 
 /**
@@ -142,6 +142,30 @@ describe('subject access (D-74)', () => {
     });
     expect(JSON.stringify(row?.after)).not.toContain('parking');
     expect(await host.admin.accessLog(staff, { tenantId: t, method: 'subjectAccess' })).toHaveLength(1);
+  });
+
+  it('refuses a reaped scope before reading, even when its deployment still resolves, and records nothing', async () => {
+    const gone = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: gone, vertical: 'visits' });
+    await host.admin.activateScope(staff, t, gone);
+    await host.admin.archiveScope(staff, t, gone);
+    await host.admin.reapScope(staff, t, gone, { force: true });
+    // A deployment that still answers for the slug: the read must never reach it.
+    let reached = 0;
+    const deployed = new VerticalClient({
+      fetch: (async () => {
+        reached += 1;
+        return new Response(JSON.stringify({ events: [], records: [], unreachedEntities: [], hookEntities: [], nextCursor: null }));
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    const res = await createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), verticals: { visits: deployed } }).request(
+      `/tenants/${t}/scopes/${gone}/subjects/${who}/access`,
+      { method: 'POST', headers: auth, body: JSON.stringify({ reference: 'DSAR-2026-015', requesterVerified: true }) },
+    );
+    expect(res.status).toBe(409);
+    expect(reached).toBe(0);
+    expect(await host.admin.auditLog(staff, { tenantId: t, action: 'subjectAccess' })).toHaveLength(1);
   });
 
   it('refuses a request without a one-line reference and the identity confirmation, and records nothing', async () => {

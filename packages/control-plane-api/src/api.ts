@@ -7520,6 +7520,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = c.get('actor');
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    // Before any read, on every path: a reaped scope's storage is gone. Its deployment may still
+    // resolve, and reading through it would wake the ScopeDO, recreate an empty spine, and record a
+    // receipt saying nothing is held, a false answer in a log that is never swept. The hosts refuse
+    // the same way; this is the deployment path's guard.
+    if (scope.status === 'reaped') {
+      return refuse(c, 'conflict', `scope ${scopeId} is reaped — its storage is gone and cannot be read`);
+    }
     try {
       // A scope store may hold the subject, and no driver can answer `substrat.access` yet (P3). An
       // incomplete answer that does not say it is incomplete is the failure worth avoiding, so the
