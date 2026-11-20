@@ -7554,7 +7554,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         if (pages.length >= SUBJECT_ACCESS_MAX_PAGES) {
           throw new ControlPlaneError(
             413,
-            `subject ${subjectId} has more than ${SUBJECT_ACCESS_MAX_PAGES * SUBJECT_READ_PAGE_MAX} events and rows in scope ${scopeId}, more than one response carries; nothing was recorded`,
+            `subject ${subjectId} has more than ${SUBJECT_ACCESS_MAX_PAGES * SUBJECT_READ_PAGE_MAX} events and rows in scope ${scopeId}, more than one response carries; no package was returned and no receipt was recorded`,
           );
         }
         const page = await readPage(cursor);
@@ -7572,8 +7572,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         pages,
         salt: crypto.randomUUID(),
       });
-      // The admin row (with `onBehalfOf` from the attributed view, #977) and the access log's read.
-      await c.var.admin.recordSubjectAccess(actor, tenantId, scopeId, receipt).catch(relayHostRefusal);
+      // The admin row (with `onBehalfOf` from the attributed view, #977). The read is access-logged
+      // once: by the host for each page it served, or here for pages a deployment served.
+      await c.var.admin
+        .recordSubjectAccess(actor, tenantId, scopeId, receipt, { pagesAccessLogged: !vertical })
+        .catch(relayHostRefusal);
       return c.json({ package: pkg, receipt, html: renderSubjectAccessHtml(pkg) });
     } catch (e) {
       if (e instanceof ControlPlaneError) return relayRefusal(c, e);

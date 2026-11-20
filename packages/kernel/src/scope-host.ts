@@ -3994,14 +3994,20 @@ export interface HostAdmin {
   /**
    * Record one subject access request (D-74) once its package is assembled: the admin log's
    * `subjectAccess` row with the receipt as `after` (an attributed view adds `onBehalfOf`, the
-   * signed-in member the request was made for), and the access log's read of the subject. The
-   * receipt carries counts, a reference and the identity confirmation, never content.
+   * signed-in member the request was made for). The receipt carries counts, a reference and the
+   * identity confirmation, never content.
+   *
+   * The read itself is access-logged exactly once per page read. Pages read through this host's
+   * `readSubject` already were, so the caller says so with `pagesAccessLogged` and no second row
+   * is written; pages read from a vertical's deployment were not, and get one `subjectAccess`
+   * access row here.
    */
   recordSubjectAccess(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
     receipt: SubjectAccessReceipt,
+    options?: { readonly pagesAccessLogged?: boolean },
   ): Promise<void>;
   /**
    * Subjects whose key row is tombstoned (`shredded_at` set), in subject-id order.

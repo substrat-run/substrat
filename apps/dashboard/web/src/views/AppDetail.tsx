@@ -2230,19 +2230,25 @@ function PersonalData({ teamId, app, canRequest }: { teamId: string; app: AppRow
   const [verified, setVerified] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  // The collected package, kept until the next request: every request writes a permanent audit row,
+  // so a download the browser dropped is fetched again from here, never by asking again.
+  const [result, setResult] = useState<{ stem: string; json: string; html: string } | null>(null);
   const ready = subjectId.trim() !== '' && reference.trim() !== '' && !/[\r\n]/.test(reference) && verified;
 
   const save = (name: string, body: string, type: string) => {
+    const url = URL.createObjectURL(new Blob([body], { type }));
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([body], { type }));
+    a.href = url;
     a.download = name;
     a.click();
-    URL.revokeObjectURL(a.href);
+    // Some browsers start the download after `click()` returns; revoking now can cancel it.
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
   const request = async () => {
     setBusy(true);
     setNote(null);
+    setResult(null);
     try {
       if (DEV_MOCK) {
         setNote('Personal data requests are not available in the preview.');
@@ -2254,14 +2260,20 @@ function PersonalData({ teamId, app, canRequest }: { teamId: string; app: AppRow
         reference: reference.trim(),
         requesterVerified: true,
       });
-      const stem = `personal-data__${subjectId.trim()}__${r.receipt.generatedAt.slice(0, 10)}`;
-      save(`${stem}.json`, JSON.stringify(r.package, null, 2), 'application/json');
-      save(`${stem}.html`, r.html, 'text/html');
+      const collected = {
+        stem: `personal-data__${subjectId.trim()}__${r.receipt.generatedAt.slice(0, 10)}`,
+        json: JSON.stringify(r.package, null, 2),
+        html: r.html,
+      };
+      setResult(collected);
+      // One download started for the member; the page, and the package again, are buttons below.
+      save(`${collected.stem}.json`, collected.json, 'application/json');
       const receipt = r.receipt as { events?: number; records?: { rows: number }[]; unreachedEntities?: unknown[]; hookEntities?: unknown[] };
       const rows = (receipt.records ?? []).reduce((n, x) => n + x.rows, 0);
       const unreached = (receipt.unreachedEntities?.length ?? 0) + (receipt.hookEntities?.length ?? 0);
       setNote(
-        `Downloaded ${receipt.events ?? 0} events and ${rows} records about this person, as a JSON package and an HTML page. ` +
+        `Collected ${receipt.events ?? 0} events and ${rows} records about this person. The JSON package is downloading; ` +
+          'download the HTML page for them below, and either file again if one did not arrive. ' +
           (unreached > 0 ? `${unreached} kinds of record this app keeps could not be searched by person; the package names them. ` : '') +
           'Review it before you send it: the platform masks other people it can recognize, and the rest is yours to check. The request is recorded in Audit under your name.',
       );
@@ -2301,6 +2313,12 @@ function PersonalData({ teamId, app, canRequest }: { teamId: string; app: AppRow
         </>
       )}
       {note && <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>{note}</div>}
+      {result && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Button variant="secondary" onClick={() => save(`${result.stem}.json`, result.json, 'application/json')}>Download package (JSON)</Button>
+          <Button variant="secondary" onClick={() => save(`${result.stem}.html`, result.html, 'text/html')}>Download page (HTML)</Button>
+        </div>
+      )}
     </div>
   );
 }

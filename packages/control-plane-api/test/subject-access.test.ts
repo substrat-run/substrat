@@ -127,7 +127,16 @@ describe('subject access (D-74)', () => {
     expect(answer.html).not.toContain('<script');
   });
 
-  it('records a receipt of counts and the reference under subjectAccess, and the read in the access log', async () => {
+  /** The access log's rows for subject reads in this tenant, by method. */
+  const reads = async () => {
+    const rows = await host.admin.accessLog(staff, { tenantId: t });
+    return {
+      readSubject: rows.filter((r) => r.method === 'readSubject').length,
+      subjectAccess: rows.filter((r) => r.method === 'subjectAccess').length,
+    };
+  };
+
+  it('records a receipt of counts and the reference under subjectAccess, and the read in the access log once', async () => {
     const [row] = await host.admin.auditLog(staff, { tenantId: t, action: 'subjectAccess' });
     expect(row?.after).toEqual(answer.receipt);
     expect(answer.receipt).toMatchObject({
@@ -141,10 +150,31 @@ describe('subject access (D-74)', () => {
       recipients: 'not-available',
     });
     expect(JSON.stringify(row?.after)).not.toContain('parking');
-    expect(await host.admin.accessLog(staff, { tenantId: t, method: 'subjectAccess' })).toHaveLength(1);
+    // Read from this host: its one page logged itself, and the receipt adds no second row.
+    expect(await reads()).toEqual({ readSubject: 1, subjectAccess: 0 });
+  });
+
+  it("logs a read a deployment served once, as subjectAccess, since no host page logged it", async () => {
+    const before = await reads();
+    let reached = 0;
+    const deployed = new VerticalClient({
+      fetch: (async () => {
+        reached += 1;
+        return new Response(JSON.stringify({ events: [], records: [], unreachedEntities: [], hookEntities: [], nextCursor: null }));
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    const res = await createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), verticals: { visits: deployed } }).request(
+      `/tenants/${t}/scopes/${s}/subjects/${who}/access`,
+      { method: 'POST', headers: auth, body: JSON.stringify({ reference: 'DSAR-2026-016', requesterVerified: true }) },
+    );
+    expect(res.status).toBe(200);
+    expect(reached).toBe(1);
+    expect(await reads()).toEqual({ readSubject: before.readSubject, subjectAccess: before.subjectAccess + 1 });
   });
 
   it('refuses a reaped scope before reading, even when its deployment still resolves, and records nothing', async () => {
+    const recorded = (await host.admin.auditLog(staff, { tenantId: t, action: 'subjectAccess' })).length;
     const gone = scopeId.parse(ulid());
     await host.provisionScope(staff, { tenantId: t, scopeId: gone, vertical: 'visits' });
     await host.admin.activateScope(staff, t, gone);
@@ -165,13 +195,14 @@ describe('subject access (D-74)', () => {
     );
     expect(res.status).toBe(409);
     expect(reached).toBe(0);
-    expect(await host.admin.auditLog(staff, { tenantId: t, action: 'subjectAccess' })).toHaveLength(1);
+    expect(await host.admin.auditLog(staff, { tenantId: t, action: 'subjectAccess' })).toHaveLength(recorded);
   });
 
   it('refuses a request without a one-line reference and the identity confirmation, and records nothing', async () => {
+    const before = (await host.admin.auditLog(staff, { tenantId: t, action: 'subjectAccess' })).length;
     for (const body of [{ reference: 'x' }, { reference: 'a\nb', requesterVerified: true }, { reference: '', requesterVerified: true }]) {
       expect((await ask(body)).status).toBe(400);
     }
-    expect(await host.admin.auditLog(staff, { tenantId: t, action: 'subjectAccess' })).toHaveLength(1);
+    expect(await host.admin.auditLog(staff, { tenantId: t, action: 'subjectAccess' })).toHaveLength(before);
   });
 });
