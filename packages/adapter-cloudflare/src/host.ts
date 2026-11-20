@@ -10400,7 +10400,9 @@ export class CloudflareScopeHost implements ScopeHost {
         return { subjects, nextCursor };
       },
       readSubject: async (actor, tenantId, scopeId, subjectId, page): Promise<SubjectReadPage> => {
-        await this.assertScope(tenantId, scopeId);
+        // A reaped scope is refused before its ScopeDO is addressed: waking one would recreate the
+        // spine an irreversible reap destroyed, and read back "nothing held" about a scope that is gone.
+        await this.scopeRecordForRead(tenantId, scopeId);
         const read = await this.readSubjectLocal(scopeId, subjectId, page);
         await this.recordAccess(
           actor,

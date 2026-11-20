@@ -174,5 +174,15 @@ export function subjectAccessContractSuite(adapterName: string, makeFixture: () 
       const refused = await host.admin.readSubject(staff, t1, s1, who, { cursor: 'x:1' }).catch((e: unknown) => e);
       expect(errorCodeOf(refused)).toBe('validation_failed');
     });
+
+    it('refuses a reaped scope rather than reading back nothing held', async () => {
+      const gone = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: gone, vertical: 'erasure-vertical' });
+      await host.admin.activateScope(staff, t1, gone);
+      await host.admin.archiveScope(staff, t1, gone);
+      await host.admin.reapScope(staff, t1, gone, { force: true });
+      const refused = await host.admin.readSubject(staff, t1, gone, who).catch((e: unknown) => e);
+      expect(errorCodeOf(refused)).toBe('conflict');
+    });
   });
 }

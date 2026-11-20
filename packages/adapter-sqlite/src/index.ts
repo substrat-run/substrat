@@ -12570,7 +12570,8 @@ export class SqliteScopeHost implements ScopeHost {
         return { subjects, nextCursor };
       },
       readSubject: async (actor, tenantId, scopeId, subjectId, page) => {
-        this.assertScope(tenantId, scopeId);
+        // Before the database is opened: a reaped scope's file must not be recreated by a read.
+        this.assertScopeReachable(tenantId, scopeId);
         const db = this.scopeDbFor(tenantId, scopeId);
         // The declared entities are the scope's own tables, so they have to exist — the same
         // migrations an invoke, or an erasure, applies first.
