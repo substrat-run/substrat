@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { SOCIAL_RELAY_CONFIG_KEY, type SocialRelayDelivery } from '@substrat-run/contracts';
+import {
+  SOCIAL_RELAY_CONFIG_KEY,
+  SOCIAL_RELAY_DELIVERY_STALE,
+  SOCIAL_RELAY_SECRET_NEEDED,
+  SOCIAL_RELAY_SECRET_STALE,
+  type SocialRelayDelivery,
+} from '@substrat-run/contracts';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { createAdminApi } from '../src/admin-api.js';
 import { genericProvidersFrom, readProvider, readProviders, upsertProvider } from '../src/providers.js';
@@ -99,7 +105,7 @@ describe('syncing the rows', () => {
   it('creates each provider switched off, under its relay id, as a generic row', () => {
     const sync = syncSocialRelay(sql, delivery({ providers: [provider('github', 'GitHub'), provider('google', 'Google')] }));
     expect(sync).toEqual({
-      secretNeeded: false,
+      refused: null,
       created: ['github-relay', 'google-relay'],
       updated: [],
       switchedOff: [],
@@ -142,18 +148,18 @@ describe('syncing the rows', () => {
       providers: [provider('github', 'GitHub'), provider('google', 'Google')],
     });
     const sync = syncSocialRelay(sql, withoutSecret);
-    expect(sync).toMatchObject({ secretNeeded: false, created: ['google-relay'], updated: ['github-relay'] });
+    expect(sync).toMatchObject({ refused: null, created: ['google-relay'], updated: ['github-relay'] });
     expect(readProvider(sql, 'github-relay')?.client_secret).toBe('secret-1');
     expect(readProvider(sql, 'google-relay')?.client_secret).toBe('secret-1');
   });
 
   it('writes nothing and asks for the secret when it holds none for that client', () => {
     const { clientSecret: _none, ...withoutSecret } = delivery();
-    expect(syncSocialRelay(sql, withoutSecret)).toMatchObject({ secretNeeded: true, created: [] });
+    expect(syncSocialRelay(sql, withoutSecret)).toMatchObject({ refused: SOCIAL_RELAY_SECRET_NEEDED, created: [] });
     expect(readProviders(sql)).toEqual([]);
     // A secret held for ANOTHER client (the relay client was replaced) is not this one's.
     syncSocialRelay(sql, delivery());
-    expect(syncSocialRelay(sql, { ...withoutSecret, clientId: 'relay-client-2' }).secretNeeded).toBe(true);
+    expect(syncSocialRelay(sql, { ...withoutSecret, clientId: 'relay-client-2' }).refused).toBe(SOCIAL_RELAY_SECRET_NEEDED);
     expect(readProvider(sql, 'github-relay')?.client_id).toBe('relay-client-1');
   });
 
@@ -207,6 +213,70 @@ describe('syncing the rows', () => {
     });
     expect(syncSocialRelay(sql, delivery()).switchedOff).toEqual([]);
     expect(readProvider(sql, 'corp-relay')?.disabled).toBe(0);
+  });
+});
+
+/**
+ * The secret's generation (#3275). The relay accepts only its newest secret, so these are the
+ * promises that keep an install from holding a dead one: an older secret never overwrites a newer,
+ * and a held secret the relay has moved past is reported, so the platform rotates it once.
+ */
+describe('secret generations', () => {
+  const secretless = (over: Partial<SocialRelayDelivery> = {}) => {
+    const { clientSecret: _none, ...rest } = delivery(over);
+    return rest;
+  };
+  const held = () => JSON.parse(String(sql.exec("SELECT value FROM config WHERE key = 'social_relay_client'").toArray()[0]?.value));
+
+  it('refuses a secret older than the one held, writing nothing — the out-of-order delivery of #3275', () => {
+    // Run B's rotation (generation 3) landed first; run A's (generation 2) arrives late.
+    syncSocialRelay(sql, delivery({ clientSecret: 'secret-b', generation: 3 }));
+    const late = syncSocialRelay(
+      sql,
+      delivery({ clientSecret: 'secret-a', generation: 2, providers: [provider('github', 'GitHub'), provider('google', 'Google')] }),
+    );
+    expect(late).toMatchObject({ refused: SOCIAL_RELAY_DELIVERY_STALE, created: [], updated: [] });
+    expect(held()).toEqual({ clientId: 'relay-client-1', clientSecret: 'secret-b', generation: 3 });
+    expect(readProviders(sql).map((r) => [r.provider_id, r.client_secret])).toEqual([['github-relay', 'secret-b']]);
+    // In order, the newer one is taken, and so is the same one again.
+    expect(syncSocialRelay(sql, delivery({ clientSecret: 'secret-c', generation: 4 })).refused).toBeNull();
+    expect(syncSocialRelay(sql, delivery({ clientSecret: 'secret-c', generation: 4 })).refused).toBeNull();
+    expect(held()).toEqual({ clientId: 'relay-client-1', clientSecret: 'secret-c', generation: 4 });
+  });
+
+  it('reports a held secret the relay has rotated past, writing nothing, so the platform rotates it', () => {
+    syncSocialRelay(sql, delivery({ clientSecret: 'secret-a', generation: 2 }));
+    const stuck = syncSocialRelay(sql, secretless({ generation: 3, providers: [provider('github', 'GitHub'), provider('google', 'Google')] }));
+    expect(stuck).toMatchObject({ refused: SOCIAL_RELAY_SECRET_STALE, created: [] });
+    expect(readProvider(sql, 'google-relay')).toBeUndefined();
+    // The rotation's delivery heals it.
+    expect(syncSocialRelay(sql, delivery({ clientSecret: 'secret-b', generation: 4 })).refused).toBeNull();
+    expect(syncSocialRelay(sql, secretless({ generation: 4 })).refused).toBeNull();
+    expect(readProvider(sql, 'github-relay')?.client_secret).toBe('secret-b');
+  });
+
+  it('keeps a held secret newer than the generation a secretless delivery read', () => {
+    syncSocialRelay(sql, delivery({ clientSecret: 'secret-b', generation: 3 }));
+    expect(syncSocialRelay(sql, secretless({ generation: 2 })).refused).toBeNull();
+    expect(held()).toEqual({ clientId: 'relay-client-1', clientSecret: 'secret-b', generation: 3 });
+  });
+
+  it('cannot vouch for a secret held from before generations, so asks for one; one delivered is taken', () => {
+    sql.exec(
+      "INSERT INTO config (key, value) VALUES ('social_relay_client', ?)",
+      JSON.stringify({ clientId: 'relay-client-1', clientSecret: 'legacy' }),
+    );
+    expect(syncSocialRelay(sql, secretless({ generation: 1 })).refused).toBe(SOCIAL_RELAY_SECRET_NEEDED);
+    // A platform that sends no generation is handled as it always was.
+    expect(syncSocialRelay(sql, secretless()).refused).toBeNull();
+    expect(syncSocialRelay(sql, delivery({ clientSecret: 'fresh', generation: 2 })).refused).toBeNull();
+    expect(held()).toEqual({ clientId: 'relay-client-1', clientSecret: 'fresh', generation: 2 });
+  });
+
+  it('takes a new client’s secret whatever generation the old client’s was at', () => {
+    syncSocialRelay(sql, delivery({ clientSecret: 'old-client', generation: 7 }));
+    expect(syncSocialRelay(sql, delivery({ clientId: 'relay-client-2', clientSecret: 'new-client', generation: 1 })).refused).toBeNull();
+    expect(held()).toEqual({ clientId: 'relay-client-2', clientSecret: 'new-client', generation: 1 });
   });
 });
 

@@ -37,9 +37,13 @@ export interface SqlExec {
  * history to preserve and nothing a re-create could lose. The moment that stops being
  * true — the first column anyone must not drop — it wants real migrations instead.
  *
- * `ref` arrived after the first clients were registered, so it is ALTERed in by
- * `applySchema` when an older table lacks it. That is the one exception, and a nullable
- * column added in place is the only kind this file takes without becoming migrations.
+ * `ref` and `secret_generation` arrived after the first clients were registered, so they
+ * are ALTERed in by `applySchema` when an older table lacks them. Those are the exceptions,
+ * and a column added in place that is nullable or carries a constant default is the only
+ * kind this file takes without becoming migrations. A client that predates generations
+ * reads generation 1, which is safe because a generation is only ever compared with one
+ * the relay itself handed out, and an install holding a secret from before generations
+ * holds none to compare (`demos/auth-server/src/social-relay.ts`).
  */
 export const SCHEMA: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS relay_client (
@@ -49,7 +53,8 @@ export const SCHEMA: readonly string[] = [
      redirect_uris TEXT NOT NULL,
      disabled INTEGER NOT NULL DEFAULT 0,
      created_at INTEGER NOT NULL,
-     ref TEXT
+     ref TEXT,
+     secret_generation INTEGER NOT NULL DEFAULT 1
    )`,
   `CREATE TABLE IF NOT EXISTS relay_ephemeral (
      kind TEXT NOT NULL,
@@ -77,6 +82,9 @@ export function applySchema(sql: SqlExec): void {
   for (const statement of SCHEMA) sql.exec(statement);
   const columns = sql.exec('PRAGMA table_info(relay_client)').toArray().map((row) => row.name);
   if (!columns.includes('ref')) sql.exec('ALTER TABLE relay_client ADD COLUMN ref TEXT');
+  if (!columns.includes('secret_generation')) {
+    sql.exec('ALTER TABLE relay_client ADD COLUMN secret_generation INTEGER NOT NULL DEFAULT 1');
+  }
   // One client per install: the reconciler finds it again by this key rather than minting
   // a second one on every run. NULLs do not collide, so hand-registered clients are fine.
   sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS relay_client_ref ON relay_client (ref)');
@@ -162,47 +170,127 @@ export function updateClientRegistration(
 }
 
 /**
+ * How long a rotation lease holds off every other rotation of the same client (#3275): the time
+ * one reconcile has to deliver the secret it was just handed. A holder that delivers gives it
+ * back at once; one that never does (a crash, a hung delivery) is outlived by it, and the next
+ * reconcile rotates again. Two minutes is many times a delivery's round trip and short enough
+ * that an install left without its secret waits for nothing longer than that.
+ */
+export const ROTATION_LEASE_MS = 120_000;
+
+/** The `relay_ephemeral` kind a client's rotation lease is kept under, keyed by client id. */
+const ROTATION_LEASE = 'rotation-lease';
+
+/** The lease held on this client's rotation right now, or null. Expiry is judged here, on read. */
+function liveRotationLease(sql: SqlExec, clientId: string, now: number): string | null {
+  const row = sql
+    .exec('SELECT payload FROM relay_ephemeral WHERE kind = ? AND id = ? AND expires_at > ?', ROTATION_LEASE, clientId, now)
+    .toArray()[0] as { payload: string } | undefined;
+  return row?.payload ?? null;
+}
+
+function takeRotationLease(sql: SqlExec, clientId: string, now: number): string {
+  const lease = randomToken(16);
+  putEphemeral(sql, ROTATION_LEASE, clientId, lease, now + ROTATION_LEASE_MS);
+  return lease;
+}
+
+/**
  * The client registered under `ref`, created if there is none, its name and redirect URIs
  * replaced otherwise. Read-then-write is safe: a Durable Object runs one request at a time
- * between awaits, and the unique index on `ref` is the backstop if that ever stops being true.
- * The secret is returned only on create — it is stored hashed and cannot be read back.
+ * between awaits — the one await, hashing, comes before the read — and the unique index on
+ * `ref` is the backstop if that ever stops being true.
+ *
+ * The secret is returned only on create — it is stored hashed and cannot be read back — and
+ * with it a rotation lease, because handing out a secret is the first half of "hand out, then
+ * deliver" exactly as a rotation is: a run that overlaps the creating one must not rotate the
+ * secret the creating run is still delivering (#3275). `generation` is the client's current one.
  */
 export async function ensureClientRow(
   sql: SqlExec,
   ref: string,
   input: { name: string; redirectUris: string[] },
   now: number,
-): Promise<{ clientId: string; clientSecret: string | null; created: boolean; disabled: boolean }> {
+): Promise<{
+  clientId: string;
+  clientSecret: string | null;
+  created: boolean;
+  disabled: boolean;
+  generation: number;
+  lease?: string;
+}> {
+  const clientSecret = randomToken(32);
+  const secretHash = await sha256b64url(clientSecret);
   const existing = selectClientByRef(sql, ref);
   if (existing) {
     updateClientRegistration(sql, existing.clientId, input);
-    return { clientId: existing.clientId, clientSecret: null, created: false, disabled: existing.disabled };
+    return {
+      clientId: existing.clientId,
+      clientSecret: null,
+      created: false,
+      disabled: existing.disabled,
+      generation: selectSecretGeneration(sql, existing.clientId) ?? 1,
+    };
   }
   const clientId = randomToken(16);
-  const clientSecret = randomToken(32);
-  insertClient(sql, {
-    clientId,
-    name: input.name,
-    secretHash: await sha256b64url(clientSecret),
-    redirectUris: input.redirectUris,
-    createdAt: now,
-    ref,
-  });
-  return { clientId, clientSecret, created: true, disabled: false };
+  insertClient(sql, { clientId, name: input.name, secretHash, redirectUris: input.redirectUris, createdAt: now, ref });
+  const lease = takeRotationLease(sql, clientId, now);
+  return { clientId, clientSecret, created: true, disabled: false, generation: 1, lease };
 }
 
-/** A fresh secret for an existing client, or null if there is no such client. */
-export async function rotateClientSecretRow(sql: SqlExec, clientId: string): Promise<string | null> {
+/** What a rotation came to. `busy` and `moved` rotated nothing. */
+export type RotationResult =
+  | { status: 'rotated'; clientSecret: string; generation: number; lease: string }
+  /** Another rotation of this client holds the lease: its secret is still being delivered. */
+  | { status: 'busy' }
+  /** The client's secret is no longer at the generation the caller saw: someone rotated since. */
+  | { status: 'moved'; generation: number };
+
+/**
+ * A fresh secret for an existing client — but only if its secret is still at `expected`, the
+ * generation the caller saw, and no other rotation holds the lease (#3275). The check and the
+ * write are one compare-and-set statement after the only await, so two callers that saw the same
+ * generation can never both rotate. A rotation takes the lease its delivery runs under, given
+ * back with `releaseRotationLease` or outlived. Null if there is no such client.
+ */
+export async function rotateClientSecretRow(
+  sql: SqlExec,
+  clientId: string,
+  expected: number,
+  now: number,
+): Promise<RotationResult | null> {
   const clientSecret = randomToken(32);
-  return updateClientSecretHash(sql, clientId, await sha256b64url(clientSecret)) ? clientSecret : null;
+  const secretHash = await sha256b64url(clientSecret);
+  const current = selectSecretGeneration(sql, clientId);
+  if (current === null) return null;
+  if (liveRotationLease(sql, clientId, now) !== null) return { status: 'busy' };
+  const row = sql
+    .exec(
+      `UPDATE relay_client SET secret_hash = ?, secret_generation = secret_generation + 1
+       WHERE client_id = ? AND secret_generation = ? RETURNING secret_generation`,
+      secretHash,
+      clientId,
+      expected,
+    )
+    .toArray()[0] as { secret_generation: number } | undefined;
+  if (!row) return { status: 'moved', generation: current };
+  return { status: 'rotated', clientSecret, generation: Number(row.secret_generation), lease: takeRotationLease(sql, clientId, now) };
 }
 
-export function updateClientSecretHash(sql: SqlExec, clientId: string, secretHash: string): boolean {
+/** Give a rotation lease back — only the holder's own; any other is left to run out. */
+export function releaseRotationLease(sql: SqlExec, clientId: string, lease: string): boolean {
   return (
     sql
-      .exec('UPDATE relay_client SET secret_hash = ? WHERE client_id = ? RETURNING client_id', secretHash, clientId)
+      .exec('DELETE FROM relay_ephemeral WHERE kind = ? AND id = ? AND payload = ? RETURNING id', ROTATION_LEASE, clientId, lease)
       .toArray().length > 0
   );
+}
+
+export function selectSecretGeneration(sql: SqlExec, clientId: string): number | null {
+  const row = sql.exec('SELECT secret_generation FROM relay_client WHERE client_id = ?', clientId).toArray()[0] as
+    | { secret_generation: number }
+    | undefined;
+  return row ? Number(row.secret_generation) : null;
 }
 
 export function selectClient(sql: SqlExec, clientId: string): StoredClient | null {

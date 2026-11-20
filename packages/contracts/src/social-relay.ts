@@ -25,8 +25,24 @@ import { scopeId, tenantId } from './ids.js';
  * just created, or its secret just rotated. The relay stores secrets hashed and cannot hand an
  * existing one back, so an ordinary re-delivery carries none and the issuer keeps the one it
  * holds. An issuer that holds none answers `SOCIAL_RELAY_SECRET_NEEDED` (409), and only then
- * does the platform rotate and deliver again. Rotating on every delivery instead would let two
- * overlapping reconciles deliver secrets out of order and leave the older one in place.
+ * does the platform rotate and deliver again.
+ *
+ * Every delivery also carries `generation`, the relay's count of the client's secrets (#3275): 1
+ * for the secret handed out at creation, one more for each rotation. The relay accepts only the
+ * newest, so the generation says which secret is live without anyone reading one back:
+ *
+ *   - with a secret, it is that secret's generation, and an issuer holding a NEWER one refuses the
+ *     delivery (`SOCIAL_RELAY_DELIVERY_STALE`) — a slow delivery from a run that rotated earlier
+ *     can never overwrite the secret a later rotation delivered;
+ *   - without one, it is the relay's current generation, and an issuer holding an OLDER one knows
+ *     its secret is dead and says so (`SOCIAL_RELAY_SECRET_STALE`), which the platform answers
+ *     with one rotation — the stuck install heals on its next reconcile.
+ *
+ * Rotation and its delivery are serialized per client at the relay itself: a rotation is a
+ * compare-and-set on the generation the caller saw, and it takes a short lease that refuses any
+ * other rotation of that client until the delivery is made (`packages/control-plane-api`,
+ * `reconcileSocialRelay`). So two reconciles can never both rotate, and the generation is the
+ * guard that holds even if that serialization is ever bypassed.
  */
 export const SOCIAL_RELAY_CONFIG_KEY = 'substrat:social-relay';
 
@@ -80,13 +96,37 @@ export type SocialRelayProvider = z.infer<typeof socialRelayProvider>;
 
 export const socialRelayProviders = z.object({ providers: z.array(socialRelayProvider).max(32) });
 
-/** What an issuer answers (409, as the `error`) when a delivery carries no secret and it holds none. */
+/**
+ * What an issuer answers (409, as the `detail`) when a delivery carries no secret and it holds none
+ * it can vouch for: none for this client, or one held from before generations were delivered,
+ * which may or may not be the live one. A reconcile the install itself asked for never rotates on
+ * this answer when the install says it holds a client.
+ */
 export const SOCIAL_RELAY_SECRET_NEEDED = 'social_relay_secret_needed';
+
+/**
+ * What an issuer answers (409) when a delivery carries no secret and the relay's generation is
+ * newer than the secret it holds: that secret was rotated out and cannot work. Rotating replaces
+ * nothing that signs anyone in, so every reconcile rotates on it, the install's own included.
+ */
+export const SOCIAL_RELAY_SECRET_STALE = 'social_relay_secret_stale';
+
+/**
+ * What an issuer answers (409) when a delivery carries a secret OLDER than the one it holds — a
+ * run that rotated, then delivered after a later rotation's secret had landed. Nothing is written.
+ */
+export const SOCIAL_RELAY_DELIVERY_STALE = 'social_relay_delivery_stale';
 
 /** The delivered value of `substrat:social-relay`. */
 export const socialRelayDelivery = z.object({
   clientId: z.string().min(1).max(200),
   clientSecret: z.string().min(1).max(500).optional(),
+  /**
+   * The secret's generation when `clientSecret` is present, else the relay's current one (#3275).
+   * Optional only for a delivery from a control plane or relay older than generations, which the
+   * issuer handles as it always did.
+   */
+  generation: z.number().int().positive().optional(),
   providers: z.array(socialRelayProvider).max(32),
 });
 export type SocialRelayDelivery = z.infer<typeof socialRelayDelivery>;

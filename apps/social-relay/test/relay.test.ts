@@ -637,6 +637,7 @@ describe('the platform surface', () => {
       clientSecret: null,
       created: false,
       disabled: false,
+      generation: 1,
     });
     expect((await store.getClient(created.clientId))?.redirectUris).toHaveLength(2);
     expect(await store.verifyClientSecret(created.clientId, created.clientSecret)).toBe(true);
@@ -659,30 +660,40 @@ describe('the platform surface', () => {
     expect((await ensure(app, 'scope:01', { name: 'An install', redirectUris })).status).toBe(201);
   });
 
-  it('rotates a client secret for the platform only', async () => {
+  it('rotates a client secret for the platform only, at the generation the caller saw, under a lease', async () => {
     const app = createApp({ now: () => NOW });
     const { clientId, clientSecret } = await registerInstall();
-    const anonymous = await app.request(
-      `https://id.substrat.net/internal/clients/${clientId}/secret`,
-      { method: 'POST' },
-      envWith(),
-    );
-    expect(anonymous.status).toBe(403);
-    const res = await app.request(
-      `https://id.substrat.net/internal/clients/${clientId}/secret`,
-      { method: 'POST', headers: platformHeaders },
-      envWith(),
-    );
+    const rotate = (generation: unknown, headers: Record<string, string> = platformHeaders) =>
+      app.request(
+        `https://id.substrat.net/internal/clients/${clientId}/secret`,
+        { method: 'POST', headers, body: JSON.stringify({ generation }) },
+        envWith(),
+      );
+    expect((await rotate(1, { 'content-type': 'application/json' })).status).toBe(403);
+    const res = await rotate(1);
     expect(res.status).toBe(200);
-    const { clientSecret: rotated } = (await res.json()) as { clientSecret: string };
-    expect(await store.verifyClientSecret(clientId, rotated)).toBe(true);
+    const rotated = (await res.json()) as { clientSecret: string; generation: number; lease: string };
+    expect(rotated).toMatchObject({ generation: 2, lease: expect.any(String) });
+    expect(await store.verifyClientSecret(clientId, rotated.clientSecret)).toBe(true);
     expect(await store.verifyClientSecret(clientId, clientSecret)).toBe(false);
-    const unknown = await app.request(
-      'https://id.substrat.net/internal/clients/nobody/secret',
-      { method: 'POST', headers: platformHeaders },
-      envWith(),
-    );
-    expect(unknown.status).toBe(404);
+
+    // While that secret is being delivered, no other rotation of the client is made.
+    const busy = await rotate(2);
+    expect(busy.status).toBe(409);
+    expect(await busy.json()).toMatchObject({ code: 'conflict' });
+    const release = (lease: string) =>
+      app.request(
+        `https://id.substrat.net/internal/clients/${clientId}/rotation-lease/${lease}`,
+        { method: 'DELETE', headers: platformHeaders },
+        envWith(),
+      );
+    expect(await (await release('someone-else')).json()).toEqual({ released: false });
+    expect(await (await release(rotated.lease)).json()).toEqual({ released: true });
+    // Once it is given back, a caller that saw the generation before it is told it moved on.
+    const moved = await rotate(1);
+    expect(moved.status).toBe(412);
+    expect(await moved.json()).toMatchObject({ code: 'precondition_failed', detail: 'the client’s secret is at generation 2, not 1' });
+    expect(await store.verifyClientSecret(clientId, rotated.clientSecret)).toBe(true);
   });
 
   it('answers an unknown /internal path with a problem document by status alone, never a page', async () => {
@@ -723,7 +734,16 @@ describe('refusals outside the OAuth protocol', () => {
       code: 'validation_failed',
       detail: 'redirect URIs must be https (or http on loopback) and carry no fragment: http://acme.example/cb',
     },
-    { name: 'a secret rotation for no such client', method: 'POST', path: '/internal/clients/nobody/secret', status: 404, code: 'not_found', detail: 'no such client' },
+    { name: 'a secret rotation for no such client', method: 'POST', path: '/internal/clients/nobody/secret', body: { generation: 1 }, status: 404, code: 'not_found', detail: 'no such client' },
+    {
+      name: 'a secret rotation that names no generation',
+      method: 'POST',
+      path: '/internal/clients/nobody/secret',
+      body: {},
+      status: 400,
+      code: 'validation_failed',
+      detail: 'generation is required: the secret generation the caller saw as current',
+    },
     { name: 'a suspension of no such client', method: 'POST', path: '/internal/clients/nobody/disabled', body: { disabled: true }, status: 404, code: 'not_found', detail: 'no such client' },
     { name: 'a deletion of no such client', method: 'DELETE', path: '/internal/clients/nobody', status: 404, code: 'not_found', detail: 'no such client' },
     // Hono's own answer here is a text 404.

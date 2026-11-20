@@ -254,6 +254,9 @@ const registerInput = z.object({
   redirectUris: z.array(z.string().url()).min(1).max(MAX_REDIRECT_URIS),
 });
 
+/** A rotation names the generation it saw as current (#3275); one without it is the race it closes. */
+const rotateInput = z.object({ generation: z.number().int().positive() });
+
 /** The platform's key for an install: opaque here, but kept to a shape that is safe in a path. */
 const CLIENT_REF = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
 
@@ -748,10 +751,33 @@ export function createApp(options: AppOptions = {}) {
     return c.json(ensured, ensured.created ? 201 : 200);
   });
 
-  /** A new secret for a client whose holder lost it; the previous one stops working at once. */
+  /**
+   * A new secret for a client whose holder lost it, or holds one rotated out; the previous one
+   * stops working at once. A compare-and-set on `generation`, the one the caller saw as current
+   * (#3275): a caller that saw an older one is told the secret has moved on (412), and while
+   * another rotation's secret is still being delivered — its lease held — every other rotation of
+   * the client is refused (409). So "rotate, then deliver" has one owner per client at a time.
+   * The answer carries the new secret's generation, which the delivery hands the install, and
+   * the lease, which the caller gives back once it has delivered.
+   */
   platform.post('/clients/:clientId/secret', async (c) => {
-    const clientSecret = await storeOf(c.env).rotateClientSecret(c.req.param('clientId'));
-    return clientSecret ? c.json({ clientSecret }) : refuse('not_found', 'no such client');
+    const parsed = rotateInput.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return refuse('validation_failed', 'generation is required: the secret generation the caller saw as current');
+    const rotation = await storeOf(c.env).rotateClientSecret(c.req.param('clientId'), parsed.data.generation, now());
+    if (!rotation) return refuse('not_found', 'no such client');
+    if (rotation.status === 'busy') {
+      return refuse('conflict', 'another rotation of this client’s secret is still being delivered');
+    }
+    if (rotation.status === 'moved') {
+      return refuse('precondition_failed', `the client’s secret is at generation ${rotation.generation}, not ${parsed.data.generation}`);
+    }
+    return c.json({ clientSecret: rotation.clientSecret, generation: rotation.generation, lease: rotation.lease });
+  });
+
+  /** Give back the lease a creation or a rotation took. Only its holder's own; any other runs out. */
+  platform.delete('/clients/:clientId/rotation-lease/:lease', async (c) => {
+    const released = await storeOf(c.env).releaseRotationLease(c.req.param('clientId'), c.req.param('lease'));
+    return c.json({ released });
   });
 
   platform.get('/clients', async (c) => c.json({ clients: await storeOf(c.env).listClients() }));

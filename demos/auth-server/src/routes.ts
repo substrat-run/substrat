@@ -44,7 +44,6 @@ import {
   previewClientCheck,
   previewClientMint,
   previewClientRetire,
-  SOCIAL_RELAY_SECRET_NEEDED,
   substratError,
   TOKEN_EXCHANGE_GRANT_TYPE,
 } from '@substrat-run/contracts';
@@ -480,9 +479,10 @@ app.post('/internal/configure', async (c) => {
   assertPlatform(c.env, c.req.raw);
   const body = configureInstanceBody.parse(await c.req.json());
   const outcome = await stubFor(c.env, body.scopeId).setInstanceConfig(body.entries);
-  // Everything else in the delivery is applied; the platform rotates the relay secret and sends
-  // the entry again (`@substrat-run/contracts`, social-relay.ts).
-  if (outcome?.socialRelaySecretNeeded) return problemResponse(c, substratError('conflict', SOCIAL_RELAY_SECRET_NEEDED));
+  // Everything else in the delivery is applied. The relay entry was not, and the detail says why:
+  // no secret held or one rotated out (the platform rotates and sends it again), or a secret older
+  // than the one held (`@substrat-run/contracts`, social-relay.ts; #3275).
+  if (outcome?.socialRelayRefused) return problemResponse(c, substratError('conflict', outcome.socialRelayRefused));
   return c.json({ applied: body.entries.length });
 });
 

@@ -43,6 +43,16 @@ after a provider is added here. Adding a provider is therefore: add it to `src/p
 give this worker its credential (`secrets.mjs`), deploy, and run `POST /social-relay/reconcile`
 on the control plane.
 
+A client's secret is handed out twice at most in its usual life: once at creation, and again by
+`POST /internal/clients/:id/secret` when the install reports it holds none, or holds one this
+relay has rotated past. Each secret has a **generation** (1 at creation, one more per rotation),
+which the install keeps beside it and every delivery names (#3275). A rotation is a
+compare-and-set on the generation the caller read, and creating or rotating takes a two-minute
+**lease** that refuses every other rotation of the client until its secret is delivered
+(`DELETE /internal/clients/:id/rotation-lease/:lease` gives it back). So two overlapping
+reconciles never both hand one out, an install refuses a secret older than its own, and an install
+left holding a dead one is rotated once by its next reconcile.
+
 ## The honest limitation
 
 One shared client carries one name on the consent screen, and it is the platform's. OAuth

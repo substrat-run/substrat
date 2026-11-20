@@ -304,6 +304,9 @@ export {
   relayHostnames,
   relayRedirectUris,
   selfReconcileSocialRelay,
+  DELIVERY_SUPERSEDED,
+  ROTATED_MEANWHILE,
+  ROTATION_IN_PROGRESS,
   SELF_ROTATION_REFUSED,
 } from './social-relay.js';
 export type { ScopeReconcileDeps, SocialRelayOptions, SocialRelayOutcome } from './social-relay.js';

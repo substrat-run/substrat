@@ -5,7 +5,10 @@ import {
   ensureClientRow,
   insertClient,
   putEphemeral,
+  releaseRotationLease,
   rotateClientSecretRow,
+  ROTATION_LEASE_MS,
+  selectSecretGeneration,
   selectClient,
   selectClientSecretHash,
   sweepExpired,
@@ -100,7 +103,7 @@ describe('the client registry', () => {
     });
   });
 
-  it('adds the ref column to a registry created before it existed, keeping its clients', () => {
+  it('adds the ref and generation columns to a registry created before they existed, keeping its clients', () => {
     // Production registered clients before `ref` existed; the DO re-applies the schema on
     // start, so that table must gain the column in place rather than fail or be re-created.
     const database = new Database(':memory:');
@@ -114,6 +117,7 @@ describe('the client registry', () => {
     applySchema(sql);
     applySchema(sql);
     expect(selectClient(sql, 'old')).toMatchObject({ clientId: 'old', ref: null });
+    expect(selectSecretGeneration(sql, 'old')).toBe(1);
   });
 });
 
@@ -138,7 +142,7 @@ describe('ensuring a client by ref', () => {
       { name: 'Renamed', redirectUris: ['https://b.example/api/auth/callback/google-relay'] },
       9,
     );
-    expect(second).toEqual({ clientId: first.clientId, clientSecret: null, created: false, disabled: false });
+    expect(second).toEqual({ clientId: first.clientId, clientSecret: null, created: false, disabled: false, generation: 1 });
     expect(selectClient(sql, first.clientId)).toMatchObject({
       name: 'Renamed',
       redirectUris: ['https://b.example/api/auth/callback/google-relay'],
@@ -162,13 +166,59 @@ describe('ensuring a client by ref', () => {
     expect(selectClient(sql, first.clientId)?.disabled).toBe(true);
   });
 
-  it('rotates a secret so only the new one matches, and answers null for an unknown client', async () => {
+});
+
+describe('rotating a secret (#3275)', () => {
+  const input = { name: 'An install', redirectUris: ['https://a.example/api/auth/callback/github-relay'] };
+  /** A client whose creation lease has been given back, as a creating run that delivered leaves it. */
+  const created = async (sql: ReturnType<typeof freshSql>) => {
+    const first = await ensureClientRow(sql, 'scope:01', input, 5);
+    expect(first).toMatchObject({ created: true, generation: 1, lease: expect.any(String) });
+    expect(releaseRotationLease(sql, first.clientId, first.lease!)).toBe(true);
+    return first;
+  };
+
+  it('rotates at the generation it was told, so only the new secret matches, and answers null for no client', async () => {
+    const sql = freshSql();
+    const first = await created(sql);
+    const rotated = await rotateClientSecretRow(sql, first.clientId, 1, 10);
+    expect(rotated).toMatchObject({ status: 'rotated', generation: 2, lease: expect.any(String) });
+    if (rotated?.status !== 'rotated') throw new Error('unreachable');
+    expect(rotated.clientSecret).not.toBe(first.clientSecret);
+    expect(selectClientSecretHash(sql, first.clientId)).toBe(await sha256b64url(rotated.clientSecret));
+    expect(selectSecretGeneration(sql, first.clientId)).toBe(2);
+    expect(await ensureClientRow(sql, 'scope:01', input, 11)).toMatchObject({ created: false, generation: 2 });
+    expect(await rotateClientSecretRow(sql, 'nobody', 1, 10)).toBeNull();
+  });
+
+  it('refuses a second rotation while the first one’s lease is held, and one from a generation that moved on', async () => {
+    const sql = freshSql();
+    const first = await created(sql);
+    const a = await rotateClientSecretRow(sql, first.clientId, 1, 10);
+    expect(a).toMatchObject({ status: 'rotated', generation: 2 });
+    const hash = selectClientSecretHash(sql, first.clientId);
+    // The lease alone refuses, even naming the generation that is now current.
+    expect(await rotateClientSecretRow(sql, first.clientId, 2, 11)).toEqual({ status: 'busy' });
+    // The compare-and-set alone refuses, once the lease is given back: B saw generation 1.
+    expect(releaseRotationLease(sql, first.clientId, (a as { lease: string }).lease)).toBe(true);
+    expect(await rotateClientSecretRow(sql, first.clientId, 1, 12)).toEqual({ status: 'moved', generation: 2 });
+    expect(selectClientSecretHash(sql, first.clientId)).toBe(hash);
+    expect(selectSecretGeneration(sql, first.clientId)).toBe(2);
+  });
+
+  it('holds the creation’s secret too, until it is given back or the lease runs out', async () => {
     const sql = freshSql();
     const first = await ensureClientRow(sql, 'scope:01', input, 5);
-    const rotated = await rotateClientSecretRow(sql, first.clientId);
-    expect(rotated).toBeTruthy();
-    expect(rotated).not.toBe(first.clientSecret);
-    expect(selectClientSecretHash(sql, first.clientId)).toBe(await sha256b64url(rotated!));
-    expect(await rotateClientSecretRow(sql, 'nobody')).toBeNull();
+    expect(await rotateClientSecretRow(sql, first.clientId, 1, 6)).toEqual({ status: 'busy' });
+    expect(await rotateClientSecretRow(sql, first.clientId, 1, 5 + ROTATION_LEASE_MS)).toMatchObject({ status: 'rotated' });
+  });
+
+  it('gives back only the holder’s own lease', async () => {
+    const sql = freshSql();
+    const first = await ensureClientRow(sql, 'scope:01', input, 5);
+    expect(releaseRotationLease(sql, first.clientId, 'not-the-lease')).toBe(false);
+    expect(await rotateClientSecretRow(sql, first.clientId, 1, 6)).toEqual({ status: 'busy' });
+    expect(releaseRotationLease(sql, first.clientId, first.lease!)).toBe(true);
+    expect(await rotateClientSecretRow(sql, first.clientId, 1, 7)).toMatchObject({ status: 'rotated' });
   });
 });

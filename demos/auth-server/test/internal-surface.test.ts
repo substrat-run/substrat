@@ -3,6 +3,8 @@ import { ulid } from '@substrat-run/kernel';
 import app, { type Env } from '../src/routes.js';
 import type { AuthServerStub, ConfigEntry, InstanceMeta } from '../src/do-contract.js';
 import type { HealClaim, HealResult } from '../src/social-relay-heal.js';
+import type { SocialRelayRefusal } from '../src/social-relay.js';
+import { SOCIAL_RELAY_DELIVERY_STALE, SOCIAL_RELAY_SECRET_NEEDED, SOCIAL_RELAY_SECRET_STALE } from '@substrat-run/contracts';
 
 /**
  * The platform + routing surface of the worker app (`src/routes.ts`), driven in node with a
@@ -40,6 +42,8 @@ function fakeAuth() {
   };
   /** Platform sign-in's self-heal (#1544): how the admin API answers, claims made, results recorded. */
   const heal = { adminStatus: 200, claims: 0, recorded: [] as HealResult[] };
+  /** Why the DO declines the next social relay entry (#3275), or null to apply it. */
+  const relay = { refused: null as SocialRelayRefusal | null };
   const healClaim: HealClaim = { attempt: 'attempt-1', tenantId: 'tenant-a', scopeId: 'scope-a', hasClient: false, relayOrigin: null, providerIds: [] };
   const namespace = {
     idFromName: (name: string) => name,
@@ -69,7 +73,7 @@ function fakeAuth() {
         },
         setInstanceConfig: async (entries) => {
           configured.push({ doName, entries });
-          return { socialRelaySecretNeeded: false };
+          return { socialRelayRefused: relay.refused };
         },
         introspectTables: async () => {
           introspected.push({ doName, verb: 'tables' });
@@ -136,6 +140,7 @@ function fakeAuth() {
     previewCalls,
     previewAnswer,
     heal,
+    relay,
   };
 }
 
@@ -293,6 +298,15 @@ describe('/internal/configure (vertical-auth-detach.md §2.2)', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ applied: 1 });
     expect(auth.configured).toEqual([{ doName: scope, entries }]);
+  });
+
+  it('answers a declined social relay entry as a 409 whose detail says why (#3275)', async () => {
+    for (const refused of [SOCIAL_RELAY_SECRET_NEEDED, SOCIAL_RELAY_SECRET_STALE, SOCIAL_RELAY_DELIVERY_STALE] as const) {
+      auth.relay.refused = refused;
+      const res = await configure({ scopeId: ulid(), entries: [{ key: 'substrat:social-relay', value: '{}' }] }, PLATFORM_SECRET);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'conflict', detail: refused });
+    }
   });
 
   it('rejects empty entries as a 400 — a delivery with nothing to deliver is a caller bug', async () => {
