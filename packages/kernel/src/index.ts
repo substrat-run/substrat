@@ -630,6 +630,7 @@ export {
   moduleRowsErased,
   SECURE_DELETE_MIN_SQLITE,
 } from './module-erasure.js';
+export { readSubjectPage } from './subject-access.js';
 export {
   TABLE_OWNERS_DDL,
   assertMigrationLeavesLedgerAlone,

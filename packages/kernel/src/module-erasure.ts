@@ -337,6 +337,28 @@ function enableSecureDelete(sql: ScopedSql, idx: string): void {
 const ident = (name: string): string => assertSqlIdentifier('erasure', 'an identifier', name, 'a module erasure');
 
 /**
+ * Which of a declared entity's rows are one subject's: any subject column equal to the id. The ONE
+ * predicate behind both erasure (which blanks or deletes these rows) and subject access (which
+ * reads them, D-74), so a subject column added to a model reaches both, and nobody can teach one a
+ * link the other does not know. Only a `blank` or `delete` entity has subject columns.
+ */
+export function subjectMatchOf(
+  entity: { readonly entityType: string; readonly subjects?: readonly string[] },
+  subjectId: string,
+): { where: string; params: string[] } {
+  const subjects = (entity.subjects ?? []).map(ident);
+  if (subjects.length === 0) {
+    throw substratError('internal', `${entity.entityType}: an entity with no subject columns has no subject match`);
+  }
+  return { where: `(${subjects.map((s) => `${s} = ?`).join(' OR ')})`, params: subjects.map(() => subjectId) };
+}
+
+/** The declared table of a `blank`/`delete` entity, re-checked as an identifier. */
+export function erasureTableOf(entity: { readonly table: string }): string {
+  return ident(entity.table);
+}
+
+/**
  * Run the module half of one erasure: every declared entity, then every hook, with FTS5's
  * `secure-delete` on for the search indexes over those modules' tables. `sql` is the kernel's
  * own handle on the scope — never module code's — and the caller holds it inside the
@@ -405,9 +427,7 @@ export function eraseSubjectFromModules(input: {
       }
       if (entity.mode === 'custom') continue;
       const table = ident(entity.table);
-      const subjects = (entity.subjects ?? []).map(ident);
-      const match = `(${subjects.map((s) => `${s} = ?`).join(' OR ')})`;
-      const subjectParams = subjects.map(() => subjectId);
+      const { where: match, params: subjectParams } = subjectMatchOf(entity, subjectId);
       // Only rows still holding something: a re-run changes nothing and counts zero.
       const cols = entity.fields.map((f) => ident(f.name));
       const blanks = entity.fields.map((f) => f.blank);

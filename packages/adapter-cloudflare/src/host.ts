@@ -252,6 +252,8 @@ import {
   type ScopeLineage,
   subjectShredReceipt,
   type SubjectShredReceipt,
+  type SubjectReadPage,
+  type SubjectReadRequest,
   type ScopeId,
   connectorDispatchKind,
   type ConnectorDispatchPayload,
@@ -2256,6 +2258,11 @@ interface ScopeStubRpc {
   redactSubject(
     subjectId: string,
   ): Promise<SubjectRedactionCounts | LegacySubjectRedactionCounts | number | { failure: WireFailure }>;
+  /**
+   * One page of what this scope holds about one data subject (D-74). Undefined on a ScopeDO from
+   * before the read existed, which the caller refuses rather than reads as nothing held.
+   */
+  readSubject?(subjectId: string, page?: SubjectReadRequest): Promise<SubjectReadPage | { failure: WireFailure }>;
   /** PITR bookmarks recorded before migration passes (#286), newest first. */
   migrationBookmarks(limit?: number): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
   appliedMigrations(): Promise<AppliedMigration[]>;
@@ -4481,6 +4488,26 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async isCleanRoomCopyLocal(scopeId: ScopeId): Promise<boolean> {
     return await this.scopeStub(scopeId).isCleanRoomCopy();
+  }
+
+  /**
+   * One page of subject access (D-74), read through this script's own DO binding. Not audited here:
+   * `admin.readSubject` audits on this host, and the control plane audits a page it reads from a
+   * vertical's deployment through `/internal/read-subject`.
+   */
+  async readSubjectLocal(scopeId: ScopeId, subjectId: string, page?: SubjectReadRequest): Promise<SubjectReadPage> {
+    const stub = this.scopeStub(scopeId);
+    // An RPC stub answers any method name, so an old ScopeDO is told apart by what it returns: one
+    // without the read rejects the call, and that is refused rather than read as nothing held.
+    const answer = await Promise.resolve(stub.readSubject?.(subjectId, page)).catch((err: unknown) => {
+      if (err instanceof Error && /does not implement|is not a function/i.test(err.message)) return undefined;
+      throw err;
+    });
+    if (answer === undefined) {
+      throw substratError('unavailable', `scope ${scopeId} runs a ScopeDO from before subject access (D-74) — redeploy and retry`);
+    }
+    if ('failure' in answer && answer.failure) throw fromWireFailure(answer.failure);
+    return answer as SubjectReadPage;
   }
 
   /** Scope-side half of an erasure, reached through this script's own DO binding. */
@@ -10371,6 +10398,18 @@ export class CloudflareScopeHost implements ScopeHost {
         const nextCursor = rows.length > 100 ? (subjects[99] ?? null) : null;
         await this.recordAccess(actor, 'listShreddedSubjects', { tenantId, scopeId }, null, subjects.length);
         return { subjects, nextCursor };
+      },
+      readSubject: async (actor, tenantId, scopeId, subjectId, page): Promise<SubjectReadPage> => {
+        await this.assertScope(tenantId, scopeId);
+        const read = await this.readSubjectLocal(scopeId, subjectId, page);
+        await this.recordAccess(
+          actor,
+          'readSubject',
+          { tenantId, scopeId },
+          { subjectId },
+          read.events.length + read.records.reduce((n, r) => n + r.rows.length, 0),
+        );
+        return read;
       },
       shredSubject: async (actor, tenantId, scopeId, subjectId, fence): Promise<SubjectShredReceipt> => {
         await this.assertScope(tenantId, scopeId);

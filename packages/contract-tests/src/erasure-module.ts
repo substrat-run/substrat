@@ -185,12 +185,12 @@ export const erasureMod: ModuleRegistration = {
       stash.exec("UPDATE er_loose SET memo = 'written through a stashed handle' WHERE id = ?", [input.subject]);
     }) as Handler,
     /** A classified event about the subject, so the spine half of a rolled-back erasure is visible. */
-    'erasure/emit': ((ctx, input: { subject: string; secret: string }) => {
+    'erasure/emit': ((ctx, input: { subject: string; secret: string; piiClass?: 'none' | 'pseudonymous' }) => {
       ctx.emit({
         type: 'erasure.noted',
         schemaVersion: 1,
         entity: { entityType: 'erperson', entityId: input.subject },
-        piiClass: 'pseudonymous',
+        piiClass: input.piiClass ?? 'pseudonymous',
         subjectId: dataSubjectId.parse(input.subject),
         payload: { secret: input.secret },
       });
