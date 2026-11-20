@@ -45,6 +45,15 @@ wp wc shop_order delete "$deleted_order" --force=true --user=admin >/dev/null
 printf 'WOOCOMMERCE_TRASHED_PRODUCT=%s\nWOOCOMMERCE_DELETED_PRODUCT=%s\nWOOCOMMERCE_TRASHED_ORDER=%s\nWOOCOMMERCE_DELETED_ORDER=%s\n' \
   "$trashed_product" "$deleted_product" "$trashed_order" "$deleted_order" >&3
 
+# A variable product with a SKU whose variations have none of their own. The live test checks
+# that the store fills each variation's empty SKU from the product, and that the mapping reports
+# them as having none.
+skuless=$(w product create --name='Strumpor' --type=variable --sku=SOCK-1 \
+  --attributes='[{"name":"Färg","options":["Svart","Vit"],"variation":true,"visible":true}]')
+w product_variation create "$skuless" --regular_price=35.00 --attributes='[{"name":"Färg","option":"Svart"}]' >/dev/null
+w product_variation create "$skuless" --regular_price=35.00 --attributes='[{"name":"Färg","option":"Vit"}]' >/dev/null
+printf 'WOOCOMMERCE_SKU_LESS=%s\n' "$skuless" >&3
+
 # Stock (#3223): a counted simple product, a variable product whose variation keeps its own count,
 # and one whose product keeps the count for every variation. Then a sale's stock change, made the
 # way an order makes it (`wc_update_product_stock`), after a timestamp the live test reads changes

@@ -120,7 +120,11 @@ export function productChange(
           const named = v.attributes.filter((a) => a.option !== '');
           return {
             variantId: String(v.id),
-            sku: v.sku,
+            // A variation with no SKU of its own is sent its product's: WooCommerce fills it in
+            // when the variation's is empty. WooCommerce keeps SKUs unique, so the two matching
+            // means the variation has none, and reporting the parent's would read as every
+            // SKU-less variation of the product sharing one.
+            sku: v.sku !== null && v.sku === row.sku ? null : v.sku,
             title: named.length > 0 ? named.map((a) => a.option).join(' / ') : null,
             options: named.map((a) => ({ name: a.name, value: a.option })),
             price: p,

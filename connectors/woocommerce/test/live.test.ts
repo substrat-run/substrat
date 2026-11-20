@@ -31,6 +31,8 @@ import { currencyCode } from '@substrat-run/contracts';
  * 6. A stock change made the way a sale makes it moves the modified date of the product it belongs
  *    to — for a simple product, and for a variable product when only its variation's count changed
  *    — so the products' walk delivers it within one sweep (#3223). Also needs the seeded ids.
+ * 7. A variation with no SKU of its own is sent its product's SKU, and the mapping reports it as
+ *    having none. Needs the seeded id.
  */
 const env = process.env;
 const secret =
@@ -46,6 +48,7 @@ const stock = env.WOOCOMMERCE_STOCK_CHANGED_AFTER
       shared: Number(env.WOOCOMMERCE_STOCK_SHARED),
     }
   : null;
+const skuLess = env.WOOCOMMERCE_SKU_LESS ? Number(env.WOOCOMMERCE_SKU_LESS) : null;
 const allowLocalHttp = env.WOOCOMMERCE_ALLOW_LOCAL_HTTP === '1';
 const removed =
   env.WOOCOMMERCE_TRASHED_PRODUCT && env.WOOCOMMERCE_DELETED_PRODUCT && env.WOOCOMMERCE_TRASHED_ORDER && env.WOOCOMMERCE_DELETED_ORDER
@@ -132,6 +135,16 @@ describe.skipIf(secret === null)('woocommerce connector — live', () => {
     });
     const own = productChange('live', currency, variable!, await client.variations(variable!.id)).variants;
     expect(own.find((v) => v.variantId === String(stock!.variation))?.stock).toMatchObject({ manageStock: true, quantity: 5, sharedWithProduct: false });
+  });
+
+  it.skipIf(skuLess === null)("sends a SKU-less variation its product's SKU, and the mapping reports none", async () => {
+    const client = api();
+    const currency = currencyCode.parse((await client.storeInfo()).settings.currency);
+    const row = (await client.changedPage('products', null, 1)).map((r) => wcProduct.parse(r)).find((p) => p.id === skuLess);
+    expect(row?.sku).toBe('SOCK-1');
+    const variations = await client.variations(row!.id);
+    expect(variations.map((v) => v.sku), 'the store fills an empty variation SKU from the product').toEqual(['SOCK-1', 'SOCK-1']);
+    expect(productChange('live', currency, row!, variations).variants.map((v) => v.sku)).toEqual([null, null]);
   });
 
   it.skipIf(stock === null)('reports a count the product keeps for all its variations on each variant, as shared', async () => {
