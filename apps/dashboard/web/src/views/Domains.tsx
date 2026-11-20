@@ -143,7 +143,7 @@ export function Domains({ teamId }: { teamId: string }) {
       </div>
 
       <div style={{ ...card, overflow: 'hidden' }}>
-        <div
+        <div className="m-hide"
           style={{
             display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px',
             fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase',
@@ -203,7 +203,7 @@ function DomainsSkeleton() {
   return (
     <SkeletonRegion label="Loading domains…">
       {[0, 1, 2].map((i) => (
-        <div key={i} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 40, padding: '0 16px', borderBottom: i === 2 ? 'none' : '1px solid var(--border-subtle)' }}>
+        <div className="m-row" key={i} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 40, padding: '0 16px', borderBottom: i === 2 ? 'none' : '1px solid var(--border-subtle)' }}>
           <Skeleton w="60%" h={12} />
           <Skeleton w="50%" h={12} />
           <Skeleton w={72} h={20} r={999} />
@@ -229,7 +229,7 @@ function DomainRowView({
   const hasRecords = d.validationRecords.length > 0 && d.status !== 'active';
   return (
     <div style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 40, padding: '0 16px', fontSize: 13 }}>
+      <div className="m-row" style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 40, padding: '0 16px', fontSize: 13 }}>
         {d.status === 'active' ? (
           <a
             href={`https://${d.hostname}`}

@@ -77,3 +77,33 @@ a:hover {
   .apps-create wa-button::part(base) { width: 32px; padding: 0; }
   .apps-create-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 }
+
+/* Narrow screens (dashboard-ui.md §5.1). The views lay out with inline styles, so these
+   classes override with `!important` — the one way a stylesheet beats an inline style.
+   767px is DashShell's DRAWER_BELOW: the sidebar becomes a drawer at the same width. */
+@media (max-width: 1199px) {
+  /* A two-panel detail body (main + aside) stacks. */
+  .t-stack { grid-template-columns: minmax(0, 1fr) !important; }
+}
+@media (max-width: 767px) {
+  /* A side panel or a card grid goes single-column. */
+  .m-stack { grid-template-columns: minmax(0, 1fr) !important; }
+  /* A table row becomes a stacked card: its cells one under another, left-aligned. */
+  .m-row {
+    grid-template-columns: minmax(0, 1fr) !important;
+    height: auto !important;
+    row-gap: 4px !important;
+    padding-top: 10px !important;
+    padding-bottom: 10px !important;
+  }
+  .m-row > * { justify-self: start !important; text-align: left !important; }
+  /* A table whose columns must stay aligned (Pulse's sparklines share one time axis) scrolls
+     sideways instead of stacking. The class goes on a wrapper, so the table keeps its width
+     whole and anything positioned against it stays where it was drawn. */
+  .m-scroll-x { overflow-x: auto; }
+  .m-scroll-x > * { min-width: 880px; }
+  /* A table's column-header row: with the columns gone it labels nothing. */
+  .m-hide { display: none !important; }
+  /* A fixed-width toolbar field takes the row instead. */
+  .m-fill { width: 100% !important; min-width: 0 !important; max-width: 100% !important; flex: 1 1 100% !important; }
+}

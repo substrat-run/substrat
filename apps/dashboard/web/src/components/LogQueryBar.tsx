@@ -62,7 +62,7 @@ export function LogQueryBar({
         <div
           role="search"
           aria-label="Log filters"
-          style={{ flex: 1, minWidth: 320, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, minHeight: 36, padding: '4px 10px', boxSizing: 'border-box', border: '1px solid var(--border-default)', borderRadius: 6, background: 'var(--surface-card)', boxShadow: 'var(--shadow-xs)' }}
+          style={{ flex: 1, minWidth: 'min(320px, 100%)', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, minHeight: 36, padding: '4px 10px', boxSizing: 'border-box', border: '1px solid var(--border-default)', borderRadius: 6, background: 'var(--surface-card)', boxShadow: 'var(--shadow-xs)' }}
         >
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--text-tertiary)" strokeWidth="1.5" strokeLinecap="round" aria-hidden>
             <circle cx="11" cy="11" r="8" />

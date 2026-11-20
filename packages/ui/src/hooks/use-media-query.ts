@@ -10,12 +10,13 @@ import { useEffect, useState } from 'react';
  * window resize (or a phone rotating) re-renders.
  */
 export function useMediaQuery(query: string | null): boolean {
-  // `null` is "no question asked" — a layout that has no breakpoint (the dashboard's shell,
-  // which never becomes a drawer) answers false without touching `matchMedia`, which jsdom
-  // and some embedders do not have.
-  const [matches, setMatches] = useState(() => (query === null ? false : window.matchMedia(query).matches));
+  // `null` is "no question asked" — a layout that has no breakpoint answers false without
+  // touching `matchMedia`. So does an environment without one (jsdom, some embedders): it
+  // gets the wide layout, which is the one every suite was written against.
+  const asked = query !== null && typeof window.matchMedia === 'function';
+  const [matches, setMatches] = useState(() => (asked ? window.matchMedia(query).matches : false));
   useEffect(() => {
-    if (query === null) {
+    if (query === null || typeof window.matchMedia !== 'function') {
       setMatches(false);
       return;
     }

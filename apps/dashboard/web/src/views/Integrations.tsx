@@ -1270,8 +1270,8 @@ function FleetRows({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 4 }}>
       {provider.connections.map((c) => (
-        <div key={c.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }}>
-          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div key={c.id} style={{ display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8, borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }}>
+          <div style={{ flex: '1 1 200px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, flexWrap: 'wrap' }}>
               <Pill kind={STATUS[c.status].kind}>{STATUS[c.status].label}</Pill>
               <span style={{ color: 'var(--text-primary)' }}>{c.label}</span>
@@ -1354,7 +1354,7 @@ export function AppIntegrations({ teamId, app }: { teamId: string; app: AppRow }
           This app declares no integrations — its vertical lists none in its manifest.
         </div>
       )}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
+      <div className="m-stack" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
         {view.map((p) => {
           if (p.multiAccount) {
             const n = p.connections.length;
@@ -1587,7 +1587,7 @@ export function Integrations({ teamId }: { teamId: string }) {
       {err && <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load integrations — {err}</div>}
       {!err && !view && <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading integrations…</div>}
       {view && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
+        <div className="m-stack" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
           {view.map((p, i) => {
             const connected = p.connections.length > 0;
             // A vertical-defined provider no vertical declares any more: no form to connect or
@@ -1604,7 +1604,7 @@ export function Integrations({ teamId }: { teamId: string }) {
                   <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{p.description}</div>
                   {p.connections.map((c) => (
                     <div key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 4 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, fontSize: 12 }}>
                         <Pill kind={STATUS[c.status].kind}>{STATUS[c.status].label}</Pill>
                         <span style={{ color: 'var(--text-primary)' }}>{c.label}</span>
                         <span style={{ color: 'var(--text-tertiary)' }}>

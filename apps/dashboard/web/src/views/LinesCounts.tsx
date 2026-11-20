@@ -111,7 +111,7 @@ export function LinesCounts({
           {...(zoomed && onResetZoom ? { onResetZoom } : {})}
         />
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '232px minmax(0,1fr)', gap: 16, alignItems: 'start' }}>
+      <div className="m-stack" style={{ display: 'grid', gridTemplateColumns: '232px minmax(0,1fr)', gap: 16, alignItems: 'start' }}>
         <div style={{ display: 'grid', gap: 10, alignContent: 'start' }}>
           <FacetSidebar label="Line filters" defs={LINE_FACETS} facets={facets} q={q} onToggle={(f, value) => onFilters(toggleIn(q, f, value))} />
           <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)', padding: '0 2px' }}>

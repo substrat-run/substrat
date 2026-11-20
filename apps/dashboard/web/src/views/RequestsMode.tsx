@@ -179,7 +179,7 @@ export function RequestsMode({
           {...(zoomed && onResetZoom ? { onResetZoom } : {})}
         />
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '232px minmax(0,1fr)', gap: 16, alignItems: 'start' }}>
+      <div className="m-stack" style={{ display: 'grid', gridTemplateColumns: '232px minmax(0,1fr)', gap: 16, alignItems: 'start' }}>
         <FacetSidebar label="Request filters" defs={REQUEST_FACETS} facets={facets} q={q} onToggle={(f, value) => onFilters(toggleIn(q, f, value))} />
         {frame(
           <>

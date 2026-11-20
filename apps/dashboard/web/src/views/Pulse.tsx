@@ -365,6 +365,8 @@ export function Pulse({
         </div>
       )}
 
+      {/* On a phone the card keeps its columns and this wrapper scrolls it sideways (app.css). */}
+      <div className="m-scroll-x">
       <div data-pulse-card style={{ position: 'relative', border: '1px solid var(--border-default)', borderRadius: 12, background: 'var(--surface-card)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden' }}>
         {oneApp && (
           <DeployStrip
@@ -449,6 +451,7 @@ export function Pulse({
         )}
         <AxisRow window={window} schedules={oneApp} />
         <Lines oneApp={oneApp} pills={pills} pushes={pushes} window={window} migrations={(shown.overlays?.markers ?? []).filter((m) => m.kind === 'migration')} brush={brush} />
+      </div>
       </div>
 
       {oneApp && !!overlays?.incompleteSources?.length && <Footnote>Partial change history: {overlays.incompleteSources.join(', ')}. Older records may be omitted.</Footnote>}

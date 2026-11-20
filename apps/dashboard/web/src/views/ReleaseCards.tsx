@@ -261,7 +261,7 @@ export function ReleaseComparisonCard({
         {actions}
       </div>
       {target ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
+        <div className="m-stack" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
           {columns.map(([title, col], i) => (
             <div key={title} data-diff-column={title} style={{ padding: '12px 16px 14px', borderRight: i < 2 ? '1px solid var(--border-subtle)' : 'none', display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
               <div style={{ ...columnHead, fontSize: 11 }}>{title}</div>
@@ -344,7 +344,7 @@ export function ReleasesCard({ ledger, onPick }: { ledger: Ledger | null; onPick
       <div style={{ padding: '12px 16px', fontSize: 14, fontWeight: 600 }}>
         Releases <span style={{ fontWeight: 400, ...tertiary }}>· pushed and went live are separate instants</span>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: RELEASE_COLS, gap: '0 10px', alignItems: 'center', height: 30, padding: '0 16px', borderTop: '1px solid var(--border-subtle)', ...columnHead }}>
+      <div className="m-hide" style={{ display: 'grid', gridTemplateColumns: RELEASE_COLS, gap: '0 10px', alignItems: 'center', height: 30, padding: '0 16px', borderTop: '1px solid var(--border-subtle)', ...columnHead }}>
         <span>Version</span><span>Pushed</span><span>Went live</span><span>By</span><span style={{ textAlign: 'right' }}>Installs</span>
       </div>
       {ledger === null && <div style={note}>Loading…</div>}
@@ -360,7 +360,7 @@ export function ReleasesCard({ ledger, onPick }: { ledger: Ledger | null; onPick
                 e.preventDefault();
                 onPick(r.versionId);
               }}
-              className="release-row"
+              className="release-row m-row"
               style={{ display: 'grid', gridTemplateColumns: RELEASE_COLS, gap: '0 10px', alignItems: 'center', height: 40, padding: '0 16px', borderTop: '1px solid var(--border-subtle)', color: 'var(--text-primary)', textDecoration: 'none', cursor: 'pointer' }}
             >
               <span style={{ ...mono, fontSize: 12.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.version}>{r.version}</span>
@@ -455,14 +455,14 @@ export function SchemaHistoryCard({ teamId, app }: { teamId: string; app: AppRow
       )}
       {shown.length > 0 && (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: SCHEMA_COLS, gap: '0 10px', alignItems: 'center', height: 30, padding: '0 16px', borderTop: '1px solid var(--border-subtle)', ...columnHead }}>
+          <div className="m-hide" style={{ display: 'grid', gridTemplateColumns: SCHEMA_COLS, gap: '0 10px', alignItems: 'center', height: 30, padding: '0 16px', borderTop: '1px solid var(--border-subtle)', ...columnHead }}>
             <span>Migration</span>
             <span style={{ textAlign: 'right' }}>Rows</span>
             <span style={{ textAlign: 'right' }}>Duration</span>
             <span style={{ textAlign: 'right' }}>Applied</span>
           </div>
           {shown.map((m) => (
-            <div
+            <div className="m-row"
               key={`${m.moduleId}:${m.version}`}
               style={{ display: 'grid', gridTemplateColumns: SCHEMA_COLS, gap: '0 10px', alignItems: 'center', minHeight: 44, padding: '4px 16px', borderTop: '1px solid var(--border-subtle)' }}
             >

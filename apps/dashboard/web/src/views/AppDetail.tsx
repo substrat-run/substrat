@@ -534,7 +534,7 @@ function Overview({ teamId, app, meta, statusKind, statusLabel, surfaceUrls, can
       <AppTraffic teamId={teamId} scopeId={app.app_scope_id} surfaces={surfaceUrls} metrics24={metrics24} />
       <AppSchedulesCard key={`schedules:${app.app_scope_id}`} scopeId={app.app_scope_id} schedules={schedules} />
       <SchedulesAbsent scopeId={app.app_scope_id} schedules={schedules} />
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, alignItems: 'start' }}>
+      <div className="t-stack" style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, alignItems: 'start' }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ ...card, padding: 20 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', fontSize: 13 }}>
@@ -1047,7 +1047,7 @@ export function Deployments({ teamId, app, canManageApp }: { teamId: string; app
           <>Read live from the registry. “Running” is the version the router serves for this app. The Substrat team promotes versions to prod; updating here moves this app to the current prod version.</>
         )}
       </HonestyBanner>
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
+      <div className="t-stack" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
         <ReleasesCard ledger={ledger} onPick={pickVersion} />
         <SchemaHistoryCard teamId={teamId} app={app} />
       </div>
@@ -1055,14 +1055,14 @@ export function Deployments({ teamId, app, canManageApp }: { teamId: string; app
         <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>No versions pushed to the registry yet.</div>
       ) : (
         <div style={{ ...card, overflow: 'hidden' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
+          <div className="m-hide" style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
             <span>Version</span><span>Admission</span><span>Channels</span><span>Pushed</span><span style={{ textAlign: 'right' }}>Bind</span>
           </div>
           {dep.versions.map((v, i) => {
             const chans = channelsOf(v.id);
             return (
               <div key={v.id} id={`version-${v.id}`} style={{ borderBottom: i === dep.versions.length - 1 ? 'none' : '1px solid var(--border-subtle)', background: v.id === dep.boundVersionId ? 'var(--surface-brand-subtle)' : 'transparent', boxShadow: v.id === picked ? 'inset 3px 0 0 var(--border-brand)' : undefined }}>
-              <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', minHeight: 40, padding: '8px 16px', fontSize: 13 }}>
+              <div className="m-row" style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', minHeight: 40, padding: '8px 16px', fontSize: 13 }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{v.version}</span>
                   {v.id === dep.boundVersionId && <Pill kind="success">running</Pill>}
@@ -1502,13 +1502,13 @@ export function AppPermissions({ teamId, app }: { teamId: string; app: AppRow })
                 <Eyebrow>{engine}</Eyebrow>
                 <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{perms.length} permission{perms.length === 1 ? '' : 's'}</span>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 32, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
+              <div className="m-hide" style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 32, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
                 <span>Key</span><span>Description</span><span>Roles</span>
               </div>
               {perms.map((p, i) => {
                 const holders = rolesHolding(reg, p.key);
                 return (
-                  <div key={p.key} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', minHeight: 40, padding: '8px 16px', fontSize: 13, borderBottom: i === perms.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
+                  <div className="m-row" key={p.key} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', minHeight: 40, padding: '8px 16px', fontSize: 13, borderBottom: i === perms.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
                     <span style={mono}>{p.key}</span>
                     <span style={{ color: 'var(--text-secondary)', fontSize: 12.5 }}>{p.description}</span>
                     <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -2046,11 +2046,11 @@ function Previews({ teamId, app, canClaimOwnerSeat }: { teamId: string; app: App
         <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>No previews yet.</div>
       ) : (
         <div style={{ ...card, overflow: 'hidden' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
+          <div className="m-hide" style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
             <span>Preview</span><span>URL</span><span>Taken</span><span>Retention</span><span />
           </div>
           {snaps.map((s, i) => (
-            <div key={s.id} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', minHeight: 44, padding: '8px 16px', fontSize: 13, borderBottom: i === snaps.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
+            <div className="m-row" key={s.id} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', minHeight: 44, padding: '8px 16px', fontSize: 13, borderBottom: i === snaps.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <MonoTag>{shortId(s.id)}</MonoTag>
                 <Pill kind="neutral">{s.kind}</Pill>
@@ -2399,7 +2399,7 @@ function DataBrowser({ teamId, app }: { teamId: string; app: AppRow }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {banner}
       {switcher}
-      <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 16, alignItems: 'start' }}>
+      <div className="m-stack" style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 16, alignItems: 'start' }}>
         <div style={{ ...card, overflow: 'hidden' }}>
           <TableGroup label="Tables" tables={own} selected={selected} onPick={pickTable} />
           {system.length > 0 && <TableGroup label="System" tables={system} selected={selected} onPick={pickTable} />}
@@ -2954,7 +2954,7 @@ function AppDomains({ teamId, app, authServers }: { teamId: string; app: AppRow;
         </div>
       )}
       <div style={{ ...card, overflow: 'hidden' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
+        <div className="m-hide" style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
           <span>Hostname</span><span>Surface</span><span>Status</span><span>Added</span><span />
         </div>
         {view.bindings.length === 0 && (
@@ -2966,7 +2966,7 @@ function AppDomains({ teamId, app, authServers }: { teamId: string; app: AppRow;
           const busy = checking === h.hostname;
           return (
             <div key={h.hostname} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 44, padding: '0 16px', fontSize: 13 }}>
+              <div className="m-row" style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 44, padding: '0 16px', fontSize: 13 }}>
                 {h.status === 'active' ? (
                   <a href={`https://${h.hostname}`} target="_blank" rel="noreferrer" style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                     {h.hostname}<Ic name="external" size={11} />

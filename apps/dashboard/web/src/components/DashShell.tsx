@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { AppShell, AppShellChildRow, Avatar, IconTile, SearchPill, SubIcon, SubIcons } from '@substrat-run/ui';
+import { AppShell, AppShellChildRow, Avatar, IconTile, SearchPill, SubIcon, SubIcons, useMediaQuery } from '@substrat-run/ui';
 import { AccountMenu, Button, Dropdown } from '@substrat-run/ui/wa';
 import { Ic, StrataGlyph, type IconName } from '../lib/icons';
 import { obsPath, teamPath } from '../lib/router';
@@ -115,7 +115,14 @@ export interface DashShellProps {
   children: ReactNode;
 }
 
+/**
+ * Below this width the sidebar is a drawer behind a hamburger (dashboard-ui.md §5.1: "<768").
+ * app.css's `m-*` classes use the same number.
+ */
+const DRAWER_BELOW = 767;
+
 export function DashShell(props: DashShellProps) {
+  const narrow = useMediaQuery(`(max-width: ${DRAWER_BELOW}px)`);
   // Observability's group row opens Pulse, and while any of its children is open the
   // parent reads as where you are without the fill — the fill belongs to the child.
   const obsOpen = props.active === 'observability';
@@ -127,6 +134,8 @@ export function DashShell(props: DashShellProps) {
       }))}
       active={obsOpen ? null : props.active}
       parent={obsOpen ? 'observability' : null}
+      drawerBelow={DRAWER_BELOW}
+      navLabel="Dashboard"
       onNav={(k) => props.onNav(k as NavKey)}
       beneath={(k) => (k === 'observability' && obsOpen ? <ObsChildren active={props.obsSection} onNav={props.onObsNav} /> : null)}
       brand={
@@ -162,7 +171,7 @@ export function DashShell(props: DashShellProps) {
       crumbs={props.crumbs}
       actions={
         <>
-          <SearchPill placeholder="Jump to… or write to support" onOpen={props.onOpenPalette} />
+          <SearchPill placeholder="Jump to… or write to support" onOpen={props.onOpenPalette} compact={narrow} />
           <IconTile label="Notifications" onClick={props.onOpenNotifications} size={28} badge={props.unread}>
             <Ic name="bell" size={16} />
           </IconTile>

@@ -108,7 +108,8 @@ export function AppShell(props: AppShellProps) {
     <div
       className={props.className}
       {...props.rootProps}
-      style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--surface-page)', position: 'relative', ...props.style }}
+      // `dvh`: on a phone `100vh` reaches under the browser's own toolbar and hides the bottom.
+      style={{ display: 'flex', height: '100dvh', overflow: 'hidden', background: 'var(--surface-page)', position: 'relative', ...props.style }}
     >
       {compact && navOpen && (
         <div onClick={() => setNavOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.4)', zIndex: 30 }} />
@@ -183,15 +184,17 @@ export function AppShell(props: AppShellProps) {
         {props.footer}
       </nav>
 
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+      {/* While the drawer is open the rest of the shell is `inert`: the scrim already blocks the
+          pointer, and this blocks Tab, so focus stays in the drawer the way a dialog's does. */}
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }} {...(compact && navOpen ? { inert: '' } : {})}>
         <header
           style={{
             height: 56,
             flexShrink: 0,
             display: 'flex',
             alignItems: 'center',
-            gap: 16,
-            padding: compact ? '0 16px' : '0 24px',
+            gap: compact ? 8 : 16,
+            padding: compact ? '0 12px' : '0 24px',
             borderBottom: '1px solid var(--border-default)',
             background: 'color-mix(in srgb, var(--surface-card) 80%, transparent)',
             backdropFilter: 'blur(8px)',
@@ -202,7 +205,8 @@ export function AppShell(props: AppShellProps) {
               <SubIcon d={SubIcons.menu} />
             </IconButton>
           )}
-          <Crumbs crumbs={props.crumbs} />
+          {/* A phone has room for where you are, not how you got there. */}
+          <Crumbs crumbs={compact ? props.crumbs.slice(-1) : props.crumbs} />
           <div style={{ flex: 1 }} />
           {props.actions}
         </header>
@@ -514,7 +518,15 @@ export const IconTile = forwardRef<HTMLButtonElement, { label: string; onClick?:
 );
 
 /** The top bar's search affordance: a field-shaped button that opens a palette. */
-export function SearchPill({ placeholder, onOpen, width = 340 }: { placeholder: string; onOpen: () => void; width?: number }) {
+export function SearchPill({ placeholder, onOpen, width = 340, compact }: { placeholder: string; onOpen: () => void; width?: number; compact?: boolean }) {
+  // On a narrow screen the field shape is a 32px icon button: the placeholder becomes its name.
+  if (compact) {
+    return (
+      <IconTile label={placeholder} onClick={onOpen} size={32}>
+        <SubIcon d={SubIcons.search} size={16} />
+      </IconTile>
+    );
+  }
   return (
     <button
       type="button"

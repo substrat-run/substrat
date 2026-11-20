@@ -488,7 +488,7 @@ export function EntityTimeline({
         const imp = impersonationLabel(e);
         return (
           <div key={e.id} data-event-id={e.id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
-            <div
+            <div className="m-row"
               onClick={() => setOpen(isOpen ? null : { id: e.id, logs: false })}
               style={{
                 display: 'grid', gridTemplateColumns: '156px 190px 150px minmax(0,1fr) 100px', gap: '0 12px', alignItems: 'center',
