@@ -51,7 +51,9 @@ operation receives one `commerceChange` per call and must upsert by the record's
 - **`product`** — name, slug, public URL, `listed` (published for sale), the store's own status
   word, the store's currency, and **at least one variant**. A product sold without variants (a
   WooCommerce *simple* product) lands with one variant whose id is the product's id. Each variant
-  carries its SKU, its options (`Size: L`), its `price`, a `compareAtPrice` when it is on sale, and
+  carries its SKU (`null` when it has none: a variation without a SKU of its own reports `null`, not
+  the product's SKU WooCommerce fills in for it), its options (`Size: L`), its `price`, a
+  `compareAtPrice` when it is on sale, and
   its `stock`: whether the store counts it (`manageStock`), the `quantity` (`null` when it does
   not count it, never `0`), and its `status` (`in_stock`, `out_of_stock`, `on_backorder`). When the
   product keeps one count for all its variations, every variant reports that count with

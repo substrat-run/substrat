@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { wcOrder, wcProduct } from '../src/api.js';
+import { wcOrder, wcProduct, wcVariation } from '../src/api.js';
 import { gmtInstant, orderChange, productChange } from '../src/commerce.js';
 import { currencyCode } from '@substrat-run/contracts';
-import { ORDERS, product } from './fixture.js';
+import { ORDERS, SKU_LESS_VARIATIONS, product } from './fixture.js';
 
 /**
  * Mapping refuses rather than reshapes: a value that does not fit the neutral shape names the row
@@ -38,6 +38,16 @@ describe('woocommerce → commerce mapping', () => {
     [{ line_items: [{ id: 9, name: 'Tyg', product_id: 5, variation_id: 0, quantity: 1.5, subtotal: '1.00', total: '1.00', total_tax: '0.00' }] }, /quantity 1.5 is not whole/],
   ])('refuses an order with %j', (over, error) => {
     expect(() => orderChange('c1', wcOrder.parse({ ...ORDERS()[0], ...over }))).toThrow(error);
+  });
+
+  it("reports a variation with no SKU of its own as having none, not the product's SKU WooCommerce fills in", () => {
+    const { product: row, variations } = SKU_LESS_VARIATIONS();
+    const change = productChange('c1', SEK, wcProduct.parse(row), variations.map((v) => wcVariation.parse(v)));
+    expect(change.variants.map((v) => [v.variantId, v.sku])).toEqual([
+      ['141', null],
+      ['142', null],
+      ['143', 'GK-40-R'],
+    ]);
   });
 
   it.each(['constructor', '__proto__', 'onsale-soon'])("maps a stock status word of a plugin's own (%s) to no status, keeping the word", (word) => {
