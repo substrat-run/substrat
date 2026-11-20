@@ -2041,10 +2041,11 @@ export const dashboardRoutes = defineRoutes({
     http: { method: 'GET', path: '/github/workflow-preview' },
   },
   'dashboard/github-repo-link': {
-    summary: "Whether one-click setup linked a repo to this team, and which of its PRs preview",
+    summary: "Whether one-click setup linked a repo to this team, and the preview mode setup would commit",
     // A repo linked to another team reads as not linked: this answer names no other team.
-    // `previews` is then what setup would choose for a repo set up for the first time.
-    input: z.object({ repo: githubRepo }),
+    // Not linked, `previews` is what setup would commit on `branch` unless told otherwise:
+    // `every-pr` when the workflow is already there, `on-request` when it is not (or no branch).
+    input: z.object({ repo: githubRepo, branch: z.string().min(1).max(200).optional(), account: z.string().min(1).optional() }),
     output: z.object({ linked: z.boolean(), slug: z.string().nullable(), previews: previewMode }),
     http: { method: 'GET', path: '/github/repo-link' },
   },

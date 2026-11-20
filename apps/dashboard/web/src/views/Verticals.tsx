@@ -1315,7 +1315,7 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
   useEffect(() => {
     let live = true;
     teamApi(teamId)
-      .githubRepoLink({ repo: repo.fullName })
+      .githubRepoLink({ repo: repo.fullName, branch, account: repo.account })
       .then((l) => {
         if (!live) return;
         setLinked(l.linked);
@@ -1326,7 +1326,8 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
     return () => {
       live = false;
     };
-  }, [teamId, repo.fullName]);
+    // Per branch: whether the workflow is already there (and so kept every-pr) is a fact of it.
+  }, [teamId, repo.fullName, repo.account, branch]);
 
   const setup = async () => {
     setBusy(true);

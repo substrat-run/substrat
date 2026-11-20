@@ -116,7 +116,8 @@ export async function setupRepoCi(
   if (!secretRes.ok) throw new Error(`github: set actions secret failed (${secretRes.status})`);
 
   // Create-or-update the workflow file: the contents API needs the existing blob's
-  // sha to update, and 404s when the file is new — both are fine.
+  // sha to update, and 404s when the file is new — both are fine. (`repoFileExists` reads
+  // the same path for the setup card, so the card and this commit agree on "existed".)
   const path = input.workflowPath.split('/').map(encodeURIComponent).join('/');
   const existing = await gh(
     cfg,
@@ -284,4 +285,41 @@ export async function labelPullRequest(
   if (add.status === 403 || add.status === 404) return { needsPermissions: true };
   if (!add.ok) throw new Error(`github: add label failed (${add.status})`);
   return { ok: true };
+}
+
+/**
+ * The paths a PR changes (renames name both sides). GitHub serves at most 3000 files for a
+ * PR, 100 a page; the caller only asks whether ANY of them is in a set, so it may stop early.
+ */
+export async function listPullRequestFiles(
+  cfg: GithubConfig,
+  installationId: string,
+  repoFullName: string,
+  prNumber: number,
+): Promise<string[]> {
+  const token = await installationToken(cfg, installationId);
+  const repo = encodeRepo(repoFullName);
+  const files: string[] = [];
+  for (let page = 1; page <= 30; page++) {
+    const res = await gh(cfg, `/repos/${repo}/pulls/${prNumber}/files?per_page=100&page=${page}`, `token ${token}`);
+    if (!res.ok) throw new Error(`github: list pull request files failed (${res.status})`);
+    const body = (await res.json()) as Array<{ filename: string; previous_filename?: string }>;
+    for (const f of body) files.push(f.filename, ...(f.previous_filename ? [f.previous_filename] : []));
+    if (body.length < 100) break;
+  }
+  return files;
+}
+
+/**
+ * Whether `path` exists on `branch`, read with the installation's token. Setup asks it of the
+ * deploy workflow (`resolvePreviewMode`'s "already set up" case), and the setup card asks it
+ * too, so the toggle shows the mode setup will actually commit.
+ */
+export async function repoFileExists(cfg: GithubConfig, installationId: string, repoFullName: string, branch: string, path: string): Promise<boolean> {
+  const token = await installationToken(cfg, installationId);
+  const file = path.split('/').map(encodeURIComponent).join('/');
+  const res = await gh(cfg, `/repos/${encodeRepo(repoFullName)}/contents/${file}?ref=${encodeURIComponent(branch)}`, `token ${token}`);
+  if (res.status === 404) return false;
+  if (!res.ok) throw new Error(`github: read ${path} failed (${res.status})`);
+  return true;
 }

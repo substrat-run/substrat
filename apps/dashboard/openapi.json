@@ -16795,7 +16795,7 @@
     "/api/teams/{teamId}/github/repo-link": {
       "get": {
         "operationId": "dashboard-github-repo-link",
-        "summary": "Whether one-click setup linked a repo to this team, and which of its PRs preview",
+        "summary": "Whether one-click setup linked a repo to this team, and the preview mode setup would commit",
         "parameters": [
           {
             "name": "teamId",
@@ -16812,6 +16812,25 @@
             "schema": {
               "type": "string",
               "pattern": "^[^/\\s]+\\/[^/\\s]+$"
+            }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "account",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1
             }
           }
         ],

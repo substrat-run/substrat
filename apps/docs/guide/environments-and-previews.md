@@ -251,7 +251,10 @@ new mode. `substrat init --ci github` writes `every-pr` unless you pass `--previ
 
 On request, it works like this:
 
-1. **A PR opens.** The platform comments on it: *no preview yet*, with a **Build preview** link.
+1. **A PR opens.** The platform comments on it: *no preview yet*, with a **Build preview** link. In a
+   monorepo, only a PR that changes the vertical's directory, a workflow, or the root `package.json` or
+   `pnpm-lock.yaml` gets the comment: the workflow is filtered to those paths, so any other PR could never
+   build a preview, label or not.
 2. **Build preview.** The link opens a dashboard page that shows the PR and a button; opening the page
    changes nothing. Pressing the button checks you may deploy this vertical (the same role that promotes
    it), then the GitHub App adds the `preview` label to the PR, creating the label in the repo if it has

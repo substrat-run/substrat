@@ -193,6 +193,30 @@ export function normalizeWorkflowDir(path: string | undefined): string | undefin
   return trimmed;
 }
 
+/**
+ * The `paths:` filter a monorepo package's workflow triggers on: the package itself, the
+ * workflows, and the root manifest and lockfile. One list, because two readers act on it:
+ * the generated file, and the platform deciding whether a PR's "No preview yet" comment can
+ * lead anywhere (a PR outside these paths never starts the workflow, label or not).
+ */
+export const workflowPathFilters = (path: string): string[] => [
+  `${path}/**`,
+  '.github/workflows/**',
+  'package.json',
+  'pnpm-lock.yaml',
+];
+
+/**
+ * Whether a changed file starts a workflow filtered to `path` — GitHub's matching for the
+ * patterns {@link workflowPathFilters} writes: `dir/**` is everything under `dir/`, and a
+ * pattern with no wildcard is that one file at the repo root.
+ */
+export function fileMatchesWorkflowPaths(file: string, path: string): boolean {
+  return workflowPathFilters(path).some((pattern) =>
+    pattern.endsWith('/**') ? file.startsWith(pattern.slice(0, -2)) : file === pattern,
+  );
+}
+
 /** Render a comment body as a single-quoted `printf` format string (literal `\n`, `%s` holes). */
 const printfFormat = (body: string): string => body.replace(/\n/g, '\\n');
 
@@ -495,10 +519,7 @@ ${cpEnv}
     # directories of the repo (workspace packages, shared config), add their paths here —
     # or remove the filter to build on every merge.
     paths:
-      - '${path}/**'
-      - '.github/workflows/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'`
+${workflowPathFilters(path).map((p) => `      - '${p}'`).join('\n')}`
     : '';
 
   // --- which PRs preview ----------------------------------------------------------------

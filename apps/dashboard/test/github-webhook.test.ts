@@ -11,6 +11,7 @@ import {
   previewRequestBody,
   previewRequestUrl,
   previewTag,
+  prReachesWorkflow,
   resolvePreviewMode,
   verifyGithubSignature,
 } from '../src/github-webhook.js';
@@ -131,6 +132,33 @@ describe('which PR events preview', () => {
     expect(body.startsWith(PREVIEW_COMMENT_MARKER)).toBe(true);
     expect(body).toContain(`[**Build preview**](${url.toString()})`);
     expect(body).toContain('`preview` label');
+  });
+});
+
+describe('which PRs are offered Build preview', () => {
+  it('offers it in a monorepo only to a PR that changes what the workflow is filtered to', async () => {
+    const lister = (files: string[]) => {
+      const calls = { n: 0 };
+      return { calls, list: async () => (calls.n++, files) };
+    };
+    // Only other packages: the workflow's `paths:` filter never starts, label or not, so a
+    // Build preview link would say Building… for thirty minutes and give up.
+    const elsewhere = lister(['packages/other/src/a.ts', 'apps/site/package.json']);
+    expect(await prReachesWorkflow('apps/helpdesk', elsewhere.list)).toBe(false);
+    // The package, a workflow, or the root manifest or lockfile: it does.
+    for (const f of ['apps/helpdesk/src/a.ts', '.github/workflows/x.yml', 'package.json', 'pnpm-lock.yaml']) {
+      expect(await prReachesWorkflow('apps/helpdesk', lister(['docs/a.md', f]).list), f).toBe(true);
+    }
+    // A sibling whose name only starts the same is not the package.
+    expect(await prReachesWorkflow('apps/helpdesk', lister(['apps/helpdesk-admin/a.ts']).list)).toBe(false);
+    // A listing GitHub refused is a no: never a link that may lead nowhere.
+    expect(await prReachesWorkflow('apps/helpdesk', async () => { throw new Error('502'); })).toBe(false);
+    // The repo root: every PR starts the workflow, so nothing is listed.
+    const root = lister([]);
+    expect(await prReachesWorkflow(null, root.list)).toBe(true);
+    expect(root.calls.n).toBe(0);
+    // A link stored before setup recorded the path says nothing either way: no comment.
+    expect(await prReachesWorkflow(undefined, lister(['apps/helpdesk/a.ts']).list)).toBe(false);
   });
 });
 

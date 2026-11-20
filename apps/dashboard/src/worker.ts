@@ -95,8 +95,8 @@ import { listDeploymentsFromCp, ownedDeploymentFromCp, ownedDeploymentOrThrow, a
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type ListRead, type PreviewRecord, type SweepRunRead } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
-import { deployWorkflowYaml, getPullRequest, githubConfig, installUrl, installationAccount, labelPullRequest, listInstallationRepos, listRepoBranches, normalizeWorkflowDir, setupRepoCi, upsertPrComment } from './github.js';
-import { parsePullRequestWebhook, verifyGithubSignature, previewActionFor, resolvePreviewMode, previewCommentBody, previewReapedBody, previewRequestBody, previewRequestUrl, previewTag, buildPreviewTagPrefix, PREVIEW_COMMENT_MARKER, PREVIEW_LABEL, type PreviewMode } from './github-webhook.js';
+import { deployWorkflowYaml, getPullRequest, githubConfig, installUrl, installationAccount, labelPullRequest, listInstallationRepos, listPullRequestFiles, listRepoBranches, normalizeWorkflowDir, repoFileExists, setupRepoCi, upsertPrComment } from './github.js';
+import { parsePullRequestWebhook, verifyGithubSignature, previewActionFor, prReachesWorkflow, resolvePreviewMode, previewCommentBody, previewReapedBody, previewRequestBody, previewRequestUrl, previewTag, buildPreviewTagPrefix, PREVIEW_COMMENT_MARKER, PREVIEW_LABEL, type PreviewMode } from './github-webhook.js';
 import { sealForGithub } from './github-seal.js';
 import { b64urlToBytes } from './b64.js';
 import { cachedTelemetry, telemetryKey, type TelemetryStore } from './telemetry-cache.js';
@@ -423,6 +423,12 @@ interface RepoLink {
    * previews. A link written now always carries it.
    */
   previews?: PreviewMode;
+  /**
+   * The vertical's package directory the workflow is filtered to, `null` for the repo root.
+   * Written by setup beside `previews`; a link stored before that has no `path` key, which
+   * says nothing, so such a repo gets no "No preview yet" comment (`prReachesWorkflow`).
+   */
+  path?: string | null;
 }
 
 /** A stored link's preview mode — `every-pr` for a link written before the field existed. */
@@ -491,9 +497,10 @@ export class GithubRepoLinkDO extends DurableObject<Env> {
     if (action === 'ask') {
       // The comment IS the trigger in an `on-request` repo: its link opens the page whose
       // button labels the PR. Best-effort like every comment here — a GitHub refusal leaves the
-      // label, which the comment also names, as the way in.
+      // label, which the comment also names, as the way in. Only on a PR that can start the
+      // workflow: in a monorepo one changing only other packages never does, label or not.
       const cfg = githubConfig(this.env);
-      if (cfg) {
+      if (cfg && (await prReachesWorkflow(link.path, () => listPullRequestFiles(cfg, evt.installationId, link.repo, evt.prNumber)))) {
         await upsertPrComment(
           cfg, evt.installationId, link.repo, evt.prNumber, PREVIEW_COMMENT_MARKER,
           previewRequestBody(previewRequestUrl(evt.origin, link.tenantId, link.repo, evt.prNumber)),
@@ -6146,7 +6153,7 @@ const routeHandlers = {
   'dashboard/list-github-branches': async (ctx, { repo, account }) => githubBranchesIn(ctx, repo, account),
   'dashboard/setup-github-ci': async (ctx, body) => setupGithubCiIn(ctx, body),
   'dashboard/github-workflow-preview': async (ctx, input) => workflowPreviewIn(ctx, input),
-  'dashboard/github-repo-link': async (ctx, { repo }) => githubRepoLinkIn(ctx, repo),
+  'dashboard/github-repo-link': async (ctx, input) => githubRepoLinkIn(ctx, input),
   'dashboard/github-preview-request': async (ctx, input) => githubPreviewRequestIn(ctx, input),
   'dashboard/request-github-preview': async (ctx, input) => requestGithubPreviewIn(ctx, input),
 } satisfies RouteImpl<typeof dashboardRoutes, TeamContext>;
@@ -6344,7 +6351,7 @@ async function setupGithubCiIn(
   // path `apps/helpdesk` registers `helpdesk`, exactly what an in-package push claims.
   const path = packageDirOrThrow(body.path);
   const slug = slugify((path ? path.split('/').pop() : undefined) ?? body.repo.split('/').pop() ?? 'app');
-  const workflowPath = '.github/workflows/substrat-deploy.yml';
+  const workflowPath = DEPLOY_WORKFLOW_PATH;
   const link = repoLinkStub(c.env, body.repo);
   const stored = await link.getLink();
   // Settled once the file's existence is known (setupRepoCi reads it before committing).
@@ -6369,7 +6376,7 @@ async function setupGithubCiIn(
   // event back to this tenant's app (preview comment + reap). Idempotent; re-running
   // setup refreshes it. Repos wired before this existed link on their next re-run.
   // The mode is stored only beside a committed workflow, so the two never disagree.
-  await link.setLink({ tenantId: node.tenantId, slug, repo: body.repo, previews });
+  await link.setLink({ tenantId: node.tenantId, slug, repo: body.repo, previews, path: path ?? null });
   return {
     ok: true as const,
     workflowPath,
@@ -6479,10 +6486,28 @@ async function githubInstallationForRepo(host: ReturnType<typeof hostFor>, tenan
   return githubInstallationFor(host, tenantId, named);
 }
 
-/** Whether this team linked a repo, and which of its PRs preview — the setup card's toggle reads it. */
-async function githubRepoLinkIn(ctx: TeamContext, repo: string) {
+/** Where one-click setup commits the deploy workflow. */
+const DEPLOY_WORKFLOW_PATH = '.github/workflows/substrat-deploy.yml';
+
+/**
+ * Whether this team linked a repo, and the preview mode Set up deployment would commit if the
+ * person changes nothing — the setup card's toggle shows it. Linked: the stored mode. Not
+ * linked: `resolvePreviewMode`'s answer, which reads the same file setup does on `branch`,
+ * so a repo whose workflow is already committed shows `every-pr`, as setup will keep it.
+ */
+async function githubRepoLinkIn(ctx: TeamContext, { repo, branch, account }: { repo: string; branch?: string; account?: string }) {
   const link = await teamRepoLink(ctx, repo);
-  return { linked: link !== null, slug: link?.slug ?? null, previews: link ? previewModeOf(link) : ('on-request' as const) };
+  if (link) return { linked: true, slug: link.slug, previews: previewModeOf(link) };
+  let workflowExisted = false;
+  if (branch) {
+    const cfg = githubOrThrow(ctx.c.env);
+    const installationId = account !== undefined
+      ? await githubInstallationFor(ctx.host, ctx.node.tenantId, account)
+      : await githubInstallationForRepo(ctx.host, ctx.node.tenantId, repo);
+    if (!installationId) throw new HTTPException(409, { message: 'GitHub is not connected' });
+    workflowExisted = await repoFileExists(cfg, installationId, repo, branch, DEPLOY_WORKFLOW_PATH);
+  }
+  return { linked: false, slug: null, previews: resolvePreviewMode({ workflowExisted }) };
 }
 
 /** The repo's link, its installation and the PR — or the 4xx a Build preview page reads as a message. */
@@ -6549,7 +6574,7 @@ function workflowPreviewIn({ c }: TeamContext, input: { repo?: string; branch?: 
   const path = packageDirOrThrow(input.path || undefined);
   const slug = slugify((path ? path.split('/').pop() : undefined) ?? repo.split('/').pop() ?? 'app');
   return {
-    workflowPath: '.github/workflows/substrat-deploy.yml',
+    workflowPath: DEPLOY_WORKFLOW_PATH,
     workflow: deployWorkflowYaml({
       branch,
       slug,

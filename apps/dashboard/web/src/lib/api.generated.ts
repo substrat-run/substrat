@@ -1020,11 +1020,11 @@ export interface DashboardClient {
   githubPreviewRequest(input: { repo: string; pr: number }): Promise<{ repo: string; pr: number; slug: string; title: string; htmlUrl: string; state: "open" | "closed"; requested: boolean; previewUrl: string | null; canRequest: boolean }>;
 
   /**
-   * Whether one-click setup linked a repo to this team, and which of its PRs preview
+   * Whether one-click setup linked a repo to this team, and the preview mode setup would commit
    *
    * `GET /github/repo-link` — `dashboard/github-repo-link`
    */
-  githubRepoLink(input: { repo: string }): Promise<{ linked: boolean; slug: string | null; previews: "every-pr" | "on-request" }>;
+  githubRepoLink(input: { repo: string; branch?: string; account?: string }): Promise<{ linked: boolean; slug: string | null; previews: "every-pr" | "on-request" }>;
 
   /**
    * The deploy workflow to commit by hand, from the same generator one-click setup uses

@@ -13,7 +13,7 @@
  * Kept free of Cloudflare imports so it compiles (and tests) under the node
  * tsconfig — the same split as github.ts.
  */
-import { PREVIEW_LABEL, z, type PreviewMode } from '@substrat-run/contracts';
+import { PREVIEW_LABEL, fileMatchesWorkflowPaths, z, type PreviewMode } from '@substrat-run/contracts';
 
 export {
   PREVIEW_COMMENT_MARKER,
@@ -182,4 +182,23 @@ export function resolvePreviewMode(input: {
   workflowExisted: boolean;
 }): PreviewMode {
   return input.requested ?? input.stored ?? (input.workflowExisted ? 'every-pr' : 'on-request');
+}
+
+/**
+ * Whether a PR can start the repo's workflow at all, which is what decides if its "No
+ * preview yet" comment may offer Build preview: in a monorepo the workflow is filtered to the
+ * vertical's package (`workflowPathFilters`), and a PR changing only other packages, a
+ * dependency bump among them, never starts it, label or not. A link that leads nowhere would
+ * say "Building…" for thirty minutes and give up.
+ *
+ * `path` is what setup stored on the repo's link: `null` for a vertical at the repo root
+ * (every PR reaches the workflow), a directory for a monorepo package, and `undefined` for a
+ * link stored before setup recorded it, which says nothing either way, so no comment. Files
+ * are only listed when the answer depends on them, and a failed listing is a no.
+ */
+export async function prReachesWorkflow(path: string | null | undefined, listFiles: () => Promise<string[]>): Promise<boolean> {
+  if (path === undefined) return false;
+  if (path === null) return true;
+  const files = await listFiles().catch(() => null);
+  return files !== null && files.some((f) => fileMatchesWorkflowPaths(f, path));
 }
