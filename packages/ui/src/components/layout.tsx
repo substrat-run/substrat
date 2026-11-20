@@ -5,7 +5,8 @@ import { useMediaQuery } from '../hooks/use-media-query';
 
 /** The padded, centred content column every screen sits in (content-max default 1200). */
 export function Page({ children, maxWidth = 1200, style }: { children: ReactNode; maxWidth?: number; style?: CSSProperties }) {
-  // A phone keeps its width for the content: 16px gutters below 768, the shell's drawer width.
+  // A phone keeps its width for the content: 16px gutters below 768 (dashboard-ui.md §5.1).
+  // A shell may move to a drawer at its own width (the console's is 900); this does not follow it.
   const narrow = useMediaQuery('(max-width: 767px)');
   return (
     <div style={{ padding: narrow ? '16px' : '24px 32px' }}>
