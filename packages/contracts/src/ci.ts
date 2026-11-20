@@ -523,12 +523,14 @@ ${cpEnv}
   # FORK of prod on its own URL; close the PR → it is reaped (the TTL is the GC backstop).`;
   const previewIf = onRequest
     ? `    # Only a PR labelled '${PREVIEW_LABEL}' previews, and a \`labeled\` event only when it added that
-    # label. A job-level \`if:\` skips (grey, not red), so an unlabelled PR reports as skipped.
+    # label to an OPEN PR: a closed PR can still be labelled, and its preview would outlive it,
+    # since only a \`closed\` event reaps. A job-level \`if:\` skips (grey, not red), so an
+    # unlabelled PR reports as skipped.
     if: >-
       github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
       contains(github.event.pull_request.labels.*.name, '${PREVIEW_LABEL}') &&
-      (github.event.action != 'labeled' || github.event.label.name == '${PREVIEW_LABEL}')`
+      (github.event.action != 'labeled' || (github.event.label.name == '${PREVIEW_LABEL}' && github.event.pull_request.state == 'open'))`
     : `    if: github.event_name == 'pull_request' && github.event.action != 'closed'`;
 
   const releaseNote = release === 'changesets'
@@ -551,7 +553,7 @@ ${cpEnv}
 #   SUBSTRAT_TEST_SCOPE_ID      a long-lived scope rebound to every merge (the test env)
 #   SUBSTRAT_PER_BUILD_PREVIEW  set to 1 to also mint a frozen per-build preview URL per push${
     onRequest
-      ? `\n#\n# Previews are on request: only a PR carrying the '${PREVIEW_LABEL}' label builds one. To preview\n# every PR, turn on Preview every PR where this repo is set up in the dashboard (or\n# regenerate with \`substrat init --ci github --previews every-pr\`).`
+      ? `\n#\n# Previews are on request: only a PR carrying the '${PREVIEW_LABEL}' label builds one. To preview\n# every PR, turn on Preview every PR where this repo is set up in the dashboard, or\n# regenerate with \`substrat init --ci github --previews every-pr --force\` (which replaces\n# this file, local edits included).`
       : ''
   }
 

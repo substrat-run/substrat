@@ -207,13 +207,14 @@ jobs:
     # reason to this job's summary, so a grey `preview` reads as decided, not broken.
     #
     # Only for a PR labelled 'preview', and on a `labeled` event only when that label is the one
-    # added: labelling a previewed PR `bug` is not a reason to build it again.
+    # added, to an open PR: labelling a previewed PR `bug` is not a reason to build it again,
+    # and a closed PR's preview would outlive it, since only a `closed` event reaps.
     if: >-
       github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
       github.event.pull_request.user.login != 'dependabot[bot]' &&
       contains(github.event.pull_request.labels.*.name, 'preview') &&
-      (github.event.action != 'labeled' || github.event.label.name == 'preview')
+      (github.event.action != 'labeled' || (github.event.label.name == 'preview' && github.event.pull_request.state == 'open'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -256,7 +257,7 @@ jobs:
       github.event.action != 'closed' &&
       github.event.pull_request.user.login != 'dependabot[bot]' &&
       contains(github.event.pull_request.labels.*.name, 'preview') &&
-      (github.event.action != 'labeled' || github.event.label.name == 'preview') &&
+      (github.event.action != 'labeled' || (github.event.label.name == 'preview' && github.event.pull_request.state == 'open')) &&
       needs.preview_scope.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15

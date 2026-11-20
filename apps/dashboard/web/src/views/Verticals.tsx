@@ -1292,6 +1292,8 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
   // existed keeps previewing every PR unless somebody turns that off.
   const [previews, setPreviews] = useState<PreviewMode>('on-request');
   const [previewsTouched, setPreviewsTouched] = useState(false);
+  // The link read may land after the person already chose: it must not undo that choice.
+  const previewsTouchedRef = useRef(false);
   const [linked, setLinked] = useState(false);
 
   useEffect(() => {
@@ -1317,7 +1319,7 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
       .then((l) => {
         if (!live) return;
         setLinked(l.linked);
-        setPreviews(l.previews);
+        if (!previewsTouchedRef.current) setPreviews(l.previews);
       })
       // Unread, the server decides (stored mode, else what a first setup picks).
       .catch(() => {});
@@ -1419,6 +1421,7 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
               checked={previews === 'every-pr'}
               onChange={(on) => {
                 setPreviews(on ? 'every-pr' : 'on-request');
+                previewsTouchedRef.current = true;
                 setPreviewsTouched(true);
               }}
               style={{ fontSize: 12.5 }}
@@ -1461,17 +1464,31 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
 /** The copy-paste fallback: the same workflow the one-click path would commit. */
 function ManualCiSetup({ teamId, repo, branch, path, previews }: { teamId: string; repo: string; branch: string; path?: string; previews: PreviewMode }) {
   const [preview, setPreview] = useState<WorkflowPreview | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let live = true;
+    // A file for other inputs (another branch, directory or preview mode) must never stay up
+    // to be copied while this one loads, or after it fails.
+    setPreview(null);
+    setFailed(false);
     api
       .workflowPreview(teamId, repo, branch, path, previews)
       .then((p) => live && setPreview(p))
-      .catch(() => {});
+      .catch(() => live && setFailed(true));
     return () => {
       live = false;
     };
-  }, [teamId, repo, branch, path, previews]);
+  }, [teamId, repo, branch, path, previews, attempt]);
 
+  if (failed) {
+    return (
+      <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>
+        Could not load the workflow.{' '}
+        <a href="#" onClick={(e) => { e.preventDefault(); setAttempt((n) => n + 1); }}>Try again</a>
+      </div>
+    );
+  }
   if (!preview) return <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Loading workflow…</div>;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

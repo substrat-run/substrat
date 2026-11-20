@@ -1195,7 +1195,13 @@ export function App() {
           canManageFindings={canManageFindings(members, me.principal)}
         />
       ) : route.section === 'preview-request' && route.request ? (
-        <PreviewRequest teamId={route.request.team ?? me.currentTeamId} repo={route.request.repo} pr={route.request.pr} />
+        // Keyed by the request: another PR is another page, never this one's state and polls.
+        <PreviewRequest
+          key={`${route.request.team ?? me.currentTeamId}/${route.request.repo}#${route.request.pr}`}
+          teamId={route.request.team ?? me.currentTeamId}
+          repo={route.request.repo}
+          pr={route.request.pr}
+        />
       ) : route.section === 'settings' ? (
         <Settings org={org} teamId={me.currentTeamId} slug={currentTeam?.slug ?? ''} name={me.name} email={me.email} isTeamAdmin={isTeamAdmin} />
       ) : null}

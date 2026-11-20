@@ -120,8 +120,9 @@ export function nextStepsMessage(slug: string, release: ReleaseMode, previews: P
   if (previews === 'on-request') {
     lines.push(
       "Previews: on request — only a PR labelled 'preview' builds one, and every push to it",
-      'updates it. Add the label on GitHub; removing it stops updating the preview. Use',
-      '`--previews every-pr` to preview every PR.',
+      'updates it. Add the label on GitHub; removing it stops updating the preview. To',
+      'preview every PR, run this again with `--previews every-pr --force` (it replaces the',
+      'file, local edits included).',
       '',
     );
   }

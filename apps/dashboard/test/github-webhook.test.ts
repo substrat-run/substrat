@@ -15,6 +15,7 @@ import {
   verifyGithubSignature,
 } from '../src/github-webhook.js';
 import { deployWorkflowYaml, githubConfig, upsertPrComment } from '../src/github.js';
+import { ownedByBareName } from '../src/deployments.js';
 
 /**
  * The webhook boundary's pure half: the HMAC gate (the ONLY auth on an
@@ -130,6 +131,18 @@ describe('which PR events preview', () => {
     expect(body.startsWith(PREVIEW_COMMENT_MARKER)).toBe(true);
     expect(body).toContain(`[**Build preview**](${url.toString()})`);
     expect(body).toContain('`preview` label');
+  });
+});
+
+describe('the Build preview ownership gate', () => {
+  it('finds the team’s vertical by the bare name a repo link stores', () => {
+    // The registry keys a vertical `<tenantSlug>/<name>`; setup stores `<name>`. Comparing the
+    // two for equality refused every vertical the team owns.
+    const owned = [{ slug: 'acme-x1y2z3/helpdesk' }, { slug: 'acme-x1y2z3/desk-admin' }];
+    expect(ownedByBareName(owned, 'helpdesk')).toBe(owned[0]);
+    expect(ownedByBareName(owned, 'acme-x1y2z3/helpdesk')).toBe(owned[0]);
+    expect(ownedByBareName(owned, 'desk')).toBeUndefined();
+    expect(ownedByBareName(owned, 'shop')).toBeUndefined();
   });
 });
 

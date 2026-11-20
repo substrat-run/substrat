@@ -21,12 +21,18 @@ const POLL_FOR_MS = 30 * 60_000;
  * has a URL and then sends the person to it.
  */
 export function PreviewRequest({ teamId, repo, pr }: { teamId: string; repo: string; pr: number }) {
+  // One instance per PR: App keys this page by (team, repo, pr), so nothing here outlives the
+  // request it was opened for.
   const [view, setView] = useState<PullPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [needsPermissions, setNeedsPermissions] = useState(false);
-  // Set once the button labelled the PR on this page: the moment a URL appears, go to it.
+  // Polling since: set when the button labelled the PR here, or when the page opened on a PR
+  // that already asked and has no preview yet (a refresh mid-build).
   const [waitingSince, setWaitingSince] = useState<number | null>(null);
+  // Only a request made on THIS page sends the person to the preview when it lands; one that
+  // was already under way just updates what the page says.
+  const [navigateOnReady, setNavigateOnReady] = useState(false);
   const [gaveUp, setGaveUp] = useState(false);
   const live = useRef(true);
 
@@ -46,29 +52,38 @@ export function PreviewRequest({ teamId, repo, pr }: { teamId: string; repo: str
 
   useEffect(() => {
     live.current = true;
-    void read();
+    void read().then((v) => {
+      if (live.current && v?.requested && !v.previewUrl && v.state === 'open') setWaitingSince(Date.now());
+    });
     return () => {
       live.current = false;
     };
-  }, [teamId, repo, pr]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Building: poll until the preview has a URL, then open it — bounded, since a PR whose change
-  // the repo's workflow judges out of the vertical's scope never builds one.
+  // Building: poll until the preview has a URL — bounded, since a PR whose change the repo's
+  // workflow judges out of the vertical's scope never builds one. A read still in flight when
+  // this effect ends (the page left, or a new request restarted the poll) is ignored, so it can
+  // neither update the page nor navigate away from wherever the person went.
   useEffect(() => {
     if (waitingSince === null) return;
+    let cancelled = false;
     const t = setInterval(() => {
       void read().then((v) => {
+        if (cancelled) return;
         if (v?.previewUrl) {
           clearInterval(t);
-          window.location.assign(v.previewUrl);
+          if (navigateOnReady) window.location.assign(v.previewUrl);
         } else if (Date.now() - waitingSince > POLL_FOR_MS) {
           clearInterval(t);
-          if (live.current) setGaveUp(true);
+          setGaveUp(true);
         }
       });
     }, POLL_MS);
-    return () => clearInterval(t);
-  }, [waitingSince]); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [waitingSince, navigateOnReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const build = async () => {
     setBusy(true);
@@ -78,6 +93,7 @@ export function PreviewRequest({ teamId, repo, pr }: { teamId: string; repo: str
       if (!result.ok) setNeedsPermissions(true);
       else {
         setGaveUp(false);
+        setNavigateOnReady(true);
         setWaitingSince(Date.now());
         void read();
       }

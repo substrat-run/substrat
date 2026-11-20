@@ -91,7 +91,7 @@ import {
 } from './identity-mirror.js';
 import { inventoryCallerAllowed, inventoryPage } from './directory-inventory.js';
 import { BoundScopeError, moveBoundScopes, readBoundScopes, readMoveReview, retireBoundScopes } from './bound-scopes.js';
-import { listDeploymentsFromCp, ownedDeploymentFromCp, ownedDeploymentOrThrow, assertOwnedFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, versionPair, type Deployment } from './deployments.js';
+import { listDeploymentsFromCp, ownedDeploymentFromCp, ownedDeploymentOrThrow, assertOwnedFromCp, assertOwnedBareFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, versionPair, type Deployment } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type ListRead, type PreviewRecord, type SweepRunRead } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
@@ -6530,7 +6530,8 @@ async function githubPreviewRequestIn(ctx: TeamContext, { repo, pr }: { repo: st
 async function requestGithubPreviewIn(ctx: TeamContext, { repo, pr }: { repo: string; pr: number }) {
   await assertMayManageApps(ctx.host, ctx.node);
   const { cfg, link, installationId, pull } = await linkedPullRequest(ctx, repo, pr);
-  await assertOwnedFromCp(teamPlane(ctx), link.slug);
+  // The link stores the bare name; the registry keys the vertical `<tenantSlug>/<name>`.
+  await assertOwnedBareFromCp(teamPlane(ctx), link.slug);
   if (pull.state !== 'open') throw new HTTPException(409, { message: `#${pr} is closed — a closed pull request has no preview` });
   const result = await labelPullRequest(cfg, installationId, link.repo, pr, {
     name: PREVIEW_LABEL,

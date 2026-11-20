@@ -457,7 +457,10 @@ describe('GitHub App client', () => {
       // On the PR (a push to a labelled PR rebuilds; an unlabelled one builds nothing), and on a
       // `labeled` delivery only when it is this label.
       expect(previewJob).toContain("contains(github.event.pull_request.labels.*.name, 'preview') &&");
-      expect(previewJob).toContain("(github.event.action != 'labeled' || github.event.label.name == 'preview')");
+      // A closed PR can still be labelled; only `closed` reaps, so that preview would outlive it.
+      expect(previewJob).toContain(
+        "(github.event.action != 'labeled' || (github.event.label.name == 'preview' && github.event.pull_request.state == 'open'))",
+      );
       expect(previewJob).toContain("github.event.action != 'closed' &&");
       // Closing still reaps, labelled or not: a PR whose label was removed may hold a preview.
       expect(yaml).toContain("if: github.event_name == 'pull_request' && github.event.action == 'closed'");
