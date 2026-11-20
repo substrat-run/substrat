@@ -253,6 +253,15 @@ import { provisionSiblingScope } from './platform-drain.js';
 import { NON_PROBLEM_REFUSAL, coded, mapError, relayed, type ApiError } from './errors.js';
 import { maskDump, maskRecords } from './mask.js';
 import { createPseudonymizer } from './pseudonymize.js';
+import { assembleSubjectAccess, renderSubjectAccessHtml } from './subject-access.js';
+import { SUBJECT_READ_PAGE_MAX, subjectAccessBody, type SubjectReadPage } from '@substrat-run/contracts';
+
+/**
+ * The most `readSubject` pages one access request assembles (D-74): past it the package would not
+ * fit one response, and the request is refused rather than truncated. A later phase writes such a
+ * package to an object and returns a link.
+ */
+const SUBJECT_ACCESS_MAX_PAGES = 50;
 import { openDump, sealDump, type SubjectSealer } from './seal.js';
 import {
   assertSandboxContract,
@@ -1826,6 +1835,9 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/peer-grants$/, pin: 'path' },
   { method: 'DELETE', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/peer-grants$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/snapshots$/, pin: 'path' },
+  // D-74: one data subject's package, the team's own answer to an access request. The dashboard
+  // checks `dashboard:subject-access` (owner, admin) before calling. Not `/shred`: erasure stays staff's.
+  { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/subjects\/[^/]+\/access$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/tables$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/tables\/[^/]+$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/activate$/, pin: 'path' },
@@ -7482,6 +7494,84 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const storeErasures = await eraseStores();
     return c.json(await c.var.admin.finalizeSubjectShred(c.get('actor'), tenantId, scopeId, subjectId, redactions, fence,
       storeErasures).catch(relayHostRefusal));
+  });
+
+  // -- subject access (D-74, GDPR Art. 15) ------------------------------------
+  // What one scope holds about one data subject, read through the reach erasure writes through,
+  // as one package for the controller to answer the person with (docs/rfc/subject-access.md).
+  //
+  // On TENANT_ROUTES, so a team's owner or admin runs it from the dashboard's Data tab, and open to
+  // staff for a request a customer forwards. Not in BUILDER_ROUTES: the CLI has no reason to pull a
+  // person. `POST`: it writes two audit entries and is never cached or prefetched.
+  //
+  // Exempt from the jurisdiction gate the bulk exports carry (§3.6): Art. 15(3) obliges the
+  // controller to hand the person this copy, one subject per call, never whole-scope data. The
+  // receipt records `residencyExempt` whenever the scope is pinned tighter than `global`.
+  app.post('/tenants/:tenantId/scopes/:scopeId/subjects/:subjectId/access', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const subjectId = dataSubjectIdSchema.parse(c.req.param('subjectId'));
+    const parsed = subjectAccessBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) {
+      return refuse(c, 'validation_failed', 'a subject access request names a one-line reference and confirms the requester was verified', {
+        reason: 'subject_access_body',
+      });
+    }
+    const actor = c.get('actor');
+    const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    try {
+      // A scope store may hold the subject, and no driver can answer `substrat.access` yet (P3). An
+      // incomplete answer that does not say it is incomplete is the failure worth avoiding, so the
+      // request is refused, naming the binding, rather than answered without it.
+      const running = await runningVersionOf(c.var.admin, actor, scope);
+      const reach = await platformStoresOf(c, scope, running);
+      const store = reach?.stores[0];
+      if (store) {
+        throw new ControlPlaneError(
+          501,
+          `scope ${scopeId}'s store '${store.binding}' runs driver '${store.driver}', which cannot answer a subject access request yet; nothing was read`,
+        );
+      }
+      // The serving deployment's copy, when the scope's data lives in one; else this host's own.
+      const vertical = await verticalForScope(c, scope);
+      const readPage = (cursor: string | undefined) => {
+        const page = { limit: SUBJECT_READ_PAGE_MAX, ...(cursor ? { cursor } : {}) };
+        return vertical
+          ? vertical.readSubject(scopeId, subjectId, page)
+          : c.var.admin.readSubject(actor, tenantId, scopeId, subjectId, page).catch(relayHostRefusal);
+      };
+      const pages: SubjectReadPage[] = [];
+      let cursor: string | undefined;
+      do {
+        if (pages.length >= SUBJECT_ACCESS_MAX_PAGES) {
+          throw new ControlPlaneError(
+            413,
+            `subject ${subjectId} has more than ${SUBJECT_ACCESS_MAX_PAGES * SUBJECT_READ_PAGE_MAX} events and rows in scope ${scopeId}, more than one response carries; nothing was recorded`,
+          );
+        }
+        const page = await readPage(cursor);
+        pages.push(page);
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+      const { package: pkg, receipt } = await assembleSubjectAccess({
+        tenantId,
+        scopeId,
+        subjectId,
+        jurisdiction: scope.jurisdiction,
+        vertical: { slug: scope.vertical, versionId: scope.verticalVersionId },
+        generatedAt: new Date().toISOString(),
+        reference: parsed.data.reference,
+        pages,
+        salt: crypto.randomUUID(),
+      });
+      // The admin row (with `onBehalfOf` from the attributed view, #977) and the access log's read.
+      await c.var.admin.recordSubjectAccess(actor, tenantId, scopeId, receipt).catch(relayHostRefusal);
+      return c.json({ package: pkg, receipt, html: renderSubjectAccessHtml(pkg) });
+    } catch (e) {
+      if (e instanceof ControlPlaneError) return relayRefusal(c, e);
+      throw e;
+    }
   });
 
   // -- directory backups (#40) -----------------------------------------------

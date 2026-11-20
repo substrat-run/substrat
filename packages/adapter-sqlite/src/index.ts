@@ -205,6 +205,7 @@ import {
   type ScopeId,
   type ReservedStoreOperation,
   subjectShredReceipt,
+  subjectAccessReceipt,
   type SubjectShredReceipt,
   type ScopeQueryResult,
   type ScopeStatus,
@@ -12590,6 +12591,18 @@ export class SqliteScopeHost implements ScopeHost {
           read.events.length + read.records.reduce((n, r) => n + r.rows.length, 0),
         );
         return read;
+      },
+      recordSubjectAccess: async (actor, tenantId, scopeId, receipt) => {
+        this.assertScope(tenantId, scopeId);
+        const after = subjectAccessReceipt.parse(receipt);
+        this.recordAdmin(actor, 'subjectAccess', { tenantId, scopeId }, null, after);
+        this.recordAccess(
+          actor,
+          'subjectAccess',
+          { tenantId, scopeId },
+          { subjectId: after.subjectId },
+          after.events + after.records.reduce((n, r) => n + r.rows, 0),
+        );
       },
       shredSubject: async (
         actor,

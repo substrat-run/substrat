@@ -30,6 +30,7 @@ import {
   causeChain,
   deadLetter,
   defineRoutes,
+  subjectAccessBody,
   dnsRecord,
   edgeHealth,
   edgeHealthReport,
@@ -1329,6 +1330,17 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().min(1) }),
     output: scopeDump.extend({ masked: z.boolean() }),
     http: { method: 'GET', path: '/apps/{scopeId}/export' },
+  },
+  'dashboard/subject-access': {
+    summary: 'Download everything this app holds about one person, to answer their access request',
+    input: subjectAccessBody.extend({ scopeId: z.string().min(1), subjectId: z.string().min(1) }),
+    // The plane's package and receipt, held open (#2401): their literals are the plane's vocabulary.
+    output: z.object({
+      package: z.object({ kind: z.string() }).passthrough(),
+      receipt: z.object({ subjectId: z.string(), reference: z.string(), generatedAt: z.string() }).passthrough(),
+      html: z.string(),
+    }),
+    http: { method: 'POST', path: '/apps/{scopeId}/subjects/{subjectId}/access' },
   },
   'dashboard/restore-installed-app': {
     summary: 'Replace this app’s data from an uploaded dump after making a safety copy',

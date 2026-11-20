@@ -1,4 +1,4 @@
-import { PERSONAS_PATH, SEED_WORLD_PATH, seededPersonas, z, type PersonasBody, type SeedWorldBody, type SeededPersona } from '@substrat-run/contracts';
+import { PERSONAS_PATH, SEED_WORLD_PATH, seededPersonas, subjectReadPage, z, type PersonasBody, type SeedWorldBody, type SeededPersona, type SubjectReadPage, type SubjectReadRequest } from '@substrat-run/contracts';
 import type {
   EntityGrantShape,
   AttachmentRecord,
@@ -1808,6 +1808,29 @@ export class VerticalClient {
       throw new ControlPlaneError(502, `script answered redact-subject incompletely for scope ${scopeId}`);
     }
     return answer;
+  }
+
+  /**
+   * One page of what a scope in this script holds about one data subject (D-74). Scope bytes cross
+   * the boundary, as `exportScope`'s do; the control-plane route in front of it is the gate and the
+   * audit. Parsed, not trusted: a deployment's answer is held to the page's shape.
+   */
+  async readSubject(scopeId: ScopeId, subjectId: string, page?: SubjectReadRequest): Promise<SubjectReadPage> {
+    const answer = await this.postInternal<unknown>(
+      '/internal/read-subject',
+      { scopeId, subjectId, ...(page?.cursor ? { cursor: page.cursor } : {}), ...(page?.limit ? { limit: page.limit } : {}) },
+      'read-subject',
+    ).catch((err: unknown) => {
+      // A deployment pushed before the read existed has no route for it, which is not "nobody
+      // by that id": say what it is, and what fixes it.
+      if (err instanceof ControlPlaneError && err.status === 404) {
+        throw new ControlPlaneError(501, `scope ${scopeId}'s deployment predates subject access — push the app again and retry`);
+      }
+      throw err;
+    });
+    const parsed = subjectReadPage.safeParse(answer);
+    if (!parsed.success) throw new ControlPlaneError(502, `script answered read-subject in an unexpected shape for scope ${scopeId}`);
+    return parsed.data;
   }
 
   /**

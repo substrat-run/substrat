@@ -251,6 +251,7 @@ import {
   type ScopeDumpPageTable,
   type ScopeLineage,
   subjectShredReceipt,
+  subjectAccessReceipt,
   type SubjectShredReceipt,
   type SubjectReadPage,
   type SubjectReadRequest,
@@ -10414,6 +10415,18 @@ export class CloudflareScopeHost implements ScopeHost {
           read.events.length + read.records.reduce((n, r) => n + r.rows.length, 0),
         );
         return read;
+      },
+      recordSubjectAccess: async (actor, tenantId, scopeId, receipt) => {
+        await this.assertScope(tenantId, scopeId);
+        const after = subjectAccessReceipt.parse(receipt);
+        await this.recordAdmin(actor, 'subjectAccess', { tenantId, scopeId }, null, after);
+        await this.recordAccess(
+          actor,
+          'subjectAccess',
+          { tenantId, scopeId },
+          { subjectId: after.subjectId },
+          after.events + after.records.reduce((n, r) => n + r.rows, 0),
+        );
       },
       shredSubject: async (actor, tenantId, scopeId, subjectId, fence): Promise<SubjectShredReceipt> => {
         await this.assertScope(tenantId, scopeId);

@@ -208,6 +208,8 @@ export const adminAction = z.enum([
   // it becomes unreadable. The `after` carries the receipt (how many events, whether a key
   // existed) — an erasure that records no proof it happened is not a fulfilled DSAR.
   'shredSubject',
+  // D-74: one data subject's package handed to the controller, with its receipt as `after`.
+  'subjectAccess',
   // #1233 — the issues lifecycle: a staff verdict on a fingerprint-grouped failure class.
   'setIssueStatus',
   // K-42 (#868) — opening a session that acts as a principal, and closing one.

@@ -52,6 +52,30 @@ it('deleteScope sends the tenant with the scope to the vertical (#1802)', async 
   expect(body).toEqual({ tenantId: t, scopeId: s });
 });
 
+it("readSubject asks the deployment for one page and refuses an answer not shaped like one (D-74)", async () => {
+  let asked: unknown;
+  const page = { events: [], records: [], unreachedEntities: [], hookEntities: [], nextCursor: null };
+  const answering = (reply: unknown) =>
+    new VerticalClient({
+      fetch: (async (_url: string, init: RequestInit) => {
+        asked = JSON.parse(init.body as string);
+        return new Response(JSON.stringify(reply), { status: 200 });
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+  expect(await answering(page).readSubject(s, 'subject-1', { cursor: 'e:1', limit: 5 })).toEqual(page);
+  expect(asked).toEqual({ scopeId: s, subjectId: 'subject-1', cursor: 'e:1', limit: 5 });
+  const refused = await answering({ events: 'nope' }).readSubject(s, 'subject-1').catch((e: unknown) => e);
+  expect(refused).toBeInstanceOf(ControlPlaneError);
+  expect((refused as ControlPlaneError).status).toBe(502);
+  const old = new VerticalClient({
+    fetch: (async () => new Response('Not Found', { status: 404 })) as unknown as typeof fetch,
+    platformSecret: 'secret',
+  });
+  const missing = await old.readSubject(s, 'subject-1').catch((e: unknown) => e);
+  expect((missing as ControlPlaneError).status).toBe(501);
+});
+
 it('normalizes pre-metrics migration replies without discarding recorded values', async () => {
   const urls: string[] = [];
   const replies = [

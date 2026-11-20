@@ -82,6 +82,12 @@ export const DASHBOARD_PERM = {
    * browses does not reach across apps or outlive them.
    */
   readEventLake: dashboardKey('dashboard:read-event-lake'),
+  /**
+   * Download everything an app holds about one person, to answer their access request (D-74, GDPR
+   * Art. 15). Owner and admin only, as restore is: an owner or admin can already read every row in
+   * Data › Tables, but this puts one person's rows, unmasked, into one file.
+   */
+  subjectAccess: dashboardKey('dashboard:subject-access'),
 };
 
 /**
@@ -97,8 +103,8 @@ export const DASHBOARD_PERM = {
  * but cannot manage the team or replace an app's data; `viewer` is read-only.
  */
 export const MEMBER_ROLES: Record<string, PermissionKey[]> = {
-  owner: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.manageMembers, DASHBOARD_PERM.manageIntegrations, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings, DASHBOARD_PERM.restoreAppData, DASHBOARD_PERM.readEventLake, INVITES_PERM.send, INVITES_PERM.read, INVITES_PERM.revoke],
-  admin: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.manageMembers, DASHBOARD_PERM.manageIntegrations, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings, DASHBOARD_PERM.restoreAppData, DASHBOARD_PERM.readEventLake, INVITES_PERM.send, INVITES_PERM.read, INVITES_PERM.revoke],
+  owner: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.manageMembers, DASHBOARD_PERM.manageIntegrations, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings, DASHBOARD_PERM.restoreAppData, DASHBOARD_PERM.readEventLake, DASHBOARD_PERM.subjectAccess, INVITES_PERM.send, INVITES_PERM.read, INVITES_PERM.revoke],
+  admin: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.manageMembers, DASHBOARD_PERM.manageIntegrations, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings, DASHBOARD_PERM.restoreAppData, DASHBOARD_PERM.readEventLake, DASHBOARD_PERM.subjectAccess, INVITES_PERM.send, INVITES_PERM.read, INVITES_PERM.revoke],
   // A member runs the apps, so triaging what they do wrong is theirs too; a viewer only reads.
   member: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings],
   viewer: [DASHBOARD_PERM.read, DASHBOARD_PERM.readFindings],
@@ -137,6 +143,10 @@ export const dashboardManifest = moduleManifest.parse({
     {
       key: 'dashboard:read-event-lake',
       description: 'Read the team’s events across all its apps from the event lake',
+    },
+    {
+      key: 'dashboard:subject-access',
+      description: 'Download everything an app holds about one person, to answer their access request',
     },
   ],
   // #1184: a removal is asked of the kernel's membership executor, as an add is by the invites engine.
@@ -811,6 +821,12 @@ const authorizeFindingsChangeOp = checkOnly(DASHBOARD_PERM.manageFindings);
  * after the fork, naming the copy, and asks the same key again.
  */
 const authorizeRestoreOp = checkOnly(DASHBOARD_PERM.restoreAppData);
+
+/**
+ * Whether the caller may download one person's data from an app (D-74), asked before the plane is
+ * called. The read, its receipt and the admin row naming the member are the plane's.
+ */
+const authorizeSubjectAccessOp = checkOnly(DASHBOARD_PERM.subjectAccess);
 
 /** Whether the caller may read the team's lake events (#1334). The read is the plane's. */
 const authorizeEventLakeReadOp = checkOnly(DASHBOARD_PERM.readEventLake);
@@ -1916,6 +1932,7 @@ export const DASHBOARD_PERMISSIONS = [
   DASHBOARD_PERM.manageFindings,
   DASHBOARD_PERM.restoreAppData,
   DASHBOARD_PERM.readEventLake,
+  DASHBOARD_PERM.subjectAccess,
 ] as const;
 
 export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
@@ -2002,6 +2019,11 @@ export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
   'dashboard/authorize-restore': {
     summary: 'Answer whether the caller may replace an app’s data with an uploaded dump',
     permission: DASHBOARD_PERM.restoreAppData,
+    output: ok,
+  },
+  'dashboard/authorize-subject-access': {
+    summary: 'Answer whether the caller may download everything an app holds about one person',
+    permission: DASHBOARD_PERM.subjectAccess,
     output: ok,
   },
   'dashboard/authorize-rewind': {
@@ -2264,6 +2286,7 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/authorize-findings-change': authorizeFindingsChangeOp,
     'dashboard/authorize-event-lake-read': authorizeEventLakeReadOp,
     'dashboard/authorize-restore': authorizeRestoreOp,
+    'dashboard/authorize-subject-access': authorizeSubjectAccessOp,
     'dashboard/authorize-rewind': authorizeRewindOp,
     'dashboard/mark-app-failed': markAppFailedOp,
     'dashboard/record-install-step': recordInstallStepOp,

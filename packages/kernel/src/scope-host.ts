@@ -141,6 +141,7 @@ import type {
   SubjectShredReceipt,
   SubjectReadPage,
   SubjectReadRequest,
+  SubjectAccessReceipt,
   ScopeQueryResult,
   ScopeId,
   ScopeStatus,
@@ -3990,6 +3991,18 @@ export interface HostAdmin {
     subjectId: string,
     page?: SubjectReadRequest,
   ): Promise<SubjectReadPage>;
+  /**
+   * Record one subject access request (D-74) once its package is assembled: the admin log's
+   * `subjectAccess` row with the receipt as `after` (an attributed view adds `onBehalfOf`, the
+   * signed-in member the request was made for), and the access log's read of the subject. The
+   * receipt carries counts, a reference and the identity confirmation, never content.
+   */
+  recordSubjectAccess(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    receipt: SubjectAccessReceipt,
+  ): Promise<void>;
   /**
    * Subjects whose key row is tombstoned (`shredded_at` set), in subject-id order.
    * A page is at most 100. `cursor` is the last id the caller already has.
