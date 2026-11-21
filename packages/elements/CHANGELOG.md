@@ -1,5 +1,21 @@
 # @substrat-run/elements
 
+## 0.9.0
+
+### Minor Changes
+
+- 7e681ed: `<sub-kanban>`: a column's `colour` is drawn before its label; `sortable="false"` is for a board that keeps no order within a column; every word it shows or announces is replaceable (`labels`) and translatable through Web Awesome's registry (`registerKanbanLabels`); `--sub-kanban-column-grow` lets columns fill a wide board.
+
+### Patch Changes
+
+- Updated dependencies [dccd345]
+- Updated dependencies [d7a79e5]
+- Updated dependencies [af44e9e]
+- Updated dependencies [3b8ba29]
+- Updated dependencies [b83cf97]
+- Updated dependencies [95a6184]
+  - @substrat-run/contracts@0.205.0
+
 ## 0.8.11
 
 ### Patch Changes

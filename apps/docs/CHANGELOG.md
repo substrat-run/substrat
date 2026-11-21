@@ -1,5 +1,20 @@
 # @substrat-run/docs
 
+## 0.1.35
+
+### Patch Changes
+
+- 3dfa27c: A third edition of the ebook, reviewing weeks 42–46 and the merges of 16–20 November. Two new
+  chapters: apps made of other apps (peer calls and exported events, a plugin that takes its people
+  from another app, a call made as the signed-in person, an app that creates tenants, and where the
+  module and vertical line falls) and screens (the published web components, the generated client
+  and files served as the person). The chapters from the old chapter 8 onwards move up by two.
+  Existing chapters cover the worker door, verified addresses, request ids, reserved keys, the
+  migration data-loss fence, platform-built releases, stores, connectors a vertical ships, the Logs
+  view and daily usage capture. The cover and EPUB title page say fifteen chapters.
+- d7a79e5: Pull request previews are on request by default. Each preview forks prod's data, which is billed per row written, so previewing every push to every PR is now something a repo asks for. The generated deploy workflow defaults to `previews: 'on-request'`, and `substrat init --ci github` writes it unless you pass `--previews every-pr`. In the dashboard, setting up a repo commits the on-request workflow unless Preview every PR is ticked. That now includes a repo whose workflow was already committed, and one linked before the choice existed. Only a repo where somebody chose every PR on an earlier run keeps it. A workflow already committed keeps previewing every PR until its deployment is updated.
+- af44e9e: Pull request previews can be opt-in. The generated deploy workflow takes `previews: 'on-request'`, which previews only a PR labelled `preview`, and contracts adds the "No preview yet" comment it pairs with. `substrat init --ci github --previews on-request` writes it. In the dashboard, a repo set up for the first time previews on request: each new PR's comment links to a Build preview page that labels the PR through the GitHub App. Two kinds of repo keep previewing every PR: one linked before this change, and one whose deploy workflow was already committed when it is set up (by hand, or before repo links existed). The setup card's Preview every PR switches between the two.
+
 ## 0.1.34
 
 ### Patch Changes

@@ -1,5 +1,24 @@
 # @substrat-run/vertical-host
 
+## 0.205.0
+
+### Minor Changes
+
+- b83cf97: Subject access (D-74), the door: `POST /tenants/:t/scopes/:s/subjects/:id/access` returns one person's package (their events and records, other people masked, recipients marked not available) with an HTML page, and records a `subjectAccess` admin row holding counts and the request's reference. A team's owner or admin runs it from a new Personal data section of the app's Data tab, behind `dashboard:subject-access`, and Audit shows it under their name.
+
+### Patch Changes
+
+- Updated dependencies [dccd345]
+- Updated dependencies [d7a79e5]
+- Updated dependencies [af44e9e]
+- Updated dependencies [3b8ba29]
+- Updated dependencies [b83cf97]
+- Updated dependencies [95a6184]
+  - @substrat-run/contracts@0.205.0
+  - @substrat-run/kernel@0.205.0
+  - @substrat-run/model-providers@0.5.95
+  - @substrat-run/vertical-auth@0.37.6
+
 ## 0.204.0
 
 ### Patch Changes
