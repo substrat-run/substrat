@@ -672,7 +672,9 @@ const SIGNED_QUERY_PARAMS = ['sig', 'exp', 'ba_iat', 'ba_pl', 'ba_param'] as con
  * session (`autoSignInAfterVerification`), and lands on `/oauth2/authorize` signed in, which
  * answers it like any other: consent, or a code at the application's callback.
  *
- * Re-issuing rather than resuming means nothing here has to outlive the signed query's own
+ * Re-issued as the plugin would resume it after a fresh sign-in: without `prompt=login`,
+ * `prompt=create` or `max_age`, since the click is that sign-in. Re-issuing rather than resuming
+ * means nothing here has to outlive the signed query's own
  * expiry: the link is good for as long as the verification token is, and authorize re-judges
  * the client, the redirect URI and the per-client sign-in policy from scratch. The signature is
  * not ours to check — `oauthProvider`'s before-hook refuses a forged one on this same request —
@@ -711,6 +713,16 @@ async function verificationReturnsToClient(ctx: {
   }
   const request = new URLSearchParams(pending);
   for (const param of SIGNED_QUERY_PARAMS) request.delete(param);
+  // Clicking the link IS a fresh authentication, so what asked for one is answered — exactly the
+  // parts `oauthProvider` strips when it resumes after a fresh sign-in (`login`, `max_age`) or a
+  // sign-up (`create`). Left in, authorize judges the request from the start and sends someone
+  // who has just verified and been signed in back to `/signup` or `/login`. `max_age=0` in
+  // particular is usually ours, not the client's: the policy hook below adds it to re-ask, and
+  // still does on this request if the link's session is one the client's policy refuses.
+  request.delete('max_age');
+  const prompts = (request.get('prompt') ?? '').split(' ').filter((p) => p && p !== 'login' && p !== 'create');
+  if (prompts.length) request.set('prompt', prompts.join(' '));
+  else request.delete('prompt');
   // A path, not an absolute URL: the verify endpoint's origin check admits a relative callback
   // without consulting `trustedOrigins`, and the base path is whatever this issuer mounts at.
   const authorize = `${new URL(ctx.context.baseURL).pathname.replace(/\/$/, '')}/oauth2/authorize`;

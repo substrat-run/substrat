@@ -295,7 +295,11 @@ async function patchSettings(patch: Record<string, unknown>): Promise<Response> 
  * sent here: no session, so the plugin answers `/login` with the whole request signed into the
  * query — where the SPA offers "Create an account". Returns that signed query.
  */
-async function arriveFromRelyingParty(state: string): Promise<{ clientId: string; oauthQuery: string }> {
+async function arriveFromRelyingParty(
+  state: string,
+  extra: Record<string, string> = {},
+  page = '/login',
+): Promise<{ clientId: string; oauthQuery: string }> {
   const registered = await call('/api/auth/oauth2/register', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -313,11 +317,12 @@ async function arriveFromRelyingParty(state: string): Promise<{ clientId: string
       state,
       code_challenge: challenge,
       code_challenge_method: 'S256',
+      ...extra,
     })}`,
     { headers: { 'sec-fetch-mode': 'navigate' } },
   );
   const location = authorize.headers.get('location') ?? '';
-  expect(location.startsWith('/login?')).toBe(true);
+  expect(location.startsWith(`${page}?`)).toBe(true);
   return { clientId, oauthQuery: new URL(`http://x${location}`).search.replace(/^\?/, '') };
 }
 
@@ -402,6 +407,33 @@ describe('with REQUIRE_EMAIL_VERIFICATION on, the verification link returns to t
     expect(`${back.origin}${back.pathname}`).toBe(RP_REDIRECT);
     expect(back.searchParams.get('code')).toBeTruthy();
     expect(back.searchParams.get('state')).toBe('st-verify');
+  });
+
+  it('answers what asked for a fresh sign-in, so a relying party that asked for sign-up gets its code', async () => {
+    // `prompt=create` is how a relying party asks for the sign-up screen — this PR's case.
+    // `login` and `max_age=0` ask for a fresh sign-in too; `consent` is not about signing in.
+    const { clientId, oauthQuery } = await arriveFromRelyingParty(
+      'st-create',
+      { prompt: 'login create consent', max_age: '0' },
+      '/signup',
+    );
+    const signedUp = await call('/api/auth/sign-up/email', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'sec-fetch-mode': 'cors' },
+      body: JSON.stringify({ ...NEWCOMER, oauth_query: oauthQuery }),
+    });
+    expect(signedUp.status).toBe(200);
+    const link = lastLink();
+    const callback = new URL(link.searchParams.get('callbackURL')!, ORIGIN);
+    expect(callback.searchParams.get('prompt')).toBe('consent');
+    expect(callback.searchParams.has('max_age')).toBe(false);
+
+    // Re-issued verbatim, the click would land on `/signup` again, signed in and verified.
+    const cookie = cookiesFrom(await call(`${link.pathname}${link.search}`, { headers: { 'sec-fetch-mode': 'navigate' } }));
+    const authorize = await call(`${callback.pathname}${callback.search}`, { headers: { 'sec-fetch-mode': 'navigate', cookie } });
+    const next = authorize.headers.get('location') ?? '';
+    expect(next.startsWith('/consent?')).toBe(true);
+    expect(new URL(`http://x${next}`).searchParams.get('client_id')).toBe(clientId);
   });
 
   it('refuses an unverified sign-in only after the password, with a fresh link that also returns', async () => {
