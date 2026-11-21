@@ -185,3 +185,5 @@ export { migrationFenceContractSuite } from './migration-fence-suite.js';
 export { fenceDeclaredMod, fenceReusedRightMod, fenceReusedWrongMod, fenceUndeclaredMod, fenceWideMod } from './migration-fence.js';
 export { shapeBackfillTies } from './shape-backfill-ties.js';
 export { shapeReconcilePlans } from './shape-reconcile-plan.js';
+// #3136: what every commerce-source connector does, whichever store platform it reads.
+export { commerceSourceSuite, type CommerceSourceHarness } from './commerce-source-suite.js';

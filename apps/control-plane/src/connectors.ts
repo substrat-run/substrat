@@ -59,6 +59,20 @@ import {
   woocommerceCredentialSummary,
 } from '@substrat-run/connector-woocommerce';
 import {
+  SHOPIFY_CONNECTION_GRANTS,
+  ShopifyKeyRefusal,
+  bindShopifyScope,
+  listShopifyBindings,
+  prepareShopifyCandidate,
+  probeShopifyConnection,
+  probeShopifySecret,
+  shopifyBindingHealth,
+  shopifyConnectionActivity,
+  shopifyCredentialSummary,
+  sweepShopify,
+  unbindShopifyScope,
+} from '@substrat-run/connector-shopify';
+import {
   MICROSOFT365_CONNECTION_GRANTS,
   Microsoft365CertificateRefusal,
   bindMicrosoft365Scope,
@@ -290,7 +304,7 @@ export interface ConnectorRegistration {
    * selector) wherever it opens one, so a scope may hold its own through the relay's
    * `owner: 'scope'` and bind it, and the tenant's inspection routes open it through the inspector
    * (#3201). Absent, its connections are the tenant's, and the relay refuses a scope's own: its sweep,
-   * dispatch and inspection open the tenant's connection by key. WooCommerce sets it (#3201).
+   * dispatch and inspection open the tenant's connection by key. WooCommerce and Shopify set it (#3201).
    */
   readonly scopeOwned?: true;
   /**
@@ -613,6 +627,53 @@ const WOOCOMMERCE: ConnectorRegistration = {
 };
 
 /**
+ * Shopify (#3136): a shop's products and orders, read-only, landed in the same provider-neutral
+ * commerce shape as WooCommerce's, through the consuming vertical's own operation — so a vertical
+ * takes either store's records through one landing operation. The credential is the shop and the
+ * client ID and secret of a Dev Dashboard app installed on it, pasted into the dashboard's door; the
+ * connector mints a short-lived token from them per pass and stores none. The shop must be a
+ * `<handle>.myshopify.com` name (`shopDomain`), the one host Shopify serves its Admin API at.
+ *
+ * Shaped as WooCommerce's registration, for its reasons: a connection is keyed on the shop its probe
+ * names (`accountFromProbe`, `accountOnBinding`), `prepareCandidate` stores the shop by its own
+ * canonical name and refuses another shop's app on rotation, and a scope may own its shop's
+ * connection (`scopeOwned`).
+ */
+const SHOPIFY: ConnectorRegistration = {
+  provider: 'shopify',
+  grants: SHOPIFY_CONNECTION_GRANTS,
+  // An idle pass is a token mint and three small queries; a quarter of an hour matches WooCommerce.
+  sweepEveryMinutes: 15,
+  accountOnBinding: true,
+  scopeOwned: true,
+  inspector: () => ({
+    accountFromProbe: true,
+    bindScope: (h, row, target) =>
+      bindShopifyScope(h, {
+        ...target,
+        connectionId: row.id,
+        externalAccountRef: row.externalAccountRef,
+        ownerScopeId: row.ownerScopeId,
+      }),
+    bindings: async (h, row) => (await listShopifyBindings(h, row.id)).map((b) => ({ ...b, health: shopifyBindingHealth(b) })),
+    unbindScope: (h, row, scopeId) => unbindShopifyScope(h, row.id, scopeId),
+    probe: async (h, row) => probeShopifyConnection(h, row, { fetch: globalFetch }),
+    activity: async (h, row) => shopifyConnectionActivity(h, row.id),
+    credential: (h, row) => shopifyCredentialSummary(h, row),
+    probeCandidate: async (secret) => probeShopifySecret(secret, { fetch: globalFetch }),
+    prepareCandidate: async (candidate, previous) => {
+      try {
+        return await prepareShopifyCandidate({ fetch: globalFetch })(candidate, previous);
+      } catch (err) {
+        if (err instanceof ShopifyKeyRefusal) throw new ConnectionRelayError(err.message, err.status);
+        throw err;
+      }
+    },
+  }),
+  sweep: () => async (h, id, o) => sweepShopify(h, id, o),
+};
+
+/**
  * Stripe (#3189) — a vertical takes payments through its tenant's own Stripe account. The
  * credential is one restricted key, pasted into the dashboard's door; the probe names the account,
  * says whether it is live, and whether the key may register the webhook endpoint. The connection is
@@ -834,7 +895,7 @@ function microsoft365Options(env: ConnectorEnv) {
  * — the inspector map, the drain handlers, the sweeper map, the declared grants and the
  * callback routes in `worker.ts` are all derived from this array.
  */
-export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE, FORTNOX, PLANIMA, WOOCOMMERCE, STRIPE, BOLAGSVERKET, MICROSOFT365, MAIL_IN];
+export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE, FORTNOX, PLANIMA, WOOCOMMERCE, SHOPIFY, STRIPE, BOLAGSVERKET, MICROSOFT365, MAIL_IN];
 
 /**
  * The `{ provider → inspector }` shape `control-plane-api` and the relay both take. A `scopeOwned`
@@ -883,7 +944,7 @@ export function connectionBindersFor(env: ConnectorEnv): Record<string, Connecti
         list: (h, row) => bindings(h, row),
         bind: (h, row, target) => bindScope(h, row, target as Parameters<typeof bindScope>[2]),
         ...(inspector.unbindScope ? { unbind: inspector.unbindScope } : {}),
-        ...(['fortnox', 'planima', 'woocommerce', 'stripe', 'bolagsverket'].includes(c.provider)
+        ...(['fortnox', 'planima', 'woocommerce', 'shopify', 'stripe', 'bolagsverket'].includes(c.provider)
           ? {
               bindBeforeGrant: (h: ScopeHost, row: Parameters<typeof bindScope>[1], target: Parameters<typeof bindScope>[2]) =>
                 bindScope(h, row, { ...target, grantPreflighted: true } as Parameters<typeof bindScope>[2]),

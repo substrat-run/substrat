@@ -1,5 +1,5 @@
 import { WooCommerceMock } from '../src/mock.js';
-import { commerceSourceSuite } from './commerce-source-suite.js';
+import { commerceSourceSuite } from '@substrat-run/contract-tests';
 import { ORDERS, PRODUCTS, VARIATIONS } from './fixture.js';
 import { touch, world, type World } from './world.js';
 

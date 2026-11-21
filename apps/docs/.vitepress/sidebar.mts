@@ -233,6 +233,7 @@ export function guideSidebar() {
         { text: 'Fortnox (accounting)', link: '/connectors/fortnox' },
         { text: 'Planima (facility maintenance)', link: '/connectors/planima' },
         { text: 'WooCommerce (online store)', link: '/connectors/woocommerce' },
+        { text: 'Shopify (online store)', link: '/connectors/shopify' },
         { text: 'Stripe (payments)', link: '/connectors/stripe' },
         { text: 'Bolagsverket (company register)', link: '/connectors/bolagsverket' },
         { text: 'Microsoft 365 (mail, documents)', link: '/connectors/microsoft365' },

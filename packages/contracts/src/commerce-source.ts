@@ -7,8 +7,9 @@ import { currencyCode, moneyAmount } from './money.js';
  * platform it runs on.
  *
  * A commerce source is a connector whose far side is a shop: products with their variants, and the
- * orders placed for them. The first is WooCommerce; Shopify is the second this vocabulary is checked
- * against. A vertical codes against these names, so swapping one store platform for another keeps
+ * orders placed for them. WooCommerce and Shopify both land it (`connectors/woocommerce`,
+ * `connectors/shopify`), and `commerceSourceSuite` in `@substrat-run/contract-tests` is the behaviour
+ * the two share. A vertical codes against these names, so swapping one store platform for another keeps
  * its landing operation, its tables and the schemas it parses. The CONNECTION is still the
  * provider's (its credential, its probe, its binding), and so is any event type a later write
  * travels under: the type is what routes a delivery to a provider's connector, so a neutral type
@@ -27,9 +28,11 @@ import { currencyCode, moneyAmount } from './money.js';
  *   upsert again.
  * - **Money is a decimal string with its currency.** Never a float, and never reshaped: a provider
  *   amount that is not a decimal is refused by the connector rather than rounded into one.
- * - **Every product has at least one variant.** A store platform that sells a product without
- *   variants (a WooCommerce simple product) lands it with one variant whose id is the product's,
- *   so a vertical prices, stocks and sells variants and never branches on the platform.
+ * - **Every product has at least one variant.** A product sold without variants lands with exactly
+ *   one, untitled and picked by no option, so a vertical prices, stocks and sells variants and
+ *   never branches on the platform. Its id is the store's to give: the product's own where the
+ *   store has no variant row (a WooCommerce simple product), the store's default variant's where
+ *   it has one (Shopify). A vertical keys on `variantId` and never assumes either.
  * - **Stock is read-only and per variant** (#3223), as the store last reported it with the
  *   product: whether the store tracks it, how many, and in stock / out / on backorder. Where a
  *   store keeps one count for the whole product (`sharedWithProduct`), every variant reports that
@@ -41,9 +44,9 @@ import { currencyCode, moneyAmount } from './money.js';
  *
  *  * - **Fulfilment, refunds and customers as records of their own.** An order carries the customer it
  *   was placed by, as the order states it; a customer register is a later shape.
- * - **Write requests** (set stock, mark an order fulfilled) and the shared `CommerceSource` facet:
- *   both wait for a second store platform, so they are extracted from two implementations rather
- *   than designed from one.
+ * - **Write requests** (set stock, mark an order fulfilled) and a shared `CommerceSource` facet. The
+ *   second store platform now exists, so both are extracted from the two connectors when a vertical
+ *   first needs them, rather than designed ahead of that.
  *
  * An order carries personal data (a name, an email address, postal addresses). A vertical that
  * lands it declares those columns as such.
@@ -94,7 +97,10 @@ export type CommerceStock = z.infer<typeof commerceStock>;
 
 /** One sellable variant of a product. */
 export const commerceVariant = z.object({
-  /** The variant's id at the store. For a product without variants, the product's own id. */
+  /**
+   * The variant's id at the store. For a product without variants, whatever id the store gives its
+   * only variant: the product's own on WooCommerce, the default variant's on Shopify.
+   */
   variantId: z.string().min(1),
   sku: z.string().nullable(),
   /** A label for the variant, when the store gives one; `null` for a product's only variant. */
@@ -109,7 +115,7 @@ export const commerceVariant = z.object({
   compareAtPrice: moneyAmount.nullable(),
   /**
    * The variant's stock (#3223). Optional because it was added after the shape shipped: a source
-   * that reads no stock leaves it out, and the WooCommerce connector always sends it.
+   * that reads no stock leaves it out; the WooCommerce and Shopify connectors always send it.
    */
   stock: commerceStock.optional(),
 });

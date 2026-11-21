@@ -241,6 +241,27 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // a key for the same store rotates it, a key for another store becomes a second connection.
     accountFromProbe: true,
   },
+  shopify: {
+    provider: 'shopify',
+    name: 'Shopify',
+    description: 'An online store — reads its products and orders.',
+    monogram: 'Sh',
+    // Keyed as the connector's `shopifySecret` parses them. The app is made in Shopify's Dev
+    // Dashboard with the read_products and read_orders scopes (read_all_orders for orders older than
+    // 60 days, read_customers to name the customer account), installed on the shop, and its client
+    // ID and secret are on the app's Settings page. The connector never writes.
+    fields: [
+      { key: 'shop', label: 'Shop', secret: false, placeholder: 'acme.myshopify.com' },
+      { key: 'clientId', label: 'Client ID', secret: false, placeholder: "From the app's Settings in the Dev Dashboard" },
+      { key: 'clientSecret', label: 'Client secret', secret: true, placeholder: 'shpss_…' },
+    ],
+    // Empty for WooCommerce's reason: the records land through the consuming vertical's own
+    // operation, and `bindShopifyScope` verifies its permission at bind time.
+    grants: [],
+    // The probe names the shop (its own myshopify.com name), so the plane keys the connection on it:
+    // a credential for the same shop rotates it, one for another shop becomes a second connection.
+    accountFromProbe: true,
+  },
   stripe: {
     provider: 'stripe',
     name: 'Stripe',

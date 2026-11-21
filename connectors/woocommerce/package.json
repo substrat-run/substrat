@@ -32,6 +32,7 @@
   },
   "devDependencies": {
     "@substrat-run/adapter-sqlite": "workspace:^",
+    "@substrat-run/contract-tests": "workspace:^",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "zod": "catalog:"
