@@ -136,4 +136,44 @@ describe('<sub-kanban>', () => {
     await board.updateComplete;
     expect(board.shadowRoot!.querySelector('.compose')).toBeNull();
   });
+
+  it("sets a column's colour as its accent and draws a dot for it, and draws none for a column without one", async () => {
+    const { board } = await boardWith({ columns: [{ key: 'todo', label: 'To do', colour: '#e2445c' }, { key: 'doing', label: 'Doing' }] });
+    const [todo, doing] = [...board.shadowRoot!.querySelectorAll<HTMLElement>('.column')];
+    expect(todo!.style.getPropertyValue('--sub-kanban-column-accent')).toBe('#e2445c');
+    expect(todo!.querySelector('header [part="accent"]')).not.toBeNull();
+    expect(doing!.style.getPropertyValue('--sub-kanban-column-accent')).toBe('');
+    expect(doing!.querySelector('[part="accent"]')).toBeNull();
+  });
+
+  it('with sortable off, keeps a held card out of its own column\'s order and lands it where the given order puts it', async () => {
+    // Given order a, c, b: so b lands after c in Doing, whatever the keys or `moveTo` ask.
+    const cards = [
+      { id: 'a', title: 'Alpha', status: 'todo' },
+      { id: 'c', title: 'Gamma', status: 'doing' },
+      { id: 'b', title: 'Beta', status: 'todo' },
+    ];
+    const { board, moves } = await boardWith({ cards, sortable: false });
+    board.shadowRoot!.querySelector<HTMLElement>('[data-key="b"]')!.focus();
+    await press(board, ' ');
+    await press(board, 'ArrowUp');
+    expect(said(board)).toBe('This board keeps no order within a column.');
+    await press(board, 'ArrowRight');
+    expect(said(board)).toBe('Doing, position 2 of 2.');
+    await press(board, 'ArrowLeft');
+    await press(board, ' ');
+    expect(said(board)).toBe('Beta dropped where it was.');
+    expect(moves).toEqual([]);
+    expect(await board.moveTo('b', 'doing', 0)).toBe(true);
+    expect(columns(board)).toEqual({ todo: ['a'], doing: ['c', 'b'], done: [] });
+    expect(moves).toMatchObject([{ key: 'b', to: 'doing', index: 1, after: 'c', before: null }]);
+  });
+
+  it('reads sortable="false" from the attribute, and any other value as on', async () => {
+    const { board } = await boardWith();
+    board.setAttribute('sortable', 'false');
+    expect(board.sortable).toBe(false);
+    board.setAttribute('sortable', '');
+    expect(board.sortable).toBe(true);
+  });
 });

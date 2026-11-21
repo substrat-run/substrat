@@ -23,7 +23,14 @@ element's attributes or slots.
   aside; columns the lifecycle refuses (`canDrop`) dim and say so; WIP limits warn, or refuse
   with `strict`. Space / arrows / Space moves a card by keyboard, every step announced, and
   `moveTo` makes the same move from a menu. `move` persists it optimistically and rolls back
-  on failure. Cards are drawn by `renderCard` (Lit) or `mount` (React, Vue).
+  on failure. Cards are drawn by `renderCard` (Lit) or `mount` (React, Vue). A column may
+  carry a `colour` (a dot before its label, and `--sub-kanban-column-accent`);
+  `--sub-kanban-column-grow: 1` lets a few columns fill a wide board. `sortable="false"` is for
+  a board that keeps no order within a column: a card lands where the given order puts it, and
+  no reorder is offered. Every word it shows or announces is replaceable (`labels`, typed
+  `KanbanLabels`), and resolves through Web Awesome's translation registry by the board's
+  `lang` (`registerKanbanLabels('sv', {…})`), so one `lang` translates its own words and the Web
+  Awesome components inside it.
   Not yet, each seen on one or two of Trello, GitHub Projects, Linear, Jira and monday.com:
   dragging several selected cards at once (GitHub, Jira), swimlanes (GitHub, Linear, Jira),
   collapsing a column (Trello, Linear, Jira), reordering columns by drag (Trello), hiding

@@ -56,6 +56,7 @@ import {
   type AssistantTurnChange,
 } from './assistant-model.js';
 import { isComposingEnter, type CompositionState } from './internal/composing.js';
+import { langOf } from './internal/lang.js';
 import SubstratElement from './internal/substrat-element.js';
 
 const PAGE = svg`<path d="M4 1.5h5l3 3v10H4z" /><path d="M9 1.5v3h3" />`;
@@ -296,14 +297,8 @@ export class SubAssistant extends SubstratElement {
     return this.renderRoot.querySelector('textarea');
   }
 
-  /** A page can carry a malformed tag (`en_US`), and `Intl` throws on one in the middle of a render. */
   get #lang(): string | undefined {
-    const lang = this.closest<HTMLElement>('[lang]')?.lang || document.documentElement.lang;
-    try {
-      return lang ? Intl.getCanonicalLocales(lang)[0] : undefined;
-    } catch {
-      return undefined;
-    }
+    return langOf(this);
   }
 
   #subscribe(): void {
