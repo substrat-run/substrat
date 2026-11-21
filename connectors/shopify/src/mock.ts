@@ -118,8 +118,15 @@ export class ShopifyMock {
     return this.options.now?.() ?? Date.now();
   }
 
+  private grantedScopes: readonly string[] | undefined;
+
   private scopes(): readonly string[] {
-    return this.options.scopes ?? ['read_products', 'read_orders'];
+    return this.grantedScopes ?? this.options.scopes ?? ['read_products', 'read_orders'];
+  }
+
+  /** A merchant changing the app's scopes and updating the installation. */
+  setScopes(scopes: readonly string[]): void {
+    this.grantedScopes = scopes;
   }
 
   /** The secret a connection to this shop holds. */

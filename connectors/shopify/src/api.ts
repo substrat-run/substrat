@@ -44,7 +44,8 @@ export const SHOPIFY_API_VERSION = '2026-10';
 export const SHOPIFY_PRODUCTS_PAGE = 15;
 /**
  * Orders per changed-list page. An order is 1 + customer 1 + two addresses 2 + four money bags with
- * their `presentmentMoney` 8 + up to 10 transactions 10 + its lines connection 2 + 10 × (line 1 +
+ * their `presentmentMoney` 8 + its transactions (all of them, since `paidAt` is the LAST successful
+ * one; counted at 10) + its lines connection 2 + 10 × (line 1 +
  * product 1 + variant 1 + original total 2 + discount and tax entries, counted at 2 each and
  * 3 points apiece, 12) ≈ 194 at the outside, ≈ 74 counting the discount and tax lists as nothing; a
  * page of 4 requests about 780 by the first count and 300 by the second. ESTIMATED as the products'
@@ -238,7 +239,7 @@ const ORDER = `fragment O on Order {
   customer @include(if: $customers) { id }
   billingAddress { ${ADDRESS} } shippingAddress { ${ADDRESS} }
   totalPriceSet ${MONEY} totalTaxSet ${MONEY} totalShippingPriceSet ${MONEY} totalDiscountsSet ${MONEY}
-  transactions(first: 10) { kind status processedAt }
+  transactions { kind status processedAt }
   lineItems(first: ${SHOPIFY_NESTED_PAGE}) { nodes { ...L } pageInfo { hasNextPage endCursor } }
 }
 ${LINE}`;

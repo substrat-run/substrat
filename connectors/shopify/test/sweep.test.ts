@@ -4,6 +4,7 @@ import { ROW_COST, ShopifyMock, type ShopifyMockOptions } from '../src/mock.js';
 import { SHOPIFY_ORDERS_PAGE, SHOPIFY_PRODUCTS_PAGE } from '../src/api.js';
 import { NOW, ORDERS, PRODUCTS, gid, line, order, product, variant } from './fixture.js';
 import { touch, world, type World } from './world.js';
+import { listShopifyBindings, unbindShopifyScope } from '../src/index.js';
 
 const ids = (landed: CommerceChange[], record: 'product' | 'order'): string[] =>
   landed.filter((c) => c.record === record && c.change === 'upsert').map((c) => (c.record === 'product' ? (c as { productId: string }).productId : (c as { orderId: string }).orderId));
@@ -155,6 +156,59 @@ describe('shopify sweep', () => {
     expect(r.failed).toEqual([]);
     expect(ids(w.landed, 'product')).toEqual(['11', '13']);
     expect((await w.binding()).lastSync?.skipped).toEqual([expect.objectContaining({ resource: 'products', id: 12, error: expect.stringMatching(/'abc' is not a decimal/) })]);
+  });
+
+  it('leaves a scope unbound while a pass ran unbound, rather than writing the pass back over the tombstone', async () => {
+    const mock = new ShopifyMock({ products: PRODUCTS(), orders: ORDERS(), now: () => NOW });
+    let ref: World | undefined;
+    let unbound = false;
+    ref = await world(mock, {
+      onLand: async () => {
+        if (ref && !unbound) {
+          unbound = true;
+          await unbindShopifyScope(ref.host, ref.connId, ref.scopeId);
+        }
+      },
+    });
+    w = ref;
+    await w.bind();
+    await w.sweep();
+    expect(unbound).toBe(true);
+    expect(await listShopifyBindings(w.host, w.connId)).toEqual([]);
+  });
+
+  it('reports every other deletion when one removal is refused, and the refused one again at the next reconcile', async () => {
+    const mock = new ShopifyMock({ products: PRODUCTS(), orders: [], now: () => NOW });
+    let refuse = true;
+    w = await world(mock, {
+      onLand: (c) => {
+        if (refuse && c.change === 'removed' && c.record === 'product' && c.productId === '11') throw new Error('the app refused this one');
+      },
+    });
+    await w.bind();
+    await w.sweep({ reconcileEveryMs: 0 });
+    const keep = mock.products.filter((p) => p.id === gid('Product', 12));
+    mock.products.splice(0, mock.products.length, ...keep);
+    const removedIds = () => w!.landed.filter((c) => c.change === 'removed').map((c) => (c as { productId: string }).productId);
+    const second = await w.sweep({ reconcileEveryMs: 0 });
+    // 11 comes first and is refused; 13 after it is still reported.
+    expect(removedIds()).toEqual(['13']);
+    expect(second.failed).toEqual([expect.objectContaining({ error: expect.stringMatching(/1 removal\(s\) did not land.*first: 11/) })]);
+    refuse = false;
+    await w.sweep({ reconcileEveryMs: 0 });
+    expect(removedIds()).toEqual(['13', '11']);
+  });
+
+  it('walks orders again from the start, once, when the app is given read_all_orders', async () => {
+    const old = order(700, '2026-08-01T09:00:00Z', { createdAt: '2026-08-01T09:00:00Z' });
+    const { mock, w } = await start({ orders: [old, ...ORDERS()], products: [] });
+    await w.sweep();
+    expect(ids(w.landed, 'order')).toEqual(['501', '502']);
+    mock.setScopes(['read_products', 'read_orders', 'read_all_orders']);
+    await w.sweep();
+    expect(ids(w.landed, 'order')).toEqual(['501', '502', '700', '501', '502']);
+    await w.sweep();
+    expect(ids(w.landed, 'order')).toHaveLength(5);
   });
 
   it('refuses to sync an app without the scopes a sync reads', async () => {

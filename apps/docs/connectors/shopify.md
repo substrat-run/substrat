@@ -117,14 +117,19 @@ Each pass, for each bound install:
 4. Once an hour, ask the shop about every product and order it has delivered, a hundred at a time,
    and land each one the shop no longer has as a removal. **Orders are checked only when the app
    holds `read_all_orders`**: without it, Shopify hides an order once it is 60 days old, which looks
-   exactly like a deleted one.
+   exactly like a deleted one. A removal your app refuses is reported again at the next check, and
+   the others are reported meanwhile.
 5. Remember how far it got, and which ids it has delivered.
+
+Giving the app `read_all_orders` later makes the next pass read every order again from the start,
+once, so the older ones arrive too (with the recent ones again, as upserts).
 
 A change from the last two minutes is left for the next pass, because Shopify answers a "changed
 since" question from a search index that can lag a save by a few seconds. A pass reads at most 600
-products and 160 orders (smaller pages if Shopify finds a page too costly to answer), and the next pass reads on from exactly where it stopped, so a shop's first pass and a
-bulk edit of thousands of products are spread over several passes; the activity says **catching up**
-until it is done.
+products and 160 orders (in smaller pages if Shopify finds a page too costly to answer), and the
+next pass reads on from exactly where it stopped, so a shop's first pass and a bulk edit of
+thousands of products are spread over several passes; the activity says **catching up** until it is
+done.
 
 A record that cannot land is handled as on WooCommerce ([how](/connectors/woocommerce#a-record-that-cannot-land)).
 

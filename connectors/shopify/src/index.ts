@@ -410,22 +410,40 @@ function withoutResume(cursor: ShopifyCursor): ShopifyCursor {
   return rest;
 }
 
-/** Reconcile one resource's delivered ids against the shop: every one `nodes` answers `null` for is reported deleted. */
-async function reconcile(api: ShopifyApi, seen: SeenIds, land: (id: number) => Promise<void>): Promise<number> {
+/**
+ * Reconcile one resource's delivered ids against the shop: every one `nodes` answers `null` for is
+ * reported deleted, and forgotten only once its removal has landed. A removal that fails for its own
+ * record (the app's operation refused that one) is kept, so the next reconcile reports it again, and
+ * the walk goes on to the next id: one refused removal must not hold back every id after it. A
+ * failure that says nothing about the record (the credential, the landing permission) ends it, as it
+ * ends the walk.
+ */
+async function reconcile(
+  api: ShopifyApi,
+  seen: SeenIds,
+  land: (id: number) => Promise<void>,
+): Promise<{ removed: number; failed: { id: number; error: unknown }[] }> {
   await seen.loadAll();
   const tracked = seen.all();
   let removed = 0;
+  const failed: { id: number; error: unknown }[] = [];
   for (let i = 0; i < tracked.length; i += SHOPIFY_NODES_PAGE) {
     const chunk = tracked.slice(i, i + SHOPIFY_NODES_PAGE);
     const present = await api.presentIds(seen.resource, chunk);
     for (const id of chunk) {
       if (present.has(id)) continue;
-      await land(id);
+      try {
+        await land(id);
+      } catch (error) {
+        if (verdictOf(error) === 'pass') throw error;
+        failed.push({ id, error });
+        continue;
+      }
       await seen.forget(id);
       removed += 1;
     }
   }
-  return removed;
+  return { removed, failed };
 }
 
 /** The scopes the app holds, as the shop reports them. Refuses a shop that lacks a required one. */
@@ -447,6 +465,9 @@ function shopCurrency(value: string): CurrencyCode {
 /**
  * Sync ONE bound scope: read what changed at the shop since the cursor, land each product and
  * order through the binding's operation as the connection itself, and move the cursor.
+ *
+ * `binding` must be the value as stored (what {@link listShopifyBindings} answers): the pass writes
+ * its progress back only over that exact value, so an unbind or a re-bind made meanwhile wins.
  */
 export async function syncShopifyScope(
   host: ScopeHost,
@@ -477,7 +498,11 @@ export async function syncShopifyScope(
 
   const start: ShopifyCursor = { at: null, landedAt: [] };
   const products: Walk = { cursor: binding.lastSync?.products ?? start, landed: 0, caughtUp: false };
-  const orders: Walk = { cursor: binding.lastSync?.orders ?? start, landed: 0, caughtUp: false };
+  // An app newly given read_all_orders sees orders its walk has already passed: older than 60 days,
+  // and unchanged since, so no "changed since" read would ever meet them. The order walk starts over
+  // once, re-landing the recent ones as upserts, which delivery already allows.
+  const backfill = binding.lastSync?.ordersReconciled === false && allOrders;
+  const orders: Walk = { cursor: (backfill ? undefined : binding.lastSync?.orders) ?? start, landed: 0, caughtUp: false };
   const seenProducts = new SeenIds(host.admin, connectionId, binding.scopeId, 'products');
   const seenOrders = new SeenIds(host.admin, connectionId, binding.scopeId, 'orders');
   const lastReconciled = binding.lastSync?.reconciledAt;
@@ -514,7 +539,9 @@ export async function syncShopifyScope(
         ...(failures.skipped.length === 0 ? {} : { skipped: failures.skipped }),
       },
     };
-    await host.admin.putConnectorState(connectionId, bindingKey(binding.scopeId), synced);
+    // Only over the binding this pass started from: a scope unbound while the pass ran keeps its
+    // tombstone, rather than being bound again by the pass's write.
+    await host.admin.swapConnectorState(connectionId, bindingKey(binding.scopeId), binding, synced);
   };
 
   const landProduct = async (row: ShopifyProduct): Promise<boolean> => {
@@ -557,6 +584,7 @@ export async function syncShopifyScope(
   }
 
   let failure: unknown;
+  let removalFailure: Error | undefined;
   let ended = false;
   const step = async (run: () => Promise<void>): Promise<void> => {
     if (ended) return;
@@ -579,10 +607,19 @@ export async function syncShopifyScope(
         const key = resource === 'products' ? { record: 'product', productId: String(id) } : { record: 'order', orderId: String(id) };
         await scope.invoke(binding.operation, commerceChange.parse({ ...key, change: 'removed', connectionId, removal: 'deleted', observedAt: new Date(now()).toISOString() }));
       };
-      removed += await reconcile(api, seenProducts, report('products'));
+      const results = [await reconcile(api, seenProducts, report('products'))];
       // Without read_all_orders an old order is invisible, which no answer tells from a delete.
-      if (allOrders) removed += await reconcile(api, seenOrders, report('orders'));
+      if (allOrders) results.push(await reconcile(api, seenOrders, report('orders')));
+      removed += results.reduce((n, r) => n + r.removed, 0);
       reconciledAt = startedAt;
+      // Kept and reported again next hour; said on the pass, without stopping what comes after.
+      const refused = results.flatMap((r) => r.failed);
+      if (refused.length > 0) {
+        removalFailure = new Error(
+          `${refused.length} removal(s) did not land and are reported again next reconcile; first: ${refused[0]!.id}: ${refused[0]!.error instanceof Error ? refused[0]!.error.message : String(refused[0]!.error)}`,
+          { cause: refused[0]!.error },
+        );
+      }
     });
     await step(async () => {
       await retrySkipped('products', parseProduct, landProduct, products);
@@ -590,6 +627,7 @@ export async function syncShopifyScope(
     });
   }
   await save();
+  failure ??= removalFailure;
   if (failure !== undefined) throw failure;
   return {
     scopeId: binding.scopeId,

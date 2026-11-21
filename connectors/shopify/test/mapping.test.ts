@@ -87,6 +87,12 @@ describe('shopify → commerce mapping', () => {
     expect(incl.lines[0]).toMatchObject({ subtotal: '8.93', total: '8.04', tax: '0.96' });
   });
 
+  it('is paid at the last successful sale or capture, however many transactions come before it', () => {
+    const earlier = Array.from({ length: 11 }, (_, i) => ({ kind: i % 2 === 0 ? 'AUTHORIZATION' : 'SALE', status: i % 2 === 0 ? 'SUCCESS' : 'FAILURE', processedAt: `2026-11-02T09:${String(i).padStart(2, '0')}:00Z` }));
+    const change = mapOrder(order(508, '2026-11-02T10:00:00Z', { displayFinancialStatus: 'PAID', transactions: [...earlier, { kind: 'CAPTURE', status: 'SUCCESS', processedAt: '2026-11-02T09:30:00Z' }] }));
+    expect(change.paidAt).toBe('2026-11-02T09:30:00.000Z');
+  });
+
   it('marks a cancelled, unpaid order as such', () => {
     expect(mapOrder(ORDERS()[1]!)).toMatchObject({ cancelled: true, paidAt: null, providerStatus: 'voided' });
   });

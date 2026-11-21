@@ -16,7 +16,7 @@ export const OPERATION = 'shop/record-commerce';
  * vertical's landing operation that records what it was handed. The sweep runs on `clock`, the same
  * clock the mock judges tokens and the 60-day window by; `onLand` runs inside the landing.
  */
-export async function world(mock: ShopifyMock, opts: { grant?: boolean; onLand?: (c: CommerceChange) => void; clock?: { now: number } } = {}) {
+export async function world(mock: ShopifyMock, opts: { grant?: boolean; onLand?: (c: CommerceChange) => void | Promise<void>; clock?: { now: number } } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-shopify-'));
   const clock = opts.clock ?? { now: NOW };
   const landed: CommerceChange[] = [];
@@ -34,7 +34,7 @@ export async function world(mock: ShopifyMock, opts: { grant?: boolean; onLand?:
     ...undeclaredOperations('a test fixture, built to drive the host rather than declared', {
       [OPERATION]: (async (ctx, input: CommerceChange) => {
         assertAllowed(await ctx.check(RECORD));
-        opts.onLand?.(input);
+        await opts.onLand?.(input);
         landed.push(input);
         return { ok: true };
       }) as OperationHandler<never, unknown>,
@@ -66,6 +66,7 @@ export async function world(mock: ShopifyMock, opts: { grant?: boolean; onLand?:
   return {
     host,
     connId,
+    scopeId: s,
     landed,
     waited,
     clock,
