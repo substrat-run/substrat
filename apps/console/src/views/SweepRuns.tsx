@@ -143,6 +143,8 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
             { value: 'vertical-events', label: 'Cross-app events' },
             // #1840: one row per pass — the platform-intent drain's fleet-wide totals.
             { value: 'platform-request', label: 'Platform requests' },
+            // #1054: one row per reconciled UTC day of model usage; its findings are Issues rows.
+            { value: 'model-reconcile', label: 'Model reconciliation' },
           ]}
           value={kindFilter}
           onChange={(e) => setKindFilter(e.target.value as typeof kindFilter)}

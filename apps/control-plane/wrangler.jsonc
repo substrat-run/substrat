@@ -101,7 +101,13 @@
 		// dataset, never the router's: the two shapes' ordinals mean different things, and a
 		// connector point in the router's dataset would count as tenant traffic. Stated per
 		// env and defaulted nowhere, like the router's. Unset ⇒ the connector-calls read 501s.
-		"CONNECTOR_ANALYTICS_DATASET": "substrat_connector_calls"
+		"CONNECTOR_ANALYTICS_DATASET": "substrat_connector_calls",
+		// #1054: the scheduled pass reconciles each closed UTC day of the model usage ledger against
+		// AI Gateway and Workers AI analytics, and files the gaps for staff (sweep.model-reconcile).
+		// Production only: the environments share one Cloudflare account, so the account-wide
+		// Workers AI figure would be filed twice, and only one directory should own it. The staff read
+		// (GET /model-usage/reconciliation) works in both, and sets other directories' tenants aside.
+		"MODEL_RECONCILIATION": "on"
 		// Opt-in, off until set (#1416): the scheduled pass mails ONE digest of the failures
 		// recorded since the previous pass (the ops-failure ledger + the pass's own errors)
 		// to these comma-separated staff addresses, through the EMAIL binding below. Unset ⇒
@@ -352,6 +358,7 @@
 				"ROUTER_ANALYTICS_DATASET": "substrat_router_test", // differs
 				// #1691: TEST's own connector-call dataset — see the prod entry.
 				"CONNECTOR_ANALYTICS_DATASET": "substrat_connector_calls_test" // differs
+				// MODEL_RECONCILIATION is deliberately absent: see the prod entry. // differs
 			}, // differs
 			"durable_objects": {
 				"bindings": [

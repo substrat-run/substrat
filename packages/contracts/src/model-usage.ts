@@ -183,3 +183,112 @@ export function marginFactor(percent: number): string {
     .replace(/0+$/, '');
   return frac ? `${whole}.${frac}` : String(whole);
 }
+
+/**
+ * Reconciliation (#1054, #3316): the ledger above against what Cloudflare saw.
+ *
+ * The ledger is self-reported (D-59): a vertical's own model host builds the line, and only a
+ * line raised as a `model-usage` intent reaches it. A call that went through AI Gateway carries
+ * the same five attribution keys as gateway metadata, so the gateway's analytics are a second
+ * account of the same calls, kept by someone other than the caller. A Workers AI call made
+ * through the binding with no gateway carries no script, tenant or scope, so it is counted only
+ * as a daily total nobody can attribute.
+ *
+ * One reconciled UTC day, per (tenant, scope, model id):
+ *
+ * - `matched`: both sides saw the calls, and the call counts and costs agree within tolerance;
+ * - `discrepancy`: both sides saw calls, but the counts differ or the costs differ beyond it;
+ * - `ledger-only`: lines for a gateway-routed provider that the gateway never saw — the model
+ *   host ran through the binding, which bypasses the gateway, or the gateway dropped the call;
+ * - `gateway-only`: calls the gateway attributed to a tenant and scope that no ledger line
+ *   accounts for — the self-report gap: a model host whose `record` never raised the intent.
+ *
+ * Gateway cost is Cloudflare's own estimate from tokens and its price list, and its analytics are
+ * sampled; the ledger prices from OUR rate card (D-59). So a cost difference is a finding to read,
+ * not a correction to apply: the ledger stays the ledger.
+ */
+const usd = z.string().regex(/^-?\d+(\.\d{1,6})?$/, 'a decimal string with at most 6 decimal places');
+
+export const modelReconciliationStatus = z.enum(['matched', 'discrepancy', 'ledger-only', 'gateway-only']);
+export type ModelReconciliationStatus = z.infer<typeof modelReconciliationStatus>;
+
+export const modelReconciliationRow = z.object({
+  tenantId: z.string().min(1),
+  scopeId: z.string().min(1),
+  /** The ledger's vertical (the scope's slug); the gateway's metadata (the package name) when only it saw the calls. */
+  vertical: z.string().nullable(),
+  /** The model id both sides share: `@cf/zai-org/glm-5.2`, never the `provider:` prefix. */
+  modelId: z.string().min(1),
+  status: modelReconciliationStatus,
+  /** Why a `discrepancy` is one. Empty otherwise. */
+  differs: z.array(z.enum(['calls', 'cost'])),
+  ledger: z.object({
+    calls: z.number().int().nonnegative(),
+    inputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+    /** Summed list price of the priced lines. */
+    listUsd: usd,
+    /** Lines the rate card could not price: never folded into `listUsd` as $0. */
+    unpriced: z.number().int().nonnegative(),
+  }),
+  gateway: z.object({
+    calls: z.number().int().nonnegative(),
+    inputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+    costUsd: usd,
+  }),
+  /** `gateway.costUsd − ledger.listUsd`. */
+  deltaUsd: usd,
+});
+export type ModelReconciliationRow = z.infer<typeof modelReconciliationRow>;
+
+export const modelReconciliationDay = z.object({
+  /** The UTC day, `YYYY-MM-DD`. */
+  day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  readAt: instant,
+  rows: z.array(modelReconciliationRow),
+  /** Gateway calls with no `tenant` or `scope` metadata: a caller outside the platform's model hosts. */
+  unattributedGateway: z.array(
+    z.object({
+      provider: z.string(),
+      modelId: z.string(),
+      calls: z.number().int().nonnegative(),
+      costUsd: usd,
+    }),
+  ),
+  /**
+   * Workers AI calls that never passed through a gateway, by model and Cloudflare's `requestSource`.
+   * Nothing names a tenant for them: this is the part of the Workers AI bill only the ledger, if
+   * anyone raised it, can attribute. `estimatedUsd` is neurons at Workers AI's list price.
+   */
+  workersAiWithoutGateway: z.array(
+    z.object({
+      modelId: z.string(),
+      requestSource: z.string(),
+      calls: z.number().int().nonnegative(),
+      neurons: usd,
+      estimatedUsd: usd,
+    }),
+  ),
+  /**
+   * Gateway calls attributed to a tenant this directory does not hold. Environments share one
+   * Cloudflare account, so another environment's calls land in the same analytics; they are
+   * counted here and never reported as anyone's gap.
+   */
+  otherDirectoryGateway: z.object({ calls: z.number().int().nonnegative(), costUsd: usd }),
+  /** Ledger lines of the day for a provider that does not route through the gateway: not reconcilable here. */
+  offGatewayLedgerCalls: z.number().int().nonnegative(),
+  totals: z.object({
+    ledgerListUsd: usd,
+    gatewayCostUsd: usd,
+    workersAiWithoutGatewayUsd: usd,
+  }),
+});
+export type ModelReconciliationDay = z.infer<typeof modelReconciliationDay>;
+
+export const modelReconciliation = z.object({
+  since: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  days: z.array(modelReconciliationDay),
+});
+export type ModelReconciliation = z.infer<typeof modelReconciliation>;

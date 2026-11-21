@@ -255,6 +255,8 @@ import { maskDump, maskRecords } from './mask.js';
 import { createPseudonymizer } from './pseudonymize.js';
 import { assembleSubjectAccess, renderSubjectAccessHtml } from './subject-access.js';
 import { SUBJECT_READ_PAGE_MAX, subjectAccessBody, type SubjectReadPage } from '@substrat-run/contracts';
+import { modelReconciliation } from '@substrat-run/contracts';
+import { daysBetween, reconcileModelDays, type ModelCostReader } from './model-reconcile.js';
 
 /**
  * The most `readSubject` pages one access request assembles (D-74): past it the package would not
@@ -521,6 +523,11 @@ export interface ControlPlaneApiOptions {
    * block with its review tokens, their would-be cost and what is charged. Unset: neither.
    */
   reviewUsage?: { readonly scope: ScopeId; readonly zeroRated: boolean };
+  /**
+   * #1054: what `GET /model-usage/reconciliation` reads Cloudflare's side from, and which provider
+   * rows send their calls through AI Gateway. Unset: the route answers 501.
+   */
+  modelReconciliation?: { readonly reader: ModelCostReader; readonly gatewayProviders: readonly string[] };
   host: ScopeHost;
   /**
    * How edge health reaches the two ends of a cross-vertical edge (#1705 PR 3): the phase's own
@@ -1697,6 +1704,15 @@ const modelUsageQuery = z.object({
   until: z.string().optional(),
   ...listPageQuery.shape,
 });
+
+/** Inclusive UTC days for `GET /model-usage/reconciliation`; both default to yesterday. */
+const modelReconciliationQuery = z.object({
+  since: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+});
+
+/** The most days one reconciliation read covers: each is a ledger walk and a GraphQL read. */
+export const MODEL_RECONCILIATION_MAX_DAYS = 14;
 
 /** The summary window: a half-open `[since, until)`; defaults to the current calendar month so far. */
 /**
@@ -14033,6 +14049,31 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       options.reviewUsage?.zeroRated ? { zeroRatedScopes: [options.reviewUsage.scope] } : {},
     );
     return c.json(summary);
+  });
+
+  // #1054: the ledger against what Cloudflare saw, per closed UTC day and per (tenant, scope, model).
+  // Staff-only, like the ledger it reads, and computed on every request: nothing is stored. The
+  // scheduled pass files each day's findings once; this is where a person reads the whole day.
+  // Gateway analytics answer for about two months, so a day older than that reads as gateway-free.
+  app.get('/model-usage/reconciliation', async (c) => {
+    const recon = options.modelReconciliation;
+    if (!recon) throw new ControlPlaneError(501, 'this control plane does not read Cloudflare analytics');
+    const q = modelReconciliationQuery.parse({ since: c.req.query('since'), until: c.req.query('until') });
+    const today = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(Date.parse(`${today}T00:00:00.000Z`) - 86_400_000).toISOString().slice(0, 10);
+    const since = q.since ?? q.until ?? yesterday;
+    const until = q.until ?? (q.since && q.since > yesterday ? q.since : yesterday);
+    if (since > until) return refuse(c, 'validation_failed', '`since` is after `until`');
+    if (until >= today) return refuse(c, 'validation_failed', 'only closed UTC days reconcile: `until` must be before today');
+    const days = daysBetween(since, until);
+    if (days.length > MODEL_RECONCILIATION_MAX_DAYS) {
+      return refuse(c, 'validation_failed', `at most ${MODEL_RECONCILIATION_MAX_DAYS} days per read`);
+    }
+    const result = await reconcileModelDays(
+      { admin: c.var.admin, actor: c.get('actor'), reader: recon.reader, gatewayProviders: recon.gatewayProviders },
+      days,
+    );
+    return c.json(modelReconciliation.parse({ since, until, days: result }));
   });
 
   // -- store-driver releases (D-63, #2300) ----------------------------------------

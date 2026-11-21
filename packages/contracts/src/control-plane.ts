@@ -1269,8 +1269,12 @@ export type IssueEntry = z.infer<typeof issueEntry>;
  * every pass, idle ones included — its reader wants "how many were still pending as of
  * the last pass", and an idle pass that wrote nothing would leave an older, larger number
  * standing as the answer.
+ *
+ * `model-reconcile` (#1054) is one closed UTC day of model usage reconciled against what
+ * Cloudflare saw: `unit` is the day, `YYYY-MM-DD`. The `ok` row is what says the day is done,
+ * so a later pass does not file its findings again; a `failed` row is retried.
  */
-export const sweepRunKind = z.enum(['connector', 'schedule', 'freshness', 'vertical-events', 'platform-request']);
+export const sweepRunKind = z.enum(['connector', 'schedule', 'freshness', 'vertical-events', 'platform-request', 'model-reconcile']);
 export type SweepRunKind = z.infer<typeof sweepRunKind>;
 /** `skipped` records a pass with nothing to poll; `unsupported` records a known binding
  * awaiting a connector capability, without counting it as a failed poll. */
