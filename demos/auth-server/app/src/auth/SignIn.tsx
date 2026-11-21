@@ -11,6 +11,7 @@ import {
   requestPasswordReset,
   resolveSignInRoute,
   signIn as signInWithPassword,
+  EmailNotVerified,
   signInSocial,
   type BankIdEmailRequired,
   type BankIdStart,
@@ -191,7 +192,8 @@ export function SignIn({
                 if (needsSms) { setPassword(''); setPhoneOpen(true); return; }
                 if (!resumed) onDone();
               } catch (e) {
-                setErr(e instanceof Error ? e.message : String(e));
+                if (e instanceof EmailNotVerified) setNotice(t('signin.verifySent'));
+                else setErr(e instanceof Error ? e.message : String(e));
               }
             }}
           >
@@ -327,7 +329,8 @@ function IdentifierFirst({
                     if (needsSms) { setPassword(''); onSms(); return; }
                     if (!resumed) onDone();
                   } catch (e) {
-                    setErr(e instanceof Error ? e.message : String(e));
+                    if (e instanceof EmailNotVerified) setNotice(t('signin.verifySent'));
+                    else setErr(e instanceof Error ? e.message : String(e));
                   }
                 }}
               >

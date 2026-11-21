@@ -177,10 +177,20 @@ export async function signIn(email: string, password: string, oauthQuery?: strin
     password,
     ...(oauthQuery ? { oauth_query: oauthQuery } : {}),
   } as Parameters<typeof authClient.signIn.email>[0]);
-  if (error) throw new Error(error.message ?? 'sign-in failed');
+  if (error) {
+    if (error.code === 'EMAIL_NOT_VERIFIED') throw new EmailNotVerified(error.message ?? 'email not verified');
+    throw new Error(error.message ?? 'sign-in failed');
+  }
   const resume = data as unknown as { redirect?: boolean; url?: string } | null;
   return { resumed: Boolean(resume?.redirect && resume.url) };
 }
+
+/**
+ * The issuer requires a verified address (`REQUIRE_EMAIL_VERIFICATION`) and this one is not.
+ * Not a failure to report as one: the password was right, and the refusal already sent a fresh
+ * link — so the screen says where to look rather than what went wrong.
+ */
+export class EmailNotVerified extends Error {}
 
 /**
  * Create an account. Refused by the issuer unless an administrator has turned sign-up on —
@@ -190,18 +200,23 @@ export async function signIn(email: string, password: string, oauthQuery?: strin
  * and the plugin's after-hook fires on ANY response that carries a new session cookie, not
  * just sign-in. So someone sent here by a relying party can create an account and land back at
  * that app's callback, instead of stranded on a dashboard they cannot use.
+ *
+ * With `REQUIRE_EMAIL_VERIFICATION` on there is no session to resume: the issuer answers
+ * `token: null` and the verification mail's link does the signing in — and the resuming, since
+ * the issuer points it at the pending authorize request. `verificationSent` is that answer.
  */
 export async function signUp(
   input: { name: string; email: string; password: string },
   oauthQuery?: string | null,
-): Promise<{ resumed: boolean }> {
+): Promise<{ resumed: boolean; verificationSent: boolean }> {
   const { data, error } = await authClient.signUp.email({
     ...input,
     ...(oauthQuery ? { oauth_query: oauthQuery } : {}),
   } as Parameters<typeof authClient.signUp.email>[0]);
   if (error) throw new Error(error.message ?? 'sign-up failed');
-  const resume = data as unknown as { redirect?: boolean; url?: string } | null;
-  return { resumed: Boolean(resume?.redirect && resume.url) };
+  const resume = data as unknown as { redirect?: boolean; url?: string; token?: string | null } | null;
+  const resumed = Boolean(resume?.redirect && resume.url);
+  return { resumed, verificationSent: !resumed && resume?.token === null };
 }
 
 export async function signOut(): Promise<void> {
@@ -1057,6 +1072,11 @@ export type AccountLinkingMode = 'link' | 'block';
 
 export interface IssuerSettings {
   allowSignup: boolean;
+  /**
+   * `REQUIRE_EMAIL_VERIFICATION` — a password sign-in is refused until the address is verified,
+   * and sign-up sets no session: the verification link does.
+   */
+  requireEmailVerification: boolean;
   accountLinking: AccountLinkingMode;
   /**
    * `MACHINE_SCOPES` — what a machine client may be granted. The same key the platform's Env
@@ -1086,7 +1106,7 @@ export async function issuerVersion(): Promise<{ versionId: string | null }> {
 
 /** A partial patch: only the settings named are written, so one control cannot revert another. */
 export async function setIssuerSettings(
-  patch: Partial<Pick<IssuerSettings, 'allowSignup' | 'accountLinking' | 'machineScopes' | 'issuerTheme' | 'defaultLocale'>>,
+  patch: Partial<Pick<IssuerSettings, 'allowSignup' | 'requireEmailVerification' | 'accountLinking' | 'machineScopes' | 'issuerTheme' | 'defaultLocale'>>,
 ): Promise<IssuerSettings> {
   return admin('/settings', { method: 'PATCH', body: JSON.stringify(patch) });
 }

@@ -12,6 +12,7 @@ import { ISSUER_LOCALE, LOCALES, issuerLocale } from './locale-wire.js';
 import {
   ACCOUNT_LINKING,
   ALLOW_SIGNUP,
+  REQUIRE_EMAIL_VERIFICATION,
   MACHINE_SCOPES,
   accountLinkingMode,
   boolValue,
@@ -544,6 +545,8 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     const machine = machineScopesOf(cfg[MACHINE_SCOPES]);
     return {
       allowSignup: isTruthy(cfg[ALLOW_SIGNUP]),
+      /** `REQUIRE_EMAIL_VERIFICATION` — whether a password sign-in needs a verified address. */
+      requireEmailVerification: isTruthy(cfg[REQUIRE_EMAIL_VERIFICATION]),
       accountLinking: accountLinkingMode(cfg[ACCOUNT_LINKING]),
       /**
        * What a machine client may be granted — `MACHINE_SCOPES`, however it was set (a var, the
@@ -580,6 +583,7 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     const parsed = z
       .object({
         allowSignup: z.boolean().optional(),
+        requireEmailVerification: z.boolean().optional(),
         accountLinking: z.enum(['link', 'block']).optional(),
         machineScopes: z.array(z.string()).optional(),
         issuerTheme: z.unknown().optional(),
@@ -607,6 +611,9 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
       ...(machine ? [{ key: MACHINE_SCOPES, value: machine.value }] : []),
       ...(parsed.data.allowSignup !== undefined
         ? [{ key: ALLOW_SIGNUP, value: boolValue(parsed.data.allowSignup) }]
+        : []),
+      ...(parsed.data.requireEmailVerification !== undefined
+        ? [{ key: REQUIRE_EMAIL_VERIFICATION, value: boolValue(parsed.data.requireEmailVerification) }]
         : []),
       ...(parsed.data.accountLinking !== undefined
         ? [{ key: ACCOUNT_LINKING, value: parsed.data.accountLinking }]
