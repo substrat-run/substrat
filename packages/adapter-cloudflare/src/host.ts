@@ -1042,7 +1042,7 @@ interface ControlPlaneStub {
   recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, role?: ScopeCopyRole | null, loadStamp?: string | null, leaseMs?: number): Promise<'recorded' | 'reaping' | 'missing' | 'invalid'>;
   backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, audit: AdminEntry): Promise<ScopeCopyBackfillResult>;
   claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): Promise<ScopeScriptCopyRow[]>;
-  beginScopeScriptReap(tenantId: string, scopeId: string): Promise<'claimed' | 'pending' | 'missing'>;
+  beginScopeScriptReap(tenantId: string, scopeId: string, expiredBy?: string): Promise<'claimed' | 'pending' | 'missing' | 'not-due'>;
   markScopeStoresFenced(tenantId: string, scopeId: string, whileTenantDeleting: boolean, audit: AdminEntry): Promise<void>;
   scopeStoresFencedAt(tenantId: string, scopeId: string): Promise<string | null>;
   settleScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string, loadStamp: string | null, revision: string | null, claimedBy?: string): Promise<boolean>;
@@ -1062,7 +1062,7 @@ interface ControlPlaneStub {
   recordWireAuth(row: DeploymentWireAuth, audit: AdminEntry): Promise<boolean>;
   listWireAuth(filter: DeploymentWireAuthFilter): Promise<DeploymentWireAuth[]>;
   setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, audit?: AdminEntry): Promise<boolean>;
-  setScopeExpiresAt(scopeId: string, expiresAt: string | null, audit: AdminEntry): Promise<void>;
+  setScopeExpiresAt(scopeId: string, expiresAt: string | null, audit: AdminEntry): Promise<boolean>;
   keepAlivePendingScopeCopy(tenantId: string, scopeId: string, moveId: string, status: string,
     expectedExpiresAt: string | null, expiresAt: string | null, audit: AdminEntry): Promise<boolean>;
   /** #2555: `onlyWhile` removes the scope only if still in that status, judged in the DO's unit. */
@@ -9358,9 +9358,10 @@ export class CloudflareScopeHost implements ScopeHost {
           this.adminEntry(actor, 'markScopeStoresFenced', { tenantId, scopeId }, null, { storesFenced: true }));
       },
       scopeStoresFencedAt: async (_actor, tenantId, scopeId) => this.cp.scopeStoresFencedAt(tenantId, scopeId),
-      beginScopeScriptReap: async (_actor, tenantId, scopeId) => {
-        const result = await this.cp.beginScopeScriptReap(tenantId, scopeId);
+      beginScopeScriptReap: async (_actor, tenantId, scopeId, opts) => {
+        const result = await this.cp.beginScopeScriptReap(tenantId, scopeId, opts?.expiredBy);
         if (result === 'missing') throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        if (result === 'not-due') throw substratError('precondition_failed', `scope ${scopeId} is no longer due to expire (pinned or renewed since it was listed); not reaped`);
         if (result === 'pending') throw substratError('precondition_failed', `scope ${scopeId} has a copy move in flight; retry reap after it settles`);
       },
       backfillScopeScriptCopy: async (actor, tenantId, scopeId, scriptRef, opts) => {
@@ -9535,9 +9536,10 @@ export class CloudflareScopeHost implements ScopeHost {
       setScopeExpiresAt: async (actor, tenantId, scopeId, expiresAt) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);
         if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
-        await this.cp.setScopeExpiresAt(scopeId, expiresAt,
+        const set = await this.cp.setScopeExpiresAt(scopeId, expiresAt,
           this.adminEntry(actor, 'setScopeExpiresAt', { tenantId, scopeId },
             { expiresAt: scope.expires_at ?? null }, { expiresAt }));
+        if (!set) throw substratError('conflict', `scope ${scopeId} is being reaped; its expiry can no longer be moved`);
       },
       keepAlivePendingScopeCopy: async (actor, tenantId, scopeId, moveId, status, expectedExpiresAt, expiresAt) => {
         return this.cp.keepAlivePendingScopeCopy(

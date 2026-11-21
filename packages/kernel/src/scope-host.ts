@@ -2754,6 +2754,8 @@ export interface HostAdmin {
    * pushes must have its deadline pushed forward on each reuse — otherwise it dies 72h
    * after its FIRST creation regardless of activity. `null` pins the fork until it is
    * deliberately deleted (the "absent = pinned" the snapshot body already models). Audited.
+   * Refused (`conflict`) once a reap has claimed the scope (`beginScopeScriptReap`, #3314): the
+   * deadline no longer decides anything, and a pin that reported success would be a lie.
    */
   setScopeExpiresAt(
     actor: PlatformActorId,
@@ -2824,8 +2826,14 @@ export interface HostAdmin {
   ): Promise<ScopeScriptCopy[]>;
   /** Reserve a scope for script cleanup only when no copy move is in flight. The claim is a
    * column on the directory row, not a ledger entry: it refuses new moves and the conditional
-   * bind until the row itself is deleted, and a crashed reaper resumes it. */
-  beginScopeScriptReap(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
+   * bind until the row itself is deleted, and a crashed reaper resumes it.
+   *
+   * `opts.expiredBy` (#3314) is the GC's form: the claim is also taken only while the scope's
+   * `expiresAt` is set and at or before that instant, in the same write, so a fork pinned or
+   * renewed after the sweep listed it is refused (`precondition_failed`) before anything is
+   * unrouted or wiped. Once claimed, `setScopeExpiresAt` refuses, so a pin cannot land on a fork
+   * the reap has already taken. A reaper resuming its own claim is admitted whatever the expiry. */
+  beginScopeScriptReap(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, opts?: { expiredBy?: string }): Promise<void>;
   /**
    * Record, immediately before the first `substrat.fence` on a scope whose row outlives it, that its
    * stores are being fenced (D-71). It cannot be undone, as the fence cannot, and from then on the host

@@ -5220,6 +5220,42 @@ export function scopeHostContractSuite(
         expect(await host.admin.getScopeRecord(staff, t1, previewId)).toBeUndefined();
       });
 
+      it('a fork pinned after the sweep listed it survives the reap, and the pass says why (#3314)', async () => {
+        const past = new Date(Date.now() - 60_000).toISOString();
+        const snap = await host.snapshotScope(staff, t1, s1, { expiresAt: past });
+        await host.admin.setScopeExpiresAt(staff, t1, snap, null);
+        // The listing the pass works from was taken before the pin: it still reads expired, through
+        // whichever listing the host offers the sweep.
+        const stale = <T extends { id: string }>(rows: T[]): T[] => rows.map((sc) => (sc.id === snap ? { ...sc, expiresAt: past } : sc));
+        const staleAdmin = new Proxy(host.admin, {
+          get: (target, key, receiver) => {
+            if (key === 'listScopes') {
+              return async (...args: Parameters<typeof target.listScopes>) => stale(await target.listScopes(...args));
+            }
+            if (key === 'listScopesReadable' && target.listScopesReadable) {
+              const readable = target.listScopesReadable.bind(target);
+              return async (...args: Parameters<typeof readable>) => {
+                const out = await readable(...args);
+                return { ...out, scopes: stale(out.scopes) };
+              };
+            }
+            return Reflect.get(target, key, receiver);
+          },
+        });
+        const staleHost = new Proxy(host, {
+          get: (target, key) => {
+            if (key === 'admin') return staleAdmin;
+            const value = Reflect.get(target, key, target) as unknown;
+            return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+          },
+        });
+
+        const report = await runPlatformSweep(staleHost, { actor: staff, fetch: connectorTestFetch, sweepers: {}, drainRetries: false });
+
+        expect((await host.admin.getScopeRecord(staff, t1, snap))?.expiresAt).toBeNull();
+        expect(report.errors).toContainEqual(expect.objectContaining({ kind: 'gc', id: snap, error: expect.stringMatching(/no longer due/) }));
+      });
+
       it('gcSnapshots: false skips the phase', async () => {
         const past = new Date(Date.now() - 60_000).toISOString();
         const snapId = await host.snapshotScope(staff, t1, s1, { expiresAt: past });
@@ -6624,6 +6660,28 @@ export function scopeHostContractSuite(
           .every((copy) => copy.scriptRef === ref && [first, next].includes(copy.moveId))).toBe(true);
       }
       expect(beforeClaim.map((copy) => copy.moveId).sort()).toEqual([first, next].sort());
+    });
+
+    it('a GC reap claim judges the expiry in its own write, and a pin cannot land once a reap holds the fork (#3314)', async () => {
+      // The sweep lists expired forks, then reaps each. A pin or a renewal can land in between, so
+      // the claim, the reap's first write, is where the expiry is judged again.
+      const source = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: source });
+      const fork = scopeId.parse(ulid());
+      const lapsed = new Date(Date.now() - 60_000).toISOString();
+      await host.provisionScope(staff, { tenantId: t1, scopeId: fork, forkedFrom: source, forkedAt: lapsed, expiresAt: lapsed });
+      const listedAt = new Date().toISOString();
+      for (const moved of [null, new Date(Date.now() + 86_400_000).toISOString()]) {
+        await host.admin.setScopeExpiresAt(staff, t1, fork, moved);
+        await expectRefusal(host.admin.beginScopeScriptReap(staff, t1, fork, { expiredBy: listedAt }), 'precondition_failed', /no longer due/);
+        expect((await host.admin.getScopeRecord(staff, t1, fork))?.expiresAt).toBe(moved);
+      }
+      await host.admin.setScopeExpiresAt(staff, t1, fork, lapsed);
+      await host.admin.beginScopeScriptReap(staff, t1, fork, { expiredBy: listedAt });
+      await expectRefusal(host.admin.setScopeExpiresAt(staff, t1, fork, null), 'conflict', /being reaped/);
+      expect((await host.admin.getScopeRecord(staff, t1, fork))?.expiresAt).toBe(lapsed);
+      // A reaper resuming its own claim is admitted whatever instant it judges by.
+      await host.admin.beginScopeScriptReap(staff, t1, fork, { expiredBy: new Date(0).toISOString() });
     });
 
     it('a move renews its whole lease, or none of it, and never after a sweep could act (#2450)', async () => {

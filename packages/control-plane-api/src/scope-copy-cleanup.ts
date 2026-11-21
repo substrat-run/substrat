@@ -236,8 +236,10 @@ export async function reapScopeScriptCopies(
  */
 export async function claimScopeScriptReap(
   input: Pick<ScopeCopyCleanup, 'admin' | 'actor'>, tenantId: TenantId, scopeId: ScopeId,
+  /** #3314: the GC's form, claimed only while the expiry is still due (`beginScopeScriptReap`). */
+  opts?: { expiredBy?: string },
 ): Promise<void> {
-  await input.admin.beginScopeScriptReap(input.actor, tenantId, scopeId).catch((error: unknown) => {
+  await input.admin.beginScopeScriptReap(input.actor, tenantId, scopeId, opts).catch((error: unknown) => {
     if (errorCodeOf(error) === 'precondition_failed') {
       throw new ControlPlaneError(412, error instanceof Error ? error.message : String(error));
     }
