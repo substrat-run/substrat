@@ -2222,6 +2222,25 @@ describe('runPlatformSweep — reap deleting tenants (§4.8)', () => {
     ]);
   });
 
+  it('keeps draining while batches come back full, up to the per-pass bound (#3326)', async () => {
+    // Seven rows, batches of two, at most three batches: a full batch asks for another, and the
+    // bound stops the pass with one row left for the next.
+    const rows = Array.from({ length: 7 }, () => ({ id: genId(), drained: false }));
+    const { host, calls } = drainHost(rows);
+    const report = await runPlatformSweep(host, {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: {},
+      accessLogBatch: 2,
+      accessLogBatchesPerPass: 3,
+      accessLogSink: { ship: async () => ({ ref: 'access-log/batch.ndjson' }) },
+    });
+
+    expect(calls).toEqual(['read', 'stamp', 'prune', 'read', 'stamp', 'prune', 'read', 'stamp', 'prune']);
+    expect(report.accessLog).toEqual({ shipped: 6, marked: 6, pruned: 6, ref: 'access-log/batch.ndjson' });
+    expect(rows).toHaveLength(1);
+  });
+
   it('prunes rows a previous pass stamped, even when nothing new ships', async () => {
     // Self-healing: a tick that shipped and stamped but died before pruning leaves
     // drained rows behind, and they are exactly as eligible on the next pass.
