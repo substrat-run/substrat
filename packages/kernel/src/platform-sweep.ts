@@ -202,8 +202,16 @@ export interface EventSink {
   ship(scope: { tenantId: TenantId; scopeId: ScopeId }, events: DrainedEvent[]): Promise<{ ref: string }>;
 }
 
-/** How many access rows one pass ships, and one pass prunes, by default. */
+/** How many access rows one access-log batch ships, and prunes, by default. */
 const ACCESS_LOG_BATCH = 500;
+
+/**
+ * How many full access-log batches one pass may drain, by default (#3326). One batch a pass
+ * was outrun: the control plane's own sweep writes about 720 access rows a pass, so a drain of
+ * 500 fell further behind every tick (eight days behind and 944 K rows deep by 2026-11-18). Eight
+ * outruns that inflow several times over and still bounds the pass.
+ */
+const ACCESS_LOG_BATCHES_PER_PASS = 8;
 
 /** How many events one pass drains PER SCOPE by default. */
 const EVENT_DRAIN_BATCH = 200;
@@ -387,9 +395,10 @@ export interface PlatformSweepOptions {
    * its evidence deleted on a schedule, and "no sink configured" is a supported posture
    * (the log then grows unbounded — stated, not silent).
    *
-   * Bounded per pass by `accessLogBatch`, not run to exhaustion: a sweep tick has a
-   * budget, and an unbounded first pass over a year of rows is how a cron becomes an
-   * incident. The window closes over several ticks instead of one.
+   * Bounded per pass by `accessLogBatch` × `accessLogBatchesPerPass`, not run to
+   * exhaustion: a sweep tick has a budget, and an unbounded first pass over a year of rows
+   * is how a cron becomes an incident. The window closes over several ticks instead of one,
+   * but the bound must outrun what a pass writes, or it never closes (#3326).
    */
   accessLogSink?: AccessLogSink;
   /**
@@ -416,8 +425,14 @@ export interface PlatformSweepOptions {
    * with a reach over `/internal`. A self-host, whose host IS the deployment, opts in with `{}`.
    */
   crossVertical?: CrossVerticalOptions;
-  /** Rows shipped (and pruned) per pass. Default 500. */
+  /** Rows shipped (and pruned) per access-log batch. Default 500. */
   accessLogBatch?: number;
+  /**
+   * Full access-log batches one pass may drain before it stops (#3326). The drain keeps going
+   * while a batch comes back full, so a backlog closes over a few passes instead of growing.
+   * Default 8.
+   */
+  accessLogBatchesPerPass?: number;
   /** Rows of each telemetry table pruned per pass (#1632). Default `TELEMETRY_PRUNE_BATCH`. */
   telemetryBatch?: number;
   /**
@@ -1378,6 +1393,7 @@ function tallyPlatformDrain(report: PlatformSweepReport, s: Scope, r: PlatformRe
 function assertSweepBatches(options: PlatformSweepOptions): void {
   if (options.telemetryBatch !== undefined) assertRowLimit('telemetryBatch', options.telemetryBatch);
   if (options.accessLogBatch !== undefined) assertRowLimit('accessLogBatch', options.accessLogBatch);
+  if (options.accessLogBatchesPerPass !== undefined) assertRowLimit('accessLogBatchesPerPass', options.accessLogBatchesPerPass);
   const gauge = options.storageGauge;
   if (gauge?.pruneBatch !== undefined) assertRowLimit('storageGauge.pruneBatch', gauge.pruneBatch);
   // `0` is a pause, so the sample batch is a non-negative integer rather than a row limit.
@@ -3100,26 +3116,33 @@ async function sweepAccessLog(
   out: AccessLogSweepReport,
 ): Promise<void> {
   const batch = options.accessLogBatch ?? ACCESS_LOG_BATCH;
-  const pending = await host.admin.accessLog(options.actor, {
-    drained: false,
-    order: 'asc', // oldest first — the window closes from the back
-    limit: batch,
-  });
-  if (pending.length > 0) {
-    const { ref } = await sink.ship(pending);
-    out.shipped = pending.length;
-    out.ref = ref;
-    // The batch's last id IS the watermark: ULID order is chronological and the log is
-    // append-only, so rows written during the shipment sort strictly after it and are
-    // left for the next tick rather than being stamped unshipped.
-    const upToId = pending[pending.length - 1]!.id;
-    out.marked = await host.admin.markAccessLogDrained(
-      options.actor,
-      upToId,
-      instant.parse(new Date().toISOString()),
-    );
+  const batches = options.accessLogBatchesPerPass ?? ACCESS_LOG_BATCHES_PER_PASS;
+  // #3326: batch after batch while each comes back full, up to `batches`. Each one is a whole
+  // ship→stamp→prune cycle, so a throw in the third leaves the first two shipped and pruned,
+  // and the report counts what really happened.
+  for (let i = 0; i < batches; i++) {
+    const pending = await host.admin.accessLog(options.actor, {
+      drained: false,
+      order: 'asc', // oldest first — the window closes from the back
+      limit: batch,
+    });
+    if (pending.length > 0) {
+      const { ref } = await sink.ship(pending);
+      out.shipped += pending.length;
+      out.ref = ref;
+      // The batch's last id IS the watermark: ULID order is chronological and the log is
+      // append-only, so rows written during the shipment sort strictly after it and are
+      // left for the next batch rather than being stamped unshipped.
+      const upToId = pending[pending.length - 1]!.id;
+      out.marked += await host.admin.markAccessLogDrained(
+        options.actor,
+        upToId,
+        instant.parse(new Date().toISOString()),
+      );
+    }
+    out.pruned += await host.admin.pruneAccessLog(options.actor, batch);
+    if (pending.length < batch) return;
   }
-  out.pruned = await host.admin.pruneAccessLog(options.actor, batch);
 }
 
 /** A running sweeper; `stop()` prevents the next pass and cancels the pending timer. */
