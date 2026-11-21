@@ -479,7 +479,7 @@ function SurfaceTable({
   const num = { textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
   return (
     <div style={{ ...card, overflow: 'hidden', padding: 0 }}>
-      <div
+      <div className="m-hide"
         style={{ display: 'grid', gridTemplateColumns: COLUMNS, gap: '0 12px', alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-default)' }}
       >
         <span>Surface</span>
@@ -497,7 +497,7 @@ function SurfaceTable({
         <div style={{ padding: '12px 16px', fontSize: 12.5, color: 'var(--text-tertiary)' }}>No traffic recorded in this window.</div>
       ) : (
         surfaceRows(metrics, surfaces).map((r) => (
-          <a
+          <a className="m-row"
             key={r.key}
             href={href ?? '#'}
             onClick={(e) => {
@@ -510,11 +510,11 @@ function SurfaceTable({
               <span style={{ fontSize: 13, fontWeight: 500 }}>{r.name}</span>
               {r.sub && <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.sub}</span>}
             </span>
-            <span style={num}>{r.requests}</span>
-            <span style={num}>{r.errors}</span>
-            <span style={{ ...num, color: r.rateHigh ? 'var(--status-danger-fg)' : 'var(--text-primary)' }}>{r.rate}</span>
-            <span style={{ ...num, color: 'var(--text-secondary)' }}>{r.p50}</span>
-            <span style={{ ...num, color: r.p95Slow ? 'var(--status-warning-fg)' : 'var(--text-secondary)' }}>{r.p95}</span>
+            <span data-label="Requests" style={num}>{r.requests}</span>
+            <span data-label="Errors" style={num}>{r.errors}</span>
+            <span data-label="Error rate" style={{ ...num, color: r.rateHigh ? 'var(--status-danger-fg)' : 'var(--text-primary)' }}>{r.rate}</span>
+            <span data-label="p50" style={{ ...num, color: 'var(--text-secondary)' }}>{r.p50}</span>
+            <span data-label="p95" style={{ ...num, color: r.p95Slow ? 'var(--status-warning-fg)' : 'var(--text-secondary)' }}>{r.p95}</span>
           </a>
         ))
       )}

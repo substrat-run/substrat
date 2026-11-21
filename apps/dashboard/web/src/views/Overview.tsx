@@ -167,7 +167,7 @@ export function Overview({
           <div style={quiet}>Nothing needs attention.</div>
         ) : (
           attention.map((n) => (
-            <Go key={n.key} href={n.href} style={{ display: 'grid', gridTemplateColumns: '96px 150px minmax(0,1fr) 110px', gap: '0 12px', alignItems: 'center', minHeight: 44, padding: '6px 16px', borderTop: '1px solid var(--border-subtle)' }}>
+            <Go className="m-row" key={n.key} href={n.href} style={{ display: 'grid', gridTemplateColumns: '96px 150px minmax(0,1fr) 110px', gap: '0 12px', alignItems: 'center', minHeight: 44, padding: '6px 16px', borderTop: '1px solid var(--border-subtle)' }}>
               <span><Badge status={n.status}>{n.badge}</Badge></span>
               <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                 <span style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.what}</span>
@@ -182,7 +182,7 @@ export function Overview({
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>Apps</span>
           <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
             {loading ? 'listing apps…' : `${apps.length} ${apps.length === 1 ? 'app' : 'apps'}${walking ? ' so far' : partial ? ' read, list incomplete' : ''} · health in plain words, details in Observability`}
@@ -206,7 +206,7 @@ export function Overview({
         {!loading && shown.length === 0 ? (
           <div style={{ ...cardStyle, ...quiet, borderTop: undefined }}>No apps match.</div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 16, alignItems: 'start' }}>
+          <div className="m-stack" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 16, alignItems: 'start' }}>
             {shown.map((r) => {
               const row = byScope.get(r.scopeId)!;
               return (
@@ -226,7 +226,7 @@ export function Overview({
         )}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1.4fr)', gap: 16, alignItems: 'start' }}>
+      <div className="t-stack" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1.4fr)', gap: 16, alignItems: 'start' }}>
         <div style={cardStyle} aria-label="Integrations">
           <div style={{ display: 'flex', alignItems: 'center', padding: '12px 16px' }}>
             <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>Integrations</span>
@@ -308,11 +308,12 @@ function IntegrationList({ providers }: { providers: AccountIntegration[] }) {
 }
 
 /** A row or link with a real href (open in new tab works) that navigates in place on a plain click. */
-function Go({ href, style, plain, children }: { href: string; style: CSSProperties; plain?: boolean; children: ReactNode }) {
+function Go({ href, style, plain, className, children }: { href: string; style: CSSProperties; plain?: boolean; className?: string; children: ReactNode }) {
   const [hover, setHover] = useState(false);
   return (
     <a
       href={teamPath(href)}
+      className={className}
       onClick={(e) => {
         if (!isPlainClick(e)) return;
         e.preventDefault();

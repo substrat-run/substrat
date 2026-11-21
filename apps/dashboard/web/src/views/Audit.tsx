@@ -410,7 +410,7 @@ function RefusalRow({ refusal: r, scopeId }: { refusal: Refusal; scopeId: string
   const who = refusalActorOf(r.actor);
   const actingAs = r.impersonation !== null && r.impersonation !== undefined;
   return (
-    <div
+    <div className="m-row"
       data-refusal-id={r.id}
       style={{
         display: 'grid',
@@ -494,7 +494,7 @@ function EntryRow({
   ];
   return (
     <div data-entry-id={e.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-      <div
+      <div className="m-row"
         role="button"
         tabIndex={0}
         aria-expanded={open}
@@ -526,7 +526,7 @@ function EntryRow({
         <span title={e.at} style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-tertiary)', textAlign: 'right' }}>{clockTime(e.at)}</span>
       </div>
       {open && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 16, padding: '12px 16px 14px 56px', background: 'var(--surface-inset)', borderTop: '1px solid var(--border-subtle)' }}>
+        <div className="m-stack" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 16, padding: '12px 16px 14px 56px', background: 'var(--surface-inset)', borderTop: '1px solid var(--border-subtle)' }}>
           <KeyValue items={kv} columns={2} style={{ gap: '10px 16px', wordBreak: 'break-word' }} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
             {e.scopeId && (

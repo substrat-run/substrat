@@ -24,7 +24,7 @@ export function NotificationsPopover({ onClose, onMarkRead }: { onClose: () => v
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 150 }}>
       <div
         onClick={(e) => e.stopPropagation()}
-        style={{ position: 'absolute', top: 60, right: 16, width: 360, background: 'var(--surface-card)', border: '1px solid var(--border-default)', borderRadius: 12, boxShadow: 'var(--shadow-popover)', overflow: 'hidden' }}
+        style={{ position: 'absolute', top: 60, right: 16, width: 360, maxWidth: 'calc(100vw - 32px)', background: 'var(--surface-card)', border: '1px solid var(--border-default)', borderRadius: 12, boxShadow: 'var(--shadow-popover)', overflow: 'hidden' }}
       >
         <div style={{ display: 'flex', alignItems: 'center', height: 44, padding: '0 16px', borderBottom: '1px solid var(--border-subtle)' }}>
           <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Notifications</span>

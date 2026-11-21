@@ -77,7 +77,7 @@ export function FleetHealth({
         </span>
       </div>
       <div role="table" aria-label="App health" aria-busy={loading} style={{ border: '1px solid var(--border-default)', borderRadius: 12, background: 'var(--surface-card)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden' }}>
-        <div role="row" style={{ display: 'grid', gridTemplateColumns: COLS, gap: '0 12px', alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-default)' }}>
+        <div className="m-hide" role="row" style={{ display: 'grid', gridTemplateColumns: COLS, gap: '0 12px', alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-default)' }}>
           <span role="columnheader">Health</span>
           <span role="columnheader">App</span>
           <span role="columnheader">Why</span>
@@ -132,7 +132,7 @@ function FleetTableRow({ row, last, loading, onOpen, onRetry }: { row: FleetRow;
   const num = { textAlign: 'right' as const, fontFamily: 'var(--font-mono)', fontSize: 12.5 };
   const dash = <span title={row.unread ?? undefined} style={{ color: 'var(--text-placeholder)' }}>{loading ? '…' : '—'}</span>;
   return (
-    <div
+    <div className="m-row"
       role="row"
       tabIndex={0}
       onClick={onOpen}
@@ -175,9 +175,9 @@ function FleetTableRow({ row, last, loading, onOpen, onRetry }: { row: FleetRow;
           </>
         )}
       </span>
-      <span role="cell" style={num}>{row.requests === null ? dash : compact(row.requests)}</span>
-      <span role="cell" style={{ ...num, color: hot ? 'var(--status-danger-fg)' : 'var(--text-secondary)' }}>{rate ?? dash}</span>
-      <span role="cell" style={{ ...num, color: 'var(--text-secondary)' }}>{row.p95 === null ? dash : duration(row.p95)}</span>
+      <span role="cell" data-label="Requests" style={num}>{row.requests === null ? dash : compact(row.requests)}</span>
+      <span role="cell" data-label="Errors" style={{ ...num, color: hot ? 'var(--status-danger-fg)' : 'var(--text-secondary)' }}>{rate ?? dash}</span>
+      <span role="cell" data-label="p95" style={{ ...num, color: 'var(--text-secondary)' }}>{row.p95 === null ? dash : duration(row.p95)}</span>
     </div>
   );
 }

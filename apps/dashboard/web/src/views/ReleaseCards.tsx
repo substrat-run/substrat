@@ -261,7 +261,7 @@ export function ReleaseComparisonCard({
         {actions}
       </div>
       {target ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
+        <div className="m-stack" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
           {columns.map(([title, col], i) => (
             <div key={title} data-diff-column={title} style={{ padding: '12px 16px 14px', borderRight: i < 2 ? '1px solid var(--border-subtle)' : 'none', display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
               <div style={{ ...columnHead, fontSize: 11 }}>{title}</div>
@@ -344,7 +344,7 @@ export function ReleasesCard({ ledger, onPick }: { ledger: Ledger | null; onPick
       <div style={{ padding: '12px 16px', fontSize: 14, fontWeight: 600 }}>
         Releases <span style={{ fontWeight: 400, ...tertiary }}>· pushed and went live are separate instants</span>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: RELEASE_COLS, gap: '0 10px', alignItems: 'center', height: 30, padding: '0 16px', borderTop: '1px solid var(--border-subtle)', ...columnHead }}>
+      <div className="m-hide" style={{ display: 'grid', gridTemplateColumns: RELEASE_COLS, gap: '0 10px', alignItems: 'center', height: 30, padding: '0 16px', borderTop: '1px solid var(--border-subtle)', ...columnHead }}>
         <span>Version</span><span>Pushed</span><span>Went live</span><span>By</span><span style={{ textAlign: 'right' }}>Installs</span>
       </div>
       {ledger === null && <div style={note}>Loading…</div>}
@@ -360,14 +360,14 @@ export function ReleasesCard({ ledger, onPick }: { ledger: Ledger | null; onPick
                 e.preventDefault();
                 onPick(r.versionId);
               }}
-              className="release-row"
+              className="release-row m-row"
               style={{ display: 'grid', gridTemplateColumns: RELEASE_COLS, gap: '0 10px', alignItems: 'center', height: 40, padding: '0 16px', borderTop: '1px solid var(--border-subtle)', color: 'var(--text-primary)', textDecoration: 'none', cursor: 'pointer' }}
             >
               <span style={{ ...mono, fontSize: 12.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.version}>{r.version}</span>
-              <span style={{ ...mono, fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{r.pushedAt ? instant(r.pushedAt) : '—'}</span>
-              <span data-live style={{ ...mono, fontSize: 12, color, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{text}</span>
-              <span style={{ ...mono, fontSize: 12, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.actor ?? undefined}>{r.actor ?? '—'}</span>
-              <span data-installs style={{ ...mono, fontSize: 12, textAlign: 'right' }}>{r.installs ? `${r.installs.on} / ${r.installs.total}` : '—'}</span>
+              <span data-label="Pushed" style={{ ...mono, fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{r.pushedAt ? instant(r.pushedAt) : '—'}</span>
+              <span data-live data-label="Went live" style={{ ...mono, fontSize: 12, color, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{text}</span>
+              <span style={{ ...mono, fontSize: 12, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} data-label="By" title={r.actor ?? undefined}>{r.actor ?? '—'}</span>
+              <span data-installs data-label="Installs" style={{ ...mono, fontSize: 12, textAlign: 'right' }}>{r.installs ? `${r.installs.on} / ${r.installs.total}` : '—'}</span>
             </a>
           );
         })}
@@ -455,14 +455,14 @@ export function SchemaHistoryCard({ teamId, app }: { teamId: string; app: AppRow
       )}
       {shown.length > 0 && (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: SCHEMA_COLS, gap: '0 10px', alignItems: 'center', height: 30, padding: '0 16px', borderTop: '1px solid var(--border-subtle)', ...columnHead }}>
+          <div className="m-hide" style={{ display: 'grid', gridTemplateColumns: SCHEMA_COLS, gap: '0 10px', alignItems: 'center', height: 30, padding: '0 16px', borderTop: '1px solid var(--border-subtle)', ...columnHead }}>
             <span>Migration</span>
             <span style={{ textAlign: 'right' }}>Rows</span>
             <span style={{ textAlign: 'right' }}>Duration</span>
             <span style={{ textAlign: 'right' }}>Applied</span>
           </div>
           {shown.map((m) => (
-            <div
+            <div className="m-row"
               key={`${m.moduleId}:${m.version}`}
               style={{ display: 'grid', gridTemplateColumns: SCHEMA_COLS, gap: '0 10px', alignItems: 'center', minHeight: 44, padding: '4px 16px', borderTop: '1px solid var(--border-subtle)' }}
             >
@@ -470,9 +470,9 @@ export function SchemaHistoryCard({ teamId, app }: { teamId: string; app: AppRow
                 <span style={{ ...mono, fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={m.version}>{m.version}</span>
                 <span style={{ ...mono, fontSize: 11.5, color: 'var(--text-tertiary)' }}>{m.moduleId}</span>
               </span>
-              <span style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-tertiary)' }}>{m.rowsChanged == null ? '—' : m.rowsChanged.toLocaleString()}</span>
-              <span style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-tertiary)' }}>{m.durationMs == null ? '—' : `${m.durationMs} ms`}</span>
-              <span style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+              <span data-label="Rows" style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-tertiary)' }}>{m.rowsChanged == null ? '—' : m.rowsChanged.toLocaleString()}</span>
+              <span data-label="Duration" style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-tertiary)' }}>{m.durationMs == null ? '—' : `${m.durationMs} ms`}</span>
+              <span data-label="Applied" style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
                 {m.appliedAt ? instant(m.appliedAt) : 'before we recorded'}
               </span>
             </div>

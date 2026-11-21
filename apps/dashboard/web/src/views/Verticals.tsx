@@ -1068,7 +1068,7 @@ export function Verticals({
         {repo ? (
           <RepoDeploy teamId={teamId} repo={repo} onBack={() => setRepo(null)} onDone={() => setRepo(null)} />
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: '1.15fr 1fr', gap: 16, alignItems: 'start' }}>
+          <div className="t-stack" style={{ display: 'grid', gridTemplateColumns: '1.15fr 1fr', gap: 16, alignItems: 'start' }}>
             <GitImportCard teamId={teamId} git={git} error={gitError} onPick={setRepo} onSelectAccount={setGitAccount} />
             <CliPushPanel />
           </div>

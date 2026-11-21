@@ -156,7 +156,7 @@ export function Team({
       </div>
 
       <div style={{ ...card, overflow: 'hidden' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
+        <div className="m-hide" style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
           <span>Member</span><span>Role</span><span>Status</span><span>Added</span><span />
         </div>
         <RequestView
@@ -172,7 +172,7 @@ export function Team({
           const you = m.email !== '' && m.email === meEmail;
           const name = m.email ? (m.email.split('@')[0] ?? m.email) : 'owner';
           return (
-            <div key={m.id} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 48, padding: '0 16px', fontSize: 13, borderBottom: i === rows.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
+            <div className="m-row" key={m.id} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 48, padding: '0 16px', fontSize: 13, borderBottom: i === rows.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Avatar seed={name} tone={AVATAR_TONE[m.role_key] ?? 'muted'} size={26} />
                 <span style={{ display: 'flex', flexDirection: 'column' }}>
@@ -185,7 +185,7 @@ export function Team({
               </span>
               <span><MonoTag>{m.role_key}</MonoTag></span>
               <span><Pill kind={s.kind}>{s.label}</Pill></span>
-              <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{fmtDate(m.joined_at ?? m.invited_at)}</span>
+              <span data-label="Added" style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{fmtDate(m.joined_at ?? m.invited_at)}</span>
               <span style={{ textAlign: 'right' }}>
                 {canManage && m.status === 'invited' && m.invitation_id && (
                   <span style={{ display: 'inline-flex', gap: 4, justifyContent: 'flex-end' }}>
@@ -315,7 +315,7 @@ function MembersSkeleton() {
   return (
     <SkeletonRegion label="Loading members…">
       {[0, 1, 2].map((i) => (
-        <div key={i} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 48, padding: '0 16px', borderBottom: i === 2 ? 'none' : '1px solid var(--border-subtle)' }}>
+        <div className="m-row" key={i} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 48, padding: '0 16px', borderBottom: i === 2 ? 'none' : '1px solid var(--border-subtle)' }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <Skeleton w={26} h={26} r={13} />
             <span style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>

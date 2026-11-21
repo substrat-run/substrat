@@ -365,90 +365,93 @@ export function Pulse({
         </div>
       )}
 
-      <div data-pulse-card style={{ position: 'relative', border: '1px solid var(--border-default)', borderRadius: 12, background: 'var(--surface-card)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden' }}>
-        {oneApp && (
-          <DeployStrip
-            pills={pills}
-            pushes={pushes}
-            window={window}
-            overlayMarkers={shown.overlays?.markers ?? []}
-            onRelease={(m) => onNav({ ...(scopeId ? { app: scopeId } : {}), view: 'logs', ...around(m.at) })}
-            onMarker={onMarker}
-          />
-        )}
-        <SectionHead
-          cells={['Apps', 'Requests', 'Errors', 'p95', bins ? `Requests · errors · p95 trend, ${bins} bins` : 'Requests · errors · p95 trend', 'Status']}
-          first={!oneApp}
-        />
-        <RequestView
-          state={appsReq}
-          what="this team's apps"
-          onRetry={onRetryApps}
-          errorStyle={{ borderTop: '1px solid var(--border-subtle)' }}
-          skeleton={<AppLinesSkeleton />}
-          empty={<Note>No apps yet — traffic appears here once one is serving.</Note>}
-        >
-          {() => rows.map((r) => (
-            <AppLine
-              key={r.scopeId}
-              row={r}
-              loading={loading}
-              series={series}
+      {/* On a phone the card keeps its columns and this wrapper scrolls it sideways (app.css). */}
+      <div className="m-scroll-x">
+        <div data-pulse-card style={{ position: 'relative', border: '1px solid var(--border-default)', borderRadius: 12, background: 'var(--surface-card)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden' }}>
+          {oneApp && (
+            <DeployStrip
+              pills={pills}
+              pushes={pushes}
               window={window}
-              stale={oneApp ? (shown.overlays?.spans ?? []) : []}
-              handle={handle}
-              onOpen={() => openRow(r)}
-              href={teamPath(r.verdict === 'failing' ? obsPath({ app: r.scopeId, view: 'failures', hours: '24' }) : oneApp ? `/apps/${r.scopeId}/overview` : obsPath({ app: r.scopeId }))}
+              overlayMarkers={shown.overlays?.markers ?? []}
+              onRelease={(m) => onNav({ ...(scopeId ? { app: scopeId } : {}), view: 'logs', ...around(m.at) })}
+              onMarker={onMarker}
             />
-          ))}
-        </RequestView>
-        {series && !series.available && (
-          <Note>
-            {chartError
-              ? 'Traffic over time is unavailable right now.'
-              : 'Traffic over time is not available on this plane — no sparkline is drawn rather than one that would read as silence.'}
-          </Note>
-        )}
-        <SectionHead cells={[oneApp ? 'Connectors · team' : 'Connectors', 'Calls', 'Failed', 'Latest p95', 'Calls · failed · p95', '']} />
-        {connectorCalls === null ? <Note>Reading connector calls…</Note> : connectorCalls.available ? (
-          connectorRows.length ? connectorRows.map((row) => (
-            <ConnectorLine key={row.provider} row={row} bucketMinutes={connectorBucketMinutes} window={window} handle={handle} />
-          )) : <Note>No connector calls in this window.</Note>
-        ) : <Note>{connectorError ? 'Connector calls are unavailable right now.' : 'Connector call analytics are not available on this plane.'}</Note>}
-        <SectionHead cells={['Business today', 'Today', 'Yesterday', 'Change', business ? `Moves per ${binLabel(business.bucketMinutes)}` : 'Moves per bucket', '']} />
-        {businessError ? <Note>Business volumes are unavailable right now.</Note> : business === null ? <Note>Reading business volumes…</Note> : businessShown.length ? (
-          businessShown.map((row) => (
-            <BusinessLine
-              key={`${row.scopeId}:${row.entityType}:${row.state}:${row.fromInitial}`}
-              row={row}
-              app={oneApp ? null : (apps.find((a) => a.app_scope_id === row.scopeId)?.name ?? null)}
-              bucketMinutes={business.bucketMinutes}
-              window={window}
-              handle={handle}
-            />
-          ))
-        ) : <Note>{business.rows.length ? 'No app declares a move that opens or ends a record.' : 'No app declares a lifecycle whose moves can be counted yet.'}</Note>}
-        {hiddenMoves > 0 && (
-          <div style={{ padding: '6px 16px', borderTop: '1px solid var(--border-subtle)' }}>
-            <Button variant="ghost" size="sm" onClick={() => setAllMoves((v) => !v)}>
-              {allMoves ? 'Show outcomes only' : `Show all moves (${hiddenMoves} more)`}
-            </Button>
-          </div>
-        )}
-        {scopeId && (
-          <AppSchedules
-            key={`${scopeId}:${nonce}`}
-            embedded
-            teamId={teamId}
-            scopeId={scopeId}
-            window={window}
-            focused={cursor !== null}
-            {...(app ? { appName: app.name } : {})}
-            onOpen={(next) => onNav({ app: scopeId, ...next })}
+          )}
+          <SectionHead
+            cells={['Apps', 'Requests', 'Errors', 'p95', bins ? `Requests · errors · p95 trend, ${bins} bins` : 'Requests · errors · p95 trend', 'Status']}
+            first={!oneApp}
           />
-        )}
-        <AxisRow window={window} schedules={oneApp} />
-        <Lines oneApp={oneApp} pills={pills} pushes={pushes} window={window} migrations={(shown.overlays?.markers ?? []).filter((m) => m.kind === 'migration')} brush={brush} />
+          <RequestView
+            state={appsReq}
+            what="this team's apps"
+            onRetry={onRetryApps}
+            errorStyle={{ borderTop: '1px solid var(--border-subtle)' }}
+            skeleton={<AppLinesSkeleton />}
+            empty={<Note>No apps yet — traffic appears here once one is serving.</Note>}
+          >
+            {() => rows.map((r) => (
+              <AppLine
+                key={r.scopeId}
+                row={r}
+                loading={loading}
+                series={series}
+                window={window}
+                stale={oneApp ? (shown.overlays?.spans ?? []) : []}
+                handle={handle}
+                onOpen={() => openRow(r)}
+                href={teamPath(r.verdict === 'failing' ? obsPath({ app: r.scopeId, view: 'failures', hours: '24' }) : oneApp ? `/apps/${r.scopeId}/overview` : obsPath({ app: r.scopeId }))}
+              />
+            ))}
+          </RequestView>
+          {series && !series.available && (
+            <Note>
+              {chartError
+                ? 'Traffic over time is unavailable right now.'
+                : 'Traffic over time is not available on this plane — no sparkline is drawn rather than one that would read as silence.'}
+            </Note>
+          )}
+          <SectionHead cells={[oneApp ? 'Connectors · team' : 'Connectors', 'Calls', 'Failed', 'Latest p95', 'Calls · failed · p95', '']} />
+          {connectorCalls === null ? <Note>Reading connector calls…</Note> : connectorCalls.available ? (
+            connectorRows.length ? connectorRows.map((row) => (
+              <ConnectorLine key={row.provider} row={row} bucketMinutes={connectorBucketMinutes} window={window} handle={handle} />
+            )) : <Note>No connector calls in this window.</Note>
+          ) : <Note>{connectorError ? 'Connector calls are unavailable right now.' : 'Connector call analytics are not available on this plane.'}</Note>}
+          <SectionHead cells={['Business today', 'Today', 'Yesterday', 'Change', business ? `Moves per ${binLabel(business.bucketMinutes)}` : 'Moves per bucket', '']} />
+          {businessError ? <Note>Business volumes are unavailable right now.</Note> : business === null ? <Note>Reading business volumes…</Note> : businessShown.length ? (
+            businessShown.map((row) => (
+              <BusinessLine
+                key={`${row.scopeId}:${row.entityType}:${row.state}:${row.fromInitial}`}
+                row={row}
+                app={oneApp ? null : (apps.find((a) => a.app_scope_id === row.scopeId)?.name ?? null)}
+                bucketMinutes={business.bucketMinutes}
+                window={window}
+                handle={handle}
+              />
+            ))
+          ) : <Note>{business.rows.length ? 'No app declares a move that opens or ends a record.' : 'No app declares a lifecycle whose moves can be counted yet.'}</Note>}
+          {hiddenMoves > 0 && (
+            <div style={{ padding: '6px 16px', borderTop: '1px solid var(--border-subtle)' }}>
+              <Button variant="ghost" size="sm" onClick={() => setAllMoves((v) => !v)}>
+                {allMoves ? 'Show outcomes only' : `Show all moves (${hiddenMoves} more)`}
+              </Button>
+            </div>
+          )}
+          {scopeId && (
+            <AppSchedules
+              key={`${scopeId}:${nonce}`}
+              embedded
+              teamId={teamId}
+              scopeId={scopeId}
+              window={window}
+              focused={cursor !== null}
+              {...(app ? { appName: app.name } : {})}
+              onOpen={(next) => onNav({ app: scopeId, ...next })}
+            />
+          )}
+          <AxisRow window={window} schedules={oneApp} />
+          <Lines oneApp={oneApp} pills={pills} pushes={pushes} window={window} migrations={(shown.overlays?.markers ?? []).filter((m) => m.kind === 'migration')} brush={brush} />
+        </div>
       </div>
 
       {oneApp && !!overlays?.incompleteSources?.length && <Footnote>Partial change history: {overlays.incompleteSources.join(', ')}. Older records may be omitted.</Footnote>}

@@ -140,6 +140,7 @@ function RowLink({ path, columns, minHeight, children }: { path: string; columns
   return (
     <a
       href={teamPath(path)}
+      className="m-row"
       onClick={(e) => {
         e.preventDefault();
         navigate(path);

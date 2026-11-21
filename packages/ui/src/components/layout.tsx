@@ -1,11 +1,15 @@
 // The layout primitives every signed-in screen sits in — lifted from the dashboard's
 // components/layout.tsx with AppShell, so the auth-server console lays out the same way.
 import type { CSSProperties, KeyboardEvent, ReactNode } from 'react';
+import { useMediaQuery } from '../hooks/use-media-query';
 
 /** The padded, centred content column every screen sits in (content-max default 1200). */
 export function Page({ children, maxWidth = 1200, style }: { children: ReactNode; maxWidth?: number; style?: CSSProperties }) {
+  // A phone keeps its width for the content: 16px gutters below 768 (dashboard-ui.md §5.1).
+  // A shell may move to a drawer at its own width (the console's is 900); this does not follow it.
+  const narrow = useMediaQuery('(max-width: 767px)');
   return (
-    <div style={{ padding: '24px 32px' }}>
+    <div style={{ padding: narrow ? '16px' : '24px 32px' }}>
       <div style={{ maxWidth, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 20, ...style }}>{children}</div>
     </div>
   );
