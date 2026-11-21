@@ -388,6 +388,8 @@ export const INDEX_VALUE_EXPORTS = [
   'cursorOf',
   // #2518: a connector call's bounds: the call's total, and a streamed body's idle window.
   'deadlineFetch',
+  // #3221: the landing a running version declares, read as the pass reads it, for the door choosing an install's connection.
+  'declaredLandingFor',
   'delegatedRevokeSql',
   'delegationCeilingOf',
   // #3176: the record a delegated call leaves on the outbox and the denial log.
@@ -426,6 +428,8 @@ export const INDEX_VALUE_EXPORTS = [
   // K-61 phase 3: a member invite's link exchanged by id, for the door admitting a verified address — both adapters run it.
   'exchangeBecomeLinkById',
   'exchangeCapability',
+  // #3221: which connection each install of an exclusive (payment) provider lands through, shared by the pass and that door.
+  'exclusiveLandingsOf',
   'executableSqlStatements',
   'executorOutcomeOf',
   'exportBreakRefusal',
