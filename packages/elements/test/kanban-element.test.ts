@@ -169,6 +169,18 @@ describe('<sub-kanban>', () => {
     expect(moves).toMatchObject([{ key: 'b', to: 'doing', index: 1, after: 'c', before: null }]);
   });
 
+  it('turning sortable off puts each column back in the given order, keeping every card in its column', async () => {
+    const { board } = await boardWith();
+    expect(await board.moveTo('b', 'todo', 0)).toBe(true);
+    expect(await board.moveTo('c', 'done')).toBe(true);
+    expect(columns(board)).toEqual({ todo: ['b', 'a'], doing: [], done: ['c'] });
+    board.sortable = false;
+    await board.updateComplete;
+    expect(columns(board)).toEqual({ todo: ['a', 'b'], doing: [], done: ['c'] });
+    expect(await board.moveTo('c', 'todo')).toBe(true);
+    expect(columns(board).todo).toEqual(['a', 'b', 'c']);
+  });
+
   it('reads sortable="false" from the attribute, and any other value as on', async () => {
     const { board } = await boardWith();
     board.setAttribute('sortable', 'false');

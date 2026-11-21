@@ -403,6 +403,12 @@ export class SubKanban<T = any> extends SubstratElement {
       this.#byKey = new Map(this.cards.map((c) => [this.keyOf(c), c]));
       const drag = this.#drag;
       if (drag && !this.#byKey.has(drag.key)) this.#abandon();
+    } else if (changed.has('sortable') && !this.sortable) {
+      // Turned off: an order made while it was on is not the given one, and a card landing by
+      // `placeOf` would be placed among it. Each column takes the given order; every card stays
+      // in its column, moves already saved included, which a rebuild from `cards` would drop.
+      const rank = (key: string) => this.#rank.get(key) ?? Number.MAX_SAFE_INTEGER;
+      this.#board = new Map([...this.#board].map(([column, keys]) => [column, [...keys].sort((x, y) => rank(x) - rank(y))]));
     }
     this.#measure();
   }
