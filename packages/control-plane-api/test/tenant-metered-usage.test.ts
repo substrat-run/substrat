@@ -334,3 +334,31 @@ describe('POST /model-usage', () => {
     expect((await post({ requestId: 'builder:turn-4', line: { ...line(own), reported: false } })).status).toBe(400);
   });
 });
+
+describe('the markup schedule routes (#3316)', () => {
+  const staffHeaders = { [DEV_ACTOR_HEADER]: actor, 'content-type': 'application/json' };
+  const today = new Date().toISOString().slice(0, 10);
+  const post = (body: unknown, as: Record<string, string> = staffHeaders) =>
+    app.request('/markup-schedule', { method: 'POST', headers: as, body: JSON.stringify(body) });
+
+  it('lets staff add a dated row over the seed, refuses a tenant, an unknown tenant and a past day', async () => {
+    const asTenant = { ...headers, 'content-type': 'application/json' };
+    expect((await app.request(`/markup-schedule?tenantId=${own}`, { headers })).status).toBe(403);
+    expect((await post({ tenantId: own, effectiveFrom: today, percent: 0, reason: 'mine' }, asTenant)).status).toBe(403);
+    expect((await post({ tenantId: ulid(), effectiveFrom: today, percent: 50, reason: 'x' })).status).toBe(404);
+    expect((await post({ effectiveFrom: '2020-01-01', percent: 50, reason: 'x' })).status).toBe(400);
+
+    const added = await post({ tenantId: billed, dimension: 'model-calls', effectiveFrom: today, percent: 50, reason: 'pilot' });
+    expect(added.status, await added.clone().text()).toBe(201);
+    const row = await added.json() as { id: string };
+    const ids = async (tenant: string) =>
+      ((await (await app.request(`/markup-schedule?tenantId=${tenant}`, { headers: staffHeaders })).json()) as { rows: { id: string }[] }).rows.map((r) => r.id);
+    expect(await ids(billed)).toContain(row.id);
+    expect(await ids(other)).not.toContain(row.id);
+  });
+
+  it('prices the ledger summary at the seeded model-calls rate', async () => {
+    const summary = await (await app.request(`/model-usage/summary?tenantId=${own}`, { headers: staffHeaders })).json() as { marginPercent: number };
+    expect(summary.marginPercent).toBe(30);
+  });
+});

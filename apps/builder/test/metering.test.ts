@@ -16,7 +16,7 @@
  * delivers them intact.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { platformActorId, principalId } from '@substrat-run/contracts';
+import { MARKUP_SEED, platformActorId, principalId, type MarkupRow } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { STUDIO_NODE } from '../src/studio.js';
 import { startStudio, stopStudio } from './studio-shim.js';
@@ -94,7 +94,7 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 			stepUsage: [{ inputTokens: 1_000_000, outputTokens: 100_000, cachedInputTokens: 800_000 }],
 		});
 
-		const report = await metering.studioUsage(env);
+		const report = await metering.studioUsage(env, MARKUP_SEED);
 		// Cache slices are slices OF input — counted per model, never added to totals.
 		expect(report.totals).toEqual({ input: 1_000_000, output: 100_000 });
 		expect(report.byModel).toEqual([
@@ -112,6 +112,18 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 			{ projectId: 'proj-1', input: 1_000_000, output: 100_000, turns: 1 },
 		]);
 		expect(report.cost).toEqual({ listUsd: '0.68', billedUsd: '0.884', unpricedTokens: 0 });
+	});
+
+	it('bills each cost entry at the schedule\'s model-calls row in force on its day, never a later one', async () => {
+		await metering.recordTurnUsage(env, {
+			projectId: 'proj-1', turnId: ulid(), model: FLASH, inputTokens: 1_000_000, outputTokens: 100_000, cachedInputTokens: 800_000,
+			stepUsage: [{ inputTokens: 1_000_000, outputTokens: 100_000, cachedInputTokens: 800_000 }],
+		});
+		const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+		const at = (effectiveFrom: string): MarkupRow => ({ ...MARKUP_SEED[2]!, id: `row-${effectiveFrom}`, effectiveFrom, percent: 100, setAt: new Date().toISOString() });
+		expect((await metering.studioUsage(env, [...MARKUP_SEED, at(day(1))])).cost.billedUsd).toBe('0.884');
+		const today = await metering.studioUsage(env, [...MARKUP_SEED, at(day(0))]);
+		expect([today.cost.billedUsd, today.markupPercent]).toEqual(['1.36', 100]);
 	});
 
 	describe('the team\'s bill (reportTurnUsage → the control plane\'s ledger)', () => {
@@ -159,7 +171,7 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 			const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 			const { env: ledger } = ledgerEnv(new Response('no', { status: 503 }));
 			await metering.reportTurnUsage(ledger, turn);
-			expect((await metering.studioUsage(env)).totals).toEqual({ input: 1_000_000, output: 100_000 });
+			expect((await metering.studioUsage(env, MARKUP_SEED)).totals).toEqual({ input: 1_000_000, output: 100_000 });
 			expect(error).toHaveBeenCalledWith(expect.stringContaining('the control plane answered 503'));
 			error.mockRestore();
 		});
@@ -177,17 +189,17 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 		await metering.recordTurnUsage(env, turn);
 		await metering.recordTurnUsage(env, turn);
 
-		const report = await metering.studioUsage(env);
+		const report = await metering.studioUsage(env, MARKUP_SEED);
 		expect(report.totals).toEqual({ input: 1_000_000, output: 100_000 });
 		expect(report.byModel[0]).toMatchObject({ listUsd: '1.4', billedUsd: '1.82' });
 		expect(report.byProject[0]?.turns).toBe(1);
 	});
 
 	it('prices token rows that predate cost entries via flat totals — the pre-#663 fallback', async () => {
-		await metering.studioUsage(env); // provision the studio so the legacy writer can be granted
+		await metering.studioUsage(env, MARKUP_SEED); // provision the studio so the legacy writer can be granted
 		await recordLegacyTokens(FLASH, 2_000_000, 100_000);
 
-		const report = await metering.studioUsage(env);
+		const report = await metering.studioUsage(env, MARKUP_SEED);
 		// 2M × $1/1M + 100k × $4/1M = $2.4.
 		expect(report.byModel[0]).toMatchObject({
 			model: FLASH,
@@ -205,7 +217,7 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 		// token columns but price at $0. Accepted (staff-only spend, self-corrects
 		// as new turns dominate) — this test pins it as CHOSEN behavior, so a
 		// future fix rewrites the expectation deliberately instead of tripping on it.
-		await metering.studioUsage(env);
+		await metering.studioUsage(env, MARKUP_SEED);
 		await recordLegacyTokens(FLASH, 2_000_000, 100_000);
 		await metering.recordTurnUsage(env, {
 			projectId: 'proj-1',
@@ -216,7 +228,7 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 			stepUsage: [{ inputTokens: 40_000, outputTokens: 2_000 }],
 		});
 
-		const report = await metering.studioUsage(env);
+		const report = await metering.studioUsage(env, MARKUP_SEED);
 		const row = report.byModel.find((m) => m.model === FLASH);
 		// Tokens: legacy + new. Cost: ONLY the new turn — 40k × $0.25/1M + 2k × $1.5/1M.
 		expect(row).toMatchObject({
@@ -237,7 +249,7 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 			stepUsage: [{ inputTokens: 5_000, outputTokens: 500 }],
 		});
 
-		const report = await metering.studioUsage(env);
+		const report = await metering.studioUsage(env, MARKUP_SEED);
 		expect(report.byModel).toEqual([
 			{
 				model: 'ollama:qwen3-coder',
@@ -253,7 +265,7 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 	});
 
 	it('v0 flat token keys fold in as an unattributed, unpriced row', async () => {
-		await metering.studioUsage(env);
+		await metering.studioUsage(env, MARKUP_SEED);
 		const scope = await ledgerScope();
 		await scope.invoke('metering/configure-meter', {
 			key: 'ai.tokens.input',
@@ -266,7 +278,7 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 			dedupeKey: ulid(),
 		});
 
-		const report = await metering.studioUsage(env);
+		const report = await metering.studioUsage(env, MARKUP_SEED);
 		expect(report.byModel).toEqual([
 			{ model: null, input: 500, output: 0, cacheRead: 0, cacheWrite: 0, listUsd: null, billedUsd: null },
 		]);

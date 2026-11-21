@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { connectorCalls, connectorTestFetch, resetConnectorCalls } from './connector-fixture.js';
 import {
+  MARKUP_SEED,
+  markupPercentFor,
   connectionId,
   dataSubjectId,
   domainEvent,
@@ -5420,6 +5422,33 @@ export function scopeHostContractSuite(
           tenantId: t1, since: at, until: new Date(day + 86_400_000).toISOString(), limit: 10,
         });
         expect(rows).toEqual([{ vertical: 'app', builds: 2, ms: 90_000 }, { vertical: 'other', builds: 1, ms: 5_000 }]);
+      });
+    });
+
+    // -- the markup schedule (#3316): what a tenant is charged over cost, dated, never edited --
+
+    describe('markup schedule (#3316)', () => {
+      it('adds a row with its admin row, lists it over the seed for its tenant only, and refuses a past day', async () => {
+        const setMarkup = host.admin.setMarkup!.bind(host.admin);
+        const listMarkup = host.admin.listMarkup!.bind(host.admin);
+        const today = new Date().toISOString().slice(0, 10);
+        const row = await setMarkup(staff, { tenantId: t1, dimension: 'rows-written', effectiveFrom: today, percent: 50, reason: 'pilot rate' });
+        expect(row).toMatchObject({ tenantId: t1, dimension: 'rows-written', kind: null, percent: 50, setBy: staff });
+
+        const mine = await listMarkup(staff, { tenantId: t1 });
+        expect(mine.map((r) => r.id)).toEqual([...MARKUP_SEED.map((r) => r.id), row.id]);
+        expect(markupPercentFor(mine, { tenantId: t1, dimension: 'rows-written', kind: 'preview', day: today })).toBe(50);
+        expect((await listMarkup(staff, { tenantId: t2 })).map((r) => r.id)).not.toContain(row.id);
+
+        const logged = await host.admin.auditLog(staff, { tenantId: t1, action: 'setMarkup' });
+        expect(logged.map((e) => e.after)).toEqual([row]);
+
+        // The directory may be shared with other cases, so the refusal is judged by what it adds.
+        const held = (await listMarkup(staff)).length;
+        const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+        await expect(setMarkup(staff, { effectiveFrom: yesterday, percent: 10, reason: 'too late' }))
+          .rejects.toMatchObject({ code: 'validation_failed' });
+        expect((await listMarkup(staff)).length).toBe(held);
       });
     });
 

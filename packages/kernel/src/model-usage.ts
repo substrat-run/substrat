@@ -8,8 +8,10 @@
 import {
   addDecimal,
   marginFactor,
+  markupPercentFor,
   modelUsageSummary,
   mulDecimal,
+  type MarkupRow,
   type ModelUsageEntry,
   type ModelUsageLine,
   type ModelUsageSummary,
@@ -79,25 +81,64 @@ export interface ModelUsageWindow {
  * these scopes are priced at zero, with what they would cost shown beside (#2365: a code review is
  * filed under the platform's review scope, and reviews are zero-rated until the runner's phase 3).
  * Which scopes, and for how long, is the caller's policy; the fold only applies it.
+ *
+ * `markup` (#3316): the markup schedule. Each line is then priced at the `model-calls` row in
+ * force for its tenant on its own UTC day, so a tenant's override and a dated change both apply,
+ * and `marginPercent` is only the rate for a line no row covers. A model line is read as `live`:
+ * the ledger cannot tell a preview's call from a live one, and the dimension row outranks a kind
+ * row anyway (`MARKUP_PRECEDENCE`).
  */
 export interface ModelUsagePricing {
   zeroRatedScopes?: readonly string[];
+  markup?: readonly MarkupRow[];
 }
 
 /** `a - b` on the fold's decimal strings, exact: `addDecimal` with the sign of `b` turned. */
 const subtractDecimal = (a: string, b: string): string => addDecimal(a, b.startsWith('-') ? b.slice(1) : b === '0' ? '0' : `-${b}`);
 
-const EMPTY_TOTALS = { calls: 0, unpriced: 0, inputTokens: 0, outputTokens: 0, listUsd: '0', zeroRatedCalls: 0, zeroRatedListUsd: '0' };
+const EMPTY_TOTALS = { calls: 0, unpriced: 0, inputTokens: 0, outputTokens: 0, listUsd: '0', zeroRatedCalls: 0 };
+
+/**
+ * List price kept apart per markup percent: the margin is multiplied once per percent, never per
+ * line, so a window priced at one rate rounds exactly as a single `list × factor` does.
+ */
+type ByPercent = Map<number, { list: string; free: string }>;
+
+const addTo = (groups: ByPercent, percent: number, list: string, free: boolean): void => {
+  const g = groups.get(percent) ?? { list: '0', free: '0' };
+  groups.set(percent, { list: addDecimal(g.list, list), free: free ? addDecimal(g.free, list) : g.free });
+};
+
+/** `billedUsd` (the charged part) and `zeroRatedUsd` (what the free part would cost) of a group set. */
+const priceGroups = (groups: ByPercent): { billedUsd: string; zeroRatedUsd: string } => {
+  let billedUsd = '0';
+  let zeroRatedUsd = '0';
+  for (const [percent, g] of groups) {
+    const factor = marginFactor(percent);
+    billedUsd = addDecimal(billedUsd, mulDecimal(subtractDecimal(g.list, g.free), factor));
+    zeroRatedUsd = addDecimal(zeroRatedUsd, mulDecimal(g.free, factor));
+  }
+  return { billedUsd, zeroRatedUsd };
+};
 
 export function foldModelUsage(
   entries: readonly ModelUsageEntry[],
   window: { readAt: string; since: string; until: string; marginPercent: number } & ModelUsagePricing,
 ): ModelUsageSummary {
-  const factor = marginFactor(window.marginPercent);
+  marginFactor(window.marginPercent); // refuses a bad fallback rate even when no line needs it
   const zeroRated = new Set(window.zeroRatedScopes ?? []);
+  const percentOf = (e: ModelUsageEntry): number =>
+    (window.markup &&
+      markupPercentFor(window.markup, {
+        tenantId: e.attribution.tenant,
+        dimension: 'model-calls',
+        kind: 'live',
+        day: e.at.slice(0, 10),
+      })) ??
+    window.marginPercent;
   const rows = new Map<string, ModelUsageSummaryRow>();
-  // The zero-rated part of each row's list price, kept beside the row: the row carries what it would cost.
-  const zeroRatedList = new Map<string, string>();
+  const rowGroups = new Map<string, ByPercent>();
+  const totalGroups: ByPercent = new Map();
   for (const e of entries) {
     const key = `${e.attribution.tenant} ${e.attribution.vertical} ${e.model}`;
     const row: ModelUsageSummaryRow = rows.get(key) ?? {
@@ -117,10 +158,14 @@ export function foldModelUsage(
       zeroRatedCalls: 0,
       zeroRatedUsd: '0',
     };
-    const listUsd = e.listUsd === null ? row.listUsd : addDecimal(row.listUsd, e.listUsd);
     const free = zeroRated.has(e.attribution.scope);
-    const freeList = free && e.listUsd !== null ? addDecimal(zeroRatedList.get(key) ?? '0', e.listUsd) : zeroRatedList.get(key) ?? '0';
-    zeroRatedList.set(key, freeList);
+    const groups = rowGroups.get(key) ?? new Map();
+    rowGroups.set(key, groups);
+    if (e.listUsd !== null) {
+      const percent = percentOf(e);
+      addTo(groups, percent, e.listUsd, free);
+      addTo(totalGroups, percent, e.listUsd, free);
+    }
     rows.set(key, {
       ...row,
       calls: row.calls + 1,
@@ -129,10 +174,9 @@ export function foldModelUsage(
       outputTokens: row.outputTokens + e.outputTokens,
       cachedInputTokens: row.cachedInputTokens + e.cachedInputTokens,
       cacheWriteTokens: row.cacheWriteTokens + e.cacheWriteTokens,
-      listUsd,
-      billedUsd: mulDecimal(subtractDecimal(listUsd, freeList), factor),
+      listUsd: e.listUsd === null ? row.listUsd : addDecimal(row.listUsd, e.listUsd),
+      ...priceGroups(groups),
       zeroRatedCalls: row.zeroRatedCalls + (free ? 1 : 0),
-      zeroRatedUsd: mulDecimal(freeList, factor),
     });
   }
   const sorted = [...rows.values()].sort(
@@ -143,28 +187,21 @@ export function foldModelUsage(
   );
   const totals = sorted.reduce(
     (t, r) => ({
-      ...t,
       calls: t.calls + r.calls,
       unpriced: t.unpriced + r.unpriced,
       inputTokens: t.inputTokens + r.inputTokens,
       outputTokens: t.outputTokens + r.outputTokens,
       listUsd: addDecimal(t.listUsd, r.listUsd),
       zeroRatedCalls: t.zeroRatedCalls + r.zeroRatedCalls,
-      zeroRatedListUsd: addDecimal(t.zeroRatedListUsd, zeroRatedList.get(`${r.tenantId} ${r.vertical} ${r.model}`) ?? '0'),
     }),
     EMPTY_TOTALS,
   );
-  const { zeroRatedListUsd, ...summed } = totals;
   return modelUsageSummary.parse({
     readAt: window.readAt,
     since: window.since,
     until: window.until,
     marginPercent: window.marginPercent,
     rows: sorted,
-    totals: {
-      ...summed,
-      billedUsd: mulDecimal(subtractDecimal(totals.listUsd, zeroRatedListUsd), factor),
-      zeroRatedUsd: mulDecimal(zeroRatedListUsd, factor),
-    },
+    totals: { ...totals, ...priceGroups(totalGroups) },
   });
 }

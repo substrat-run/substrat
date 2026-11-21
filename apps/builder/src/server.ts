@@ -57,7 +57,8 @@ import { devStatus, startDev, stopDev } from './devserver.js';
 import { loadEnvFiles } from './env.js';
 import { openReferences } from './reference.js';
 import { providerCatalog } from './hosting.js';
-import { MARKUP_PERCENT } from './pricing.js';
+import { MARKUP_SEED } from '@substrat-run/contracts';
+import { modelMarkupPercent } from './pricing.js';
 import {
 	loadRegistry,
 	loadState,
@@ -571,7 +572,8 @@ const server = createServer((req, res) => {
 					byProject: [],
 					byModel: [],
 					cost: { listUsd: '0', billedUsd: '0', unpricedTokens: 0 },
-					markupPercent: MARKUP_PERCENT,
+					// No control plane locally: the schedule is its seed.
+					markupPercent: modelMarkupPercent(MARKUP_SEED, new Date().toISOString().slice(0, 10)),
 					windowDays: 30,
 					generatedAt: new Date().toISOString(),
 				});

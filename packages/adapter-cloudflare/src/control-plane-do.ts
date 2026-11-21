@@ -209,6 +209,12 @@ import {
   type AuditedOperationRow,
   type AuditedOperationSqlRow,
 } from '@substrat-run/kernel';
+import {
+  MARKUP_INSERT_SQL,
+  MARKUP_SELECT_FOR_TENANT_SQL,
+  MARKUP_SELECT_SQL,
+  type MarkupScheduleRecord,
+} from '@substrat-run/kernel';
 import { replyOf, type DoReply } from './do-reply.js';
 import { rowBytes, switchSqlOver } from './scope-do.js';
 import {
@@ -1457,6 +1463,21 @@ const DIRECTORY_DDL = `
   );
   CREATE INDEX IF NOT EXISTS _substrat_build_usage_tenant ON _substrat_build_usage (tenant_id, at);
   CREATE INDEX IF NOT EXISTS _substrat_build_usage_at ON _substrat_build_usage (at);
+  -- #3316: the markup schedule, what a tenant is charged over cost. Rows are added, never
+  -- edited (newMarkupRow); a NULL target column means "every". The owner's seed is read
+  -- beneath these rows, never stored (markupScheduleOf).
+  CREATE TABLE IF NOT EXISTS _substrat_markup_schedule (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT,
+    dimension TEXT,
+    kind TEXT,
+    effective_from TEXT NOT NULL,
+    percent INTEGER,
+    reason TEXT NOT NULL,
+    set_at TEXT NOT NULL,
+    set_by TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS _substrat_markup_schedule_tenant ON _substrat_markup_schedule (tenant_id, effective_from);
   -- #1524: the stored storage gauge — one row per (scope, UTC day), kernel-owned DDL.
   ${SCOPE_STORAGE_DDL}
   -- #2501: the daily request rollup — one row per (UTC day, tenant, vertical, scope), kernel-owned DDL.
@@ -7209,6 +7230,26 @@ export class ControlPlaneDO extends DurableObject {
       params.push(assertRowLimit('limit', query.limit));
     }
     return this.sql.exec(sql, ...params).toArray() as unknown as ModelUsageRow[];
+  }
+
+  /**
+   * #3316: one markup row and its `setMarkup` admin row, one unit. The host built and judged the
+   * row (`newMarkupRow`); this only stores it. A name no older DO has, so an older one refuses
+   * the call rather than storing the row without its admin row.
+   */
+  insertMarkupRowAndAudit(values: (string | number | null)[], audit: AdminEntryInput): void {
+    this.writeAndAudit(() => {
+      this.sql.exec(MARKUP_INSERT_SQL, ...values);
+      return true;
+    }, audit);
+  }
+
+  /** #3316: the stored markup rows, all or those that can price one tenant (its own and the platform's). */
+  listMarkupRows(tenantId?: string): MarkupScheduleRecord[] {
+    return (tenantId
+      ? this.sql.exec(MARKUP_SELECT_FOR_TENANT_SQL, tenantId)
+      : this.sql.exec(MARKUP_SELECT_SQL)
+    ).toArray() as unknown as MarkupScheduleRecord[];
   }
 
   listTenantModelUsageMeter(query: TenantModelUsageMeterFilter): TenantModelUsageMeterRow[] {

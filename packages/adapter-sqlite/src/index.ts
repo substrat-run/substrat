@@ -156,6 +156,8 @@ import {
   type SweepRunEntry,
   type ModelUsageEntry,
   type ModelUsageSummary,
+  type MarkupRow,
+  type MarkupRowInput,
   type CapabilityGrant,
   type CreateTenantInput,
   type DomainEvent,
@@ -977,6 +979,15 @@ import {
   type PlatformRequestSettle,
 } from '@substrat-run/kernel';
 import { canonicalInstant } from '@substrat-run/kernel';
+import {
+  MARKUP_INSERT_SQL,
+  MARKUP_SELECT_FOR_TENANT_SQL,
+  MARKUP_SELECT_SQL,
+  markupRecordValues,
+  markupScheduleOf,
+  newMarkupRow,
+  type MarkupScheduleRecord,
+} from '@substrat-run/kernel';
 import { prePromoteSnapshotExpiresAt } from '@substrat-run/kernel';
 import {
   ADMIN_LOG_INDEXES_SQL,
@@ -3259,6 +3270,21 @@ export class SqliteScopeHost implements ScopeHost {
       );
       CREATE INDEX IF NOT EXISTS _substrat_build_usage_tenant ON _substrat_build_usage (tenant_id, at);
       CREATE INDEX IF NOT EXISTS _substrat_build_usage_at ON _substrat_build_usage (at);
+      -- #3316: the markup schedule, what a tenant is charged over cost. Rows are added, never
+      -- edited (newMarkupRow); a NULL target column means "every". The owner's seed is read
+      -- beneath these rows, never stored (markupScheduleOf).
+      CREATE TABLE IF NOT EXISTS _substrat_markup_schedule (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT,
+        dimension TEXT,
+        kind TEXT,
+        effective_from TEXT NOT NULL,
+        percent INTEGER,
+        reason TEXT NOT NULL,
+        set_at TEXT NOT NULL,
+        set_by TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS _substrat_markup_schedule_tenant ON _substrat_markup_schedule (tenant_id, effective_from);
       -- #1524: the stored storage gauge — one row per (scope, UTC day), kernel-owned DDL.
       ${SCOPE_STORAGE_DDL}
       -- #2501: the daily request rollup — one row per (UTC day, tenant, vertical, scope), kernel-owned DDL.
@@ -14400,6 +14426,23 @@ export class SqliteScopeHost implements ScopeHost {
         const rows = this.selectModelUsage({ ...window, order: 'asc' });
         this.recordAccess(actor, 'summarizeModelUsage', { tenantId: window.tenantId ?? null }, window, rows.length);
         return foldModelUsage(rows, { readAt: new Date().toISOString(), ...window, marginPercent, ...pricing });
+      },
+      setMarkup: async (actor: PlatformActorId, input: MarkupRowInput): Promise<MarkupRow> => {
+        const row = newMarkupRow(input, { id: ulid(), now: new Date().toISOString(), actor });
+        // The row and its admin row are one directory unit (#2526).
+        this.directoryWriteAndAudit(() => {
+          this.directory.prepare(MARKUP_INSERT_SQL).run(...markupRecordValues(row));
+          return true;
+        }, () => this.recordAdmin(actor, 'setMarkup', { tenantId: row.tenantId }, null, row));
+        return row;
+      },
+      listMarkup: async (actor: PlatformActorId, filter?: { tenantId?: TenantId }): Promise<MarkupRow[]> => {
+        const records = (filter?.tenantId
+          ? this.directory.prepare(MARKUP_SELECT_FOR_TENANT_SQL).all(filter.tenantId)
+          : this.directory.prepare(MARKUP_SELECT_SQL).all()) as MarkupScheduleRecord[];
+        const rows = markupScheduleOf(records);
+        this.recordAccess(actor, 'listMarkup', { tenantId: filter?.tenantId ?? null }, filter ?? null, rows.length);
+        return rows;
       },
     };
   }
