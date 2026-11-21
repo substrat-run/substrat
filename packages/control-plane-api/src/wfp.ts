@@ -1,4 +1,5 @@
 import { assetHash, PLATFORM_WORKER_FIRST_PREFIXES } from '@substrat-run/contracts';
+import { SCOPE_WORK_BINDING } from '@substrat-run/kernel';
 import { DeployUploadError, nextMigrationTag } from './deploy.js';
 import { withPlatformEntry } from './platform-entry.js';
 import type {
@@ -84,6 +85,13 @@ export interface WfpUploaderOptions {
    * the first mechanism that sees them.
    */
   traceSampling?: number;
+  /**
+   * #3316: the Analytics Engine dataset every pushed script's scope objects count their own rows
+   * into, by origin (the vertical's operation or a platform verb), bound as `SUBSTRAT_SCOPE_WORK`.
+   * Undefined binds nothing, and a scope object with no binding counts nothing. Per environment, so
+   * test counts stay out of prod's.
+   */
+  scopeWorkDataset?: string;
 }
 
 /** Bytes → base64, web-standard only (chunked so a large file does not blow the
@@ -266,6 +274,11 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
         ? [{ type: 'plain_text', name: 'SUBSTRAT_VERSION_ID', text: bundle.versionId }]
         : []),
       ...(opts.bindAi && bundle.usesModels ? [{ type: 'ai', name: 'AI' }] : []),
+      // #3316: on every script, the serving one and each version's own: a preview's fork copy is
+      // the platform work this exists to tell apart.
+      ...(opts.scopeWorkDataset
+        ? [{ type: 'analytics_engine', name: SCOPE_WORK_BINDING, dataset: opts.scopeWorkDataset }]
+        : []),
     ];
     // A fresh script declares every DO class under the first tag. An in-place update
     // of the serving script (#286) may only declare classes the script does not

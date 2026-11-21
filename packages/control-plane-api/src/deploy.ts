@@ -11,7 +11,13 @@ import {
   type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import type { AssetRouting, DeclaredBinding, DeclaredMigration, DeployManifest } from '@substrat-run/contracts';
-import { MIGRATIONS_DIGEST_BINDING, migrationSetDigest } from '@substrat-run/kernel';
+import {
+  MIGRATIONS_DIGEST_BINDING,
+  SCOPE_WORK_KIND_BINDING,
+  SCOPE_WORK_VERTICAL_BINDING,
+  migrationSetDigest,
+  type ScopeWorkScriptKind,
+} from '@substrat-run/kernel';
 
 /**
  * The deploy seam (self-serve-deploy.md). A `substrat push` uploads a *built* worker
@@ -268,6 +274,22 @@ export async function migrationsDigestBindings(
 ): Promise<{ type: 'plain_text'; name: string; text: string }[]> {
   if (migrations === null) return [];
   return [{ type: 'plain_text', name: MIGRATIONS_DIGEST_BINDING, text: await migrationSetDigest(migrations) }];
+}
+
+/**
+ * The two plain-text platform bindings a scope object stamps its row counts with (#3316): the
+ * vertical's slug and which script this is — `live` for the serving upload, `preview` for a
+ * version's own script, where a preview's fork lands. `plain_text`, like `SUBSTRAT_VERSION_ID`, so
+ * an in-place serve replaces them. The dataset the counts go to is the uploader's (`wfp.ts`).
+ */
+export function scopeWorkBindings(
+  vertical: string,
+  kind: ScopeWorkScriptKind,
+): { type: 'plain_text'; name: string; text: string }[] {
+  return [
+    { type: 'plain_text', name: SCOPE_WORK_VERTICAL_BINDING, text: vertical },
+    { type: 'plain_text', name: SCOPE_WORK_KIND_BINDING, text: kind },
+  ];
 }
 
 /**

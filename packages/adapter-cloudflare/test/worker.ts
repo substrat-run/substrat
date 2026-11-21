@@ -339,6 +339,31 @@ export class SetCheckScopeDO extends SetCheckBase {
   }
 }
 
+/**
+ * #3316: the scope-work meter on a real object — scope-work.test.ts. Hosted, the dataset is an
+ * Analytics Engine binding the uploader injects with the vertical and the script kind; here the
+ * class is handed a recorder whose points the test reads through `SCOPE_WORK_POINTS` (env is
+ * script-wide, as `SET_CHECK_DIGEST` says), and that refuses every write while `SCOPE_WORK_REFUSES`
+ * is set. `SCOPE_WORK_UNMETERED` is the same class with no dataset, the probe's baseline.
+ */
+export const SCOPE_WORK_POINTS = Symbol.for('substrat.test.scope-work-points');
+export const SCOPE_WORK_REFUSES = Symbol.for('substrat.test.scope-work-refuses');
+type ScopeWorkPoint = { indexes: string[]; blobs: string[]; doubles: number[] };
+const scopeWorkRecorder = {
+  writeDataPoint(point: ScopeWorkPoint): void {
+    const g = globalThis as unknown as Record<symbol, unknown>;
+    if (g[SCOPE_WORK_REFUSES]) throw new Error('Analytics Engine refused the point');
+    ((g[SCOPE_WORK_POINTS] ??= []) as ScopeWorkPoint[]).push(point);
+  },
+};
+const MeteredBase = defineScopeDO(contractTestModules, contractTestBareOps);
+export class MeteredScopeDO extends MeteredBase {
+  constructor(ctx: DurableObjectState, env: ScopeDoEnv) {
+    super(ctx, { ...env, SUBSTRAT_SCOPE_WORK: scopeWorkRecorder, SUBSTRAT_VERTICAL: 'acme', SUBSTRAT_SCRIPT_KIND: 'preview' });
+  }
+}
+export const UnmeteredScopeDO = defineScopeDO(contractTestModules, contractTestBareOps);
+
 export const NarrowedPeerScopeDO = defineScopeDO([peerModNarrowed], {});
 export const RemovedPeerScopeDO = defineScopeDO([peerModWithoutCaller], {});
 

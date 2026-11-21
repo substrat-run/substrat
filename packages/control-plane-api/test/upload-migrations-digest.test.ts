@@ -10,6 +10,8 @@ import {
   migrationSetDivergence,
   migrationSteps,
   MIGRATIONS_DIGEST_BINDING,
+  SCOPE_WORK_KIND_BINDING,
+  SCOPE_WORK_VERTICAL_BINDING,
   moduleMigrations,
   ulid,
 } from '@substrat-run/kernel';
@@ -131,6 +133,24 @@ describe('a vertical upload carries the stored migration set digest (#2349)', ()
     expect(await migrationSetDivergence([{ id: mod.manifest.id, steps: migrationSteps(edited) }], expected)).toMatch(
       /^the authored migrations this deployment registers are not the ones stored/,
     );
+  });
+
+  // #3316: the same two uploads, and the other plain-text platform bindings they carry — what each
+  // scope object stamps its row counts with. Here because this suite already drives both uploads.
+  it('the push names its script `preview` and the serving upload `live`, each with the vertical', async () => {
+    stubCloudflare();
+    const { id, verticalSlug } = await push('scope-work-kind');
+    await promote(verticalSlug, id);
+    const sentTo = (script: string) =>
+      ([...puts].reverse().find((p) => p.script === script)?.meta['bindings'] as { name: string }[]).filter((b) =>
+        [SCOPE_WORK_VERTICAL_BINDING, SCOPE_WORK_KIND_BINDING].includes(b.name),
+      );
+    const stamped = (kind: string) => [
+      { type: 'plain_text', name: SCOPE_WORK_VERTICAL_BINDING, text: verticalSlug },
+      { type: 'plain_text', name: SCOPE_WORK_KIND_BINDING, text: kind },
+    ];
+    expect(sentTo(deploymentRefFor(verticalSlug, id))).toEqual(stamped('preview'));
+    expect(sentTo(stableDeploymentRefFor(verticalSlug))).toEqual(stamped('live'));
   });
 
   it('an unheld version (its push left the migrations out) injects no binding on either upload', async () => {

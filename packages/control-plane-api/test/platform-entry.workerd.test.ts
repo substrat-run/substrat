@@ -174,6 +174,37 @@ describe('the platform entry, uploaded and run on workerd (#2245)', () => {
     expect(run.body.authChecks).toBeNull();
   });
 
+  // #3316: the scope objects in a script count their rows by the RPC entry whose async context ran
+  // them, and cannot import `node:async_hooks` themselves; the entry publishes its class for them.
+  it('publishes its AsyncLocalStorage for the scope-work meter, which finds it with no node flag', async () => {
+    const probe = (
+      await build({
+        stdin: {
+          contents: `
+import { asyncLocalStorageClass } from ${JSON.stringify(fileURLToPath(new URL('../../adapter-cloudflare/src/scope-work.ts', import.meta.url)))};
+export default {
+  async fetch() {
+    const Als = asyncLocalStorageClass();
+    if (!Als) return Response.json({ found: false });
+    const als = new Als();
+    const held = await als.run('held', async () => { await Promise.resolve(); return als.getStore(); });
+    return Response.json({ found: true, held });
+  },
+};`,
+          loader: 'ts',
+          resolveDir: fileURLToPath(new URL('.', import.meta.url)),
+        },
+        bundle: true,
+        format: 'esm',
+        platform: 'neutral',
+        write: false,
+      })
+    ).outputFiles[0]!.text;
+    expect((await served([], RUNTIME_BASELINE, probe)).body).toEqual({ found: true, held: 'held' });
+    // Opted out with no node of any kind: nothing to publish, and the meter counts unattributed.
+    expect((await served(['no_nodejs_als'], RUNTIME_BASELINE, probe)).body).toEqual({ found: false });
+  });
+
   it('an opt-out beside nodejs_compat still names its calls, through process.getBuiltinModule', async () => {
     const run = await served(['nodejs_compat', 'no_nodejs_als']);
     expect(run.flags).toEqual(['nodejs_compat', 'no_nodejs_als']);
