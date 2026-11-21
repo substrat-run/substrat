@@ -102,6 +102,7 @@ import {
   scopeStorageSample,
   requestDay,
   requestRollupDay,
+  costDay,
   meterDay,
   meterDayTake,
   verticalOwnerPeriod,
@@ -199,6 +200,7 @@ import {
   type StorageGauge,
   type RequestDay,
   type RequestRollupDay,
+  type CostDay,
   type MeterDay,
   type MeterDayTake,
   type VerticalOwnerPeriod,
@@ -596,6 +598,11 @@ import {
   type RequestDayFilter,
   type RequestDayReadInput,
   type RequestRollupDayFilter,
+  type CostDayFilter,
+  type CostDayReadInput,
+  type CostRollupDayFilter,
+  type ScopeObjectReadInput,
+  type ScopeObjectTarget,
   type TenantRequestMeterRow,
   type RequestMeterDayRow,
   type MeterDayFilter,
@@ -1135,6 +1142,13 @@ interface ControlPlaneStub {
   listTenantRequestMeter(tenantId: TenantId, since: string, until: string, limit: number): Promise<TenantRequestMeterRow[]>;
   listRequestMeterDays(since: string, until: string): Promise<RequestMeterDayRow[]>;
   pruneRequestDays(limit: number, retentionMonths: number | null): Promise<number>;
+  /** #3316: the daily Cloudflare cost rollup and the scope-object ledger — kernel `cost-rollup.ts`. */
+  recordCostDay(input: CostDayReadInput): Promise<{ recorded: number }>;
+  listCostDays(filter?: CostDayFilter): Promise<CostDay[]>;
+  listCostRollupDays(filter?: CostRollupDayFilter): Promise<RequestRollupDay[]>;
+  pruneCostDays(limit: number, retentionMonths: number | null): Promise<number>;
+  listScopeObjectsDue(input: { limit: number; retryMs: number }): Promise<ScopeObjectTarget[]>;
+  recordScopeObject(input: ScopeObjectReadInput): Promise<void>;
   /** #2501: the daily meter snapshot — kernel `meter-days.ts`, run inside the directory DO. */
   recordMeterDay(input: MeterDayTakeInput): Promise<MeterDayTakeResult>;
   listMeterDays(filter?: MeterDayFilter): Promise<MeterDay[]>;
@@ -4683,6 +4697,17 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async databaseSizeLocal(scopeId: ScopeId): Promise<number> {
     return heldOrRefused(scopeId, await this.scopeStub(scopeId).databaseSizeIfHeld());
+  }
+
+  /**
+   * The Durable Object id this deployment's scope namespace derives for a scope (#3316): the hex
+   * Cloudflare's analytics name an object by, which nothing outside this script can compute. The
+   * platform records it so a billed row (rows written, duration) maps to its scope. `idFromName`
+   * wakes nothing, so asking costs no request and reads no row; the scope is not asked whether it
+   * is held here, because the platform asks the script its directory says holds the scope's data.
+   */
+  scopeObjectIdLocal(scopeId: ScopeId): string {
+    return this.scopeNs.idFromName(scopeId).toString();
   }
 
   /** This host's own scope's attachment bytes (#2501), the vertical-host read; refused as the size is. */
@@ -11411,6 +11436,31 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       pruneRequestDays: async (_actor, limit: number, retentionMonths: number | null) =>
         this.cp.pruneRequestDays(assertRowLimit('limit', limit), retentionMonths),
+      recordCostDay: async (_actor, input: CostDayReadInput) => this.cp.recordCostDay(input),
+      listCostDays: async (actor, filter?: CostDayFilter) => {
+        const rows = (await this.cp.listCostDays(filter)).map((r) => costDay.parse(r));
+        await this.recordAccess(
+          actor,
+          'listCostDays',
+          { tenantId: filter?.tenantId ?? null, scopeId: filter?.scopeId ?? null },
+          filter ?? null,
+          rows.length,
+        );
+        return rows;
+      },
+      listCostRollupDays: async (actor, filter?: CostRollupDayFilter) => {
+        const rows = (await this.cp.listCostRollupDays(filter)).map((r) => requestRollupDay.parse(r));
+        await this.recordAccess(actor, 'listCostRollupDays', { tenantId: null }, filter ?? null, rows.length);
+        return rows;
+      },
+      pruneCostDays: async (_actor, limit: number, retentionMonths: number | null) =>
+        this.cp.pruneCostDays(assertRowLimit('limit', limit), retentionMonths),
+      listScopeObjectsDue: async (actor, input: { limit: number; retryMs: number }) => {
+        const rows = await this.cp.listScopeObjectsDue({ limit: assertRowLimit('limit', input.limit), retryMs: input.retryMs });
+        await this.recordAccess(actor, 'listScopeObjectsDue', { tenantId: null }, input, rows.length);
+        return rows;
+      },
+      recordScopeObject: async (_actor, input: ScopeObjectReadInput) => this.cp.recordScopeObject(input),
       recordMeterDay: async (_actor, input: MeterDayTakeInput) => this.cp.recordMeterDay(input),
       listMeterDays: async (actor, filter?: MeterDayFilter) => {
         const rows = (await this.cp.listMeterDays(filter)).map((r) => meterDay.parse(r));

@@ -480,6 +480,12 @@ export interface VerticalScopeHost {
    */
   attachmentSizeLocal?(scopeId: ScopeId): Promise<number>;
   /**
+   * The Durable Object id this deployment derives for a scope (#3316), so the platform can map
+   * Cloudflare's billed analytics to it. OPTIONAL for the reason `databaseSizeLocal` is: a host
+   * built before it satisfies this interface without it, and the route answers 501.
+   */
+  scopeObjectIdLocal?(scopeId: ScopeId): string | Promise<string>;
+  /**
    * One orphan-attachment pass over a scope this deployment holds (#2314). OPTIONAL for the reason
    * `databaseSizeLocal` is: a host built before it satisfies this interface without it, and the
    * route answers 501, which the platform counts as a deployment to redeploy, not as a clean pass.
@@ -2028,6 +2034,18 @@ export function mountPlatformSurface<Env extends object>(
       return refuseStatus(c, 501, 'this deployment cannot read a database size (#1524). Redeploy it');
     }
     return c.json({ bytes: await host.databaseSizeLocal(scope) });
+  });
+
+  // #3316: the Durable Object id this deployment derives for one scope, so the platform maps
+  // Cloudflare's billed analytics (rows written, duration) to it. An id, nothing of the scope: the
+  // derivation wakes no object. Behind the one gate above, as every route here is.
+  app.get('/internal/scope-object-id', async (c) => {
+    const scope = scopeIdOf.parse(c.req.query('scopeId'));
+    const host = deps.hostFor(c.env);
+    if (!host.scopeObjectIdLocal) {
+      return refuseStatus(c, 501, "this deployment cannot name a scope's object (#3316). Redeploy it");
+    }
+    return c.json({ objectId: await host.scopeObjectIdLocal(scope) });
   });
 
   // #2501: what one scope's attachment rows sum to, for the storage gauge. Metadata only, like the

@@ -47,6 +47,8 @@ import type {
   ScopeStatus,
   StorageMeterReading,
   RequestRollupReading,
+  CostRollupReading,
+  CostAttribution,
   MeterDaysReading,
   VerticalOwnersReading,
   SweepRunEntry,
@@ -404,6 +406,12 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   readRequestRollup = (
     q: { tenantId?: TenantId; scopeId?: ScopeId; vertical?: string; since?: string; until?: string; limit?: number } = {},
   ): Promise<RequestRollupReading> => this.call(`/meters/requests${query({ ...q })}`);
+  // Cloudflare costs (#3316): the stored cost inputs per (day, script, scope, Durable Object class,
+  // billed dimension), attributed through the directory, over an inclusive window of UTC days (by
+  // default the 31 days ending today), and which of those days the rollup has read. Quantities only.
+  readCloudflareCosts = (
+    q: { tenantId?: TenantId; scopeId?: ScopeId; vertical?: string; attribution?: CostAttribution; since?: string; until?: string; limit?: number } = {},
+  ): Promise<CostRollupReading> => this.call(`/meters/cloudflare-costs${query({ ...q })}`);
   // Meter days (#2501): meters 1 and 2 per tenant as the first scheduled pass of each UTC day found
   // them, over an inclusive window of days (by default the 31 days ending today), and which of
   // those days were taken. Omit `tenantId` for the fleet.

@@ -633,6 +633,15 @@ describe('VerticalClient — database size (#1524)', () => {
     expect(new URL(seen[0]!).searchParams.get('scopeId')).toBe(s);
   });
 
+  it('asks the scope-object-id route (#3316), and refuses anything but a 64-hex id', async () => {
+    const seen: string[] = [];
+    await expect(answering(200, JSON.stringify({ objectId: 'f'.repeat(64) }), seen).scopeObjectId(s)).resolves.toBe('f'.repeat(64));
+    expect(new URL(seen[0]!).pathname).toBe('/internal/scope-object-id');
+    for (const body of [{}, { objectId: 'F'.repeat(64) }, { objectId: 'f'.repeat(63) }]) {
+      await expect(answering(200, JSON.stringify(body)).scopeObjectId(s)).rejects.toThrow(/without an object id/);
+    }
+  });
+
   it('a 200 without a size is a wire disagreement, not a zero', async () => {
     for (const body of [{}, { bytes: '8192' }, { bytes: -1 }, { bytes: 1.5 }]) {
       await expect(answering(200, JSON.stringify(body)).databaseSize(s)).rejects.toThrow(/without a size/);

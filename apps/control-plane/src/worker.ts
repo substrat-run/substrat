@@ -73,6 +73,10 @@ import {
   type OrphanAttachmentSweepOptions,
   type RequestRollupSweepOptions,
   type RequestRollupSweepReport,
+  type CostRollupSweepOptions,
+  type CostRollupSweepReport,
+  type ScopeObjectsSweepOptions,
+  type ScopeObjectsSweepReport,
   type MeterSnapshotSweepReport,
   type FailingRun,
 } from '@substrat-run/kernel';
@@ -122,6 +126,7 @@ import {
   createWfpWireSettingsApi,
   createCfObservabilityReader,
   createRouterRequestDayReader,
+  createCloudflareUsageDayReader,
   createCfDoNamespaceReader,
   createR2AccessLogSink,
   createPipelinesEventSink,
@@ -519,6 +524,15 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * its bytes. docs/architecture/orphan-attachment-sweep.md has the rollout.
    */
   ORPHAN_ATTACHMENT_SWEEP?: string;
+  /**
+   * #3316: the daily Cloudflare cost rollup. `on` reads each closed day of the account's billed
+   * Workers and Durable Objects analytics into the directory, attributed through it; anything else
+   * (the default) skips it. Opt-in per environment because the analytics are the ACCOUNT's: only
+   * the control plane whose directory names the account's scripts can attribute them, so TEST,
+   * which shares the account, leaves it off. Needs the Cloudflare API token with Account Analytics
+   * Read and Workers Scripts Read.
+   */
+  CLOUDFLARE_COST_ROLLUP?: string;
   /** #2314: scopes one orphan-attachment pass visits (kernel default 25). `0` pauses. Garbled is the default. */
   ORPHAN_ATTACHMENT_SWEEP_BATCH?: string;
   /**
@@ -1117,6 +1131,54 @@ export const GATEWAY_PROVIDERS: readonly string[] = Object.entries(PROVIDERS)
 export function modelCostReaderFor(env: Pick<Env, 'CF_API_TOKEN' | 'CF_ACCOUNT_ID'>): ModelCostReader | undefined {
   if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
   return createCfModelCostReader({ accountId: env.CF_ACCOUNT_ID, apiToken: env.CF_API_TOKEN, fetch: globalFetch });
+}
+
+/**
+ * #3316: the daily Cloudflare cost rollup's reader, or undefined when the environment has not opted
+ * in (`CLOUDFLARE_COST_ROLLUP=on`) or holds no Cloudflare credential.
+ */
+export function cloudflareCostsFor(
+  env: Pick<Env, 'CF_API_TOKEN' | 'CF_ACCOUNT_ID' | 'CLOUDFLARE_COST_ROLLUP'>,
+): CostRollupSweepOptions | undefined {
+  if (env.CLOUDFLARE_COST_ROLLUP !== 'on' || !env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
+  return { read: createCloudflareUsageDayReader({ accountId: env.CF_ACCOUNT_ID, apiToken: env.CF_API_TOKEN }) };
+}
+
+/**
+ * #3316: the scope-object phase's reader: the object id the script the DIRECTORY names as holding
+ * the scope's data derives for it (`/internal/scope-object-id`), never a script the deployment
+ * ladder falls back to, whose namespace would derive another object's id. Undefined without script
+ * dispatch: nothing else can reach a vertical's namespace.
+ */
+export function scopeObjectsFor(
+  resolveRef: ((deploymentRef: string) => Promise<Pick<VerticalClient, 'scopeObjectId'> | undefined>) | undefined,
+): ScopeObjectsSweepOptions | undefined {
+  if (!resolveRef) return undefined;
+  return {
+    read: async (target) => {
+      const client = await resolveRef(target.script);
+      if (!client) throw new Error(`no deployment resolves for script ${target.script}`);
+      return client.scopeObjectId(target.scopeId);
+    },
+  };
+}
+
+/**
+ * #3316: what the pass's log line says about the scope-object phase and the cost rollup, or null
+ * when neither did anything worth a line. A cost day's standing failure is mailed once and named
+ * here on every pass it lasts, as the request rollup's is.
+ */
+export function cloudflareCostsLogOf(
+  objects: ScopeObjectsSweepReport | null | undefined,
+  costs: CostRollupSweepReport | null | undefined,
+): { scopeObjects?: ScopeObjectsSweepReport; costs?: { read: number; recorded: number; failing?: FailingRun } } | null {
+  const objectsActive = objects != null && objects.asked > 0;
+  const costsActive = costs != null && (costs.read > 0 || costs.failed > 0 || costs.streak !== null);
+  if (!objectsActive && !costsActive) return null;
+  return {
+    ...(objectsActive ? { scopeObjects: objects } : {}),
+    ...(costsActive ? { costs: { read: costs.read, recorded: costs.recorded, ...(costs.streak ? { failing: costs.streak } : {}) } } : {}),
+  };
 }
 
 /**
@@ -2813,6 +2875,9 @@ export default {
     const crossVertical = crossVerticalFor(env, host);
     const orphanAttachments = orphanAttachmentSweepFor(env, host.admin, resolveRef);
     const requestRollup = requestRollupFor(env);
+    // #3316: each scope's object id, through the script that holds its data, and the day's costs.
+    const scopeObjects = scopeObjectsFor(resolveRef);
+    const cloudflareCosts = cloudflareCostsFor(env);
     // #2501: the storage gauge's database and attachment reads go through one deployment per scope.
     const gaugeDeployment = oncePerScope(resolveVerticalForScopeFor(env));
     const recordNow = scopeRecordNowIn(host.admin, SWEEP_ACTOR);
@@ -2930,6 +2995,10 @@ export default {
       // #2501: each closed day of the router's request datapoints, kept in the directory as
       // estimated counts before Analytics Engine ages them out. Off without the router's dataset.
       ...(requestRollup ? { requestRollup } : {}),
+      // #3316: the directory learns each scope's Durable Object id, then each closed day of the
+      // account's billed Cloudflare analytics is attributed through it. Costs are opt-in per env.
+      ...(scopeObjects ? { scopeObjects } : {}),
+      ...(cloudflareCosts ? { cloudflareCosts } : {}),
       // #2501: each UTC day's meters 1 and 2, one row per tenant, taken by the day's first pass and
       // kept for the billing horizon. A directory transaction, so nothing to configure.
       meterSnapshot: {},
@@ -2977,6 +3046,8 @@ export default {
     const rollup = requestRollupLogOf(report.requestRollup);
     // #2501: the day's snapshot taken, or a failing run, on every pass it lasts.
     const snapshot = meterSnapshotLogOf(report.meterSnapshot);
+    // #3316: object ids asked and recorded, and cost days read or failing.
+    const costs = cloudflareCostsLogOf(report.scopeObjects, report.cloudflareCosts);
     if (
       report.snapshotsReaped > 0 ||
       report.archivedScopesReaped > 0 ||
@@ -2993,7 +3064,8 @@ export default {
       cvActive ||
       orphansActive ||
       rollup !== null ||
-      snapshot !== null
+      snapshot !== null ||
+      costs !== null
     ) {
       console.log('platform-sweep', {
         snapshotsReaped: report.snapshotsReaped,
@@ -3022,6 +3094,7 @@ export default {
         ...(orphansActive ? { orphanAttachments: oa } : {}),
         ...(rollup ? { requestRollup: rollup } : {}),
         ...(snapshot ? { meterSnapshot: snapshot } : {}),
+        ...(costs ? { cloudflareCosts: costs } : {}),
         errors: report.errors,
       });
     }

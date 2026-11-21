@@ -2358,6 +2358,131 @@ export const requestRollupReading = z.object({
 });
 export type RequestRollupReading = z.infer<typeof requestRollupReading>;
 
+/**
+ * A non-negative quantity as a decimal string, at most 6 decimal places (#3316): the scale the
+ * contracts decimal helpers (`addDecimal`, `mulDecimal`) compute on, so a price is a product of
+ * two strings and never a float.
+ */
+export const costQuantity = z.string().regex(/^\d+(\.\d{1,6})?$/);
+
+/**
+ * The billed Cloudflare dimensions the cost rollup keeps (#3316, #3311), each in the unit the
+ * analytics report it in. Requests through the router are the request rollup's (`requestDay`),
+ * because Workers for Platforms bills one request per dispatch chain, not per script.
+ *
+ * - `worker_cpu_us`: Worker CPU time, µs (`workersInvocationsAdaptive`, sampled).
+ * - `do_requests`: Durable Object requests, each RPC call and each alarm
+ *   (`durableObjectsInvocationsAdaptiveGroups`, sampled).
+ * - `do_rows_read`, `do_rows_written`, `do_storage_write_units`, `do_duration_gb_s` (duration in
+ *   GB-s, the billed figure; active time is not kept beside it): `durableObjectsPeriodicGroups`, an
+ *   aggregate, not a sample.
+ */
+export const costDimension = z.enum([
+  'worker_cpu_us',
+  'do_requests',
+  'do_rows_read',
+  'do_rows_written',
+  'do_storage_write_units',
+  'do_duration_gb_s',
+]);
+export type CostDimension = z.infer<typeof costDimension>;
+
+/**
+ * How a cost row was attributed (#3316). Through the directory, never by a script name's prefix:
+ *
+ * - `scope`: a Durable Object whose id the directory recorded for a scope. The scope's own tenant,
+ *   which for a listed vertical is the tenant that installed it, not the vertical's owner.
+ * - `script`: a dimension Cloudflare reports per script, not per object (CPU, DO requests), on a
+ *   vertical's script: charged to the vertical's owner on that day (`_substrat_vertical_owners`).
+ * - `unmapped`: an object in a vertical's script whose id names no scope the directory recorded:
+ *   a ConfigDO, IdentityDO or SweeperDO, a scope reaped before its id was recorded, or one not
+ *   recorded yet. Reported apart, with no tenant: whose it is is not guessed.
+ * - `platform`: the platform's own scripts (the router, the control plane, store and connector scripts).
+ * - `unknown`: a script the directory has no vertical for (another environment's, or a deleted one).
+ */
+export const costAttribution = z.enum(['scope', 'script', 'unmapped', 'platform', 'unknown']);
+export type CostAttribution = z.infer<typeof costAttribution>;
+
+/**
+ * One UTC day of one billed Cloudflare dimension at the finest grain the analytics report it
+ * (#3316): a (script, scope, Durable Object class), with what the directory attributes it to.
+ * COST INPUTS ONLY: no price, no rate. Price is computed at read from a markup schedule.
+ *
+ * `quantity` is the analytics' figure. For a sampled dimension `lower` and `upper` are its 95%
+ * confidence interval (null when the dataset is an aggregate, or Cloudflare called its interval
+ * invalid); a row that sums several groups sums their bounds, which is wider than the true interval.
+ */
+export const costDay = z.object({
+  day: utcDay,
+  /** The Worker script that ran it: a vertical's serving or per-version script, or the platform's. */
+  script: z.string(),
+  /** Null for a row that is not one scope's: a script-grain dimension, or an unmapped object. */
+  scopeId: scopeId.nullable(),
+  /** The Durable Object class the namespace holds, when Cloudflare still lists it; null otherwise. */
+  objectClass: z.string().min(1).nullable(),
+  dimension: costDimension,
+  attribution: costAttribution,
+  /** Null when the directory names no tenant for the row (`unmapped`, `platform`, `unknown`). */
+  tenantId: tenantId.nullable(),
+  vertical: z.string().min(1).nullable(),
+  /** `preview` for a preview fork (the scope's kind, or a per-version script that holds no live scope's data). */
+  kind: z.enum(['live', 'preview']),
+  /** The version a per-version script runs, or a preview scope is bound to. */
+  versionId: z.string().min(1).nullable(),
+  /** The tag that asked for a preview (`pr-<n>` for a pull request's), read off the scope's slug. */
+  previewTag: z.string().min(1).nullable(),
+  quantity: costQuantity,
+  lower: costQuantity.nullable(),
+  upper: costQuantity.nullable(),
+});
+export type CostDay = z.infer<typeof costDay>;
+
+/**
+ * `GET /meters/cloudflare-costs` (#3316): the stored daily cost inputs over an inclusive window of
+ * UTC days, and the rollup's record of each day in it (`requestRollupDay`'s shape), so a day the
+ * rollup has not read is told apart from a day without usage.
+ */
+export const costRollupReading = z.object({
+  since: utcDay,
+  until: utcDay,
+  rows: z.array(costDay),
+  truncated: z.boolean(),
+  days: z.array(requestRollupDay),
+});
+export type CostRollupReading = z.infer<typeof costRollupReading>;
+
+/**
+ * One Cloudflare usage day as the analytics report it, before attribution (#3316). What the
+ * scheduled pass reads and what the backfill loader replays: the directory attributes it in the
+ * transaction that records it, so both take the same path. Numbers are the analytics' own; a
+ * sampled figure may carry its 95% interval.
+ */
+const usageInterval = { lower: z.number().nonnegative().optional(), upper: z.number().nonnegative().optional() };
+export const cloudflareUsageDay = z.object({
+  day: utcDay,
+  /** `workersInvocationsAdaptive`, per script. */
+  workers: z.array(z.object({ script: z.string().min(1), cpuTimeUs: z.number().nonnegative(), ...usageInterval })),
+  /** `durableObjectsInvocationsAdaptiveGroups`, per (namespace, script). */
+  doInvocations: z.array(
+    z.object({ namespaceId: z.string().min(1), script: z.string().min(1), requests: z.number().nonnegative(), ...usageInterval }),
+  ),
+  /** `durableObjectsPeriodicGroups`, per (namespace, object). */
+  doObjects: z.array(
+    z.object({
+      namespaceId: z.string().min(1),
+      objectId: z.string().min(1),
+      rowsRead: z.number().nonnegative(),
+      rowsWritten: z.number().nonnegative(),
+      storageWriteUnits: z.number().nonnegative(),
+      /** GB-s. */
+      duration: z.number().nonnegative(),
+    }),
+  ),
+  /** Which script and class each namespace belongs to, from Cloudflare's namespace list. May be partial. */
+  namespaces: z.array(z.object({ id: z.string().min(1), script: z.string().min(1).nullable(), class: z.string().min(1).nullable() })),
+});
+export type CloudflareUsageDay = z.infer<typeof cloudflareUsageDay>;
+
 /** The most binding names a fleet walk's hold keeps; any more are counted (`walkHold.more`). */
 export const WALK_HOLD_BINDINGS_MAX = 64;
 

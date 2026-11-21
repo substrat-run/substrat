@@ -750,6 +750,17 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect((await refused.json()).error).toMatch(/database size/);
   });
 
+  // #3316: the object id this deployment derives for a scope, behind the same gate; a host that
+  // predates the read answers 501, which the platform's ledger records as a failed attempt.
+  it('names a scope object id behind the gate, and 501s on a host that cannot', async () => {
+    const url = `/internal/scope-object-id?scopeId=${SCOPE}`;
+    const host = fakeHost({ scopeObjectIdLocal: (s) => (s === SCOPE ? 'a'.repeat(64) : '') });
+    const ok = await appWith(host).request(url, { headers: authed() }, ENV);
+    expect(await ok.json()).toEqual({ objectId: 'a'.repeat(64) });
+    expect((await appWith(host).request(url, {}, ENV)).status).toBe(403);
+    expect((await appWith(fakeHost()).request(url, { headers: authed() }, ENV)).status).toBe(501);
+  });
+
   // #2541: a scope the deployment does not hold is the host's refusal, and the route lets it through
   // as a 409 on both size reads: not a 404, which the platform reads as "this deployment predates
   // the route", and not a 200 with a size of 0.

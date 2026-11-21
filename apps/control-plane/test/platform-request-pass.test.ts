@@ -24,6 +24,8 @@ import {
 } from '@substrat-run/kernel';
 import worker, {
   attachmentReaderFor,
+  cloudflareCostsFor,
+  scopeObjectsFor,
   drainContextOf,
   drainTarget,
   meterSnapshotLogOf,
@@ -819,5 +821,70 @@ describe('the daily meter snapshot in the scheduled pass (#2501)', () => {
     // day already: what holds either way is that the day is taken, at an instant inside it.
     const takes = await host.admin.listMeterDayTakes!(staff, { since: before, until: after });
     expect(takes.some((t) => t.error === null && t.takenAt?.slice(0, 10) === t.day)).toBe(true);
+  });
+});
+
+describe('the Cloudflare cost rollup on the control plane (#3316)', () => {
+  it('runs no cost rollup unless the environment opts in, with the credential and the account', () => {
+    const configured = { CF_API_TOKEN: 'tok', CF_ACCOUNT_ID: 'acct', CLOUDFLARE_COST_ROLLUP: 'on' };
+    expect(cloudflareCostsFor(configured)).toBeDefined();
+    for (const off of [{ CLOUDFLARE_COST_ROLLUP: undefined }, { CLOUDFLARE_COST_ROLLUP: 'yes' }, { CF_API_TOKEN: undefined }, { CF_ACCOUNT_ID: undefined }]) {
+      expect(cloudflareCostsFor({ ...configured, ...off })).toBeUndefined();
+    }
+  });
+
+  it('asks the script the directory names for a scope object id, and fails a script that resolves to nothing', async () => {
+    const asked: string[] = [];
+    const objects = scopeObjectsFor(async (ref) =>
+      ref === 'tenant-a-crm'
+        ? { scopeObjectId: async (id: string) => (asked.push(`${ref}/${id}`), 'a'.repeat(64)) }
+        : undefined,
+    );
+    const target = {
+      tenantId: tenantId.parse(ulid()),
+      scopeId: scopeId.parse(ulid()),
+      script: 'tenant-a-crm',
+      vertical: 'tenant-a/crm',
+      kind: 'live' as const,
+      versionId: null,
+      previewTag: null,
+    };
+    await expect(objects!.read(target)).resolves.toBe('a'.repeat(64));
+    expect(asked).toEqual([`tenant-a-crm/${target.scopeId}`]);
+    await expect(objects!.read({ ...target, script: 'reaped-script' })).rejects.toThrow(/no deployment resolves for script reaped-script/);
+    expect(scopeObjectsFor(undefined)).toBeUndefined();
+  });
+
+  it('on the directory DO: a day is attributed and served with its ledger, and a scope object failure is recorded', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const staff = platformActorId.parse(ulid());
+    // A day no other test of this pool touches: the ledger is fleet-wide.
+    const day = '2026-06-03';
+    const usage = {
+      day,
+      workers: [{ script: 'substrat-router', cpuTimeUs: 99, lower: 90, upper: 108 }],
+      doInvocations: [],
+      doObjects: [{ namespaceId: 'ns-x', objectId: 'e'.repeat(64), rowsRead: 0, rowsWritten: 7, storageWriteUnits: 0, duration: 0 }],
+      namespaces: [{ id: 'ns-x', script: 'substrat-control-plane', class: 'ControlPlaneDO' }],
+    };
+    await expect(host.admin.recordCostDay!(staff, { day, attemptedAt: new Date().toISOString(), usage })).resolves.toEqual({ recorded: 2 });
+    const rows = await host.admin.listCostDays!(staff, { since: day, until: day });
+    expect(rows.map((r) => `${r.script} ${r.objectClass} ${r.dimension} ${r.attribution} ${r.quantity} ${r.lower}-${r.upper}`)).toEqual([
+      'substrat-control-plane ControlPlaneDO do_rows_written platform 7 null-null',
+      'substrat-router null worker_cpu_us platform 99 90-108',
+    ]);
+    expect(await host.admin.listCostRollupDays!(staff, { since: day, until: day })).toMatchObject([{ day, rows: 2, error: null }]);
+    const target = {
+      tenantId: tenantId.parse(ulid()),
+      scopeId: scopeId.parse(ulid()),
+      script: 'no-such-script',
+      vertical: 'tenant-a/crm',
+      kind: 'live' as const,
+      versionId: null,
+      previewTag: null,
+    };
+    await expect(host.admin.recordScopeObject!(staff, { ...target, attemptedAt: new Date().toISOString(), error: 'HTTP 501' })).resolves.toBeUndefined();
+    // The due list runs its join against the directory's real tables.
+    expect(Array.isArray(await host.admin.listScopeObjectsDue!(staff, { limit: 5, retryMs: 0 }))).toBe(true);
   });
 });
