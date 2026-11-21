@@ -18,6 +18,11 @@ export interface KanbanColumn {
   limit?: number;
   /** Refuse a card that would take the column over `limit`, rather than only warn. */
   strict?: boolean;
+  /**
+   * The column's colour (any CSS colour), for a column that is a coloured status label. Drawn
+   * as a dot before the header's label, and set on the column as `--sub-kanban-column-accent`.
+   */
+  colour?: string;
 }
 
 /** Each column's card keys, in order. Every column has an entry, empty or not. */
@@ -125,14 +130,41 @@ export function indexAt(middles: readonly number[], y: number): number {
   return i < 0 ? middles.length : i;
 }
 
+/**
+ * Where a card lands on a board that keeps no order inside a column (`sortable` off), so a
+ * place is not chosen but follows: in its own column, where it already is; in another,
+ * among that column's cards by their place in the given `cards` (`rank`, a key's index in
+ * them), so a re-read draws it where the drop showed it. A key `rank` does not hold sorts last.
+ */
+export function placeOf(board: Board, key: string, column: string, rank: ReadonlyMap<string, number>): Spot {
+  const from = spotOf(board, key);
+  if (from?.column === column) return from;
+  const rest = without(board, column, key);
+  const mine = rank.get(key) ?? Infinity;
+  const index = rest.findIndex((k) => (rank.get(k) ?? Infinity) > mine);
+  return { column, index: index < 0 ? rest.length : index };
+}
+
 export type Step = 'up' | 'down' | 'left' | 'right' | 'top' | 'bottom';
 
 /**
  * Where a lifted card goes on an arrow key. Up and down move within the column, left and
  * right to the nearest column that takes it (skipping the ones that do not), keeping the
  * row where it can. Null when there is nowhere to go, so the key can say so.
+ *
+ * Given `rank`, the board keeps no order inside a column: up, down, top and bottom go
+ * nowhere, and left and right land where `placeOf` puts the card.
  */
-export function stepFrom(board: Board, columns: readonly KanbanColumn[], key: string, at: Spot, step: Step, takes: (column: string) => boolean): Spot | null {
+export function stepFrom(
+  board: Board,
+  columns: readonly KanbanColumn[],
+  key: string,
+  at: Spot,
+  step: Step,
+  takes: (column: string) => boolean,
+  rank?: ReadonlyMap<string, number>,
+): Spot | null {
+  if (rank && step !== 'left' && step !== 'right') return null;
   const length = without(board, at.column, key).length;
   if (step === 'up') return at.index > 0 ? { ...at, index: at.index - 1 } : null;
   if (step === 'down') return at.index < length ? { ...at, index: at.index + 1 } : null;
@@ -143,6 +175,7 @@ export function stepFrom(board: Board, columns: readonly KanbanColumn[], key: st
   for (let i = order.indexOf(at.column) + by; i >= 0 && i < order.length; i += by) {
     const column = order[i]!;
     if (!takes(column)) continue;
+    if (rank) return placeOf(board, key, column, rank);
     return { column, index: Math.min(at.index, without(board, column, key).length) };
   }
   return null;

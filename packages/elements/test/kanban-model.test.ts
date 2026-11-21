@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boardOf, indexAt, loadOf, moveCard, moveOf, refusalOf, stepFrom, type KanbanColumn } from '../src/kanban-model.js';
+import { boardOf, indexAt, loadOf, moveCard, moveOf, placeOf, refusalOf, stepFrom, type KanbanColumn } from '../src/kanban-model.js';
 
 type Card = { id: string; status: string };
 
@@ -55,5 +55,20 @@ describe('kanban model', () => {
     expect(stepFrom(board, COLUMNS, 'b', { column: 'todo', index: 1 }, 'down', takes)).toBeNull();
     expect(stepFrom(board, COLUMNS, 'b', { column: 'todo', index: 1 }, 'right', takes)).toEqual({ column: 'done', index: 0 });
     expect(stepFrom(board, COLUMNS, 'b', { column: 'todo', index: 1 }, 'left', takes)).toBeNull();
+  });
+
+  it('with no order in a column, lands a card by its place in the given cards, and keeps it where it is at home', () => {
+    // b comes after c in the given cards, a before it: so b lands after c, and a before it.
+    const rank = new Map([['a', 0], ['c', 1], ['b', 2]]);
+    expect(placeOf(board, 'b', 'doing', rank)).toEqual({ column: 'doing', index: 1 });
+    expect(placeOf(board, 'a', 'doing', rank)).toEqual({ column: 'doing', index: 0 });
+    expect(placeOf(board, 'b', 'todo', rank)).toEqual({ column: 'todo', index: 1 });
+    expect(placeOf(board, 'b', 'done', new Map())).toEqual({ column: 'done', index: 0 });
+    const takes = () => true;
+    for (const step of ['up', 'down', 'top', 'bottom'] as const) {
+      expect(stepFrom(board, COLUMNS, 'a', { column: 'todo', index: 0 }, step, takes, rank)).toBeNull();
+    }
+    expect(stepFrom(board, COLUMNS, 'b', { column: 'todo', index: 1 }, 'right', takes, rank)).toEqual({ column: 'doing', index: 1 });
+    expect(stepFrom(board, COLUMNS, 'b', { column: 'doing', index: 1 }, 'left', takes, rank)).toEqual({ column: 'todo', index: 1 });
   });
 });

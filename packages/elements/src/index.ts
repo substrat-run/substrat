@@ -53,13 +53,14 @@ export {
   type AssistantTurnChange,
   type AssistantTurnStatus,
 } from './assistant-model.js';
-export { SubKanban, type CardHandle } from './kanban.js';
+export { KANBAN_LABELS, SubKanban, registerKanbanLabels, type CardHandle, type KanbanLabels } from './kanban.js';
 export {
   boardOf,
   indexAt,
   loadOf,
   moveCard,
   moveOf,
+  placeOf,
   refusalOf,
   spotOf,
   stepFrom,

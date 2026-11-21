@@ -204,8 +204,8 @@ and the cards; the board shows them, and the moves made on it since.
 import '@substrat-run/elements/kanban';
 
 board.columns = [
-  { key: 'todo', label: 'To do' },
-  { key: 'doing', label: 'In progress', limit: 3 },
+  { key: 'todo', label: 'To do', colour: '#c4c4c4' },
+  { key: 'doing', label: 'In progress', limit: 3, colour: '#fdab3d' },
   { key: 'review', label: 'Review', limit: 2, strict: true },
   { key: 'done', label: 'Done' },
 ];
@@ -231,6 +231,38 @@ board.move = (m) => api.moveTicket({ ticketId: m.key, status: m.to, after: m.aft
   neighbours, for a rank between them.
 - **Without a drag.** `moveTo(key, column, index?)` makes the same move from a "Move to…" menu
   or a command palette.
+- **No order within a column.** When the screen cannot store an order inside a column (the
+  columns are a derived value, or cards are ordered somewhere else), set `sortable="false"`. No
+  gap opens in the card's own column, so dropping it there leaves it where it was. In another
+  column the gap shows where it will actually land — among that column's cards by their place
+  in `cards` — rather than following the pointer. Up, Down, Home and End on a held card say the
+  column has no order; Left and Right still change column. `moveTo` ignores `index`, and a move's
+  `index`, `after` and `before` describe where the card landed.
+- **Colours and width.** A column's `colour` (any CSS colour) is drawn as a dot before its label
+  and set on the column as `--sub-kanban-column-accent`, for a status whose label has a colour.
+  Draw it another way through `::part(header)` (a bottom border, say), and hide the dot with
+  `::part(accent)`. Columns start at `--sub-kanban-column-width` (18rem); set
+  `--sub-kanban-column-grow: 1` and a few columns share out a wide board.
+- **Words.** Everything the board shows or announces can be replaced with `labels`, a partial
+  `KanbanLabels` (a function where the words carry a value, so plurals and word order work in
+  any language; `KANBAN_LABELS` holds the English). Each word resolves as: the board's own
+  `labels`, then the words registered for its language, then English. The language is the
+  nearest `lang` up from the board, then the page's. The words are registered in Web Awesome's
+  own translation registry, beside those of the Web Awesome components inside the board, and the
+  board hands those components its language, so one `lang` switches both:
+
+  ```ts
+  import '@awesome.me/webawesome/dist/translations/sv.js';
+  import { registerKanbanLabels } from '@substrat-run/elements/kanban';
+
+  registerKanbanLabels('sv', {
+    addCard: 'Lägg till kort',
+    count: (n, limit) => `${n} kort${limit === undefined ? '' : `, gräns ${limit}`}`,
+    moved: (card, column, position, total) => `Flyttade ${card} till ${column}, plats ${position} av ${total}.`,
+    // …
+  });
+  // <html lang="sv">
+  ```
 - **Drawing cards.** `renderCard(card)` (Lit) or `mount(el, card)` (React, Vue), as a table
   cell does. A click or Enter on a card fires `sub-card-open`.
 - **Adding cards.** `addable` puts "Add a card" under each column. It opens a field: Enter
