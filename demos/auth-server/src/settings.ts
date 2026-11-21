@@ -21,6 +21,15 @@ import type { SqlExec } from './introspect.js';
 export const ALLOW_SIGNUP = 'ALLOW_SIGNUP';
 
 /**
+ * The declared key behind "a password sign-in needs a verified address". Read with
+ * `isTruthy`, so absent ⇒ off — but for the opposite reason to `ALLOW_SIGNUP`'s: off is what
+ * every install did before the key existed, and turning it on locks every unverified password
+ * account out of password sign-in until its holder clicks a link. That is a decision for the
+ * operator to make, never one an upgrade makes for them.
+ */
+export const REQUIRE_EMAIL_VERIFICATION = 'REQUIRE_EMAIL_VERIFICATION';
+
+/**
  * Read a declared boolean config value. Absent ⇒ false: an issuer that lets strangers
  * create accounts is a decision someone has to make, so it is never the default.
  */

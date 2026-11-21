@@ -218,6 +218,8 @@ describe('the session records HOW it was established', () => {
   it('names every path a session can be minted on, and nothing else', () => {
     expect(signInMethodOfPath('/sign-in/email')).toBe('password');
     expect(signInMethodOfPath('/sign-up/email')).toBe('password');
+    // The verification link signs in only while REQUIRE_EMAIL_VERIFICATION is on, for a password account.
+    expect(signInMethodOfPath('/verify-email')).toBe('password');
     // THE SHAPE A HOOK IS ACTUALLY HANDED: Better Auth registers one parameterized route for
     // every upstream, so the path is the pattern and the provider is in `params`. The cases
     // below this one are the literal spelling, kept because a route need not be a pattern —

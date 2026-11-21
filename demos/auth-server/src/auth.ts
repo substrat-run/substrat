@@ -11,6 +11,7 @@ import { TOKEN_EXCHANGE_GRANT_TYPE } from '@substrat-run/contracts';
 import { i18n } from '@better-auth/i18n';
 import { sv } from '@better-auth/i18n/locales';
 import { resetPasswordEmail, verifyEmail, type EmailBrand, type MailStyle } from './email.js';
+import { OAUTH_QUERY_AFTER_VERIFICATION } from './email-verification-wire.js';
 import { LOCALE_COOKIE, requestLocale, type Locale } from './locale-wire.js';
 import { localizedRefusals } from './server-messages.js';
 import { legacyAwarePassword } from './legacy-password.js';
@@ -104,6 +105,15 @@ export interface AuthDeps {
    * through the admin API regardless.
    */
   allowSignup?: boolean;
+  /**
+   * Must a password account's address be verified before it may sign in with the password?
+   * Off unless an operator turns it on (`REQUIRE_EMAIL_VERIFICATION`, settable from the
+   * dashboard). On, sign-up sets no session — the verification link does, and carries someone
+   * a relying party sent back to it (`verificationReturnsToClient`) — and an unverified sign-in
+   * is refused with a fresh link sent. Only `/sign-in/email` is gated: every other way in
+   * proves the person by something other than a password this issuer cannot vouch for.
+   */
+  requireEmailVerification?: boolean;
   /**
    * The UPSTREAM providers this issuer federates to, built from the `identity_provider` rows
    * by `socialProvidersFrom` — "sign in with Microsoft", enabled by an operator rather than
@@ -639,6 +649,86 @@ async function refuseVerifiedPlaceholder(ctx: {
   }
 }
 
+/**
+ * The parameters `oauthProvider` adds when it signs a pending authorize request for the login
+ * screen (`ba_param` repeats once per name the signature covers). Everything else in
+ * `oauth_query` is the relying party's own request, verbatim.
+ */
+const SIGNED_QUERY_PARAMS = ['sig', 'exp', 'ba_iat', 'ba_pl', 'ba_param'] as const;
+
+
+/**
+ * With verification required, someone a relying party sent here must still end up back at that
+ * application — and the session that would carry them there no longer comes from the request
+ * that holds the pending authorize request.
+ *
+ * Without verification, sign-up sets a session and `oauthProvider`'s after-hook resumes the
+ * `oauth_query` the same request carried (#898). With it, sign-up sets no session, and an
+ * unverified sign-in is refused; the session arrives later, from `GET /verify-email`, which
+ * carries no body and so no `oauth_query` for the plugin to resume. What that GET does have is
+ * the `callbackURL` it redirects to — taken from the sign-up or sign-in body that minted the
+ * link. So that is where the pending request goes: the link's callback becomes the relying
+ * party's ORIGINAL authorize request, re-issued. Clicking it verifies the address, sets the
+ * session (`autoSignInAfterVerification`), and lands on `/oauth2/authorize` signed in, which
+ * answers it like any other: consent, or a code at the application's callback.
+ *
+ * Re-issued as the plugin would resume it after a fresh sign-in: without `prompt=login`,
+ * `prompt=create` or `max_age`, since the click is that sign-in. Re-issuing rather than resuming
+ * means nothing here has to outlive the signed query's own
+ * expiry: the link is good for as long as the verification token is, and authorize re-judges
+ * the client, the redirect URI and the per-client sign-in policy from scratch. The signature is
+ * not ours to check — `oauthProvider`'s before-hook refuses a forged one on this same request —
+ * and a forged one would gain nothing anyway: anyone can already send a browser to any
+ * authorize URL they like.
+ *
+ * Only when there is something to carry. A body that names its own `callbackURL` keeps it. A
+ * sign-in by someone already verified is left alone, because it succeeds and the plugin
+ * resumes it the ordinary way — setting `callbackURL` there would add a `Location` the resume
+ * does not want. The lookup is by address before the password is checked, but answers nothing
+ * to the caller: it only decides what a link that is never sent would have said.
+ *
+ * A sign-in for a client that requires an SMS code carries the request as
+ * `OAUTH_QUERY_AFTER_VERIFICATION` instead, and its link is addressed the same way. That is
+ * safe because of what authorize does next: the link's session is stamped `password`
+ * (`signInMethodOfPath`), which such a client's policy refuses, so authorize asks again
+ * (`max_age=0`) and the person signs in with password and code before any code is issued.
+ */
+async function verificationReturnsToClient(ctx: {
+  path: string;
+  body?: Record<string, unknown>;
+  context: {
+    baseURL: string;
+    internalAdapter: { findUserByEmail(email: string): Promise<{ user: { emailVerified: boolean } } | null> };
+  };
+}): Promise<{ context: { body: Record<string, unknown> } } | undefined> {
+  const body = ctx.body;
+  if (!body || body.callbackURL !== undefined) return undefined;
+  const afterVerification = ctx.path === '/sign-in/email' ? body[OAUTH_QUERY_AFTER_VERIFICATION] : undefined;
+  const pending = typeof body.oauth_query === 'string' ? body.oauth_query : afterVerification;
+  if (typeof pending !== 'string') return undefined;
+  if (ctx.path === '/sign-in/email') {
+    if (typeof body.email !== 'string') return undefined;
+    const found = await ctx.context.internalAdapter.findUserByEmail(body.email.toLowerCase());
+    if (!found || found.user.emailVerified) return undefined;
+  }
+  const request = new URLSearchParams(pending);
+  for (const param of SIGNED_QUERY_PARAMS) request.delete(param);
+  // Clicking the link IS a fresh authentication, so what asked for one is answered — exactly the
+  // parts `oauthProvider` strips when it resumes after a fresh sign-in (`login`, `max_age`) or a
+  // sign-up (`create`). Left in, authorize judges the request from the start and sends someone
+  // who has just verified and been signed in back to `/signup` or `/login`. `max_age=0` in
+  // particular is usually ours, not the client's: the policy hook below adds it to re-ask, and
+  // still does on this request if the link's session is one the client's policy refuses.
+  request.delete('max_age');
+  const prompts = (request.get('prompt') ?? '').split(' ').filter((p) => p && p !== 'login' && p !== 'create');
+  if (prompts.length) request.set('prompt', prompts.join(' '));
+  else request.delete('prompt');
+  // A path, not an absolute URL: the verify endpoint's origin check admits a relative callback
+  // without consulting `trustedOrigins`, and the base path is whatever this issuer mounts at.
+  const authorize = `${new URL(ctx.context.baseURL).pathname.replace(/\/$/, '')}/oauth2/authorize`;
+  return { context: { body: { ...body, callbackURL: `${authorize}?${request}` } } };
+}
+
 function betterAuthFor(deps: AuthDeps) {
   const defaultLocale = deps.defaultLocale ?? 'en';
   // An invitation is sent by an administrator, about someone else: nothing in that request says
@@ -668,6 +758,11 @@ function betterAuthFor(deps: AuthDeps) {
       // that app's callback never sees this dashboard (the #898 failure, on the sign-up path).
       disableSignUp: !deps.allowSignup,
       autoSignIn: true,
+      // The operator's `REQUIRE_EMAIL_VERIFICATION`. On, Better Auth skips `autoSignIn` on
+      // sign-up (no session until the link is clicked) and refuses an unverified
+      // `/sign-in/email` with `EMAIL_NOT_VERIFIED` — AFTER checking the password, so a fresh
+      // link is only ever sent to someone who knew it.
+      requireEmailVerification: deps.requireEmailVerification ?? false,
       minPasswordLength: 8,
       // Imported people keep the bcrypt hash their old issuer gave them until they next set a
       // password (`src/legacy-password.ts`); everything written here is still scrypt.
@@ -680,9 +775,17 @@ function betterAuthFor(deps: AuthDeps) {
     },
     emailVerification: {
       sendOnSignUp: true,
-      // Verification is offered (mail goes out through the same adapter) but not required to
-      // sign in — this is a demo, not a compliance gate. Flip `requireEmailVerification` on
-      // in emailAndPassword to make it mandatory.
+      // Verification is always offered (mail goes out through the same adapter); whether it is
+      // REQUIRED is the operator's `REQUIRE_EMAIL_VERIFICATION`. The two options below only
+      // apply while it is on, so an issuer that leaves it off behaves exactly as before:
+      //  - `sendOnSignIn`: a refused sign-in sends a fresh link, so someone whose first mail
+      //    expired or got lost is never stuck without one.
+      //  - `autoSignInAfterVerification`: the link sets the session sign-up withheld. With it
+      //    off, verifying would land a new account on a sign-in screen it has to fill in again.
+      //    The link's `callbackURL` is what carries them on to the application that sent them
+      //    (`verificationReturnsToClient`, in the before-hook below).
+      sendOnSignIn: deps.requireEmailVerification ?? false,
+      autoSignInAfterVerification: deps.requireEmailVerification ?? false,
       sendVerificationEmail: async ({ user, url }, request) => {
         await deps.transport.send(verifyEmail({ to: user.email, from: deps.sender, url, style: mailStyle(request?.headers) }));
       },
@@ -988,6 +1091,9 @@ function betterAuthFor(deps: AuthDeps) {
         }
         if (ctx.path === '/admin/update-user') await refuseVerifiedPlaceholder(ctx);
         if (ctx.path === '/oauth2/token') return machineGrantCeiling(ctx, machineScopes);
+        if (deps.requireEmailVerification && (ctx.path === '/sign-up/email' || ctx.path === '/sign-in/email')) {
+          return verificationReturnsToClient(ctx);
+        }
         if (ctx.path !== '/oauth2/authorize') return;
         const query = ctx.query as Record<string, string | undefined> | undefined;
         const clientId = query?.client_id;

@@ -11,6 +11,7 @@ import {
   requestPasswordReset,
   resolveSignInRoute,
   signIn as signInWithPassword,
+  EmailNotVerified,
   signInSocial,
   type BankIdEmailRequired,
   type BankIdStart,
@@ -175,7 +176,7 @@ export function SignIn({
         {err && !passwordEnabled && <p className="error">{err}</p>}
         {passwordEnabled && (
           <>
-          <Field label={t('common.email')} value={email} onChange={setEmail} type="email" />
+          <Field label={t('common.email')} value={email} onChange={(v) => { setEmail(v); setNotice(null); }} type="email" />
           <Field label={t('common.password')} value={password} onChange={setPassword} type="password" />
           {err && <p className="error">{err}</p>}
           {notice && <p className="notice">{notice}</p>}
@@ -183,15 +184,19 @@ export function SignIn({
             className="btn primary"
             onClick={async () => {
               setErr(null);
+              setNotice(null);
               try {
                 // `resumed` ⇒ an authorize request took over and the browser is already on its
                 // way back to the relying party; re-rendering here would flash the dashboard.
+                // With an SMS step next the request must not resume yet, so it rides along only
+                // to address a verification link, should this address turn out unverified.
                 const needsSms = signIn.passwordSecondFactor === 'sms';
-                const { resumed } = await signInWithPassword(email, password, needsSms ? null : oauthQuery);
+                const { resumed } = await signInWithPassword(email, password, needsSms ? null : oauthQuery, needsSms ? oauthQuery : null);
                 if (needsSms) { setPassword(''); setPhoneOpen(true); return; }
                 if (!resumed) onDone();
               } catch (e) {
-                setErr(e instanceof Error ? e.message : String(e));
+                if (e instanceof EmailNotVerified) setNotice(t('signin.verifySent'));
+                else setErr(e instanceof Error ? e.message : String(e));
               }
             }}
           >
@@ -298,7 +303,7 @@ function IdentifierFirst({
       <Centered>
         <Card title={title} logo={theme.logoUrl}>
           <p className="muted identifier">
-            {email.trim()} <button className="btn link" onClick={() => { setRoute(null); setPassword(''); setErr(null); }}>{t('signin.change')}</button>
+            {email.trim()} <button className="btn link" onClick={() => { setRoute(null); setPassword(''); setErr(null); setNotice(null); }}>{t('signin.change')}</button>
           </p>
           {route.kind === 'none' && (
             <p className="error">{t('signin.noRoute')}</p>
@@ -321,13 +326,15 @@ function IdentifierFirst({
                 disabled={busy}
                 onClick={async () => {
                   setErr(null);
+                  setNotice(null);
                   try {
                     const needsSms = route.secondFactor === 'sms';
-                    const { resumed } = await signInWithPassword(email.trim(), password, needsSms ? null : oauthQuery);
+                    const { resumed } = await signInWithPassword(email.trim(), password, needsSms ? null : oauthQuery, needsSms ? oauthQuery : null);
                     if (needsSms) { setPassword(''); onSms(); return; }
                     if (!resumed) onDone();
                   } catch (e) {
-                    setErr(e instanceof Error ? e.message : String(e));
+                    if (e instanceof EmailNotVerified) setNotice(t('signin.verifySent'));
+                    else setErr(e instanceof Error ? e.message : String(e));
                   }
                 }}
               >

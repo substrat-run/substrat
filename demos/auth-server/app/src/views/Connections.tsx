@@ -18,7 +18,7 @@ import { connectionPath } from '../console/routes';
 import { ConnectionLink } from './connections/ConnectionLink';
 import { connectionStatus, connectionsFrom, enabledFor, signsIn, type Connection } from './connections/model';
 import { ProviderEditor } from './connections/ProviderSettings';
-import type { HealResult } from '../../../src/social-relay-heal.js';
+import type { HealResult } from '../../../src/social-relay-heal-wire.js';
 
 const COLUMNS = 'minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1.6fr) 110px';
 

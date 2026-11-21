@@ -412,6 +412,13 @@ export function signInMethodOfPath(
   if (path === '/invitation/password') return PASSWORD_METHOD;
   if (path === '/phone/verify') return PASSWORD_SMS_METHOD;
   if (path === '/sign-in/email' || path === '/sign-up/email') return PASSWORD_METHOD;
+  // The verification link, which signs in only while `REQUIRE_EMAIL_VERIFICATION` is on: the
+  // session sign-up withheld, for a password account. Stamped as that password, so a client
+  // that refuses passwords refuses it and one that wants an SMS second factor still asks for it.
+  // Holding the mailbox is not a weaker proof than the password here — a reset link already
+  // makes it one — and an unstamped session would send every new account straight back to
+  // the login screen of any client with a policy.
+  if (path === '/verify-email') return PASSWORD_METHOD;
   // BankID's session is minted in `/bankid/collect` (`bankid-plugin.ts`), the poll that sees
   // the order complete — not in `/bankid/start`, which has nobody signed in yet.
   if (path === '/bankid/collect' || path === '/bankid/email/verify' || path === '/bankid/email/skip') return BANKID_METHOD;

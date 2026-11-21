@@ -54,6 +54,16 @@ export const AUTH_SERVER_ENV: EnvVarSpec[] = [
     group: 'Accounts',
   },
   {
+    key: 'REQUIRE_EMAIL_VERIFICATION',
+    label: 'Require email verification',
+    description:
+      'Refuse a password sign-in until the account’s email address is verified (`true`/`false`). Off by default, which is what this issuer did before the key existed. On, a new account gets no session at sign-up: the verification mail’s link signs the person in and, when an application sent them, carries them back to it. An unverified person who tries to sign in is refused and sent a fresh link. Only password sign-in is gated — an upstream, BankID or an invitation proves the person another way. Togglable from the dashboard, which writes this same value.',
+    placeholder: 'false',
+    required: false,
+    secret: false,
+    group: 'Accounts',
+  },
+  {
     key: 'ACCOUNT_LINKING',
     label: 'Account linking',
     description:

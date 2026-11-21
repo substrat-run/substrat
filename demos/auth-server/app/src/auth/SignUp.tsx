@@ -14,6 +14,10 @@ import { useT } from './locale';
  * `onDone` handles the ordinary case; when a relying party sent this person here, creating
  * the account resumes that authorize request and the browser leaves for the app's callback
  * before this component would have re-rendered — the same `resumed` dance as sign-in.
+ *
+ * When the issuer requires a verified address, creating the account signs nobody in: the card
+ * turns into "check your inbox", and the link in that mail finishes the job (and the trip back
+ * to the application, when one sent them).
  */
 export function SignUp({
   forOidc, oauthQuery, theme, onDone, onSignIn,
@@ -24,6 +28,19 @@ export function SignUp({
   const [password, setPassword] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [sentTo, setSentTo] = useState<string | null>(null);
+  if (sentTo) {
+    return (
+      <Centered>
+        <Card title={t('signup.checkInboxTitle')} logo={theme.logoUrl}>
+          <p className="notice">{t('signup.checkInbox', { email: sentTo })}</p>
+          <button className="btn link" onClick={onSignIn}>
+            {t('signup.haveAccount')}
+          </button>
+        </Card>
+      </Centered>
+    );
+  }
   return (
     <Centered>
       <Card title={t('signup.title')} logo={theme.logoUrl}>
@@ -41,8 +58,11 @@ export function SignUp({
             setErr(null);
             setBusy(true);
             try {
-              const { resumed } = await signUp({ name, email, password }, oauthQuery);
-              if (!resumed) onDone();
+              const { resumed, verificationSent } = await signUp({ name, email, password }, oauthQuery);
+              if (verificationSent) {
+                setSentTo(email.trim());
+                setBusy(false);
+              } else if (!resumed) onDone();
             } catch (e) {
               setErr(e instanceof Error ? e.message : String(e));
               setBusy(false);
