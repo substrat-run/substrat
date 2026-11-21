@@ -169,19 +169,17 @@ export function previewRequestUrl(origin: string, tenantId: string, repo: string
  * The preview mode one-click setup commits and stores, in order:
  *
  * 1. what the person chose in this request;
- * 2. what the repo's link already holds — a link stored before the mode existed was set up
- *    when every PR previewed, so `stored` arrives here as `every-pr` for it;
- * 3. `every-pr` when the repo already carried the workflow file: it was set up before links
- *    existed at all (or by hand), its PRs preview today, and re-running setup must not take
- *    that away silently;
- * 4. `on-request` for a repo set up for the first time.
+ * 2. the mode the repo's link stores explicitly — a choice somebody made on an earlier run;
+ * 3. `on-request` otherwise, which includes a repo whose workflow is already committed and a
+ *    link stored before the mode existed. Those preview every PR until setup re-runs; the
+ *    re-run turns that off unless somebody ticks Preview every PR. Every preview copies
+ *    prod's data, so previewing each push to each PR is the costly default, not the safe one.
  */
 export function resolvePreviewMode(input: {
   requested?: PreviewMode | undefined;
   stored?: PreviewMode | undefined;
-  workflowExisted: boolean;
 }): PreviewMode {
-  return input.requested ?? input.stored ?? (input.workflowExisted ? 'every-pr' : 'on-request');
+  return input.requested ?? input.stored ?? 'on-request';
 }
 
 /**

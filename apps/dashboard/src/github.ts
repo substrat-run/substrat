@@ -66,12 +66,8 @@ export interface SetupRepoCiInput {
   branch: string;
   /** e.g. `.github/workflows/substrat-deploy.yml` */
   workflowPath: string;
-  /**
-   * The file to commit. A function is handed whether the file already existed on the branch,
-   * which is how setup keeps a repo that already previewed every PR doing so
-   * (`resolvePreviewMode`); it is read after the existence check and before the commit.
-   */
-  workflowContent: string | ((existed: boolean) => string);
+  /** The file to commit. */
+  workflowContent: string;
   /** e.g. `SUBSTRAT_SERVICE_TOKEN` */
   secretName: string;
   secretValue: string;
@@ -116,8 +112,7 @@ export async function setupRepoCi(
   if (!secretRes.ok) throw new Error(`github: set actions secret failed (${secretRes.status})`);
 
   // Create-or-update the workflow file: the contents API needs the existing blob's
-  // sha to update, and 404s when the file is new — both are fine. (`repoFileExists` reads
-  // the same path for the setup card, so the card and this commit agree on "existed".)
+  // sha to update, and 404s when the file is new — both are fine.
   const path = input.workflowPath.split('/').map(encodeURIComponent).join('/');
   const existing = await gh(
     cfg,
@@ -125,9 +120,7 @@ export async function setupRepoCi(
     `token ${token}`,
   );
   const sha = existing.ok ? ((await existing.json()) as { sha?: string }).sha : undefined;
-  const content = typeof input.workflowContent === 'function' ? input.workflowContent(Boolean(sha)) : input.workflowContent;
-
-  const bytes = new TextEncoder().encode(content);
+  const bytes = new TextEncoder().encode(input.workflowContent);
   const put = await gh(cfg, `/repos/${repo}/contents/${path}`, `token ${token}`, {
     method: 'PUT',
     body: JSON.stringify({
@@ -308,18 +301,4 @@ export async function listPullRequestFiles(
     if (body.length < 100) break;
   }
   return files;
-}
-
-/**
- * Whether `path` exists on `branch`, read with the installation's token. Setup asks it of the
- * deploy workflow (`resolvePreviewMode`'s "already set up" case), and the setup card asks it
- * too, so the toggle shows the mode setup will actually commit.
- */
-export async function repoFileExists(cfg: GithubConfig, installationId: string, repoFullName: string, branch: string, path: string): Promise<boolean> {
-  const token = await installationToken(cfg, installationId);
-  const file = path.split('/').map(encodeURIComponent).join('/');
-  const res = await gh(cfg, `/repos/${encodeRepo(repoFullName)}/contents/${file}?ref=${encodeURIComponent(branch)}`, `token ${token}`);
-  if (res.status === 404) return false;
-  if (!res.ok) throw new Error(`github: read ${path} failed (${res.status})`);
-  return true;
 }

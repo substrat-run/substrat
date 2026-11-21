@@ -76,6 +76,8 @@ describe('GitHub import acts on the team the request names (#2170)', () => {
   let links: Array<{ tenantId: string; repo: string }>;
   /** Whether the fake repo already carries the deploy workflow on its branch. */
   let workflowCommitted: boolean;
+  /** The repo's stored link, as the link DO's `getLink` answers it. */
+  let storedLink: Record<string, unknown> | null;
 
   /** A new team owned by the login `sub`; answers its dashboard scope. */
   const seat = async (team: TenantId, slug: string, sub = OWNER) => {
@@ -115,6 +117,7 @@ describe('GitHub import acts on the team the request names (#2170)', () => {
     minted = [];
     links = [];
     workflowCommitted = false;
+    storedLink = null;
 
     vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) => {
       const path = new URL(String(url)).pathname;
@@ -159,8 +162,8 @@ describe('GitHub import acts on the team the request names (#2170)', () => {
       },
       GITHUB_REPO_LINK: {
         idFromName: (name: string) => name,
-        // A repo never set up before: no stored link, so setup resolves its preview mode afresh.
-        get: () => ({ getLink: async () => null, setLink: async (link: { tenantId: string; repo: string }) => void links.push(link) }),
+        // `storedLink` is null by default: a repo never set up before.
+        get: () => ({ getLink: async () => storedLink, setLink: async (link: { tenantId: string; repo: string }) => void links.push(link) }),
       },
     };
   });
@@ -193,15 +196,22 @@ describe('GitHub import acts on the team the request names (#2170)', () => {
     expect(links).toEqual([{ tenantId: teamA, slug: 'helpdesk', repo: 'acme/helpdesk', previews: 'on-request', path: null }]);
   });
 
-  it('the setup card shows the preview mode setup then commits, whether or not the workflow is already there', async () => {
-    // A repo set up by hand (or before repo links existed) keeps previewing every PR; one set
-    // up for the first time previews on request. The card must not show the other one.
-    for (const [committed, mode] of [[true, 'every-pr'], [false, 'on-request']] as const) {
+  it('the setup card shows the preview mode setup then commits: on request unless the link chose every PR', async () => {
+    // A workflow committed by hand or before links existed, and a link stored before the mode
+    // existed, both preview every PR today; re-running setup turns that off. Only an explicit
+    // choice on an earlier run is kept.
+    const legacy = { tenantId: teamA, slug: 'helpdesk', repo: 'acme/helpdesk' };
+    for (const [committed, link, mode] of [
+      [true, null, 'on-request'],
+      [true, legacy, 'on-request'],
+      [true, { ...legacy, previews: 'every-pr' }, 'every-pr'],
+    ] as const) {
       workflowCommitted = committed;
+      storedLink = link;
       links = [];
-      const card = await fromTab(teamB, 'GET', `/api/teams/${teamA}/github/repo-link?repo=acme/helpdesk&branch=main`);
+      const card = await fromTab(teamB, 'GET', `/api/teams/${teamA}/github/repo-link?repo=acme/helpdesk`);
       expect(card.status, await card.clone().text()).toBe(200);
-      expect(await card.json()).toEqual({ linked: false, slug: null, previews: mode });
+      expect(await card.json()).toEqual({ linked: link !== null, slug: link ? 'helpdesk' : null, previews: mode });
       const setup = await fromTab(teamB, 'POST', `/api/teams/${teamA}/github/setup-ci`, { repo: 'acme/helpdesk', branch: 'main' });
       expect(await setup.json()).toMatchObject({ ok: true, previews: mode });
       expect(links).toEqual([expect.objectContaining({ previews: mode })]);

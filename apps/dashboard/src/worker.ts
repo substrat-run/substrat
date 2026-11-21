@@ -95,7 +95,7 @@ import { listDeploymentsFromCp, ownedDeploymentFromCp, ownedDeploymentOrThrow, a
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type ListRead, type PreviewRecord, type SweepRunRead } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
-import { deployWorkflowYaml, getPullRequest, githubConfig, installUrl, installationAccount, labelPullRequest, listInstallationRepos, listPullRequestFiles, listRepoBranches, normalizeWorkflowDir, repoFileExists, setupRepoCi, upsertPrComment } from './github.js';
+import { deployWorkflowYaml, getPullRequest, githubConfig, installUrl, installationAccount, labelPullRequest, listInstallationRepos, listPullRequestFiles, listRepoBranches, normalizeWorkflowDir, setupRepoCi, upsertPrComment } from './github.js';
 import { parsePullRequestWebhook, verifyGithubSignature, previewActionFor, prReachesWorkflow, resolvePreviewMode, previewCommentBody, previewReapedBody, previewRequestBody, previewRequestUrl, previewTag, buildPreviewTagPrefix, PREVIEW_COMMENT_MARKER, PREVIEW_LABEL, type PreviewMode } from './github-webhook.js';
 import { sealForGithub } from './github-seal.js';
 import { b64urlToBytes } from './b64.js';
@@ -418,9 +418,10 @@ interface RepoLink {
   repo: string;
   /**
    * Which PRs preview (`PreviewMode`). Added after the first links were written, so a link
-   * stored without it was set up when every PR previewed, and reads as `every-pr`
-   * ({@link previewModeOf}): a repo linked before the mode existed never silently loses its
-   * previews. A link written now always carries it.
+   * stored without it was set up when every PR previewed: its committed workflow still does,
+   * and the webhook reads it as `every-pr` ({@link previewModeOf}). Re-running setup does not
+   * keep that: absent here, setup commits `on-request` (`resolvePreviewMode`). A link written
+   * now always carries it.
    */
   previews?: PreviewMode;
   /**
@@ -431,7 +432,10 @@ interface RepoLink {
   path?: string | null;
 }
 
-/** A stored link's preview mode — `every-pr` for a link written before the field existed. */
+/**
+ * What a stored link's committed workflow does — `every-pr` for a link written before the
+ * field existed. For the webhook only: what setup would commit is `resolvePreviewMode`'s.
+ */
 const previewModeOf = (link: RepoLink): PreviewMode => link.previews ?? 'every-pr';
 
 /** One PR event, as the webhook route hands it to the repo's link DO. */
@@ -6368,16 +6372,13 @@ async function setupGithubCiIn(
   const workflowPath = DEPLOY_WORKFLOW_PATH;
   const link = repoLinkStub(c.env, body.repo);
   const stored = await link.getLink();
-  // Settled once the file's existence is known (setupRepoCi reads it before committing).
-  let previews: PreviewMode = 'on-request';
+  // The link's explicit choice only: a link stored before the mode existed re-commits on request.
+  const previews = resolvePreviewMode({ requested: body.previews, stored: stored?.previews });
   const result = await setupRepoCi(cfg, installationId, {
     repoFullName: body.repo,
     branch: body.branch,
     workflowPath,
-    workflowContent: (workflowExisted) => {
-      previews = resolvePreviewMode({ requested: body.previews, stored: stored ? previewModeOf(stored) : undefined, workflowExisted });
-      return deployWorkflowYaml({ branch: body.branch, slug, cpUrl, previews, ...(path ? { path } : {}) });
-    },
+    workflowContent: deployWorkflowYaml({ branch: body.branch, slug, cpUrl, previews, ...(path ? { path } : {}) }),
     secretName: 'SUBSTRAT_SERVICE_TOKEN',
     secretValue: token,
     seal: sealForGithub,
@@ -6505,23 +6506,14 @@ const DEPLOY_WORKFLOW_PATH = '.github/workflows/substrat-deploy.yml';
 
 /**
  * Whether this team linked a repo, and the preview mode Set up deployment would commit if the
- * person changes nothing — the setup card's toggle shows it. Linked: the stored mode. Not
- * linked: `resolvePreviewMode`'s answer, which reads the same file setup does on `branch`,
- * so a repo whose workflow is already committed shows `every-pr`, as setup will keep it.
+ * person changes nothing — the setup card's toggle shows it: `resolvePreviewMode` over the
+ * link's explicit choice, so a repo with no choice stored shows `on-request`, as setup will
+ * commit, even while its older workflow still previews every PR.
  */
-async function githubRepoLinkIn(ctx: TeamContext, { repo, branch, account }: { repo: string; branch?: string; account?: string }) {
+async function githubRepoLinkIn(ctx: TeamContext, { repo }: { repo: string }) {
   const link = await teamRepoLink(ctx, repo);
-  if (link) return { linked: true, slug: link.slug, previews: previewModeOf(link) };
-  let workflowExisted = false;
-  if (branch) {
-    const cfg = githubOrThrow(ctx.c.env);
-    const installationId = account !== undefined
-      ? await githubInstallationFor(ctx.host, ctx.node.tenantId, account)
-      : await githubInstallationForRepo(ctx.host, ctx.node.tenantId, repo);
-    if (!installationId) throw new HTTPException(409, { message: 'GitHub is not connected' });
-    workflowExisted = await repoFileExists(cfg, installationId, repo, branch, DEPLOY_WORKFLOW_PATH);
-  }
-  return { linked: false, slug: null, previews: resolvePreviewMode({ workflowExisted }) };
+  const previews = resolvePreviewMode({ stored: link?.previews });
+  return link ? { linked: true, slug: link.slug, previews } : { linked: false, slug: null, previews };
 }
 
 /** The repo's link, its installation and the PR — or the 4xx a Build preview page reads as a message. */
