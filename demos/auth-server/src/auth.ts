@@ -11,6 +11,7 @@ import { TOKEN_EXCHANGE_GRANT_TYPE } from '@substrat-run/contracts';
 import { i18n } from '@better-auth/i18n';
 import { sv } from '@better-auth/i18n/locales';
 import { resetPasswordEmail, verifyEmail, type EmailBrand, type MailStyle } from './email.js';
+import { OAUTH_QUERY_AFTER_VERIFICATION } from './email-verification-wire.js';
 import { LOCALE_COOKIE, requestLocale, type Locale } from './locale-wire.js';
 import { localizedRefusals } from './server-messages.js';
 import { legacyAwarePassword } from './legacy-password.js';
@@ -655,6 +656,7 @@ async function refuseVerifiedPlaceholder(ctx: {
  */
 const SIGNED_QUERY_PARAMS = ['sig', 'exp', 'ba_iat', 'ba_pl', 'ba_param'] as const;
 
+
 /**
  * With verification required, someone a relying party sent here must still end up back at that
  * application — and the session that would carry them there no longer comes from the request
@@ -682,6 +684,12 @@ const SIGNED_QUERY_PARAMS = ['sig', 'exp', 'ba_iat', 'ba_pl', 'ba_param'] as con
  * resumes it the ordinary way — setting `callbackURL` there would add a `Location` the resume
  * does not want. The lookup is by address before the password is checked, but answers nothing
  * to the caller: it only decides what a link that is never sent would have said.
+ *
+ * A sign-in for a client that requires an SMS code carries the request as
+ * `OAUTH_QUERY_AFTER_VERIFICATION` instead, and its link is addressed the same way. That is
+ * safe because of what authorize does next: the link's session is stamped `password`
+ * (`signInMethodOfPath`), which such a client's policy refuses, so authorize asks again
+ * (`max_age=0`) and the person signs in with password and code before any code is issued.
  */
 async function verificationReturnsToClient(ctx: {
   path: string;
@@ -692,13 +700,16 @@ async function verificationReturnsToClient(ctx: {
   };
 }): Promise<{ context: { body: Record<string, unknown> } } | undefined> {
   const body = ctx.body;
-  if (typeof body?.oauth_query !== 'string' || body.callbackURL !== undefined) return undefined;
+  if (!body || body.callbackURL !== undefined) return undefined;
+  const afterVerification = ctx.path === '/sign-in/email' ? body[OAUTH_QUERY_AFTER_VERIFICATION] : undefined;
+  const pending = typeof body.oauth_query === 'string' ? body.oauth_query : afterVerification;
+  if (typeof pending !== 'string') return undefined;
   if (ctx.path === '/sign-in/email') {
     if (typeof body.email !== 'string') return undefined;
     const found = await ctx.context.internalAdapter.findUserByEmail(body.email.toLowerCase());
     if (!found || found.user.emailVerified) return undefined;
   }
-  const request = new URLSearchParams(body.oauth_query);
+  const request = new URLSearchParams(pending);
   for (const param of SIGNED_QUERY_PARAMS) request.delete(param);
   // A path, not an absolute URL: the verify endpoint's origin check admits a relative callback
   // without consulting `trustedOrigins`, and the base path is whatever this issuer mounts at.

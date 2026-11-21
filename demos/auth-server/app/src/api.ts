@@ -6,6 +6,7 @@ import type { ImportEntry, ImportResult } from '../../src/user-import-wire.js';
 import type { ClientTheme } from '../../src/theme-wire.js';
 import type { Locale } from '../../src/locale-wire.js';
 import type { HealRecord, HealResult } from '../../src/social-relay-heal-wire.js';
+import { OAUTH_QUERY_AFTER_VERIFICATION } from '../../src/email-verification-wire.js';
 import { translate } from '../../src/messages.js';
 
 export type { Place } from './places';
@@ -171,11 +172,19 @@ export function socialErrorTarget(oauthQuery: string | null | undefined, returnT
  * do but stay out of the way: `resumed` exists so the caller does not also re-render the
  * dashboard over a page that is already leaving.
  */
-export async function signIn(email: string, password: string, oauthQuery?: string | null): Promise<{ resumed: boolean }> {
+export async function signIn(
+  email: string,
+  password: string,
+  oauthQuery?: string | null,
+  /** The pending request for a sign-in that must not resume it (an SMS step follows): only
+   *  addresses the verification link, should the address turn out unverified. */
+  afterVerification?: string | null,
+): Promise<{ resumed: boolean }> {
   const { data, error } = await authClient.signIn.email({
     email,
     password,
     ...(oauthQuery ? { oauth_query: oauthQuery } : {}),
+    ...(afterVerification ? { [OAUTH_QUERY_AFTER_VERIFICATION]: afterVerification } : {}),
   } as Parameters<typeof authClient.signIn.email>[0]);
   if (error) {
     if (error.code === 'EMAIL_NOT_VERIFIED') throw new EmailNotVerified(error.message ?? 'email not verified');

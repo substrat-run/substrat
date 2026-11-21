@@ -13,6 +13,8 @@ import { ACCOUNT_LINKING, ALLOW_SIGNUP, REQUIRE_EMAIL_VERIFICATION, deliveredCon
 import type { SqlExec } from '../src/introspect.js';
 import type { SessionSubject } from '../src/do-contract.js';
 import { publicProvidersFrom, readProviders } from '../src/providers.js';
+import type { SignInPolicy } from '../src/sign-in-policy.js';
+import { OAUTH_QUERY_AFTER_VERIFICATION } from '../src/email-verification-wire.js';
 
 /**
  * Self-service sign-up: the setting, the endpoint it controls, and the OIDC flow it has to
@@ -39,6 +41,8 @@ const RP_REDIRECT = 'http://localhost:9999/cb';
 let db: Database.Database;
 let sql: SqlExec;
 let mail: MockEmailTransport;
+/** The relying party's sign-in policy, when a test gives it one. */
+let policy: SignInPolicy | undefined;
 
 function sqlExecOf(database: Database.Database): SqlExec {
   return {
@@ -73,6 +77,7 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth =>
     sender: { email: 'no-reply@send.substrat.test', name: 'Substrat Auth' },
     allowSignup: overrides?.allowSignup ?? isTruthy(config()[ALLOW_SIGNUP]),
     requireEmailVerification: isTruthy(config()[REQUIRE_EMAIL_VERIFICATION]),
+    signInPolicyFor: () => policy,
   });
 
 const call = (path: string, init?: RequestInit): Promise<Response> =>
@@ -125,6 +130,7 @@ async function adminCookie(): Promise<string> {
 beforeEach(async () => {
   db = new Database(':memory:');
   mail = new MockEmailTransport();
+  policy = undefined;
   for (const stmt of SCHEMA_STATEMENTS) db.exec(stmt);
   sql = sqlExecOf(db);
   // The bootstrap path: sign-up forced on, exactly as the DO seeds its first admin.
@@ -438,6 +444,47 @@ describe('with REQUIRE_EMAIL_VERIFICATION on, the verification link returns to t
     const body = (await res.json()) as { redirect?: boolean; url?: string };
     expect(body.redirect).toBe(true);
     expect(new URL(`http://x${body.url}`).searchParams.get('client_id')).toBe(clientId);
+  });
+
+  it('for a client requiring an SMS code, the link returns to it and authorize asks for password and code', async () => {
+    // The SPA cannot send `oauth_query` with the password half of password + SMS: the plugin
+    // would resume on the password alone. The request rides under its own name instead.
+    policy = { providers: [], password: true, passwordSecondFactor: 'sms' };
+    expect((await signUpCall(NEWCOMER)).status).toBe(200);
+    const { clientId, oauthQuery } = await arriveFromRelyingParty('st-sms');
+    const refused = await call('/api/auth/sign-in/email', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'sec-fetch-mode': 'cors' },
+      body: JSON.stringify({ email: NEWCOMER.email, password: NEWCOMER.password, [OAUTH_QUERY_AFTER_VERIFICATION]: oauthQuery }),
+    });
+    expect(refused.status).toBe(403);
+    const link = lastLink();
+    const callback = new URL(link.searchParams.get('callbackURL')!, ORIGIN);
+    expect(callback.pathname).toBe('/api/auth/oauth2/authorize');
+    expect(callback.searchParams.get('client_id')).toBe(clientId);
+
+    // The link's session is a password one, which this client refuses: authorize sends the
+    // person to sign in again — password, then code — instead of issuing a code for it.
+    const cookie = cookiesFrom(await call(`${link.pathname}${link.search}`, { headers: { 'sec-fetch-mode': 'navigate' } }));
+    const authorize = await call(`${callback.pathname}${callback.search}`, { headers: { 'sec-fetch-mode': 'navigate', cookie } });
+    const next = authorize.headers.get('location') ?? '';
+    expect(next.startsWith('/login?')).toBe(true);
+    expect(new URL(`http://x${next}`).searchParams.get('client_id')).toBe(clientId);
+  });
+
+  it('leaves a verified person’s password half of password + SMS exactly as it was', async () => {
+    const { oauthQuery } = await arriveFromRelyingParty('st-sms-verified');
+    const res = await call('/api/auth/sign-in/email', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'sec-fetch-mode': 'cors' },
+      body: JSON.stringify({ email: ADMIN.email, password: ADMIN.password, [OAUTH_QUERY_AFTER_VERIFICATION]: oauthQuery }),
+    });
+    // Signed in, not resumed and not redirected: the SMS step is what resumes it.
+    expect(res.status).toBe(200);
+    expect(res.headers.get('location')).toBeNull();
+    const body = (await res.json()) as { redirect?: boolean; token?: string };
+    expect(body.redirect).toBe(false);
+    expect(body.token).toBeTruthy();
   });
 
   it('is the declared key, written beside the sign-up decision without touching it', () => {
