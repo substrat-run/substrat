@@ -190,6 +190,11 @@ export const INDEX_VALUE_EXPORTS = [
   // #2447: the role keys a scope seats anyone but a system principal in — a role set is judged against it.
   'SCOPE_SEATED_ROLES_SQL',
   'SCOPE_STORAGE_DDL',
+  // #3316: the binding names the uploader (control-plane-api) injects and the scope host
+  // (adapter-cloudflare) reads to count its rows by origin; neither may import the other.
+  'SCOPE_WORK_BINDING',
+  'SCOPE_WORK_KIND_BINDING',
+  'SCOPE_WORK_VERTICAL_BINDING',
   // #2447: the scope statuses whose seats a role definition is judged against, on both adapters.
   'SEAT_HOLDING_SCOPE_STATUSES',
   'SECURE_DELETE_MIN_SQLITE',
