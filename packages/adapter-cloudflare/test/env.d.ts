@@ -67,6 +67,8 @@ declare namespace Cloudflare {
     REMOVED_PEER_SCOPE: DurableObjectNamespace;
     /** #2349: scopes held to the stored migration set digest a test sets — migration-set-check.test.ts. */
     SET_CHECK_SCOPE: DurableObjectNamespace;
+    METERED_SCOPE: DurableObjectNamespace;
+    UNMETERED_SCOPE: DurableObjectNamespace;
     /** #2498: a real R2 bucket for the streamed upload — attachment-stream.test.ts. */
     STREAM_BUCKET: R2Bucket;
   }

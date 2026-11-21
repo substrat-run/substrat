@@ -685,6 +685,11 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   VERTICAL_TRACE_SAMPLING?: string;
   /**
+   * #3316: the Analytics Engine dataset pushed scripts' scope objects count their own rows into, by
+   * origin. Unset ⇒ the uploader binds none and no scope object counts anything.
+   */
+  SCOPE_WORK_DATASET?: string;
+  /**
    * Cloudflare-for-SaaS custom-hostname issuance (#305, §4.7). The zone whose fallback
    * origin fronts tenant apps (the `substrat.run` zone), the CNAME value tenants point a
    * custom domain at, and the comma-separated base domains a PLATFORM hostname is minted
@@ -857,6 +862,7 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
     // pays for it, and no credential exists on the script to be read or rotated.
     bindAi: true,
     traceSampling: traceSamplingFor(env),
+    scopeWorkDataset: env.SCOPE_WORK_DATASET?.trim() || undefined,
   });
 }
 

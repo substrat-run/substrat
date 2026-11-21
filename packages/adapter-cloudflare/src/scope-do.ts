@@ -364,6 +364,8 @@ import {
 } from './live-reads.js';
 import { replyOf, type DoReply } from './do-reply.js';
 import { OperationQueue } from './serialization.js';
+import type { AnalyticsEngineDatasetLike } from './connector-calls.js';
+import { meterScopeWorkEntries, ScopeWorkMeter } from './scope-work.js';
 import { assertNoWorkerdStorage, doScopedSql, doBuiltColumnsOf, doRedactionSql, doSpineSql } from './sql.js';
 import {
   actorOf,
@@ -550,6 +552,16 @@ export interface ScopeDoEnv {
    * version, a script uploaded before the binding, or a test worker compares nothing.
    */
   SUBSTRAT_MIGRATIONS_DIGEST?: string;
+  /**
+   * #3316: the Analytics Engine dataset each invocation's rows are counted into, by origin
+   * (`scope-work.ts`). Injected at upload; without it nothing is counted and no entry is wrapped
+   * at run time beyond one property read.
+   */
+  SUBSTRAT_SCOPE_WORK?: AnalyticsEngineDatasetLike;
+  /** #3316: the vertical's slug, injected at upload beside the dataset, stamped on each point. */
+  SUBSTRAT_VERTICAL?: string;
+  /** #3316: `live` on the serving script, `preview` on a version's own script, as the upload says. */
+  SUBSTRAT_SCRIPT_KIND?: string;
 }
 
 interface RegisteredModule {
@@ -1360,16 +1372,25 @@ class WriteRevision {
   /** Inside `untracked`: a capture's own bookkeeping, which nothing here counts. */
   private bypass = false;
   readonly sql: SqlStorage;
+  /** The handle every statement runs on: the runtime's, under the scope-work meter when there is one (#3316). */
+  private readonly raw: SqlStorage;
 
   constructor(
-    private readonly raw: SqlStorage,
+    runtime: SqlStorage,
     private readonly storage: DurableObjectStorage,
     private readonly suspended: () => boolean,
     /** Why this store takes no write at all right now, or null (a `carried_away` copy, #1722). */
     private readonly refusal: () => string | null,
     /** Run before every write statement (#2450: an idle capture's triggers go before the write). */
     private readonly beforeWrite: () => void = () => undefined,
+    /**
+     * #3316: the scope-work meter's counting wrapper, put UNDER everything here, so the revision's
+     * own bump and the capture's bypass are counted with the statement that caused them.
+     */
+    counted?: (runtime: SqlStorage) => SqlStorage,
   ) {
+    const raw = counted ? counted(runtime) : runtime;
+    this.raw = raw;
     const exec = (query: string, ...bindings: unknown[]) => {
       if (this.bypass) {
         // Enforced, not trusted, as `bookkeeping` is: a write here that is not the capture's own
@@ -1658,7 +1679,7 @@ export function defineScopeDO(
     noteReservedKeys(declaredReserved, m.manifest);
     noteDeclaredKeys(declaredListed, m.manifest);
   }
-  return class ScopeDO extends DurableObject<ScopeDoEnv> {
+  const ScopeDO = class ScopeDO extends DurableObject<ScopeDoEnv> {
     /**
      * #2351: the migrations this class registers, read by the control plane, which evaluates the
      * bundle in an isolate with no bindings and calls this before it stores the version. The same
@@ -1812,6 +1833,25 @@ export function defineScopeDO(
     private carriedAwayCopy = false;
     /** #1722: the write revision, and the one way this object opens a transaction. */
     private readonly revision: WriteRevision;
+    /** #3316: this object's rows by origin, or undefined when the upload bound no dataset. */
+    private readonly scopeWork: ScopeWorkMeter | undefined;
+    /** #3316: the tenant each point names, once known. */
+    private scopeWorkTenantId: string | null = null;
+
+    /**
+     * #3316: the tenant this scope was provisioned for, for the scope-work points — read with the
+     * meter paused, the one read it does not count: two indexed lookups per point until the scope is
+     * provisioned, then none again in this wake.
+     */
+    private scopeWorkTenant(): string | null {
+      if (this.scopeWorkTenantId !== null || !this.scopeWork) return this.scopeWorkTenantId;
+      try {
+        this.scopeWorkTenantId = this.scopeWork.uncounted(() => this.provisionedFor());
+      } catch {
+        // A point with no tenant is still a count; the scope and object ids name it.
+      }
+      return this.scopeWorkTenantId;
+    }
 
     constructor(ctx: DurableObjectState, env: ScopeDoEnv) {
       super(ctx, env);
@@ -1820,6 +1860,19 @@ export function defineScopeDO(
       // subscriber's ping still reaches `webSocketMessage` and pins the DO in memory —
       // exactly the hibernation cost `acceptWebSocket` (below) exists to avoid.
       ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
+      // #3316: the rows each invocation runs, by origin, into Analytics Engine — only when the
+      // upload bound a dataset. Built first, so the wake's own statements below are counted (`wake`).
+      const scopeWork = env.SUBSTRAT_SCOPE_WORK;
+      this.scopeWork = scopeWork
+        ? new ScopeWorkMeter(scopeWork, {
+            tenant: () => this.scopeWorkTenant(),
+            vertical: env.SUBSTRAT_VERTICAL ?? null,
+            scopeId: ctx.id.name ?? null,
+            objectId: ctx.id.toString(),
+            versionId: env.SUBSTRAT_VERSION_ID ?? null,
+            kind: env.SUBSTRAT_SCRIPT_KIND ?? null,
+          })
+        : undefined;
       // #1722: the ONE handle this object writes through and the one way it opens a transaction,
       // so every write advances the write revision a carry's restore is fenced on, inside the
       // transaction that commits it. Nothing else here may take the raw handle or open a
@@ -1830,6 +1883,7 @@ export function defineScopeDO(
         () => this.revisionSuspended,
         () => (this.carriedAwayCopy ? CARRIED_AWAY_WRITE_REFUSAL : null),
         () => this.expireIdleCaptures(),
+        this.scopeWork ? (runtime) => this.scopeWork!.counting(runtime) : undefined,
       );
       this.sql = this.revision.sql;
       for (const stmt of executableSqlStatements(KERNEL_DDL)) {
@@ -6927,7 +6981,13 @@ export function defineScopeDO(
     // -- migrations (port of applyPendingMigrations) --------------------------
 
     private ensureMigrations(): Promise<boolean> {
-      if (!this.migrationPromise) this.migrationPromise = this.applyPendingMigrations();
+      if (!this.migrationPromise) {
+        // #3316: counted as the migration it is, not as whichever entry woke it — the first
+        // operation after a promote runs the whole pass.
+        this.migrationPromise = this.scopeWork
+          ? this.scopeWork.apart('migration-pass', 'migration', () => this.applyPendingMigrations())
+          : this.applyPendingMigrations();
+      }
       return this.migrationPromise;
     }
 
@@ -8163,14 +8223,16 @@ export function defineScopeDO(
     private expireIdleCaptures(): void {
       if (this.captureIdleAt === undefined) this.readCaptureClock();
       if (this.captureIdleAt === null || this.captureIdleAt === undefined || Date.now() < this.captureIdleAt) return;
-      this.revision.untracked(() => {
+      // #3316: a copy's capture ending is the copy's work, not the write's that found it idle.
+      const apart = <T,>(fn: () => T): T => (this.scopeWork ? this.scopeWork.apart('capture-expiry', 'export', fn) : fn());
+      apart(() => this.revision.untracked(() => {
         // A load took the capture's tables with it: there is nothing left to end.
         if (!this.hasTable('_substrat_capture')) return;
         const idle = this.sql
           .exec(`SELECT copy_id FROM _substrat_capture WHERE touched_at <= ?`, Date.now() - CAPTURE_IDLE_MS)
           .toArray() as unknown as { copy_id: string }[];
         for (const { copy_id } of idle) this.forgetCapture(copy_id);
-      });
+      }));
       // Read again at the next write, not now: should the write's own transaction roll back, the
       // capture is back, and the next write ends it again.
       this.captureIdleAt = undefined;
@@ -8186,9 +8248,13 @@ export function defineScopeDO(
     private dropIdleCaptureLater(): void {
       setTimeout(() => {
         try {
-          this.revision.untracked(() => {
-            if (this.hasTable('_substrat_capture')) this.dropCaptureIfIdle();
-          });
+          const drop = () =>
+            this.revision.untracked(() => {
+              if (this.hasTable('_substrat_capture')) this.dropCaptureIfIdle();
+            });
+          // #3316: the copy's teardown, counted apart from the write whose turn scheduled it.
+          if (this.scopeWork) this.scopeWork.apart('capture-drop', 'export', drop);
+          else drop();
         } catch {
           // Left to the next capture call or wake, as above.
         }
@@ -10645,4 +10711,16 @@ export function defineScopeDO(
       return row?.effective === 1;
     }
   };
+  // #3316: each RPC entry counts the rows it runs under its origin (`scope-work.ts`). `invoke` is
+  // the vertical's own operation when a person or a connection calls it, and one of its declared
+  // schedules when the platform's sweeper does (`systemModuleId`, its eighth argument) — a purge
+  // schedule apart, since a binned row's purge is the platform's retention, not the vertical's work.
+  meterScopeWorkEntries(ScopeDO.prototype, (self) => (self as { scopeWork?: ScopeWorkMeter }).scopeWork, {
+    invoke: (self, args) => {
+      if (typeof args[7] !== 'string') return 'operation';
+      const purges = (self as { purgeSchedules?: ReadonlyMap<string, unknown> }).purgeSchedules;
+      return purges?.has(String(args[0])) ? 'purge' : 'schedule';
+    },
+  });
+  return ScopeDO;
 }

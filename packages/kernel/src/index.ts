@@ -554,6 +554,12 @@ export {
   type MigrationStep,
   type PendingMigration,
 } from './migration-digest.js';
+export {
+  SCOPE_WORK_BINDING,
+  SCOPE_WORK_KIND_BINDING,
+  SCOPE_WORK_VERTICAL_BINDING,
+  type ScopeWorkScriptKind,
+} from './scope-work-bindings.js';
 export { canonicalInstant, frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
 export { createUlid, ulid, ulidTime, type UlidMint } from './ulid.js';

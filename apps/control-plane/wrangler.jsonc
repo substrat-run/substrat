@@ -96,6 +96,10 @@
 		// shares the account and leaves it unset. Needs Account Analytics Read and Workers
 		// Scripts Read on the Cloudflare API token.
 		"CLOUDFLARE_COST_ROLLUP": "on",
+		// #3316: the dataset every pushed script's scope objects count their own rows into, by
+		// origin (the vertical's operation or a platform verb such as a preview fork's load). The
+		// uploader binds it as SUBSTRAT_SCOPE_WORK; unset, scripts are uploaded with no count.
+		"SCOPE_WORK_DATASET": "substrat_scope_work",
 		// #1904: from when the Requests histogram and facets read the router's datapoints
 		// (blobs 6–9) instead of scanning Workers Logs. Must be AFTER this environment's
 		// router started writing them — prod's deploy of #1905 is 2026-09-29T07:02:04Z —
@@ -361,6 +365,7 @@
 				// The TEST router’s own dataset — see the prod entry for why this is stated and
 				// never defaulted.
 				"ROUTER_ANALYTICS_DATASET": "substrat_router_test", // differs
+				"SCOPE_WORK_DATASET": "substrat_scope_work_test", // differs: test counts stay out of prod's
 				// #1691: TEST's own connector-call dataset — see the prod entry.
 				"CONNECTOR_ANALYTICS_DATASET": "substrat_connector_calls_test" // differs
 				// MODEL_RECONCILIATION is deliberately absent: see the prod entry. // differs

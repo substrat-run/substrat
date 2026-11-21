@@ -36,6 +36,8 @@ const SOURCE = 'packages/vertical-host/src/invocation-log.ts';
 /** The wire-signing verifier (RFC wire-signing §5), wrapped around the stamp. */
 const GATE_SOURCE = 'packages/control-plane-api/platform-entry/wire-gate.ts';
 const ROUTED_NODE_SOURCE = 'packages/vertical-host/src/routed-node.ts';
+/** #3316: the global key the entry publishes its \`AsyncLocalStorage\` under, for the scope-work meter. */
+const SCOPE_WORK_SOURCE = 'packages/adapter-cloudflare/src/scope-work.ts';
 /** Where the verifier spends a nonce (RFC wire-signing §4): the host the vertical registered. */
 const NONCE_STORE_SOURCE = 'packages/control-plane-api/platform-entry/nonce-store.ts';
 const PLACEHOLDER = '__SUBSTRAT_VERTICAL_ENTRY__';
@@ -89,6 +91,7 @@ const js = await bundle(
     // observer from the vertical. The uploader adds `nodejs_als` where the script has neither it
     // nor `nodejs_compat`, and swaps this import for `ALS_FALLBACK` where it can have neither.
     `import { AsyncLocalStorage } from 'node:async_hooks';`,
+    `import { ASYNC_LOCAL_STORAGE_GLOBAL } from './${SCOPE_WORK_SOURCE}';`,
     `import { withInvocationLog } from './${SOURCE}';`,
     `import { readRoutedNode } from './${ROUTED_NODE_SOURCE}';`,
     `import { withWireGate } from './${GATE_SOURCE}';`,
@@ -100,6 +103,10 @@ const js = await bundle(
     // the platform puts on every pushed script, and the local dev opt-out.
     `const routerSecret = (env) => env.ROUTER_SECRET;`,
     `const allowUnsigned = (env) => env.ALLOW_DEV_NODE === 'true';`,
+    // #3316: the class, published for the scope objects in this script, which count their rows by
+    // the RPC entry whose async context ran them and cannot import \`node:async_hooks\` themselves.
+    // Undefined where the uploader swapped the import out, and then nothing is published.
+    `if (typeof AsyncLocalStorage === 'function') globalThis[Symbol.for(ASYNC_LOCAL_STORAGE_GLOBAL)] ??= AsyncLocalStorage;`,
     // RFC wire-signing: the verifier judges a request before the stamp and the vertical see it,
     // with the legacy checks answered as the vertical answers its own. Inert without key lists.
     `export default withWireGate(`,

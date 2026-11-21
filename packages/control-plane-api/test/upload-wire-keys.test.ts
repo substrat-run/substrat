@@ -201,8 +201,10 @@ describe('the uploader gives the deployments the rollout names their lists, audi
 
   it('off, unset or left out: no upload carries anything, the bindings are the ones sent with no setting at all, and each records that it gave nothing', async () => {
     const sent: Record<string, unknown[]> = {};
-    // Whole binding objects, the version's own id aside: it is the one value two versions never share.
-    const comparable = (b: { name: string; text?: string }) => (b.name === 'SUBSTRAT_VERSION_ID' ? { ...b, text: '<version>' } : b);
+    // Whole binding objects, the version's own id and the vertical's slug aside (#3316): the values
+    // two serves of different verticals never share.
+    const comparable = (b: { name: string; text?: string }) =>
+      b.name === 'SUBSTRAT_VERSION_ID' ? { ...b, text: '<version>' } : b.name === 'SUBSTRAT_VERTICAL' ? { ...b, text: '<vertical>' } : b;
     for (const [name, settings] of [
       ['none', null],
       ['off', { rollout: 'off', routerKeys, platformKeys }],

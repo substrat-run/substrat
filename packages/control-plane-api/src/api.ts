@@ -281,6 +281,7 @@ import {
   assertSandboxContract,
   verticalUploadBindings,
   migrationsDigestBindings,
+  scopeWorkBindings,
   deployManifest,
   storedDeployManifest,
   pushedOwnerGrantProblems,
@@ -10543,6 +10544,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           platformBindings: [
             ...storeBindings,
             ...(await migrationsDigestBindings(await admin.versionMigrations(actor, slug, versionId))),
+            // #3316: what each scope object's row counts are stamped with — this is the live script.
+            ...scopeWorkBindings(slug, 'live'),
           ],
         }),
         // #1242: the version now being served, injected as `SUBSTRAT_VERSION_ID` so the
@@ -11408,7 +11411,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             manifest,
             drivers: options.storeDrivers,
             // #2349: the migrations this push declares, which are the ones the version stores.
-            platformBindings: await migrationsDigestBindings(manifest.migrations ?? null),
+            platformBindings: [
+              ...(await migrationsDigestBindings(manifest.migrations ?? null)),
+              // #3316: this version's own script, where its previews (and their forks) run.
+              ...scopeWorkBindings(slug, 'preview'),
+            ],
           }),
           // #1242: the freshly minted version id — this archive script IS that version,
           // and a preview routed at it stamps the signals `version` dimension honestly.

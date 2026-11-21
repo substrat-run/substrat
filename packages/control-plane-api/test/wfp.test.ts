@@ -23,7 +23,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 async function metadataOf(
   injectSecrets: Record<string, string | undefined>,
-  extra: { traceSampling?: number; bundle?: VerticalBundle } = {},
+  extra: { traceSampling?: number; bundle?: VerticalBundle; scopeWorkDataset?: string } = {},
 ): Promise<Record<string, unknown>> {
   let body: FormData | undefined;
   vi.stubGlobal(
@@ -39,6 +39,7 @@ async function metadataOf(
     apiToken: 'tok',
     injectSecrets,
     ...(extra.traceSampling !== undefined ? { traceSampling: extra.traceSampling } : {}),
+    ...(extra.scopeWorkDataset !== undefined ? { scopeWorkDataset: extra.scopeWorkDataset } : {}),
   });
   await upload('callout-01k', extra.bundle ?? bundle);
   const meta = await (body!.get('metadata') as File).text();
@@ -106,6 +107,15 @@ describe('createWfpUploader — version identity (#1242)', () => {
     // plain_text must stay OUT of keep_bindings-style inheritance: it is resent per
     // upload, which is what keeps it naming the version actually being served — so a
     // fresh upload's set simply carries it, no keep semantics involved here.
+  });
+
+  it('binds the scope-work dataset only when the platform names one (#3316)', async () => {
+    const datasets = async (scopeWorkDataset?: string) =>
+      ((await metadataOf({}, { scopeWorkDataset }))['bindings'] as { type: string }[]).filter((b) => b.type === 'analytics_engine');
+    expect(await datasets('substrat_scope_work_test')).toEqual([
+      { type: 'analytics_engine', name: 'SUBSTRAT_SCOPE_WORK', dataset: 'substrat_scope_work_test' },
+    ]);
+    expect(await datasets()).toEqual([]);
   });
 
   it('a bundle that names no version declares no plain_text binding at all', async () => {
