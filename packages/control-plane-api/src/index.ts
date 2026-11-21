@@ -371,7 +371,13 @@ export type { StoragePageInput, StorageScope } from './storage-meter.js';
 export type { PlatformRuntime } from './platform-runtime.js';
 export { createCfDoNamespaceReader, namespacesForScript } from './do-namespaces.js';
 export type { DoNamespaceReader, DoNamespaceRecord, CfDoNamespaceOptions } from './do-namespaces.js';
-export { createCfObservabilityReader, createRouterRequestDayReader, REQUEST_ROLLUP_ROW_LIMIT } from './cf-observability.js';
+export {
+  createCfObservabilityReader,
+  createCloudflareUsageDayReader,
+  createRouterRequestDayReader,
+  COST_USAGE_PAGE,
+  REQUEST_ROLLUP_ROW_LIMIT,
+} from './cf-observability.js';
 export {
   createCfModelCostReader,
   reconcileModelDay,

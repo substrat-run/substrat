@@ -88,6 +88,7 @@ import type {
   StorageGauge,
   RequestDay,
   RequestRollupDay,
+  CostDay,
   EntityRef,
   IdentityLink,
   IdentityPool,
@@ -227,6 +228,7 @@ import type { ModelUsageFilter, ModelUsageInput, ModelUsagePricing, ModelUsageWi
 import type { FindingPruneReport } from './findings.js';
 import type { ScopeStorageAttempt, ScopeStorageFilter, ScopeStorageReadingInput } from './storage-gauge.js';
 import type { RequestDayFilter, RequestDayReadInput, RequestRollupDayFilter, TenantRequestMeterRow, RequestMeterDayRow } from './request-rollup.js';
+import type { CostDayFilter, CostDayReadInput, CostRollupDayFilter, ScopeObjectReadInput, ScopeObjectTarget } from './cost-rollup.js';
 import type { MeterDayFilter, MeterDayTakeFilter, MeterDayTakeInput, MeterDayTakeResult } from './meter-days.js';
 import type { SealedSecret } from './secret-box.js';
 import type { OnSubjectErased } from './module-erasure.js';
@@ -4605,6 +4607,30 @@ export interface HostAdmin {
    * Not audited, like `pruneScopeStorage`.
    */
   pruneRequestDays?(actor: PlatformActorId, limit: number, retentionMonths: number | null): Promise<number>;
+  /**
+   * The daily Cloudflare cost rollup (#3316): record one attempt to read a UTC day's usage from
+   * Cloudflare's analytics. A successful read is attributed through the directory in the same
+   * transaction (`attributeCostDay`), replaces the day's rows and marks the day read; a failed one
+   * records only the attempt. Cost inputs only, never a price. Not audited: a sweep's bookkeeping.
+   * The staff backfill route replays a snapshot through it and refuses a day already read.
+   *
+   * The cost and scope-object methods are optional, and the sweep's phases are skipped on a host
+   * that lacks them, so an adapter built before #3316 still satisfies `HostAdmin`.
+   */
+  recordCostDay?(actor: PlatformActorId, input: CostDayReadInput): Promise<{ recorded: number }>;
+  /** Stored daily cost inputs (#3316). See `CostDayFilter`. Access-logged (K-24). */
+  listCostDays?(actor: PlatformActorId, filter?: CostDayFilter): Promise<CostDay[]>;
+  /** The cost rollup's record of each day it tried (#3316). Access-logged. */
+  listCostRollupDays?(actor: PlatformActorId, filter?: CostRollupDayFilter): Promise<RequestRollupDay[]>;
+  /** Delete cost rows past a retention, as `pruneRequestDays` does. Not audited. */
+  pruneCostDays?(actor: PlatformActorId, limit: number, retentionMonths: number | null): Promise<number>;
+  /**
+   * The scopes whose Durable Object id is not recorded for the script holding their data (#3316),
+   * newest first, at most `limit`, skipping a failed attempt younger than `retryMs`. Access-logged.
+   */
+  listScopeObjectsDue?(actor: PlatformActorId, input: { limit: number; retryMs: number }): Promise<ScopeObjectTarget[]>;
+  /** Record a scope's Durable Object id, or why it could not be read (#3316). Not audited: a sweep's bookkeeping. */
+  recordScopeObject?(actor: PlatformActorId, input: ScopeObjectReadInput): Promise<void>;
   /**
    * The daily meter snapshot (#2501): record one attempt at the snapshot of the UTC day of
    * `input.at`. Without an error it takes the snapshot, in one directory transaction, unless the

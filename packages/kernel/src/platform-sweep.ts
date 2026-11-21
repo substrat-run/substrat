@@ -41,6 +41,19 @@ import {
   requestRollupDueDays,
   type RequestDayCount,
 } from './request-rollup.js';
+import {
+  COST_ROLLUP_DAYS_PER_PASS,
+  COST_ROLLUP_LOOKBACK_DAYS,
+  COST_ROLLUP_MAX_LOOKBACK_DAYS,
+  COST_ROLLUP_PRUNE_BATCH,
+  COST_ROLLUP_READ_TIMEOUT_MS,
+  COST_ROLLUP_RETRY_MS,
+  COST_ROLLUP_SETTLE_MS,
+  SCOPE_OBJECT_RETRY_MS,
+  SCOPE_OBJECTS_PER_PASS,
+  type ScopeObjectTarget,
+} from './cost-rollup.js';
+import type { CloudflareUsageDay } from '@substrat-run/contracts';
 import { backoffAt, fetchLikeOf, type FetchLike } from './connector-transport.js';
 import { assertRowLimit, TELEMETRY_PRUNE_BATCH, type TelemetryPruneReport } from './retention.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
@@ -450,6 +463,19 @@ export interface PlatformSweepOptions {
    */
   requestRollup?: RequestRollupSweepOptions;
   /**
+   * Record each scope's Durable Object id in the directory (#3316), so a Cloudflare analytics row
+   * names its scope. UNSET skips the phase, as does a host without `listScopeObjectsDue` and
+   * `recordScopeObject`. Injected because only the control plane can reach the script that holds a
+   * scope's data. See {@link ScopeObjectsSweepOptions}.
+   */
+  scopeObjects?: ScopeObjectsSweepOptions;
+  /**
+   * Roll up each closed UTC day of Cloudflare's billed Workers and Durable Objects analytics into
+   * the directory (#3316), attributed through it. UNSET skips the phase, as does a host without
+   * `recordCostDay` and `listCostRollupDays`. See {@link CostRollupSweepOptions}.
+   */
+  cloudflareCosts?: CostRollupSweepOptions;
+  /**
    * Keep each UTC day's meters 1 and 2, one row per tenant, taken by the day's first pass (#2501).
    * UNSET (the default) skips the phase, as does a host without `recordMeterDay` and
    * `listMeterDayTakes`: the rows are kept for the billing horizon, so a deployment opts in. See
@@ -667,6 +693,10 @@ export interface PlatformSweepReport {
   orphanAttachments?: OrphanAttachmentSweepReport | null;
   /** What the request-rollup phase read and pruned (#2501). Null when the phase is off. */
   requestRollup?: RequestRollupSweepReport | null;
+  /** What the scope-object phase recorded (#3316). Null when the phase is off. */
+  scopeObjects?: ScopeObjectsSweepReport | null;
+  /** What the Cloudflare cost rollup read and pruned (#3316). Null when the phase is off. */
+  cloudflareCosts?: CostRollupSweepReport | null;
   /** What the meter-snapshot phase took and pruned (#2501). Null when the phase is off. */
   meterSnapshot?: MeterSnapshotSweepReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
@@ -702,6 +732,10 @@ export interface PlatformSweepReport {
       // #2501: one day's request rollup failed. Nothing of the day is written, and the day is
       // tried again once `RequestRollupSweepOptions.retryMs` has passed.
       | 'request-rollup'
+      // #3316: one day's Cloudflare cost rollup failed, as a request-rollup day does.
+      | 'cost-rollup'
+      // #3316: the scope-object phase could not read its due list from the directory.
+      | 'scope-objects'
       // #2501: the day's meter snapshot failed. Nothing of it is written, and the next pass of the
       // same day tries again.
       | 'meter-snapshot'
@@ -936,6 +970,65 @@ export interface RequestRollupSweepReport {
   /** Day rows past retention deleted. */
   pruned: number;
 }
+
+/**
+ * How the scope-object phase reads (#3316). Each read asks the script that holds a scope's data
+ * for `SCOPE.idFromName(scopeId)`, which wakes no object, so a batch is cheap; it is bounded so a
+ * fleet's first pass spreads over several.
+ */
+export interface ScopeObjectsSweepOptions {
+  /**
+   * The object id the target's data script derives for it: 64 lowercase hex characters. A throw
+   * (a deployment built before the route, an unreachable script) is the target's failed attempt.
+   */
+  read: (target: ScopeObjectTarget) => Promise<string>;
+  /** The most scopes asked per pass. Default `SCOPE_OBJECTS_PER_PASS`. */
+  batch?: number;
+  /** How long a failed scope waits before it is asked again. Default `SCOPE_OBJECT_RETRY_MS`. */
+  retryMs?: number;
+}
+
+/** What the scope-object phase did in one pass (#3316). */
+export interface ScopeObjectsSweepReport {
+  /** Scopes asked this pass. */
+  asked: number;
+  /** Object ids recorded. */
+  recorded: number;
+  /** Scopes whose read failed; each waits `retryMs`. Not in `errors`: a deployment built before the route is a standing state. */
+  failed: number;
+  /** The first few failures' messages, for the pass's log line. */
+  failures: string[];
+}
+
+/**
+ * How the Cloudflare cost rollup reads (#3316), with the request rollup's rules (#2501): a day is
+ * due once it ended `settleMs` ago, lies within `lookbackDays`, has no successful read, and was never
+ * tried or last tried `retryMs` ago; oldest first; a failure writes nothing of the day and ends the
+ * pass's reads. Each read is several GraphQL queries and the namespace list.
+ */
+export interface CostRollupSweepOptions {
+  /** One UTC day of raw usage. A throw fails the day; a read that could only answer part of it must throw. */
+  read: (day: string) => Promise<CloudflareUsageDay>;
+  /** The most days read in one pass. Default `COST_ROLLUP_DAYS_PER_PASS`. `0` pauses reading; the prune still runs. */
+  batch?: number;
+  /** 1 to `COST_ROLLUP_MAX_LOOKBACK_DAYS`. Default `COST_ROLLUP_LOOKBACK_DAYS`. */
+  lookbackDays?: number;
+  /** Default `COST_ROLLUP_SETTLE_MS`. */
+  settleMs?: number;
+  /** Default `COST_ROLLUP_RETRY_MS`. */
+  retryMs?: number;
+  /** Default `COST_ROLLUP_READ_TIMEOUT_MS`. */
+  readTimeoutMs?: number;
+  /** How many months of rows are kept; null keeps them all. Default `BILLING_ROLLUP_RETENTION_MONTHS`. */
+  retentionMonths?: number | null;
+  /** Default `COST_ROLLUP_PRUNE_BATCH`. */
+  pruneBatch?: number;
+  /** The instant the pass judges days against. Default the wall clock. */
+  now?: () => string;
+}
+
+/** What the cost rollup did in one pass (#3316): the request rollup's report, without saturation. */
+export type CostRollupSweepReport = Omit<RequestRollupSweepReport, 'saturated' | 'saturatedDays'>;
 
 /**
  * How the meter-snapshot phase takes a day (#2501). It reads only the directory, in one
@@ -1423,6 +1516,28 @@ function assertSweepBatches(options: PlatformSweepOptions): void {
     }
   }
   if (rollup?.readTimeoutMs !== undefined) assertPositiveMs('requestRollup.readTimeoutMs', rollup.readTimeoutMs);
+  const costs = options.cloudflareCosts;
+  if (costs?.pruneBatch !== undefined) assertRowLimit('cloudflareCosts.pruneBatch', costs.pruneBatch);
+  if (costs?.batch !== undefined && !(Number.isInteger(costs.batch) && costs.batch >= 0)) {
+    throw substratError('validation_failed', `cloudflareCosts.batch must be a non-negative integer, got ${String(costs.batch)}`);
+  }
+  if (costs?.retentionMonths !== undefined) assertBillingRetention('cloudflareCosts.retentionMonths', costs.retentionMonths);
+  const costLookback = costs?.lookbackDays;
+  if (costLookback !== undefined && !(Number.isInteger(costLookback) && costLookback >= 1 && costLookback <= COST_ROLLUP_MAX_LOOKBACK_DAYS)) {
+    throw substratError(
+      'validation_failed',
+      `cloudflareCosts.lookbackDays must be a whole number of days from 1 to ${COST_ROLLUP_MAX_LOOKBACK_DAYS}, got ${String(costLookback)}`,
+    );
+  }
+  for (const name of ['settleMs', 'retryMs'] as const) {
+    const ms = costs?.[name];
+    if (ms !== undefined && !(Number.isFinite(ms) && ms >= 0)) {
+      throw substratError('validation_failed', `cloudflareCosts.${name} must be a non-negative number of ms, got ${String(ms)}`);
+    }
+  }
+  if (costs?.readTimeoutMs !== undefined) assertPositiveMs('cloudflareCosts.readTimeoutMs', costs.readTimeoutMs);
+  const objectsBatch = options.scopeObjects?.batch;
+  if (objectsBatch !== undefined) assertRowLimit('scopeObjects.batch', objectsBatch);
   const snapshot = options.meterSnapshot;
   if (snapshot?.pruneBatch !== undefined) assertRowLimit('meterSnapshot.pruneBatch', snapshot.pruneBatch);
   if (snapshot?.retentionMonths !== undefined) assertBillingRetention('meterSnapshot.retentionMonths', snapshot.retentionMonths);
@@ -1528,6 +1643,8 @@ export async function runPlatformSweep(
     storage: null,
     orphanAttachments: null,
     requestRollup: null,
+    scopeObjects: null,
+    cloudflareCosts: null,
     meterSnapshot: null,
     errors: [],
   };
@@ -2316,6 +2433,25 @@ export async function runPlatformSweep(
     typeof host.admin.listRequestRollupDays === 'function'
   ) {
     report.requestRollup = await sweepRequestRollup(host.admin, options.actor, options.requestRollup, report);
+  }
+
+  // -- scope object ids, then the daily Cloudflare cost rollup (#3316) ------------
+  // After the request rollup, for its reason: both wait on outside services and nothing in the
+  // pass depends on them. Object ids first, so a scope provisioned since the last pass is already
+  // mapped when a day that holds it is attributed.
+  if (
+    options.scopeObjects &&
+    typeof host.admin.listScopeObjectsDue === 'function' &&
+    typeof host.admin.recordScopeObject === 'function'
+  ) {
+    report.scopeObjects = await sweepScopeObjects(host.admin, options.actor, options.scopeObjects, report);
+  }
+  if (
+    options.cloudflareCosts &&
+    typeof host.admin.recordCostDay === 'function' &&
+    typeof host.admin.listCostRollupDays === 'function'
+  ) {
+    report.cloudflareCosts = await sweepCostRollup(host.admin, options.actor, options.cloudflareCosts, report);
   }
 
   // -- drain the staff access log to Tier 2, then prune it (K-24, §4.4) --------
@@ -3475,6 +3611,107 @@ async function sweepRequestRollup(
     // A directory read or the prune failed: whatever days were recorded stay recorded, and the
     // next pass finds the rest due.
     report.errors.push({ kind: 'request-rollup', id: 'directory', error: message(err) });
+  }
+  return out;
+}
+
+/**
+ * One pass of the scope-object phase (#3316): ask each due scope's data script for its object id,
+ * one at a time, and record the answer or the failure. Only a failure to read the due list itself
+ * reaches `errors`; a scope that cannot answer waits `retryMs` and shows in the report.
+ */
+async function sweepScopeObjects(
+  admin: HostAdmin,
+  actor: PlatformActorId,
+  options: ScopeObjectsSweepOptions,
+  report: PlatformSweepReport,
+): Promise<ScopeObjectsSweepReport> {
+  const out: ScopeObjectsSweepReport = { asked: 0, recorded: 0, failed: 0, failures: [] };
+  try {
+    const due = await admin.listScopeObjectsDue!(actor, {
+      limit: options.batch ?? SCOPE_OBJECTS_PER_PASS,
+      retryMs: options.retryMs ?? SCOPE_OBJECT_RETRY_MS,
+    });
+    for (const target of due) {
+      out.asked += 1;
+      const attemptedAt = new Date().toISOString();
+      try {
+        const objectId = await options.read(target);
+        await admin.recordScopeObject!(actor, { ...target, attemptedAt, objectId });
+        out.recorded += 1;
+      } catch (err) {
+        out.failed += 1;
+        const error = message(err);
+        if (out.failures.length < 3) out.failures.push(`${target.scopeId}: ${error}`);
+        await admin.recordScopeObject!(actor, { ...target, attemptedAt, error }).catch(() => undefined);
+      }
+    }
+  } catch (err) {
+    report.errors.push({ kind: 'scope-objects', id: 'directory', error: message(err) });
+  }
+  return out;
+}
+
+/**
+ * One pass of the Cloudflare cost rollup (#3316): the request rollup's loop (`sweepRequestRollup`)
+ * over Cloudflare's analytics, read one day at a time, oldest first. A standing failure is reported
+ * when its run begins and kept on the ledger after that.
+ */
+async function sweepCostRollup(
+  admin: HostAdmin,
+  actor: PlatformActorId,
+  rollup: CostRollupSweepOptions,
+  report: PlatformSweepReport,
+): Promise<CostRollupSweepReport> {
+  const out: CostRollupSweepReport = { due: 0, deferred: 0, read: 0, failed: 0, repeated: 0, streak: null, recorded: 0, pruned: 0 };
+  const batch = rollup.batch ?? COST_ROLLUP_DAYS_PER_PASS;
+  const months = rollup.retentionMonths === undefined ? BILLING_ROLLUP_RETENTION_MONTHS : rollup.retentionMonths;
+  const now = rollup.now ?? (() => new Date().toISOString());
+  try {
+    const nowMs = Date.parse(now());
+    if (batch > 0) {
+      const reads = await admin.listCostRollupDays!(actor);
+      let previous = previousAttempt(reads);
+      const due = requestRollupDueDays({
+        nowMs,
+        reads,
+        lookbackDays: rollup.lookbackDays ?? COST_ROLLUP_LOOKBACK_DAYS,
+        settleMs: rollup.settleMs ?? COST_ROLLUP_SETTLE_MS,
+        retryMs: rollup.retryMs ?? COST_ROLLUP_RETRY_MS,
+        horizon: billingRollupHorizon(nowMs, months),
+      });
+      const take = due.slice(0, batch);
+      out.due = due.length;
+      out.deferred = due.length - take.length;
+      for (const day of take) {
+        try {
+          const usage = await withinDeadline(rollup.read(day), rollup.readTimeoutMs ?? COST_ROLLUP_READ_TIMEOUT_MS, 'the cost rollup read');
+          out.recorded += (await admin.recordCostDay!(actor, { day, attemptedAt: now(), usage })).recorded;
+          out.read += 1;
+          previous = NO_ATTEMPT;
+        } catch (err) {
+          const error = message(err);
+          const attemptedAt = now();
+          out.failed += 1;
+          const { run, repeated } = extendRun(previous, error, attemptedAt);
+          out.streak = run;
+          if (repeated) out.repeated += 1;
+          else report.errors.push({ kind: 'cost-rollup', id: day, error });
+          await admin
+            .recordCostDay!(actor, { day, attemptedAt, error, failingSince: run.since, failingCount: run.failures })
+            .catch(() => undefined);
+          break;
+        }
+      }
+      if (out.streak === null && previous.error !== null && previous.since !== null) {
+        out.streak = { error: previous.error, since: previous.since, failures: previous.failures };
+      }
+    }
+    if (typeof admin.pruneCostDays === 'function') {
+      out.pruned = await admin.pruneCostDays(actor, rollup.pruneBatch ?? COST_ROLLUP_PRUNE_BATCH, months);
+    }
+  } catch (err) {
+    report.errors.push({ kind: 'cost-rollup', id: 'directory', error: message(err) });
   }
   return out;
 }

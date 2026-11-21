@@ -91,6 +91,11 @@
 		// would answer questions about prod traffic with no error to notice. Unset ⇒ the
 		// tenant-metrics route 501s.
 		"ROUTER_ANALYTICS_DATASET": "substrat_router",
+		// #3316: the daily Cloudflare cost rollup. The analytics it reads are the ACCOUNT's, so
+		// only this environment, whose directory names the account's scripts, opts in; TEST
+		// shares the account and leaves it unset. Needs Account Analytics Read and Workers
+		// Scripts Read on the Cloudflare API token.
+		"CLOUDFLARE_COST_ROLLUP": "on",
 		// #1904: from when the Requests histogram and facets read the router's datapoints
 		// (blobs 6–9) instead of scanning Workers Logs. Must be AFTER this environment's
 		// router started writing them — prod's deploy of #1905 is 2026-09-29T07:02:04Z —

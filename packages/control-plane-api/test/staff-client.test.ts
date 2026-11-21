@@ -61,6 +61,11 @@ const WIRE: Record<string, [(c: C) => Promise<unknown>, string, string, unknown?
     'GET',
     `/meters/requests?tenantId=${T}&since=2026-09-01&until=2026-09-30`,
   ],
+  readCloudflareCosts: [
+    (c) => c.readCloudflareCosts({ tenantId: T as never, attribution: 'unmapped', since: '2026-09-01' }),
+    'GET',
+    `/meters/cloudflare-costs?tenantId=${T}&attribution=unmapped&since=2026-09-01`,
+  ],
   readMeterDays: [
     (c) => c.readMeterDays({ tenantId: T as never, since: '2026-09-01', until: '2026-09-30', limit: 5 }),
     'GET',

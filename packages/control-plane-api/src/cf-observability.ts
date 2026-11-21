@@ -10,8 +10,10 @@ import {
   PLATFORM_SECRET_HEADER,
   ROUTER_REQUEST_POINT,
   ROUTER_SCRIPT_NAMES,
+  cloudflareUsageDay,
   splitEntityTypes,
   utcDay,
+  type CloudflareUsageDay,
 } from '@substrat-run/contracts';
 import { RequestRollupSaturated, type RequestDayCount } from '@substrat-run/kernel';
 import { readFieldCoverage } from './field-coverage-read.js';
@@ -2369,6 +2371,180 @@ export function createRouterRequestDayReader(opts: {
       rateLimited: count(r, 'rateLimited'),
       sampled: aeNum(r['maxInterval']) > 1,
     }));
+  };
+}
+
+/**
+ * The most rows one GraphQL page of the cost rollup asks for (#3316): Cloudflare's own ceiling. A
+ * day is read in pages keyed on each dataset's grouping key, so no day is cut short at it.
+ */
+export const COST_USAGE_PAGE = 10_000;
+
+/** The most pages one dataset may take for one day: far past any real day, so a loop cannot spin. */
+const COST_USAGE_PAGES_MAX = 50;
+
+/** Cloudflare's Durable Object namespace list answers at most this many per page. */
+const NAMESPACE_PAGE = 1000;
+const NAMESPACE_PAGES_MAX = 200;
+
+type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
+
+/**
+ * The Cloudflare cost rollup's reader (#3316, #3311): one closed UTC day of the billed Workers and
+ * Durable Objects analytics, as Cloudflare reports them, for the platform sweep to attribute
+ * through the directory. Three GraphQL datasets, each read in keyset pages:
+ *
+ * - `workersInvocationsAdaptive` per script: CPU time, with its 95% interval (sampled);
+ * - `durableObjectsInvocationsAdaptiveGroups` per (namespace, script): requests, each RPC call and
+ *   each alarm, with its 95% interval (sampled);
+ * - `durableObjectsPeriodicGroups` per (namespace, object): rows read and written, storage write
+ *   units, duration in GB-s (an aggregate, not a sample).
+ *
+ * Plus Cloudflare's namespace list, which is the only thing that says which class a namespace
+ * holds, so a ScopeDO is told from a ConfigDO, IdentityDO or SweeperDO. It is read once per reader,
+ * and the sweep builds one reader per pass, so a pass that reads several days lists it once.
+ *
+ * The token needs Account Analytics Read (the GraphQL datasets) and Workers Scripts Read (the
+ * namespace list). Every number is the account's, so the reader belongs only to the environment
+ * whose directory can attribute it: one control plane per account.
+ */
+export function createCloudflareUsageDayReader(opts: {
+  accountId: string;
+  apiToken: string;
+  /** Injected for a test; the runtime's fetch otherwise, called as a plain function. */
+  fetch?: FetchFn;
+  /** Rows per GraphQL page. Default `COST_USAGE_PAGE`, Cloudflare's ceiling; a test pages with fewer. */
+  pageSize?: number;
+}): (day: string) => Promise<CloudflareUsageDay> {
+  const pageSize = opts.pageSize ?? COST_USAGE_PAGE;
+  const send: FetchFn = opts.fetch ?? ((input, init) => fetch(input, init));
+  const headers = { authorization: `Bearer ${opts.apiToken}`, 'content-type': 'application/json' };
+  let namespaces: Promise<CloudflareUsageDay['namespaces']> | undefined;
+
+  const graphql = async (query: string, variables: Record<string, string>): Promise<Array<Record<string, unknown>>> => {
+    const res = await send(GRAPHQL_URL, { method: 'POST', headers, body: JSON.stringify({ query, variables }) });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`Cloudflare GraphQL Analytics failed: HTTP ${res.status} ${text.slice(0, 200)}`);
+    const body = JSON.parse(text) as {
+      data?: { viewer?: { accounts?: Array<{ rows?: Array<Record<string, unknown>> }> } } | null;
+      errors?: Array<{ message?: string }> | null;
+    };
+    if (body.errors && body.errors.length > 0) {
+      throw new Error(`Cloudflare GraphQL Analytics refused the read: ${String(body.errors[0]?.message ?? 'unknown error').slice(0, 200)}`);
+    }
+    const rows = body.data?.viewer?.accounts?.[0]?.rows;
+    if (!Array.isArray(rows)) throw new Error('Cloudflare GraphQL Analytics answered without the dataset');
+    return rows;
+  };
+
+  // Every row of one dataset for the day, paged on its grouping key in ascending order. A day that
+  // does not end inside the page bound throws: a part of a day is never handed on as the whole.
+  const pages = async (dataset: string, key: string, fields: string, day: string) => {
+    const query = `query CostRollup($account: String!, $day: Date!, $after: String!) {
+      viewer { accounts(filter: { accountTag: $account }) {
+        rows: ${dataset}(limit: ${pageSize}, filter: { date: $day, ${key}_gt: $after }, orderBy: [${key}_ASC]) { ${fields} }
+      } }
+    }`;
+    const all: Array<Record<string, unknown>> = [];
+    let after = '';
+    for (let page = 0; page < COST_USAGE_PAGES_MAX; page += 1) {
+      const rows = await graphql(query, { account: opts.accountId, day, after });
+      all.push(...rows);
+      if (rows.length < pageSize) return all;
+      after = String((rows.at(-1)?.['dimensions'] as Record<string, unknown> | undefined)?.[key] ?? '');
+      if (!after) throw new Error(`Cloudflare GraphQL Analytics answered a ${dataset} page without its ${key}`);
+    }
+    throw new Error(`Cloudflare GraphQL Analytics: ${dataset} for ${day} holds more than ${COST_USAGE_PAGES_MAX} pages`);
+  };
+
+  const listNamespaces = async (): Promise<CloudflareUsageDay['namespaces']> => {
+    const out: CloudflareUsageDay['namespaces'] = [];
+    for (let page = 1; page <= NAMESPACE_PAGES_MAX; page += 1) {
+      const res = await send(
+        `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/durable_objects/namespaces?per_page=${NAMESPACE_PAGE}&page=${page}`,
+        { headers: { authorization: headers.authorization } },
+      );
+      const text = await res.text();
+      if (!res.ok) throw new Error(`Cloudflare Durable Object namespace list failed: HTTP ${res.status} ${text.slice(0, 200)}`);
+      const body = JSON.parse(text) as { result?: Array<{ id?: unknown; script?: unknown; class?: unknown }> };
+      const rows = body.result ?? [];
+      for (const r of rows) {
+        if (typeof r.id !== 'string' || !r.id) continue;
+        out.push({
+          id: r.id,
+          script: typeof r.script === 'string' && r.script ? r.script : null,
+          class: typeof r.class === 'string' && r.class ? r.class : null,
+        });
+      }
+      if (rows.length < NAMESPACE_PAGE) return out;
+    }
+    throw new Error(`Cloudflare Durable Object namespace list holds more than ${NAMESPACE_PAGES_MAX} pages`);
+  };
+
+  const num = (v: unknown): number => {
+    const n = typeof v === 'number' ? v : Number(v);
+    if (!Number.isFinite(n) || n < 0) throw new Error(`Cloudflare GraphQL Analytics answered a figure that is not a count: ${JSON.stringify(v)}`);
+    return n;
+  };
+  // A 95% interval when Cloudflare calls it valid; nothing otherwise, never a made-up one.
+  const interval = (c: unknown): { lower?: number; upper?: number } => {
+    const ci = c as { lower?: unknown; upper?: unknown; isValid?: unknown } | undefined;
+    if (!ci || ci.isValid !== true || typeof ci.lower !== 'number' || typeof ci.upper !== 'number') return {};
+    return { lower: Math.max(0, ci.lower), upper: Math.max(0, ci.upper) };
+  };
+  const at = (row: Record<string, unknown>, ...path: string[]): unknown =>
+    path.reduce<unknown>((v, k) => (v && typeof v === 'object' ? (v as Record<string, unknown>)[k] : undefined), row);
+
+  return async (day) => {
+    if (!utcDay.safeParse(day).success) {
+      throw new Error(`cost rollup: refusing a day that is not a UTC day: ${JSON.stringify(day)}`);
+    }
+    const workers = await pages(
+      'workersInvocationsAdaptive',
+      'scriptName',
+      'sum { cpuTimeUs } confidence(level: 0.95) { sum { cpuTimeUs { lower upper isValid } } } dimensions { scriptName }',
+      day,
+    );
+    const invocations = await pages(
+      'durableObjectsInvocationsAdaptiveGroups',
+      'namespaceId',
+      'sum { requests } confidence(level: 0.95) { sum { requests { lower upper isValid } } } dimensions { namespaceId scriptName }',
+      day,
+    );
+    const objects = await pages(
+      'durableObjectsPeriodicGroups',
+      'objectId',
+      'sum { rowsRead rowsWritten storageWriteUnits duration } dimensions { namespaceId objectId }',
+      day,
+    );
+    namespaces ??= listNamespaces().catch((err: unknown) => {
+      // A failed list is not kept: the next day's read asks again.
+      namespaces = undefined;
+      throw err;
+    });
+    return cloudflareUsageDay.parse({
+      day,
+      workers: workers.map((r) => ({
+        script: String(at(r, 'dimensions', 'scriptName') ?? ''),
+        cpuTimeUs: num(at(r, 'sum', 'cpuTimeUs')),
+        ...interval(at(r, 'confidence', 'sum', 'cpuTimeUs')),
+      })),
+      doInvocations: invocations.map((r) => ({
+        namespaceId: String(at(r, 'dimensions', 'namespaceId') ?? ''),
+        script: String(at(r, 'dimensions', 'scriptName') ?? ''),
+        requests: num(at(r, 'sum', 'requests')),
+        ...interval(at(r, 'confidence', 'sum', 'requests')),
+      })),
+      doObjects: objects.map((r) => ({
+        namespaceId: String(at(r, 'dimensions', 'namespaceId') ?? ''),
+        objectId: String(at(r, 'dimensions', 'objectId') ?? ''),
+        rowsRead: num(at(r, 'sum', 'rowsRead')),
+        rowsWritten: num(at(r, 'sum', 'rowsWritten')),
+        storageWriteUnits: num(at(r, 'sum', 'storageWriteUnits')),
+        duration: num(at(r, 'sum', 'duration')),
+      })),
+      namespaces: await namespaces,
+    });
   };
 }
 

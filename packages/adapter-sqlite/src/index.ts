@@ -426,6 +426,17 @@ import {
   type RequestDayFilter,
   type RequestDayReadInput,
   type RequestRollupDayFilter,
+  COST_ROLLUP_DDL,
+  listCostDayRows,
+  listCostRollupDayRows,
+  pruneCostDayRows,
+  recordCostDayRows,
+  recordScopeObjectRow,
+  scopeObjectsDueRows,
+  type CostDayFilter,
+  type CostDayReadInput,
+  type CostRollupDayFilter,
+  type ScopeObjectReadInput,
   METER_DAYS_DDL,
   VERTICAL_OWNERS_BACKFILL,
   VERTICAL_OWNERS_DDL,
@@ -3289,6 +3300,8 @@ export class SqliteScopeHost implements ScopeHost {
       ${SCOPE_STORAGE_DDL}
       -- #2501: the daily request rollup — one row per (UTC day, tenant, vertical, scope), kernel-owned DDL.
       ${REQUEST_ROLLUP_DDL}
+      -- #3316: the daily Cloudflare cost rollup and each scope's Durable Object id, kernel-owned DDL.
+      ${COST_ROLLUP_DDL}
       -- #2501: the daily meter snapshot — one row per (UTC day, tenant), kernel-owned DDL.
       ${METER_DAYS_DDL}
       -- #2501: who owned each vertical slug, period by period — kernel-owned DDL.
@@ -14351,6 +14364,36 @@ export class SqliteScopeHost implements ScopeHost {
         this.directory.transaction(() =>
           pruneRequestDayRows(redactionSqlOf(this.directory), Date.now(), limit, retentionMonths),
         )(),
+      // #3316: the day is attributed through the directory in the transaction that records it.
+      recordCostDay: async (_actor, input: CostDayReadInput) => ({
+        recorded: this.directory.transaction(() => recordCostDayRows(redactionSqlOf(this.directory), input))(),
+      }),
+      listCostDays: async (actor, filter?: CostDayFilter) => {
+        const rows = listCostDayRows(redactionSqlOf(this.directory), filter);
+        this.recordAccess(
+          actor,
+          'listCostDays',
+          { tenantId: filter?.tenantId ?? null, scopeId: filter?.scopeId ?? null },
+          filter ?? null,
+          rows.length,
+        );
+        return rows;
+      },
+      listCostRollupDays: async (actor, filter?: CostRollupDayFilter) => {
+        const rows = listCostRollupDayRows(redactionSqlOf(this.directory), filter);
+        this.recordAccess(actor, 'listCostRollupDays', { tenantId: null }, filter ?? null, rows.length);
+        return rows;
+      },
+      pruneCostDays: async (_actor, limit: number, retentionMonths: number | null) =>
+        this.directory.transaction(() => pruneCostDayRows(redactionSqlOf(this.directory), Date.now(), limit, retentionMonths))(),
+      listScopeObjectsDue: async (actor, input: { limit: number; retryMs: number }) => {
+        const rows = scopeObjectsDueRows(redactionSqlOf(this.directory), { nowMs: Date.now(), ...input });
+        this.recordAccess(actor, 'listScopeObjectsDue', { tenantId: null }, input, rows.length);
+        return rows;
+      },
+      recordScopeObject: async (_actor, input: ScopeObjectReadInput) => {
+        this.directory.transaction(() => recordScopeObjectRow(redactionSqlOf(this.directory), input))();
+      },
       // #2501: the snapshot reads and writes in one transaction, so its rows are one instant's reading.
       recordMeterDay: async (_actor, input: MeterDayTakeInput) =>
         this.directory.transaction(() => recordMeterDayRows(redactionSqlOf(this.directory), input))(),

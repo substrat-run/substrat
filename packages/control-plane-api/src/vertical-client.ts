@@ -2453,6 +2453,19 @@ export class VerticalClient {
     return this.internalSize('attachment-size', scopeId);
   }
 
+  /**
+   * The Durable Object id this deployment derives for a scope (#3316), for the directory's
+   * scope-object ledger. A deployment built before the route answers 501 or 404, which throws; a
+   * 200 without a 64-hex id is a wire disagreement and throws too, so no wrong id is recorded.
+   */
+  async scopeObjectId(scopeId: ScopeId): Promise<string> {
+    const answer = await this.getInternal<{ objectId?: unknown }>(`/internal/scope-object-id?scopeId=${encodeURIComponent(scopeId)}`);
+    if (typeof answer.objectId !== 'string' || !/^[0-9a-f]{64}$/.test(answer.objectId)) {
+      throw new ControlPlaneError(502, `vertical answered scope-object-id without an object id for scope ${scopeId}`);
+    }
+    return answer.objectId;
+  }
+
   /** One `/internal/<route>?scopeId=` size read; a 200 without a non-negative integer throws. */
   private async internalSize(route: 'database-size' | 'attachment-size', scopeId: ScopeId): Promise<number> {
     const answer = await this.getInternal<{ bytes?: unknown }>(`/internal/${route}?scopeId=${encodeURIComponent(scopeId)}`);

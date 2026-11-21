@@ -46,6 +46,18 @@ import {
   type RequestDayFilter,
   type RequestDayReadInput,
   type RequestRollupDayFilter,
+  COST_ROLLUP_DDL,
+  listCostDayRows,
+  listCostRollupDayRows,
+  pruneCostDayRows,
+  recordCostDayRows,
+  recordScopeObjectRow,
+  scopeObjectsDueRows,
+  type CostDayFilter,
+  type CostDayReadInput,
+  type CostRollupDayFilter,
+  type ScopeObjectReadInput,
+  type ScopeObjectTarget,
   METER_DAYS_DDL,
   VERTICAL_OWNERS_BACKFILL,
   VERTICAL_OWNERS_DDL,
@@ -251,6 +263,7 @@ import type {
   ScopeStorageSample,
   RequestDay,
   RequestRollupDay,
+  CostDay,
   MeterDay,
   MeterDayTake,
   VerticalOwnerPeriod,
@@ -1482,6 +1495,8 @@ const DIRECTORY_DDL = `
   ${SCOPE_STORAGE_DDL}
   -- #2501: the daily request rollup — one row per (UTC day, tenant, vertical, scope), kernel-owned DDL.
   ${REQUEST_ROLLUP_DDL}
+  -- #3316: the daily Cloudflare cost rollup and each scope's Durable Object id, kernel-owned DDL.
+  ${COST_ROLLUP_DDL}
   -- #2501: the daily meter snapshot — one row per (UTC day, tenant), kernel-owned DDL.
   ${METER_DAYS_DDL}
   -- #2501: who owned each vertical slug, period by period — kernel-owned DDL.
@@ -5255,6 +5270,32 @@ export class ControlPlaneDO extends DurableObject {
     return this.ctx.storage.transactionSync(() =>
       pruneRequestDayRows(doRedactionSql(this.sql), Date.now(), limit, retentionMonths),
     );
+  }
+
+  // -- the daily Cloudflare cost rollup (#3316) — kernel `cost-rollup.ts` -----------
+  // Attributed through the directory inside the transaction that records the day.
+  recordCostDay(input: CostDayReadInput): { recorded: number } {
+    return { recorded: this.ctx.storage.transactionSync(() => recordCostDayRows(doRedactionSql(this.sql), input)) };
+  }
+
+  listCostDays(filter?: CostDayFilter): CostDay[] {
+    return listCostDayRows(doRedactionSql(this.sql), filter);
+  }
+
+  listCostRollupDays(filter?: CostRollupDayFilter): RequestRollupDay[] {
+    return listCostRollupDayRows(doRedactionSql(this.sql), filter);
+  }
+
+  pruneCostDays(limit: number, retentionMonths: number | null): number {
+    return this.ctx.storage.transactionSync(() => pruneCostDayRows(doRedactionSql(this.sql), Date.now(), limit, retentionMonths));
+  }
+
+  listScopeObjectsDue(input: { limit: number; retryMs: number }): ScopeObjectTarget[] {
+    return scopeObjectsDueRows(doRedactionSql(this.sql), { nowMs: Date.now(), ...input });
+  }
+
+  recordScopeObject(input: ScopeObjectReadInput): void {
+    this.ctx.storage.transactionSync(() => recordScopeObjectRow(doRedactionSql(this.sql), input));
   }
 
   // -- the daily meter snapshot (#2501) — kernel `meter-days.ts` -------------------

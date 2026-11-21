@@ -118,6 +118,9 @@ import {
   scopeId as scopeIdSchema,
   scopeStatus,
   requestRollupReading,
+  costRollupReading,
+  costAttribution,
+  cloudflareUsageDay,
   meterDaysReading,
   verticalOwnersReading,
   utcDay,
@@ -217,6 +220,8 @@ import {
   type SubjectErasureFence,
   REQUEST_ROLLUP_LIMIT_DEFAULT,
   REQUEST_ROLLUP_LIMIT_MAX,
+  COST_ROLLUP_LIMIT_DEFAULT,
+  COST_ROLLUP_LIMIT_MAX,
   STORAGE_HISTORY_LIMIT_MAX,
   STORAGE_GAUGE_RETENTION_MONTHS,
   BUILD_USAGE_RETENTION_DAYS,
@@ -3420,6 +3425,72 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         days,
       }),
     );
+  });
+
+  // The daily Cloudflare cost rollup (#3316): the stored cost inputs per (day, script, scope, Durable
+  // Object class, billed dimension), attributed through the directory, and the rollup's record of each
+  // day in the window. Staff-only like `/meters`. Quantities only, never a price: the markup schedule
+  // prices them at read. A directory read; nothing is queried live.
+  const COST_ROLLUP_PAGE_MAX = COST_ROLLUP_LIMIT_MAX / 2;
+  app.get('/meters/cloudflare-costs', async (c) => {
+    const admin = c.var.admin;
+    if (!admin.listCostDays || !admin.listCostRollupDays) {
+      return refuseStatus(c, 501, 'this control plane keeps no Cloudflare cost rollup');
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const q = z
+      .object({
+        tenantId: tenantIdSchema.optional(),
+        scopeId: scopeIdSchema.optional(),
+        vertical: z.string().min(1).optional(),
+        attribution: costAttribution.optional(),
+        since: utcDay.optional(),
+        until: utcDay.default(today),
+        limit: z.coerce.number().int().min(1).max(COST_ROLLUP_PAGE_MAX).default(COST_ROLLUP_LIMIT_DEFAULT),
+      })
+      .parse({
+        tenantId: c.req.query('tenantId') || undefined,
+        scopeId: c.req.query('scopeId') || undefined,
+        vertical: c.req.query('vertical') || undefined,
+        attribution: c.req.query('attribution') || undefined,
+        since: c.req.query('since') || undefined,
+        until: c.req.query('until') || undefined,
+        limit: c.req.query('limit') || undefined,
+      });
+    const since = q.since ?? windowSince(q.until);
+    if (since > q.until) return refuse(c, 'validation_failed', '`since` is after `until`');
+    const actor = c.get('actor');
+    const rows = await admin.listCostDays(actor, {
+      ...(q.tenantId ? { tenantId: q.tenantId } : {}),
+      ...(q.scopeId ? { scopeId: q.scopeId } : {}),
+      ...(q.vertical ? { vertical: q.vertical } : {}),
+      ...(q.attribution ? { attribution: q.attribution } : {}),
+      since,
+      until: q.until,
+      limit: q.limit + 1,
+    });
+    const days = await admin.listCostRollupDays(actor, { since, until: q.until });
+    return c.json(costRollupReading.parse({ since, until: q.until, rows: rows.slice(0, q.limit), truncated: rows.length > q.limit, days }));
+  });
+
+  // #3316: load one day of a raw Cloudflare usage snapshot into the cost rollup, for the history the
+  // analytics no longer answer for. The day is attributed through the directory by the same code the
+  // scheduled pass runs. A day already read is refused, so a snapshot never replaces a read that
+  // carries its confidence intervals; so is a day that has not ended. Staff-only like `/meters`.
+  app.post('/meters/cloudflare-costs/days', async (c) => {
+    const admin = c.var.admin;
+    if (!admin.recordCostDay || !admin.listCostRollupDays) {
+      return refuseStatus(c, 501, 'this control plane keeps no Cloudflare cost rollup');
+    }
+    const usage = cloudflareUsageDay.parse(await c.req.json());
+    if (usage.day >= new Date().toISOString().slice(0, 10)) {
+      return refuse(c, 'validation_failed', `${usage.day} has not ended`);
+    }
+    const actor = c.get('actor');
+    const [read] = await admin.listCostRollupDays(actor, { since: usage.day, until: usage.day });
+    if (read?.readAt) return refuse(c, 'conflict', `${usage.day} was already read at ${read.readAt}; a snapshot does not replace it`);
+    const { recorded } = await admin.recordCostDay(actor, { day: usage.day, attemptedAt: new Date().toISOString(), usage });
+    return c.json({ day: usage.day, recorded }, 201);
   });
 
   // The daily meter snapshot (#2501): meters 1 and 2 as the first scheduled pass of each UTC day
