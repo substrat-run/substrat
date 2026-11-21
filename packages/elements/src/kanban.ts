@@ -403,6 +403,11 @@ export class SubKanban<T = any> extends SubstratElement {
       this.#byKey = new Map(this.cards.map((c) => [this.keyOf(c), c]));
       const drag = this.#drag;
       if (drag && !this.#byKey.has(drag.key)) this.#abandon();
+      else if (drag && !this.sortable) {
+        // A held card's place follows the order, and the order just changed: place it again.
+        const from = spotOf(this.#board, drag.key);
+        if (from) this.#drag = { ...drag, from, at: drag.at.column === from.column ? from : placeOf(this.#board, drag.key, drag.at.column, this.#rank) };
+      }
     } else if (changed.has('sortable') && !this.sortable) {
       // Turned off: an order made while it was on is not the given one, and a card landing by
       // `placeOf` would be placed among it. Each column takes the given order; every card stays
@@ -1210,7 +1215,9 @@ export class SubKanban<T = any> extends SubstratElement {
       await this.move(move);
       return true;
     } catch (error) {
-      this.#board = moveCard(this.#board, move.key, { column: move.from, index: move.fromIndex });
+      // Back where it was, or with no order in a column, where the order (which may have changed since) puts it.
+      const back = this.sortable ? { column: move.from, index: move.fromIndex } : placeOf(this.#board, move.key, move.from, this.#rank);
+      this.#board = moveCard(this.#board, move.key, back);
       this.#say(this.#words.moveFailed(this.labelOf(move.card), this.#columnLabel(move.from)));
       this.#emit('sub-move-failed', { move, error });
       return false;

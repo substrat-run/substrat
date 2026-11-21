@@ -169,6 +169,40 @@ describe('<sub-kanban>', () => {
     expect(moves).toMatchObject([{ key: 'b', to: 'doing', index: 1, after: 'c', before: null }]);
   });
 
+  it('with sortable off, places a held card again when the order changes under it', async () => {
+    const cards = [
+      { id: 'b', title: 'Beta', status: 'todo' },
+      { id: 'c', title: 'Gamma', status: 'doing' },
+      { id: 'd', title: 'Delta', status: 'doing' },
+    ];
+    const { board, moves } = await boardWith({ cards, sortable: false });
+    board.shadowRoot!.querySelector<HTMLElement>('[data-key="b"]')!.focus();
+    await press(board, ' ');
+    await press(board, 'ArrowRight');
+    expect(said(board)).toBe('Doing, position 1 of 3.');
+    board.cards = [cards[1]!, cards[2]!, cards[0]!];
+    await board.updateComplete;
+    await flush();
+    await press(board, ' ');
+    expect(moves).toMatchObject([{ key: 'b', to: 'doing', index: 2, after: 'd', before: null }]);
+  });
+
+  it('with sortable off, sends a card whose save failed back where the current order puts it', async () => {
+    let fail!: (e: Error) => void;
+    const cards = [
+      { id: 'b', title: 'Beta', status: 'todo' },
+      { id: 'a', title: 'Alpha', status: 'todo' },
+      { id: 'c', title: 'Gamma', status: 'todo' },
+    ];
+    const { board } = await boardWith({ cards, sortable: false, move: () => new Promise((_, reject) => (fail = reject)) });
+    const done = board.moveTo('b', 'done');
+    board.cards = [cards[2]!, cards[0]!, cards[1]!];
+    await board.updateComplete;
+    fail(new Error('conflict'));
+    expect(await done).toBe(false);
+    expect(columns(board).todo).toEqual(['c', 'b', 'a']);
+  });
+
   it('turning sortable off puts each column back in the given order, keeping every card in its column', async () => {
     const { board } = await boardWith();
     expect(await board.moveTo('b', 'todo', 0)).toBe(true);
