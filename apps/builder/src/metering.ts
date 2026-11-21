@@ -261,7 +261,7 @@ export interface UsageByModel {
 	cacheWrite: number;
 	/** Provider list price in USD; null when the model has no rate card entry. */
 	listUsd: string | null;
-	/** What the studio charges: list + 20% markup; null when unpriced. */
+	/** What the studio charges: list plus the markup (MARKUP_PERCENT); null when unpriced. */
 	billedUsd: string | null;
 }
 
