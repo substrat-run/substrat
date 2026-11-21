@@ -1,5 +1,12 @@
 # @substrat-run/docs
 
+## 0.1.36
+
+### Patch Changes
+
+- 03d8f69: The markup schedule (#3316): what a tenant is charged over cost is now data in the control plane, a default plus dated overrides per tenant, billed dimension and kind, set by staff and recorded in the admin log. Prices are computed at read with the decimal helpers; the model ledger and the builder studio price model calls from it, at today's 30%.
+- 498e9a4: Model tokens are marked up 30% over the provider's list price, up from 20%, everywhere the platform prices them: the default margin on platform-provided model calls a vertical makes (`DEFAULT_MODEL_MARGIN_PERCENT`, still overridable with `MODEL_MARGIN_PERCENT`), the hosted code-review spend limit that counts at that rate, and the builder studio's Usage pane. The builder now computes its factor with the ledger's `marginFactor` instead of a second copy.
+
 ## 0.1.35
 
 ### Patch Changes

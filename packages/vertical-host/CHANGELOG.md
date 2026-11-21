@@ -1,5 +1,25 @@
 # @substrat-run/vertical-host
 
+## 0.206.0
+
+### Minor Changes
+
+- 5244ed9: The platform keeps what Cloudflare bills it for, per tenant, vertical and scope: a daily cost rollup reads each closed day of Workers CPU, Durable Object requests, rows read and written, storage write units and duration from Cloudflare's analytics, with the 95% confidence interval where a dataset is sampled, and attributes each row through the directory (a Durable Object to the scope whose object id the directory recorded, a script to its vertical, version and owner on that day). Quantities only, no price. Each scope's object id is learned from the script that holds its data (`/internal/scope-object-id`), and staff read the rollup at `GET /meters/cloudflare-costs` and load an older snapshot day at `POST /meters/cloudflare-costs/days`.
+
+### Patch Changes
+
+- Updated dependencies [ec6c0ee]
+- Updated dependencies [5244ed9]
+- Updated dependencies [ff7fc65]
+- Updated dependencies [03d8f69]
+- Updated dependencies [866be58]
+- Updated dependencies [a23e0a1]
+- Updated dependencies [a6146fc]
+  - @substrat-run/kernel@0.206.0
+  - @substrat-run/contracts@0.206.0
+  - @substrat-run/vertical-auth@0.37.7
+  - @substrat-run/model-providers@0.5.96
+
 ## 0.205.0
 
 ### Minor Changes
