@@ -8,6 +8,11 @@ import { resolveObservabilityWindow } from './observability-window.js';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import {
+  MARKUP_SEED,
+  MARKUP_SEED_EFFECTIVE_FROM,
+  markupPercentFor,
+  markupRowInput,
+  type MarkupRow,
   permissionKey,
   parseHostname,
   withLabel,
@@ -511,9 +516,9 @@ export interface ControlPlaneApiOptions {
   /** Monotonic clock for the bounded tenant usage composition (injectable in tests). */
   meteredUsageNow?: () => number;
   /**
-   * The platform's margin over list price for model usage it provides (#1054), whole
-   * percent, applied at read time by `GET /model-usage/summary`. One global number
-   * today; a per-provider rate is an additive change later. Default 20.
+   * The margin over list price for model usage (#1054), whole percent, for a host that keeps no
+   * markup schedule. A host that keeps one (#3316, both adapters) prices from its rows instead,
+   * and this is ignored. Default `DEFAULT_MODEL_MARGIN_PERCENT`.
    */
   modelMarginPercent?: number;
   /**
@@ -1728,11 +1733,32 @@ const modelUsageSummaryQuery = z.object({
 });
 
 /**
- * The margin over list price on platform-provided model calls, whole percent, when the plane sets
- * no `MODEL_MARGIN_PERCENT`: 30%, the owner's rate for model tokens (2026-11-21, #3316). Per-tenant
- * rates are #3316's markup schedule; until it exists this is the one rate.
+ * The margin over list price on platform-provided model calls, whole percent: the markup
+ * schedule's seeded `model-calls` row (30%, the owner's rate of 2026-11-21, #3316), read from the
+ * seed rather than restated. The ledger's reads price from the schedule itself, a tenant's own
+ * row and a dated change included; this is the rate only for a host that keeps no schedule.
  */
-export const DEFAULT_MODEL_MARGIN_PERCENT = 30;
+export const DEFAULT_MODEL_MARGIN_PERCENT: number = markupPercentFor(MARKUP_SEED, {
+  tenantId: null,
+  dimension: 'model-calls',
+  kind: 'live',
+  day: MARKUP_SEED_EFFECTIVE_FROM,
+})!;
+/**
+ * The markup schedule a read prices from (#3316): every row, or the rows that can price one
+ * tenant. Null from a host that keeps no schedule, whose reads fall back to the fixed rate.
+ */
+async function markupScheduleFor(admin: HostAdmin, actor: PlatformActorId, tenantId?: TenantId): Promise<MarkupRow[] | null> {
+  if (!admin.listMarkup) return null;
+  return admin.listMarkup(actor, tenantId ? { tenantId } : undefined);
+}
+
+/** The platform's `model-calls` rate on `at`'s day: the summary's headline rate. */
+function platformModelMarginFor(markup: readonly MarkupRow[] | null, at: string, fallback: number): number {
+  const percent = markup ? markupPercentFor(markup, { tenantId: null, dimension: 'model-calls', kind: 'live', day: at.slice(0, 10) }) : null;
+  return percent ?? fallback;
+}
+
 /**
  * The most review lines one tenant's metered-usage read folds. A tenant's reviews are capped far
  * below it at intake (50 kept in 30 days), so reaching it marks the figure a lower bound.
@@ -2241,6 +2267,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   const app = new Hono<{ Variables: Vars }>();
+  /** #3316: the platform's model-calls rate on a day, or the fixed rate from a host keeping no schedule. */
+  const platformModelMargin = (markup: readonly MarkupRow[] | null, at: string): number =>
+    platformModelMarginFor(markup, at, options.modelMarginPercent ?? DEFAULT_MODEL_MARGIN_PERCENT);
 
   // Every refusal is a problem document (#113): the tripwire. A route answers a failure
   // through `refuse`/`refuseStatus`/`problem`, and anything else — a hand-rolled
@@ -3161,8 +3190,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         });
         const kept = lines.slice(0, REVIEW_USAGE_READ_MAX);
         const clipped = lines.length > REVIEW_USAGE_READ_MAX;
+        const markup = await markupScheduleFor(admin, actor, tenantId);
         const folded = foldModelUsage(kept, {
-          readAt, ...window, marginPercent: options.modelMarginPercent ?? DEFAULT_MODEL_MARGIN_PERCENT,
+          readAt, ...window, marginPercent: platformModelMargin(markup, until),
+          ...(markup ? { markup } : {}),
           ...(zeroRated ? { zeroRatedScopes: [options.reviewUsage.scope] } : {}),
         }).totals;
         const reported = kept.filter((line) => line.reported);
@@ -14042,13 +14073,41 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const now = new Date();
     const since = q.since ?? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
     const until = q.until ?? now.toISOString();
+    // #3316: each line at the model-calls row in force for its tenant on its day; the summary's
+    // `marginPercent` is the platform's rate on the window's last day.
+    const markup = await markupScheduleFor(c.var.admin, c.get('actor'), q.tenantId);
     const summary = await c.var.admin.summarizeModelUsage(
       c.get('actor'),
       { ...(q.tenantId ? { tenantId: q.tenantId } : {}), since, until },
-      options.modelMarginPercent ?? DEFAULT_MODEL_MARGIN_PERCENT,
-      options.reviewUsage?.zeroRated ? { zeroRatedScopes: [options.reviewUsage.scope] } : {},
+      platformModelMargin(markup, until),
+      {
+        ...(markup ? { markup } : {}),
+        ...(options.reviewUsage?.zeroRated ? { zeroRatedScopes: [options.reviewUsage.scope] } : {}),
+      },
     );
     return c.json(summary);
+  });
+
+  // -- the markup schedule (#3316, Pricing) -------------------------------------
+  // What a tenant is charged over cost: a default plus overrides per tenant, billed dimension and
+  // kind, dated and never edited. Staff only, on neither allowlist: a tenant sees prices, never the
+  // markup behind them. Every row added is a `setMarkup` admin row, committed with it.
+  app.get('/markup-schedule', async (c) => {
+    if (c.get('principal').kind !== 'staff') return refuse(c, 'forbidden', 'forbidden');
+    const { tenantId } = z.object({ tenantId: tenantIdSchema.optional() }).parse({ tenantId: c.req.query('tenantId') });
+    const rows = await markupScheduleFor(c.var.admin, c.get('actor'), tenantId);
+    if (!rows) throw new ControlPlaneError(501, 'this control plane keeps no markup schedule');
+    return c.json({ rows });
+  });
+
+  app.post('/markup-schedule', async (c) => {
+    if (c.get('principal').kind !== 'staff') return refuse(c, 'forbidden', 'forbidden');
+    if (!c.var.admin.setMarkup) throw new ControlPlaneError(501, 'this control plane keeps no markup schedule');
+    const input = markupRowInput.parse(await c.req.json());
+    if (input.tenantId && !(await c.var.admin.getTenant(c.get('actor'), input.tenantId))) {
+      return refuse(c, 'not_found', 'no such tenant');
+    }
+    return c.json(await c.var.admin.setMarkup(c.get('actor'), input), 201);
   });
 
   // #1054: the ledger against what Cloudflare saw, per closed UTC day and per (tenant, scope, model).

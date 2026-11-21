@@ -167,7 +167,8 @@ Platform-provided models are the one part of usage that is complete from call to
 4. The platform drain checks that the line's tenant, scope and vertical match the scope it was
    drained from, so a vertical cannot bill a model call to someone else, and writes it to the
    directory. The write is idempotent on the request id and kept for 400 days.
-5. When staff read the summary, a margin is applied, 30% unless configured otherwise. Nothing
+5. When staff read the summary, each line is priced at the markup schedule's model-calls rate
+   in force for its tenant on its day: 30% unless staff have set a dated row for it. Nothing
    stores the result.
 
 Two attribution bugs were found by looking at the ledger and finding it empty. A hosted

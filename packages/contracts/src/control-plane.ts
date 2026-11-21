@@ -152,6 +152,9 @@ export const adminAction = z.enum([
   'activateScope', // §4.2 — an explicit restore, never a silent flag flip
   'grantEntitlement', // §4.3 — the SKU flag turned on for a tenant
   'revokeEntitlement', // §4.3
+  // #3316 — a row added to the markup schedule: what a tenant is charged over cost. Rows are
+  // never edited, so this is the only write the schedule has; `after` is the row.
+  'setMarkup',
   'linkIdentity', // D-16 — bind an external identity to a principal
   'unlinkIdentity', // the inverse — sever a principal's login from a tenant
   // #101 — the integrations hub. The credential itself is NEVER in before/after:

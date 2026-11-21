@@ -2,7 +2,7 @@
  * Meter 3's fold (#1054): one definition of the number, exact money, unpriced kept apart.
  */
 import { describe, expect, it } from 'vitest';
-import { instant, scopeId, tenantId, type ModelUsageEntry } from '@substrat-run/contracts';
+import { MARKUP_SEED, instant, scopeId, tenantId, type MarkupRow, type ModelUsageEntry } from '@substrat-run/contracts';
 import { foldModelUsage } from '../src/model-usage.js';
 
 const t1 = tenantId.parse('01ARZ3NDEKTSV4RRFFQ69G5FAV');
@@ -35,6 +35,21 @@ const window = {
 };
 
 describe('foldModelUsage', () => {
+  it('with a markup schedule, prices each line at its tenant\'s model-calls row in force on its own day', () => {
+    const override: MarkupRow = {
+      id: '01KAKX0000000000000000T001', tenantId: t1, dimension: 'model-calls', kind: null,
+      effectiveFrom: '2026-08-15', percent: 100, reason: 'test', setAt: '2026-08-01T00:00:00.000Z', setBy: 'staff',
+    };
+    const lines = [
+      entry({ listUsd: '0.1', at: instant.parse('2026-08-14T23:59:59.000Z') }),
+      entry({ listUsd: '0.1', at: instant.parse('2026-08-15T00:00:00.000Z') }),
+      entry({ tenant: t2, listUsd: '0.1', attribution: { tenant: t2, scope, vertical: 'v', version: '1', operation: 'o' } }),
+    ];
+    const s = foldModelUsage(lines, { ...window, markup: [...MARKUP_SEED, override] });
+    expect(s.rows.map((r) => r.billedUsd)).toEqual(['0.33', '0.13']);
+    expect(s.totals.billedUsd).toBe('0.46');
+  });
+
   it('prices a zero-rated scope\'s lines at zero within their row, keeping the list price and what they would cost', () => {
     const reviews = scopeId.parse('01JZ0000000000000000RVW001');
     const review = { tenant: t1, scope: reviews, vertical: '@substrat-run/demo-ticket0', version: '0.1.0', operation: 'review/read' };

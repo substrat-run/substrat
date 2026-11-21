@@ -184,6 +184,8 @@ import {
   type FreshnessSpec,
   type ModelUsageEntry,
   type ModelUsageSummary,
+  type MarkupRow,
+  type MarkupRowInput,
   type CapabilityGrant,
   type CreateOrgInput,
   type CreateTenantInput,
@@ -316,6 +318,12 @@ import {
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import { prePromoteSnapshotExpiresAt } from '@substrat-run/kernel';
+import {
+  markupRecordValues,
+  markupScheduleOf,
+  newMarkupRow,
+  type MarkupScheduleRecord,
+} from '@substrat-run/kernel';
 import {
   attachmentBlobKey,
   normalizeUploadMediaType,
@@ -1412,6 +1420,8 @@ interface ControlPlaneStub {
   recordModelUsage(row: ModelUsageRow): Promise<{ recorded: boolean }>;
   listModelUsage(query: ModelUsageQuery): Promise<ModelUsageRow[]>;
   listTenantModelUsageMeter(query: TenantModelUsageMeterFilter): Promise<TenantModelUsageMeterRow[]>;
+  insertMarkupRowAndAudit(values: (string | number | null)[], audit: AdminEntry): Promise<void>;
+  listMarkupRows(tenantId?: string): Promise<MarkupScheduleRecord[]>;
   recordBuildUsage(input: BuildUsageInput): Promise<{ recorded: boolean }>;
   listTenantBuildUsage(query: TenantBuildUsageFilter): Promise<TenantBuildUsageRow[]>;
   // #40 — the directory's own backup/restore pair.
@@ -11475,6 +11485,18 @@ export class CloudflareScopeHost implements ScopeHost {
         const rows = await this.cp.listModelUsage({ ...window, order: 'asc' });
         await this.recordAccess(actor, 'summarizeModelUsage', { tenantId: window.tenantId ?? null }, window, rows.length);
         return foldModelUsage(rows.map(modelUsageEntryOf), { readAt: new Date().toISOString(), ...window, marginPercent, ...pricing });
+      },
+      setMarkup: async (actor: PlatformActorId, input: MarkupRowInput): Promise<MarkupRow> => {
+        const row = newMarkupRow(input, { id: ulid(), now: new Date().toISOString(), actor });
+        // The row and its admin row are one ControlPlaneDO unit (#2526).
+        await this.cp.insertMarkupRowAndAudit(markupRecordValues(row),
+          this.adminEntry(actor, 'setMarkup', { tenantId: row.tenantId }, null, row));
+        return row;
+      },
+      listMarkup: async (actor: PlatformActorId, filter?: { tenantId?: TenantId }): Promise<MarkupRow[]> => {
+        const rows = markupScheduleOf(await this.cp.listMarkupRows(filter?.tenantId));
+        await this.recordAccess(actor, 'listMarkup', { tenantId: filter?.tenantId ?? null }, filter ?? null, rows.length);
+        return rows;
       },
     };
   }

@@ -62,6 +62,8 @@ import type {
   SweepRunOutcome,
   ModelUsageEntry,
   ModelUsageSummary,
+  MarkupRow,
+  MarkupRowInput,
   CapabilityGrant,
   CreateTenantInput,
   Decision,
@@ -4705,6 +4707,23 @@ export interface HostAdmin {
    * they keep their list price and show what they would cost, and are left out of `billedUsd`.
    */
   summarizeModelUsage(actor: PlatformActorId, window: ModelUsageWindow, marginPercent: number, pricing?: ModelUsagePricing): Promise<ModelUsageSummary>;
+
+  // -- the markup schedule (#3316, Pricing) -----------------------------------
+  // What a tenant is charged over cost: a default plus overrides per tenant, billed dimension
+  // and kind, dated and never edited (`@substrat-run/contracts`' `markupInForce`). Optional so
+  // a host that keeps no schedule still implements `HostAdmin`; a read then falls back to the
+  // caller's fixed rate.
+
+  /**
+   * Add one row. Refuses a row taking effect before today (UTC), since a past day keeps the
+   * markup in force then (`newMarkupRow`). The row and its `setMarkup` admin row commit together.
+   */
+  setMarkup?(actor: PlatformActorId, input: MarkupRowInput): Promise<MarkupRow>;
+  /**
+   * The schedule: every row, or with `tenantId` the rows that can price that tenant (its own and
+   * the platform's). Oldest effective day first.
+   */
+  listMarkup?(actor: PlatformActorId, filter?: { tenantId?: TenantId }): Promise<MarkupRow[]>;
 
   /**
    * The staff access log (K-24) — who READ the directory, when, and how much came

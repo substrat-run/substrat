@@ -21,13 +21,13 @@
  * and the console's meters read. The turn runs in the studio's scope, not the
  * tenant's, so no intent can carry it there and the line goes by service call.
  */
-import { addDecimal, LIST_PAGE_MAX, modelUsageLine, type ModelUsageLine, type Page } from '@substrat-run/contracts';
+import { addDecimal, LIST_PAGE_MAX, markupRow, modelUsageLine, type MarkupRow, type ModelUsageLine, type Page } from '@substrat-run/contracts';
 import { parseModelSpec } from '@substrat-run/model-providers';
 import { STUDIO_NODE, studioScope, type StudioEnv } from './studio.js';
 import {
-	MARKUP_PERCENT,
 	costOf,
 	costOfSteps,
+	modelMarkupPercent,
 	normalizeModelSpec,
 	withMarkup,
 	type StepTokens,
@@ -154,7 +154,7 @@ export async function recordTurnUsage(env: StudioEnv, usage: TurnUsage): Promise
 		await scope.invoke('metering/configure-meter', { key: meter, kind: 'counter', unit: 'usd' });
 		await scope.invoke('metering/record', {
 			meter,
-			qty: cost.listUsd,
+			qty: cost,
 			subject,
 			dedupeKey: usage.turnId,
 		});
@@ -185,7 +185,7 @@ export function turnUsageLine(usage: TenantTurnUsage, at: Date): ModelUsageLine 
 		outputTokens: usage.outputTokens,
 		cachedInputTokens: usage.cachedInputTokens ?? 0,
 		cacheWriteTokens: usage.cacheWriteTokens ?? 0,
-		listUsd: reported ? (turnCost(model, usage)?.listUsd ?? null) : null,
+		listUsd: reported ? turnCost(model, usage) : null,
 		at: at.toISOString(),
 		elapsedMs: usage.elapsedMs,
 	});
@@ -207,6 +207,20 @@ export async function recordTenantUsage(env: LedgerEnv, usage: TenantTurnUsage):
 		body: JSON.stringify({ requestId: `builder:${usage.turnId}`, line: turnUsageLine(usage, new Date()) }),
 	});
 	if (!response.ok) throw new Error(`the control plane answered ${response.status}`);
+}
+
+/**
+ * The platform's markup schedule (#3316), read from the control plane: what the studio's usage
+ * pane prices at. Throws when it cannot be read; the pane then shows an error, never a price at a
+ * rate the platform did not set.
+ */
+export async function fetchMarkupSchedule(env: LedgerEnv): Promise<MarkupRow[]> {
+	const response = await env.CONTROL_PLANE_SVC.fetch('https://control-plane/api/markup-schedule', {
+		headers: { 'x-service-token': env.CP_SERVICE_TOKEN ?? '' },
+	});
+	if (!response.ok) throw new Error(`the markup schedule: the control plane answered ${response.status}`);
+	const body = (await response.json()) as { rows: unknown[] };
+	return body.rows.map((row) => markupRow.parse(row));
 }
 
 /**
@@ -261,7 +275,7 @@ export interface UsageByModel {
 	cacheWrite: number;
 	/** Provider list price in USD; null when the model has no rate card entry. */
 	listUsd: string | null;
-	/** What the studio charges: list plus the markup (MARKUP_PERCENT); null when unpriced. */
+	/** What the studio charges: list plus the markup in force on each cost entry's day; null when unpriced. */
 	billedUsd: string | null;
 }
 
@@ -275,6 +289,7 @@ export interface UsageReport {
 	byModel: UsageByModel[];
 	/** Sums over the PRICED rows only; unpricedTokens is the honest remainder. */
 	cost: { listUsd: string; billedUsd: string; unpricedTokens: number };
+	/** The platform's model-calls markup today (#3316); a past day is billed at its own. */
 	markupPercent: number;
 	windowDays: number;
 	generatedAt: string;
@@ -287,7 +302,11 @@ export interface UsageReport {
  * integers well under 2^53, so Number() is exact here; the engine's decimal
  * discipline still guards the stored truth.
  */
-export async function studioUsage(env: StudioEnv, windowDays = 30): Promise<UsageReport> {
+export async function studioUsage(
+	env: StudioEnv,
+	markup: readonly MarkupRow[],
+	windowDays = 30,
+): Promise<UsageReport> {
 	const scope = await studioScope(env);
 	// The ledger read is PAGED (#959), and this report is a fold over all of it:
 	// `totals` and `byModel` are lifetime figures, not windowed ones, so taking
@@ -311,8 +330,13 @@ export async function studioUsage(env: StudioEnv, windowDays = 30): Promise<Usag
 		string | null,
 		{ model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number }
 	>();
-	/** Model → summed record-time list cost. Only models with cost entries. */
-	const costByModel = new Map<string, string>();
+	/**
+	 * Model → record-time list cost, kept apart per markup percent (each entry at the rate in
+	 * force on its own day, #3316) so a window at one rate rounds as a single multiplication does.
+	 * Only models with cost entries.
+	 */
+	const costByModel = new Map<string, Map<number, string>>();
+	const todayPercent = modelMarkupPercent(markup, new Date().toISOString().slice(0, 10));
 	const windowStart = new Date(Date.now() - windowDays * 86_400_000).toISOString();
 
 	const modelRow = (model: string | null) => {
@@ -324,7 +348,10 @@ export async function studioUsage(env: StudioEnv, windowDays = 30): Promise<Usag
 	for (const e of entries) {
 		const costModel = parseCostKey(e.meterKey);
 		if (costModel !== null) {
-			costByModel.set(costModel, addDecimal(costByModel.get(costModel) ?? '0', e.qty));
+			const byPercent = costByModel.get(costModel) ?? new Map<number, string>();
+			const percent = modelMarkupPercent(markup, e.occurredAt.slice(0, 10));
+			byPercent.set(percent, addDecimal(byPercent.get(percent) ?? '0', e.qty));
+			costByModel.set(costModel, byPercent);
 			continue;
 		}
 		const parsed = parseMeterKey(e.meterKey);
@@ -359,12 +386,20 @@ export async function studioUsage(env: StudioEnv, windowDays = 30): Promise<Usag
 	const cost = { listUsd: '0', billedUsd: '0', unpricedTokens: 0 };
 	const modelRows = [...byModel.values()].map((m): UsageByModel => {
 		const recorded = m.model === null ? undefined : costByModel.get(m.model);
+		// A pre-#663 row has no dated cost entry, so it is billed at today's rate.
+		const legacy = recorded === undefined && m.model !== null ? costOf(m.model, m.input, m.output) : null;
 		const priced =
 			recorded !== undefined
-				? { listUsd: recorded, billedUsd: withMarkup(recorded) }
-				: m.model === null
+				? [...recorded].reduce(
+						(sum, [percent, listUsd]) => ({
+							listUsd: addDecimal(sum.listUsd, listUsd),
+							billedUsd: addDecimal(sum.billedUsd, withMarkup(listUsd, percent)),
+						}),
+						{ listUsd: '0', billedUsd: '0' },
+					)
+				: legacy === null
 					? null
-					: costOf(m.model, m.input, m.output);
+					: { listUsd: legacy, billedUsd: withMarkup(legacy, todayPercent) };
 		if (priced) {
 			cost.listUsd = addDecimal(cost.listUsd, priced.listUsd);
 			cost.billedUsd = addDecimal(cost.billedUsd, priced.billedUsd);
@@ -380,7 +415,7 @@ export async function studioUsage(env: StudioEnv, windowDays = 30): Promise<Usag
 		byProject: [...byProject.values()].sort((a, b) => b.input + b.output - (a.input + a.output)),
 		byModel: modelRows.sort((a, b) => b.input + b.output - (a.input + a.output)),
 		cost,
-		markupPercent: MARKUP_PERCENT,
+		markupPercent: todayPercent,
 		windowDays,
 		generatedAt: new Date().toISOString(),
 	};

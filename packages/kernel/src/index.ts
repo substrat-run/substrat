@@ -1157,6 +1157,17 @@ export {
   type TenantModelUsageMeterRow,
 } from './model-usage.js';
 export {
+  MARKUP_COLUMNS,
+  MARKUP_INSERT_SQL,
+  MARKUP_SELECT_FOR_TENANT_SQL,
+  MARKUP_SELECT_SQL,
+  markupRecordValues,
+  markupRowOf,
+  markupScheduleOf,
+  newMarkupRow,
+  type MarkupScheduleRecord,
+} from './markup-schedule.js';
+export {
   BUILD_USAGE_RETENTION_DAYS,
   type BuildUsageInput,
   type TenantBuildUsageFilter,

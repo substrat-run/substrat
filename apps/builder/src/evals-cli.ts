@@ -333,7 +333,7 @@ async function main(): Promise<number> {
 	// member for every non-interview phase, and eval turns are never interview
 	// turns (the concept is committed before turn 1), so one rate card fits.
 	const pricingSpec = resolveAutoSpec(chosen.spec, 'iterate');
-	const cost = (r: EvalResult) => costOfSteps(pricingSpec, r.usage.stepUsage)?.listUsd ?? null;
+	const cost = (r: EvalResult) => costOfSteps(pricingSpec, r.usage.stepUsage);
 	const report = {
 		ranAt: new Date().toISOString(),
 		modelSpec: chosen.spec,

@@ -34,7 +34,7 @@
  */
 import { Hono, type Context } from 'hono';
 import { defineScopeDO } from '@substrat-run/adapter-cloudflare';
-import { studioUsage } from './metering.js';
+import { fetchMarkupSchedule, studioUsage } from './metering.js';
 import { listTurns, readTurn } from './record.js';
 import { listTurnsQuery, turnIdOfSegment, turnQueryRefusal } from './turns.js';
 import { STUDIO_MODULES } from './studio.js';
@@ -311,7 +311,7 @@ app.get('/api/usage', async (c) => {
 	if (!(c.get('staff' as never) as boolean)) {
 		return refuse(403, 'usage is staff-only until it is per-team');
 	}
-	return c.json(await studioUsage(c.env));
+	return c.json(await studioUsage(c.env, await fetchMarkupSchedule(c.env)));
 });
 
 /** Who am I, and which teams can I build for. The SPA calls this first; a 404

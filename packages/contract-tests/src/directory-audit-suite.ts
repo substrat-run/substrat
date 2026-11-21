@@ -650,6 +650,22 @@ const CASES: DirectoryCase[] = [
       };
     },
   },
+  {
+    // #3316: a markup row and its admin row are one unit, so no price change goes unrecorded.
+    action: 'setMarkup',
+    write: { table: '_substrat_markup_schedule', verb: 'INSERT' },
+    arrange: async (host, staff) => {
+      const t = await newTenant(host, staff);
+      const effectiveFrom = new Date().toISOString().slice(0, 10);
+      return {
+        call: () => host.admin.setMarkup!(staff, { tenantId: t, effectiveFrom, percent: 40, reason: 'audit' }),
+        state: async () => (await host.admin.listMarkup!(staff, { tenantId: t }))
+          .filter((r) => r.tenantId === t).map((r) => [r.percent, r.reason]),
+        changed: [[40, 'audit']],
+        row: { before: null, after: expect.objectContaining({ tenantId: t, effectiveFrom, percent: 40, setBy: staff }) },
+      };
+    },
+  },
 ];
 
 /**

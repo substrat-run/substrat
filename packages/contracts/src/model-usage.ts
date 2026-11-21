@@ -119,9 +119,9 @@ export type ModelUsageEntry = z.infer<typeof modelUsageEntry>;
  * directory is exactly that fan-in, for this one kind of usage.
  *
  * One row per (tenant, vertical, model). Token sums are integers; money is folded with
- * `addDecimal`, never floated, and `billedUsd` is `listUsd × marginFactor(marginPercent)`
- * — the platform's rate applied at READ time, so a margin change re-prices history
- * consistently rather than leaving two rates in one table. `unpriced` counts calls whose
+ * `addDecimal`, never floated, and `billedUsd` is `listUsd × marginFactor(percent)` applied at
+ * READ time. With the markup schedule (#3316) each line is priced at the `model-calls` row in
+ * force for its tenant on its own day, so a dated change never reprices the days before it. `unpriced` counts calls whose
  * model the rate card did not know: shown beside the money, never folded into it as $0.
  */
 export const modelUsageSummaryRow = z.object({
@@ -152,7 +152,10 @@ export const modelUsageSummary = z.object({
   readAt: instant,
   since: instant,
   until: instant,
-  /** The platform's margin over list, whole percent. */
+  /**
+   * The platform's margin over list, whole percent, on the window's last day. A tenant's own
+   * schedule row, or a change inside the window, prices its lines differently (#3316).
+   */
   marginPercent: z.number().int().nonnegative(),
   rows: z.array(modelUsageSummaryRow),
   totals: z.object({

@@ -1,33 +1,28 @@
 /**
- * The studio's markup over the list math (which is pinned in
- * packages/model-providers/test). What is the studio's alone: list × 1.2.
+ * The studio's pricing over the list math (which is pinned in
+ * packages/model-providers/test): list × (1 + the markup schedule's model-calls rate, #3316).
  */
 import { describe, expect, it } from 'vitest';
-import { costOf, costOfSteps, withMarkup } from '../src/pricing.js';
+import { MARKUP_SEED, type MarkupRow } from '@substrat-run/contracts';
+import { costOf, costOfSteps, modelMarkupPercent, withMarkup } from '../src/pricing.js';
 
 describe('costOfSteps', () => {
-	it('carries list and billed together', () => {
+	it('prices the list, and returns null for unpriced models — never a guessed $0', () => {
 		// 1M in × $2/1M + 100k out × $6/1M = 2.6 list
-		const c = costOfSteps('qwen:qwen3.8-max', [{ inputTokens: 1_000_000, outputTokens: 100_000 }]);
-		expect(c).toEqual({ listUsd: '2.6', billedUsd: '3.38' });
-	});
-
-	it('returns null for unpriced models — never a guessed $0', () => {
+		expect(costOfSteps('qwen:qwen3.8-max', [{ inputTokens: 1_000_000, outputTokens: 100_000 }])).toBe('2.6');
 		expect(costOfSteps('ollama:qwen3-coder', [{ inputTokens: 1000, outputTokens: 10 }])).toBeNull();
-	});
-
-	it('costOf equals the single-pseudo-step price', () => {
-		expect(costOf('qwen:qwen3.8-max', 1_000_000, 100_000)).toEqual(
-			costOfSteps('qwen:qwen3.8-max', [{ inputTokens: 1_000_000, outputTokens: 100_000 }]),
-		);
+		expect(costOf('qwen:qwen3.8-max', 1_000_000, 100_000)).toBe('2.6');
 	});
 });
 
-describe('withMarkup', () => {
-	it('applies exactly the 30% markup, or the percent it is given', () => {
-		expect(withMarkup('2.6')).toBe('3.38');
-		expect(withMarkup('0')).toBe('0');
-		expect(withMarkup('2.6', 100)).toBe('5.2');
-		expect(withMarkup('2.6', 0)).toBe('2.6');
+describe('the markup', () => {
+	it('is the schedule\'s model-calls row on the day — 30% from the seed — applied exactly', () => {
+		const percent = modelMarkupPercent(MARKUP_SEED, '2026-11-21');
+		expect(percent).toBe(30);
+		expect(withMarkup('2.6', percent)).toBe('3.38');
+		expect(withMarkup('0', percent)).toBe('0');
+		const later: MarkupRow = { ...MARKUP_SEED[2]!, id: 'later', effectiveFrom: '2027-01-01', percent: 100 };
+		expect(modelMarkupPercent([...MARKUP_SEED, later], '2027-01-01')).toBe(100);
+		expect(() => modelMarkupPercent([], '2026-11-21')).toThrow(/prices no model call/);
 	});
 });
