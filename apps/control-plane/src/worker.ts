@@ -215,7 +215,11 @@ import {
   copyJobThrewRetryMs,
   type CopyJobRecord,
   removeManagedSignIn,
+  createCfModelCostReader,
+  runModelReconciliationPass,
+  type ModelCostReader,
 } from '@substrat-run/control-plane-api';
+import { PROVIDERS } from '@substrat-run/model-providers';
 import { durableCopyJobs } from './copy-jobs.js';
 import { problemForThrow, refuse, refuseRelayed, refuseStatus } from './problem.js';
 import { controlPlaneRequestId } from './request-id.js';
@@ -651,6 +655,12 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * `GET /connections/calls` 501s.
    */
   CONNECTOR_ANALYTICS_DATASET?: string;
+  /**
+   * #1054: `on` makes the scheduled pass reconcile each closed day of model usage against
+   * Cloudflare's AI analytics and file the gaps for staff. A checked-in var, set in production
+   * only: the environments share one Cloudflare account (wrangler.jsonc says why).
+   */
+  MODEL_RECONCILIATION?: string;
   /**
    * Head sampling rate (0–1) for Workers automatic tracing on pushed verticals (#858).
    * Unset ⇒ pushed scripts declare no `traces` block and emit logs only, which is every
@@ -1089,6 +1099,24 @@ export function requestRollupFor(
       routerDataset: env.ROUTER_ANALYTICS_DATASET,
     }),
   };
+}
+
+/**
+ * #1054: the provider rows whose calls go through AI Gateway, read off the provider table rather
+ * than named here, so a second gateway-routed row is reconciled without touching this file.
+ */
+export const GATEWAY_PROVIDERS: readonly string[] = Object.entries(PROVIDERS)
+  .filter(([, row]) => row.kind === 'compatible' && row.request === 'cloudflare-gateway')
+  .map(([name]) => name);
+
+/**
+ * #1054: Cloudflare's AI Gateway and Workers AI analytics for one day, read with the platform's
+ * account token (it needs Account Analytics Read, which the observability reads already use).
+ * Absent the token or the account, there is nothing to reconcile against.
+ */
+export function modelCostReaderFor(env: Pick<Env, 'CF_API_TOKEN' | 'CF_ACCOUNT_ID'>): ModelCostReader | undefined {
+  if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
+  return createCfModelCostReader({ accountId: env.CF_ACCOUNT_ID, apiToken: env.CF_API_TOKEN, fetch: globalFetch });
 }
 
 /**
@@ -3017,6 +3045,19 @@ export default {
       console.error('audit-outcome-settle failed', err instanceof Error ? err.message : String(err));
     }
 
+    // #1054 — the model usage ledger against what Cloudflare saw, one closed UTC day at a time.
+    // Before the digest, so a day's gaps filed this pass are in the digest it sends. Production
+    // only (MODEL_RECONCILIATION). Contained like the phases around it: loud, never sunk.
+    const modelCosts = env.MODEL_RECONCILIATION === 'on' ? modelCostReaderFor(env) : undefined;
+    if (modelCosts) {
+      try {
+        const recon = await runModelReconciliationPass({ admin: host.admin, actor: SWEEP_ACTOR, reader: modelCosts, gatewayProviders: GATEWAY_PROVIDERS });
+        if (recon.reconciled.length || recon.failed.length) console.log('model-reconcile', recon);
+      } catch (err) {
+        console.error('model-reconcile failed', err instanceof Error ? err.message : String(err));
+      }
+    }
+
     // #1416 — the one push in the observability stack. Everything above records; this
     // reads what was recorded since the previous pass (the ops-failure ledger plus the
     // pass's own errors) and mails ONE digest to the opted-in staff address. Unset
@@ -3869,6 +3910,8 @@ export default {
         crossVertical: crossVerticalFor(env, apiHost),
         // #1054: the platform's margin over list for model usage it provides. Whole percent.
         ...(env.MODEL_MARGIN_PERCENT ? { modelMarginPercent: Number(env.MODEL_MARGIN_PERCENT) } : {}),
+        // #1054: the ledger against Cloudflare's AI analytics, for staff. Absent the account token, 501.
+        ...(modelCostReaderFor(env) ? { modelReconciliation: { reader: modelCostReaderFor(env)!, gatewayProviders: GATEWAY_PROVIDERS } } : {}),
         // #2365: code reviews are metered to the tenant and zero-rated through the runner's phase 2.
         reviewUsage: { scope: REVIEW_SENTINEL_SCOPE, zeroRated: REVIEWS_ZERO_RATED },
         // #3108: a seeded preview's login, at this control plane's own persona issuer.

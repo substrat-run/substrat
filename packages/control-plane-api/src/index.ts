@@ -371,6 +371,20 @@ export type { PlatformRuntime } from './platform-runtime.js';
 export { createCfDoNamespaceReader, namespacesForScript } from './do-namespaces.js';
 export type { DoNamespaceReader, DoNamespaceRecord, CfDoNamespaceOptions } from './do-namespaces.js';
 export { createCfObservabilityReader, createRouterRequestDayReader, REQUEST_ROLLUP_ROW_LIMIT } from './cf-observability.js';
+export {
+  createCfModelCostReader,
+  reconcileModelDay,
+  reconcileModelDays,
+  runModelReconciliationPass,
+  MODEL_RECONCILE_OPERATION,
+  type CfModelCostReaderOptions,
+  type GatewayModelGroup,
+  type ModelCostDay,
+  type ModelCostReader,
+  type ModelReconcilePassReport,
+  type WorkersAiGroup,
+} from './model-reconcile.js';
+export { MODEL_RECONCILIATION_MAX_DAYS } from './api.js';
 // #1923: the one sanctioned reading of a line's `outputFields` — tenant- and app-scoped, aggregate only.
 export { tallyFieldCoverage, FIELD_COVERAGE_OPERATIONS_MAX } from './field-coverage-tally.js';
 export type { FieldCoverageTally, FieldCoverageScope, OperationFieldCoverage, FieldCoverageCount } from './field-coverage-tally.js';

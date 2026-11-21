@@ -48,7 +48,7 @@ it('pins the new read to its own tenant and leaves all staff meter routes closed
   expect((await allowed.json()).models.state).toBe('empty');
   expect((await app.request(`/tenants/${other}/metered-usage`, { headers })).status).toBe(403);
   expect((await app.request(`/tenants/${own}/metered-usage?tenantId=${other}`, { headers })).status).toBe(403);
-  for (const path of ['/meters', '/meters/requests', '/model-usage', '/model-usage/summary']) {
+  for (const path of ['/meters', '/meters/requests', '/model-usage', '/model-usage/summary', '/model-usage/reconciliation']) {
     expect((await app.request(`${path}?tenantId=${own}`, { headers })).status, path).toBe(403);
   }
   expect((await app.request(`/tenants/${own}/status`, { headers })).status).toBe(403);
