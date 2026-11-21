@@ -3,16 +3,17 @@ import { commerceChange, type CommerceChange } from '@substrat-run/contracts';
 
 /**
  * What every commerce-source connector does, whichever store platform it reads (#3136) — written
- * against a harness, not against WooCommerce, so the second connector runs the same assertions on
- * its own mock.
- *
- * It lives here until that second connector exists, and then moves to `packages/contract-tests`:
- * a shared suite is extracted from two implementations rather than designed from one.
+ * against a harness rather than against one store, so each connector runs the same assertions on
+ * its own mock. Extracted from two implementations, WooCommerce and Shopify, as the vocabulary in
+ * `@substrat-run/contracts` (`commerce-source.ts`) said it would be: what is asserted here is what
+ * both hold, and a rule only one store has (WooCommerce's variant id for a simple product) is the
+ * connector's own test, not this suite's.
  */
 export interface CommerceSourceHarness {
   /**
    * A store holding a product sold without variants, a product sold in two or more variants, and an
-   * order that sells one of each; bound to a scope and not yet swept.
+   * order that sells one of each; bound to a scope and not yet swept. The product sold without
+   * variants is the one {@link renameSimpleProduct} renames.
    */
   seed(): Promise<void>;
   /** One sweep of the bound connection. */
@@ -46,7 +47,9 @@ export function commerceSourceSuite(provider: string, harness: () => CommerceSou
       const orders = landed.filter((c) => c.record === 'order' && c.change === 'upsert');
       expect(products.length).toBeGreaterThanOrEqual(2);
       expect(orders.length).toBeGreaterThanOrEqual(1);
-      expect(products.some((p) => p.variants.length === 1 && p.variants[0]?.variantId === p.productId)).toBe(true);
+      // A product sold without variants lands ONE: untitled and picked by no option. Its id is the
+      // store's to choose — the product's own on WooCommerce, the default variant's on Shopify.
+      expect(products.some((p) => p.variants.length === 1 && p.variants[0]?.title === null && p.variants[0]?.options.length === 0)).toBe(true);
       expect(products.some((p) => p.variants.length >= 2)).toBe(true);
       const variants = new Set(products.flatMap((p) => p.variants.map((v) => v.variantId)));
       const sold = orders.flatMap((o) => o.lines.map((l) => l.variantId)).filter((v) => v !== null);

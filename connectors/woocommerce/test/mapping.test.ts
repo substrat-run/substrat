@@ -40,6 +40,13 @@ describe('woocommerce → commerce mapping', () => {
     expect(() => orderChange('c1', wcOrder.parse({ ...ORDERS()[0], ...over }))).toThrow(error);
   });
 
+  it("lands a simple product with one untitled variant whose id is the product's own", () => {
+    // WooCommerce's half of "every product has a variant": it has no variant row to name, so the
+    // product's id is the variant's, and an order line that sold it names the same id.
+    const change = productChange('c1', SEK, wcProduct.parse(product(7, '2026-11-01T10:00:00')), []);
+    expect(change.variants).toEqual([expect.objectContaining({ variantId: '7', title: null, options: [] })]);
+  });
+
   it("reports a variation with no SKU of its own as having none, not the product's SKU WooCommerce fills in", () => {
     const { product: row, variations } = SKU_LESS_VARIATIONS();
     const change = productChange('c1', SEK, wcProduct.parse(row), variations.map((v) => wcVariation.parse(v)));

@@ -31,6 +31,6 @@ WOOCOMMERCE_STORE_URL=http://localhost:8080 WOOCOMMERCE_ALLOW_LOCAL_HTTP=1 pnpm 
 docker compose -f docker/compose.yaml down -v
 ```
 
-`test/commerce-source-suite.ts` is the behaviour every commerce-source connector shares, written
-against a harness. It moves to `packages/contract-tests` when a second store platform's connector
-runs it.
+`commerceSourceSuite` in `@substrat-run/contract-tests` is the behaviour every commerce-source
+connector shares, written against a harness; `test/commerce-source.test.ts` runs it on the mock, and
+`connectors/shopify` runs the same suite on its own.
