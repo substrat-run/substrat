@@ -60,7 +60,9 @@ back. Every snapshot behavior is that rule, cashed out:
 ::: tip Snapshot-before-update
 When an app is updated to a version whose **migrations changed**, the platform takes a snapshot
 first — that's the checkbox (on by default) next to "Update to latest" in the Dashboard. A
-code-only update takes no snapshot: rebinding the previous version already undoes it.
+code-only update takes no snapshot: rebinding the previous version already undoes it. That
+snapshot is a way back from a bad update, not an archive, so it **expires after 30 days**: going
+back further would throw away every change made since.
 :::
 
 ## Copies expire (on purpose)
@@ -70,7 +72,8 @@ A snapshot is real customer data occupying real storage:
 - **TTL** — pick 1/7/30 days when creating one; the platform's scheduled sweep deletes expired
   copies — storage wiped, the deletion audited. An auto-deleting copy is also a smaller privacy
   liability than one that lingers.
-- **Keep** — a copy without a TTL stays until someone deletes it.
+- **Keep** — a copy without a TTL stays until someone deletes it. The snapshot taken before an
+  update is the exception: it always gets 30 days. To keep one, platform staff pin it.
 - This delete is the platform's **only hard delete**, and it refuses anything that isn't a
   copy. Live apps only ever archive; an ephemeral copy is the one thing allowed to truly
   disappear.

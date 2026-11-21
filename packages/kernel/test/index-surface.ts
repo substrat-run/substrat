@@ -155,6 +155,8 @@ export const INDEX_VALUE_EXPORTS = [
   'PENDING_COPY_KEEP_ALIVE_SQL',
   'PLATFORM_REQUEST_COLUMNS',
   'PLATFORM_REQUEST_REDACTION_SQL',
+  // #3314: how long a pre-promote snapshot lives; the contract suite asserts its expiry against it.
+  'PRE_PROMOTE_SNAPSHOT_TTL_MS',
   'PROVISIONED_VERSIONS_SQL',
   'PROVISION_RECONCILE_BATCH',
   'PURGE_BATCH',
@@ -624,6 +626,8 @@ export const INDEX_VALUE_EXPORTS = [
   'platformRequestRedactionQuery',
   'plausibleCapabilitySecret',
   'plausibleSessionToken',
+  // #3314: the expiry both adapters stamp on a pre-promote snapshot, so the two cannot differ.
+  'prePromoteSnapshotExpiresAt',
   'promoteRaceRefusal',
   'promoteReviewDigest',
   'promoteReviewRefusalOf',

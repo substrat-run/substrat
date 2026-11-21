@@ -18,7 +18,10 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     dumpPageMaxBytes: 900_000,
   };
 
-  /** A routed fork of a source bound to a version that declares one store. */
+  /** An instant the sweep has passed: what an expired fork's `expiresAt` reads (#3314). */
+  const lapsed = () => new Date(Date.now() - 60_000).toISOString();
+
+  /** A routed, expired fork of a source bound to a version that declares one store. */
   const routedFork = async (host: CloudflareScopeHost) => {
     const t = tenantId.parse(ulid());
     const slug = `sweep-${t.slice(-8).toLowerCase()}`;
@@ -46,6 +49,7 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     const fork = scopeId.parse(ulid());
     await host.provisionScope(staff, {
       tenantId: t, scopeId: fork, vertical: slug, forkedFrom: source, forkedAt: new Date().toISOString(),
+      expiresAt: lapsed(),
     });
     await host.admin.activateScope(staff, t, fork);
     await host.admin.bindScopeVersion(staff, t, fork, version);
@@ -193,7 +197,7 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     const pr = scopeId.parse(ulid());
     await host.provisionScope(staff, {
       tenantId: t, scopeId: pr, vertical: record.vertical!, kind: 'preview', slug: `${record.vertical}--pr-3`,
-      forkedFrom: source, forkedAt: new Date().toISOString(),
+      forkedFrom: source, forkedAt: new Date().toISOString(), expiresAt: lapsed(),
     });
     await host.admin.activateScope(staff, t, pr);
     const hostname = `pr-${pr.slice(-8).toLowerCase()}.example`;
@@ -229,6 +233,21 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     expect(retired).toEqual([pr]);
     expect(cleared).toEqual([`${MCP_RESOURCES_CONFIG_PREFIX}${pr}`]);
     expect(await host.admin.resolveHostname(hostname)).toBeUndefined();
+  });
+
+  it('a fork pinned after the sweep listed it is refused before the unroute, and keeps its route and its pin (#3314)', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const { t, fork, hostname } = await routedFork(host);
+    // The sweep listed it expired; staff pin it before the reap gets to it.
+    await host.admin.setScopeExpiresAt(staff, t, fork, null);
+    const { stores, seen } = witness(host, () => hostname);
+    const refused = await reapExpiredSnapshot({ host, stores, issuerClient: async () => undefined, drivers: [graph] }, t, fork)
+      .then(() => undefined, (e: unknown) => e as { status?: number; message?: string });
+    expect(refused?.status).toBe(412);
+    expect(refused?.message).toMatch(/no longer due/);
+    expect(seen).toEqual([]);
+    expect((await host.admin.resolveHostname(hostname))?.scopeId).toBe(fork);
+    expect((await host.admin.getScopeRecord(staff, t, fork))?.expiresAt).toBeNull();
   });
 
   it('a reap refused by a copy move in flight keeps the fork routed, and wipes nothing', async () => {

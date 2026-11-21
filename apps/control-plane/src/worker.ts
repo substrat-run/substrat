@@ -2145,8 +2145,11 @@ export async function reapExpiredSnapshot(
   const { host, resolveRef, resolveVersion } = deps;
   const actor = SWEEP_ACTOR;
   const rec = await host.admin.getScopeRecord(actor, tenantId, scopeId);
-  if (resolveRef) await claimScopeScriptReap({ admin: host.admin, actor }, tenantId, scopeId);
-  else await assertNoUnreachableScopeCopies(host.admin, actor, tenantId, scopeId);
+  if (!resolveRef) await assertNoUnreachableScopeCopies(host.admin, actor, tenantId, scopeId);
+  // #3314: the sweep listed this fork as expired, but a pin or a renewal can land since. The claim
+  // judges the expiry again in its own directory write, before anything below unroutes or wipes,
+  // and once it holds, a pin is refused instead. Taken on both branches: it is the fence.
+  await claimScopeScriptReap({ admin: host.admin, actor }, tenantId, scopeId, { expiredBy: new Date().toISOString() });
   const fenceStores = rec ? await declaredScopeStoresFence(deps.stores, host.admin, rec, deps.drivers ?? STORE_DRIVERS) : undefined;
   // An expired fork can still be routed: stop routing before the wipe (#2285, L6).
   if (rec) await unrouteScope(host.admin, actor, rec);

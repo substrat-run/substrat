@@ -1051,6 +1051,8 @@ export {
   crossVerticalHealth,
   NO_BINDING,
 } from './platform-sweep.js';
+// #3314: a fork-before-promote snapshot expires, so the snapshot GC reaps it.
+export { PRE_PROMOTE_SNAPSHOT_TTL_MS, prePromoteSnapshotExpiresAt } from './snapshot-retention.js';
 // #2316: a vertical's declared connection landings, granted and bound by the connector pass.
 export type { ConnectionBinder, ConnectionLandingOptionsInput, LandingOutcome } from './connection-landings.js';
 // #2732: a scope binding its own connection, held to the landing pass's own reading of a version.

@@ -310,7 +310,8 @@ forward on the copy — rehearse the new version against real-shaped data, throw
 it breaks, and prod never saw it. The inverse — pointing *old* code at *today's* data across a
 schema change — is invalid, because you cannot un-run a migration. So the rollback strategy is
 **fork-before-you-promote**: snapshot right before binding the new version, and a bad version
-leaves the prior one still runnable at its correct frontier. A fork is a governed dead end — the
+leaves the prior one still runnable at its correct frontier for 30 days, after which the
+snapshot is deleted. A fork is a governed dead end — the
 export copies the kernel spine too, so no connector, cron, or billing consumes from a preview —
 and preview URLs are non-public, gated code running against real-shaped data. The everyday shape
 of all this — test copies, fearless upgrades, real data pulled to a laptop — is

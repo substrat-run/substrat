@@ -977,6 +977,7 @@ import {
   type PlatformRequestSettle,
 } from '@substrat-run/kernel';
 import { canonicalInstant } from '@substrat-run/kernel';
+import { prePromoteSnapshotExpiresAt } from '@substrat-run/kernel';
 import {
   ADMIN_LOG_INDEXES_SQL,
   SETTLE_INTENT_SQL,
@@ -10965,7 +10966,10 @@ export class SqliteScopeHost implements ScopeHost {
           if (s.vertical_version_id === versionId) continue;
           const prev = s.vertical_version_id ? await readVersion(s.vertical_version_id) : undefined;
           if (prev && prev.migrationDigest !== incoming.migrationDigest) {
-            await this.snapshotScope(actor, s.tenant_id as TenantId, s.scope_id as ScopeId);
+            await this.snapshotScope(actor, s.tenant_id as TenantId, s.scope_id as ScopeId, {
+              // #3314: a rollback point, not a keepsake, so it expires and the snapshot GC reaps it.
+              expiresAt: prePromoteSnapshotExpiresAt(Date.parse(this.clock())),
+            });
           }
           this.directoryWriteAndAudit(() => this.directory
             .prepare('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?')
@@ -11074,7 +11078,8 @@ export class SqliteScopeHost implements ScopeHost {
         if (opts?.snapshot && scope.vertical_version_id) {
           const outgoing = await readVersion(scope.vertical_version_id);
           if (outgoing && outgoing.migrationDigest !== v.migrationDigest) {
-            await this.snapshotScope(actor, tenantId, scopeId);
+            // #3314: a rollback point, not a keepsake, so it expires and the snapshot GC reaps it.
+            await this.snapshotScope(actor, tenantId, scopeId, { expiresAt: prePromoteSnapshotExpiresAt(Date.parse(this.clock())) });
           }
         }
         const audit = () => this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId },
@@ -11172,19 +11177,25 @@ export class SqliteScopeHost implements ScopeHost {
       scopeStoresFencedAt: async (_actor, tenantId, scopeId) => (this.directory
         .prepare('SELECT stores_fenced_at FROM scopes WHERE tenant_id = ? AND scope_id = ?')
         .get(tenantId, scopeId) as { stores_fenced_at: string | null } | undefined)?.stores_fenced_at ?? null,
-      beginScopeScriptReap: async (_actor, tenantId, scopeId) => {
+      beginScopeScriptReap: async (_actor, tenantId, scopeId, opts) => {
+        // #3314: `expiredBy` claims only while the expiry is set and due, in the claim's own write.
+        const expiredBy = opts?.expiredBy;
         const result = this.directory.prepare(
           `UPDATE scopes SET reap_claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
            WHERE tenant_id = ? AND scope_id = ? AND reap_claimed_at IS NULL
+             ${expiredBy === undefined ? '' : 'AND expires_at IS NOT NULL AND expires_at <= ?'}
              AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS move
                WHERE move.tenant_id = scopes.tenant_id AND move.scope_id = scopes.scope_id
                  AND move.state = 'pending')`,
-        ).run(tenantId, scopeId);
+        ).run(tenantId, scopeId, ...(expiredBy === undefined ? [] : [expiredBy]));
         if (result.changes > 0) return;
-        const scope = this.directory.prepare('SELECT reap_claimed_at FROM scopes WHERE tenant_id = ? AND scope_id = ?')
-          .get(tenantId, scopeId) as { reap_claimed_at: string | null } | undefined;
+        const scope = this.directory.prepare('SELECT reap_claimed_at, expires_at FROM scopes WHERE tenant_id = ? AND scope_id = ?')
+          .get(tenantId, scopeId) as { reap_claimed_at: string | null; expires_at: string | null } | undefined;
         if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         if (scope.reap_claimed_at !== null) return; // a reaper resumes its earlier claim
+        if (expiredBy !== undefined && (scope.expires_at === null || scope.expires_at > expiredBy)) {
+          throw substratError('precondition_failed', `scope ${scopeId} is no longer due to expire (pinned or renewed since it was listed); not reaped`);
+        }
         throw substratError('precondition_failed', `scope ${scopeId} has a copy move in flight; retry reap after it settles`);
       },
       settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker, opts) =>
@@ -11405,11 +11416,12 @@ export class SqliteScopeHost implements ScopeHost {
         if (!scope || scope.tenant_id !== tenantId) {
           throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         }
-        this.directoryWriteAndAudit(() => this.directory
-          .prepare('UPDATE scopes SET expires_at = ? WHERE scope_id = ?')
+        const set = this.directoryWriteAndAudit(() => this.directory
+          .prepare('UPDATE scopes SET expires_at = ? WHERE scope_id = ? AND reap_claimed_at IS NULL')
           .run(expiresAt, scopeId).changes > 0,
           () => this.recordAdmin(actor, 'setScopeExpiresAt', { tenantId, scopeId },
             { expiresAt: scope.expires_at }, { expiresAt }));
+        if (!set) throw substratError('conflict', `scope ${scopeId} is being reaped; its expiry can no longer be moved`);
       },
       keepAlivePendingScopeCopy: async (actor, tenantId, scopeId, moveId, status, expectedExpiresAt, expiresAt) => {
         return this.directoryWriteAndAudit(() => this.directory.prepare(PENDING_COPY_KEEP_ALIVE_SQL)

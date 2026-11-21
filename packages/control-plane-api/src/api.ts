@@ -1339,6 +1339,10 @@ const snapshotScopeBody = z.object({
   expiresAt: z.string().datetime({ offset: true }).optional(),
 });
 
+// Move a fork's GC deadline (#3314): an instant, or `null` to pin it until deliberately deleted.
+// The key is required, so an empty body is a 400 rather than a silent pin.
+const scopeExpiresAtBody = z.object({ expiresAt: z.string().datetime({ offset: true }).nullable() }).strict();
+
 // A reap request (#493). `backup` is deliberately TRI-STATE, not a defaulted boolean:
 //   true      — back up or refuse (the console always sends this, so a control plane
 //               deployed without a backup store fails loudly instead of quietly wiping)
@@ -7099,6 +7103,26 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       throw e;
     }
+  });
+
+  // Move a fork's GC deadline (#3314), over the audited `setScopeExpiresAt`. The snapshot GC
+  // reaps exactly what this admits — a fork, or a source-less preview — once the instant passes,
+  // so a primary scope is refused: an expiry on it would mean nothing, and reads as if it did.
+  // `null` pins a fork (a pre-promote snapshot someone means to keep); an instant gives one an
+  // end, which is how the snapshots made before pre-promote copies expired are backfilled.
+  // Staff/service only: on neither the builder nor the tenant-credential allowlist.
+  app.put('/tenants/:tenantId/scopes/:scopeId/expires-at', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const { expiresAt } = await readJsonBody(c, scopeExpiresAtBody);
+    const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    if (!scope.forkedFrom && scope.kind !== 'preview') {
+      return refuse(c, 'conflict', `scope ${scopeId} is not a fork or a preview — only a copy may expire`);
+    }
+    await c.var.admin.setScopeExpiresAt(actor, tenantId, scopeId, expiresAt === null ? null : new Date(expiresAt).toISOString());
+    return c.json(await c.var.admin.getScopeRecord(actor, tenantId, scopeId));
   });
 
   // Reap a fork. The fork-only refusal is surfaced HERE, before any delegation —

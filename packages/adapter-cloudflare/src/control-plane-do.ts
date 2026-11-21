@@ -4246,9 +4246,12 @@ export class ControlPlaneDO extends DurableObject {
     return this.moveScopeRow('serving_ref = ?', [servingRef], scopeId, { expectedErasureEpoch, confirmMove }, audit);
   }
 
-  /** Move a fork's GC deadline forward, or pin it (`null`) — preview-and-snapshots.md §9. */
-  setScopeExpiresAt(scopeId: string, expiresAt: string | null, audit: AdminEntryInput): void {
-    this.writeAndAudit(() => this.sql.exec('UPDATE scopes SET expires_at = ? WHERE scope_id = ?', expiresAt, scopeId).rowsWritten > 0, audit);
+  /** Move a fork's GC deadline forward, or pin it (`null`) — preview-and-snapshots.md §9. False
+   *  when a reap has claimed the row (#3314): its deadline no longer decides anything. */
+  setScopeExpiresAt(scopeId: string, expiresAt: string | null, audit: AdminEntryInput): boolean {
+    return this.writeAndAudit(() => this.sql.exec(
+      'UPDATE scopes SET expires_at = ? WHERE scope_id = ? AND reap_claimed_at IS NULL', expiresAt, scopeId,
+    ).rowsWritten > 0, audit);
   }
 
   /** One atomic compare-and-set across the preview row and every entry of its copy move. */
@@ -4561,20 +4564,24 @@ export class ControlPlaneDO extends DurableObject {
     return scope?.stores_fenced_at ?? null;
   }
 
-  beginScopeScriptReap(tenantId: string, scopeId: string): 'claimed' | 'pending' | 'missing' {
+  /** #3314: `expiredBy` claims only while the expiry is set and due, in the claim's own write. */
+  beginScopeScriptReap(tenantId: string, scopeId: string, expiredBy?: string): 'claimed' | 'pending' | 'missing' | 'not-due' {
     const written = this.sql.exec(
       `UPDATE scopes SET reap_claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
        WHERE tenant_id = ? AND scope_id = ? AND reap_claimed_at IS NULL
+         ${expiredBy === undefined ? '' : 'AND expires_at IS NOT NULL AND expires_at <= ?'}
          AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS move
            WHERE move.tenant_id = scopes.tenant_id AND move.scope_id = scopes.scope_id
              AND move.state = 'pending')`,
-      tenantId, scopeId,
+      tenantId, scopeId, ...(expiredBy === undefined ? [] : [expiredBy]),
     );
     if (written.rowsWritten > 0) return 'claimed';
-    const scope = this.sql.exec('SELECT reap_claimed_at FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId)
-      .toArray()[0] as { reap_claimed_at: string | null } | undefined;
+    const scope = this.sql.exec('SELECT reap_claimed_at, expires_at FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId)
+      .toArray()[0] as { reap_claimed_at: string | null; expires_at: string | null } | undefined;
     if (!scope) return 'missing';
-    return scope.reap_claimed_at !== null ? 'claimed' : 'pending'; // a reaper resumes its earlier claim
+    if (scope.reap_claimed_at !== null) return 'claimed'; // a reaper resumes its earlier claim
+    if (expiredBy !== undefined && (scope.expires_at === null || scope.expires_at > expiredBy)) return 'not-due';
+    return 'pending';
   }
 
   settleScopeScriptCopy(

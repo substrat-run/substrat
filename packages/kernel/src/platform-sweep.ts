@@ -1912,8 +1912,13 @@ export async function runPlatformSweep(
     // (`kind === 'preview'` with no source — a source-less environment, #509 ask (b)).
     // Enumerate every scope regardless of status — a preview is `active` in the directory —
     // and compare ISO instants lexically, the same move the tuple checker's `live()` makes.
-    // `deleteSnapshot` re-checks this same predicate, so a mislabeled row fails closed there,
-    // never silently deletes.
+    // The listing is a candidate set, not a verdict: each predicate is judged again before
+    // the delete. `deleteSnapshot` refuses a row that is not a fork or a preview, so a
+    // mislabeled row fails closed there. The expiry is judged again by the reap claim
+    // (`beginScopeScriptReap` with `expiredBy`, #3314), in the same directory write that takes
+    // the claim and before anything is wiped: a fork pinned or renewed after this listing is
+    // refused, and once claimed, a pin is refused instead. A `deleteSnapshotFn` takes the same
+    // claim (the control plane's `reapExpiredSnapshot` does).
     const now = new Date().toISOString();
     const scopes = await listScopes();
     const expired = scopes.filter(
@@ -1921,8 +1926,10 @@ export async function runPlatformSweep(
     );
     const reap =
       options.deleteSnapshotFn ??
-      ((tenantId: TenantId, scopeId: ScopeId) =>
-        host.deleteSnapshot(options.actor, tenantId, scopeId));
+      (async (tenantId: TenantId, scopeId: ScopeId) => {
+        await host.admin.beginScopeScriptReap(options.actor, tenantId, scopeId, { expiredBy: now });
+        await host.deleteSnapshot(options.actor, tenantId, scopeId);
+      });
     await mapBounded(expired, concurrency, async (s) => {
       try {
         await reap(s.tenantId, s.id);
