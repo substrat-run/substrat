@@ -866,7 +866,9 @@ on every door a credential comes in by:
   chooses it for an install, on the app's Integrations tab (`PUT /tenants/:t/scopes/:s/connections/:provider/choice`,
   tenant-callable). The choice binds the chosen connection in the pass's order, audited with the person
   who chose, and only then takes every other tenant connection off the install (its key revoked there,
-  its binding dropped). The choice is not stored beside the binding; it is the binding, and the pass,
+  its binding dropped). A checkout still open on a connection taken off is held, not landed, until that
+  connection is chosen for the install again: an outcome lands through its own connection's binding.
+  The tenant's docs say to switch only once the install has none. The choice is not stored beside the binding; it is the binding, and the pass,
   finding the install bound, keeps it. Disconnecting the chosen connection leaves the install unbound
   until the next pass gives it the oldest active one left. An install already bound to two (bound by
   the pass before this rule) is left as it is and reads `chosen: null` until the tenant chooses.

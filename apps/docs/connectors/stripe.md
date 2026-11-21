@@ -139,9 +139,15 @@ Each install of your app takes payments through **one** Stripe connection: which
 money is never guessed. The first account you connect is the one every install uses. An account you
 connect after it is used by no install until you choose it: on the app's **Settings → Integrations**
 tab, press **Use for checkouts** beside it. That install's checkouts then go through it, and the
-account it used before comes off that install (its open checkouts still finish and land). Every other
-install keeps its own account, so two installs of one app can be paid into two accounts. The
-platform keeps your choice; nothing it does later moves an install back.
+account it used before comes off that install. Every other install keeps its own account, so two
+installs of one app can be paid into two accounts. The platform keeps your choice; nothing it does
+later moves an install back.
+
+**Switch only once the install has no open or settling checkout on the account it leaves.** An
+outcome lands through the install's binding to the account the checkout was opened on, and that
+binding goes with the switch. A checkout still open there is not lost (the platform keeps reading
+it), but nothing it reaches lands in your app, a `paid` included, until you choose that account for
+the install again. The connection's activity lists the open and settling checkouts.
 
 An install bound to two accounts by an earlier version of the platform is refused checkouts (`409`)
 until you choose one of them on that tab, which says so.
