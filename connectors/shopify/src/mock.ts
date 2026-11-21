@@ -26,7 +26,9 @@ export type MockOrder = Record<string, unknown> & { id: string; updatedAt: strin
  *    cursor that is the sort key, as Shopify's is.
  * 4. **Without `read_all_orders`, an order created more than 60 days before `now` does not exist** —
  *    not in a list, not by id, and `null` in `nodes` — as Shopify hides it, silently.
- * 5. **`customer` without `read_customers` is `ACCESS_DENIED`**, failing the whole query.
+ * 5. **`customer` without `read_customers` is `ACCESS_DENIED`**, failing the whole query; so is any
+ *    order query without protected customer data access (`protectedCustomerData: false`), since every
+ *    order query asks for the buyer's name, email, phone and addresses.
  * 6. A deleted record is one removed from its array: `null` by id and in `nodes`.
  */
 export interface ShopifyMockOptions {
@@ -44,6 +46,8 @@ export interface ShopifyMockOptions {
   noShop?: boolean;
   /** Shopify refusing the grant for this shop, as it does for an app of another organization. */
   shopNotPermitted?: boolean;
+  /** False: the app lacks protected customer data access, so every order query is `ACCESS_DENIED`. */
+  protectedCustomerData?: boolean;
   /** Answer the first N GraphQL calls THROTTLED. */
   throttleFirst?: number;
   tokenLifetimeS?: number;
@@ -195,6 +199,9 @@ export class ShopifyMock {
     if (first > 250) return gqlError('The first argument must be at most 250', 'BAD_REQUEST');
     if (operation.includes('Order') && typeof v.customers !== 'boolean' && operation !== 'MoreLineItems') {
       return gqlError('Variable $customers of type Boolean! was provided invalid value', 'BAD_REQUEST');
+    }
+    if (this.options.protectedCustomerData === false && ['ChangedOrders', 'Order'].includes(operation)) {
+      return gqlError('This app is not approved to access the Order object. See https://shopify.dev/docs/apps/launch/protected-customer-data for more details.', 'ACCESS_DENIED');
     }
     if (v.customers === true && !this.scopes().includes('read_customers')) {
       return gqlError('Access denied for customer field. Required access: `read_customers` access scope.', 'ACCESS_DENIED');

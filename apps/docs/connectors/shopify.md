@@ -93,8 +93,9 @@ the shop's own domain: that is the only host Shopify answers its Admin API at, a
 the client secret nowhere else.
 
 **Test connection** answers which of these went wrong: no shop at that name, a client the shop
-refuses (wrong ID or secret, the app not installed, or an app of another organization), or an app
-without the scopes a sync needs. On success it names the shop, its currency, how far back its orders
+refuses (wrong ID or secret, the app not installed, or an app of another organization), an app
+without the scopes a sync needs, or an app without protected customer data access, which it checks by
+reading one order the way a sync does. On success it names the shop, its currency, how far back its orders
 reach (every order, or the last 60 days without `read_all_orders`), and whether orders name the
 customer account.
 

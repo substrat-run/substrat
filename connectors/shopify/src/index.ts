@@ -658,9 +658,11 @@ export async function sweepShopify(host: ScopeHost, connectionId: ConnectionId, 
 }
 
 /**
- * Probe a credential that is not stored yet — the connect-time check. One mint and one query, so
- * each failure says something different: no shop at that name, a client the shop refuses, an app
- * without the scopes a sync needs. The answer names the shop and says how far back its orders reach.
+ * Probe a credential that is not stored yet — the connect-time check. One mint, the shop query, and
+ * the sync's own order query (one row), so each failure says something different: no shop at that
+ * name, a client the shop refuses, an app without the scopes a sync needs, an app without the
+ * protected customer data access its orders' customer fields need. The answer names the shop and
+ * says how far back its orders reach.
  */
 export async function probeShopifySecret(secret: Record<string, string>, options: ShopifyConnectorOptions): Promise<ConnectionProbe> {
   const parsed = shopifySecret.safeParse(secret);
@@ -706,6 +708,20 @@ async function probeWith(conn: ConnectorConnection, options: ShopifyConnectorOpt
   try {
     const info = await api.shopInfo();
     const scopes = scopesOf(info);
+    // The scopes can all be there and every sweep still fail on orders: their customer fields are
+    // protected data, granted apart from read_orders. Ask the sync's own order query, and say so.
+    try {
+      await api.ordersReadable(scopes.has('read_customers'));
+    } catch (err) {
+      if (err instanceof ShopifyApiError && err.code === 'ACCESS_DENIED') {
+        return failed(
+          true,
+          `the app may not read orders' customer details: ${err.message} — give it protected customer data access ` +
+            `(name, email, phone, address) on the app's API access page in the Dev Dashboard, release, and update the installation`,
+        );
+      }
+      throw err;
+    }
     return {
       ok: true,
       refused: false,

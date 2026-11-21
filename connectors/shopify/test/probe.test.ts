@@ -25,6 +25,8 @@ describe('shopify probe', () => {
     ['a client the shop does not know', { clientSecret: 'other' }, true, /invalid_client.*Dev Dashboard/],
     ['an app of another organization', { shopNotPermitted: true }, true, /shop_not_permitted/],
     ['an app without read_orders', { scopes: ['read_products'] }, true, /lacks read_orders/],
+    // Every scope present, and every sweep would still fail on orders: Test connection must say so.
+    ['an app without protected customer data access', { protectedCustomerData: false }, true, /protected customer data access/],
     ['no shop at that name', { noShop: true }, false, /no Shopify shop at acme\.myshopify\.com/],
   ] as const)('tells %s apart', async (_, options, refused, error) => {
     const { mock } = probe();

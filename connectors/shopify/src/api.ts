@@ -87,8 +87,10 @@ export class ShopifyApiError extends Error {
   }
 }
 
-// Provider shapes. Extra fields are ignored. Shopify sends a blank as `null`, and a field it cannot
-// show (a protected field the app may not read) as `null` too, so every optional field reads both.
+// Provider shapes. Extra fields are ignored. Shopify sends a blank as `null`, so every optional field
+// reads `null` and absent alike. A protected field the app may NOT read is different: Shopify fails the
+// whole query with `ACCESS_DENIED` rather than answering `null`, which is why the probe runs the sync's
+// own order query (`ordersReadable`) before a connection is trusted.
 const nullableStr = () => z.string().nullable().optional().transform((v) => (v === undefined || v === null || v === '' ? null : v));
 const blankStr = () => z.string().nullable().optional().transform((v) => v ?? '');
 /** A Shopify `Decimal` or `Money` scalar: a decimal string. Mapped, not parsed, here. */
@@ -435,6 +437,17 @@ export class ShopifyApi {
     const parsed = z.object({ nodes: z.array(z.unknown()), pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }) }).safeParse(data);
     if (!parsed.success) throw new ShopifyApiError(`Shopify ${resource} list answered something other than a page`, 502);
     return { nodes: parsed.data.nodes, ...parsed.data.pageInfo };
+  }
+
+  /**
+   * Whether the sync's own order query is answered: the same `ChangedOrders` operation, one row.
+   * Name, email, phone and address on an order are protected customer data, granted on the Dev
+   * Dashboard app apart from the `read_orders` scope; without that access Shopify refuses the query
+   * with `ACCESS_DENIED`, which this throws as every query does. The probe asks it so that a
+   * connection whose sweeps would all fail on orders is not shown as connected.
+   */
+  async ordersReadable(customers: boolean): Promise<void> {
+    await this.graphql('ChangedOrders', { first: 1, after: null, query: null, customers });
   }
 
   /** Which of `ids` (at most {@link SHOPIFY_NODES_PAGE}) the shop still holds — one query, ids only. */
