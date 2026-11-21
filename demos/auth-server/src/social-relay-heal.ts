@@ -1,5 +1,6 @@
 import { relayProviderId } from '@substrat-run/contracts';
 import type { SqlExec } from './introspect.js';
+import type { HealRecord, HealResult } from './social-relay-heal-wire.js';
 import { readProviders } from './providers.js';
 import { relayClientId, relayOrigin } from './social-relay.js';
 
@@ -35,23 +36,9 @@ const HEAL_KEY = 'social_relay_heal';
 /** How long after one attempt opening the Connections page may ask again. */
 export const AUTO_HEAL_INTERVAL_MS = 60 * 60_000;
 
-/** What one attempt came to, as the operator is shown it. */
-export type HealResult =
-  | { status: 'delivered'; providers: string[] }
-  | { status: 'skipped'; reason: string }
-  | { status: 'failed'; reason: string }
-  /** The automatic check found nothing missing, so the platform was not asked. */
-  | { status: 'current' };
-
-export interface HealRecord {
-  /** Which attempt this is: a result is recorded only against the claim it answers. */
-  attempt: string;
-  /** When the attempt was claimed, ISO 8601. */
-  at: string;
-  trigger: 'auto' | 'manual';
-  /** Absent while the attempt is in flight, or when it never reported back. */
-  result?: HealResult;
-}
+// The shapes the admin app reads live in a dependency-free file, so the browser build need not
+// compile this one (and, through `providers.ts`, `@substrat-run/oidc-rp`).
+export type { HealRecord, HealResult } from './social-relay-heal-wire.js';
 
 /** What the worker needs to make one attempt: who to ask for, and what to compare. */
 export interface HealClaim {

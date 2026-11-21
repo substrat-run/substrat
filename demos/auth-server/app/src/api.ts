@@ -5,7 +5,7 @@ import { isPlacesAnswer, placesOf, type Place } from './places';
 import type { ImportEntry, ImportResult } from '../../src/user-import-wire.js';
 import type { ClientTheme } from '../../src/theme-wire.js';
 import type { Locale } from '../../src/locale-wire.js';
-import type { HealRecord, HealResult } from '../../src/social-relay-heal.js';
+import type { HealRecord, HealResult } from '../../src/social-relay-heal-wire.js';
 import { translate } from '../../src/messages.js';
 
 export type { Place } from './places';
