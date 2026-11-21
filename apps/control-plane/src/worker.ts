@@ -3950,6 +3950,13 @@ export default {
         // box, and the sanctioned egress. Keyed by provider, so `control-plane-api`
         // learns no Scrive vocabulary and an unwired provider 501s honestly.
         connectionInspectors: connectionInspectorsFor(env),
+        // #3221: the pass's own reader and binders, behind the tenant's door choosing which
+        // connection an install's checkouts go through.
+        connectionLandings: {
+          read: (slug, versionId) => apiHost.versionConnectionLandings(slug, versionId),
+          binders: connectionBindersFor(env),
+          binderFor: verticalConnectorBinderFor(env, apiHost, SERVICE_ACTOR),
+        },
         // #2343: a mail connection's send test, through the senders the email relay uses.
         mailSenders: mailSendersFor(env),
         // #2611: a team's door to its apps' mail-in addresses (the dashboard's Integrations tab).

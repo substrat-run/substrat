@@ -5324,6 +5324,137 @@
         }
       }
     },
+    "/api/teams/{teamId}/apps/{scopeId}/integrations/{provider}/connections/{connectionId}/chosen": {
+      "put": {
+        "operationId": "dashboard-choose-app-connection",
+        "summary": "Choose which of the team's connections one app's checkouts go through (#3221); the others come off the app",
+        "parameters": [
+          {
+            "name": "teamId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scopeId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "connectionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "scopeId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "provider": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "connectionId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "scopeId",
+                  "provider",
+                  "connectionId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "chosen": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "bound": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "chosen",
+                    "bound"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
     "/api/teams/{teamId}/apps/{scopeId}/integrations/{provider}": {
       "post": {
         "operationId": "dashboard-connect-app-integration",
@@ -11679,6 +11810,9 @@
                           "sendsMail": {
                             "type": "boolean"
                           },
+                          "takesPayments": {
+                            "type": "boolean"
+                          },
                           "required": {
                             "type": "boolean"
                           },
@@ -11871,6 +12005,32 @@
                               ],
                               "additionalProperties": false
                             }
+                          },
+                          "paysThrough": {
+                            "type": "object",
+                            "properties": {
+                              "chosen": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "bound": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "required": [
+                              "chosen",
+                              "bound"
+                            ],
+                            "additionalProperties": false
                           }
                         },
                         "required": [
@@ -11882,6 +12042,7 @@
                           "connectFlow",
                           "multiAccount",
                           "sendsMail",
+                          "takesPayments",
                           "required",
                           "connection",
                           "connections"
@@ -21371,6 +21532,9 @@
                           "sendsMail": {
                             "type": "boolean"
                           },
+                          "takesPayments": {
+                            "type": "boolean"
+                          },
                           "connections": {
                             "type": "array",
                             "items": {
@@ -21571,6 +21735,7 @@
                           "connectFlow",
                           "multiAccount",
                           "sendsMail",
+                          "takesPayments",
                           "connections",
                           "connectTargets"
                         ],

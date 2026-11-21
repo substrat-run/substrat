@@ -140,6 +140,8 @@ const integrationProviderForm = z.object({
     file: z.object({ accept: z.string() }).optional(),
   })),
   connectFlow: z.literal('redirect').nullable(), multiAccount: z.boolean(), sendsMail: z.boolean(),
+  // #3221: the provider takes payments, so each app pays through one connection the team chooses.
+  takesPayments: z.boolean(),
 });
 // The plane owns a sweep's outcome, so it stays a string.
 const integrationSweepRun = z.object({
@@ -1473,8 +1475,17 @@ export const dashboardRoutes = defineRoutes({
     output: z.object({ providers: z.array(integrationProviderForm.extend({
       required: z.boolean(),
       connection: integrationConnection.nullable(), connections: z.array(integrationConnection),
+      // #3221: for a payment provider, the connection this app's checkouts go through; null when none
+      // is, or several are and a choice is owed. Absent when the plane could not say.
+      paysThrough: z.object({ chosen: z.string().nullable(), bound: z.array(z.string()) }).optional(),
     })) }),
     http: { method: 'GET', path: '/apps/{scopeId}/integrations' },
+  },
+  'dashboard/choose-app-connection': {
+    summary: "Choose which of the team's connections one app's checkouts go through (#3221); the others come off the app",
+    input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1), connectionId: z.string().min(1) }),
+    output: z.object({ chosen: z.string().nullable(), bound: z.array(z.string()) }),
+    http: { method: 'PUT', path: '/apps/{scopeId}/integrations/{provider}/connections/{connectionId}/chosen' },
   },
   // -- an app's mail-in address (#2611) --------------------------------------
   'dashboard/get-app-mail-in': {

@@ -223,6 +223,7 @@ import {
   releaseRoleSetRefusal,
   withheldOpsFailure,
   foldModelUsage,
+  type ConnectionLandingOptionsInput,
 } from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
@@ -247,6 +248,7 @@ import type { PreviewAuth, SeededPersona } from '@substrat-run/contracts';
 import { scopeDeployment, versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
 import { reconcileOutcomeOf, reconcileThenReassert, reviewedEntityGrants, switchCarryFor } from './reconcile.js';
+import { chooseScopeConnection, readScopeConnectionChoice } from './connection-choice.js';
 import { ConnectionRelayError, relayConnectionUpsert, type ConnectionCandidatePrepare, type ConnectionCandidateProbe, type VerticalConnectorDeclarationOf } from './connection-relay.js';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { provisionSiblingScope } from './platform-drain.js';
@@ -834,6 +836,11 @@ export interface ControlPlaneApiOptions {
    * verify a Fortnox key yet" is a true statement; "your Fortnox key is fine" is not.
    */
   connectionInspectors?: Record<string, ConnectionInspector>;
+  /**
+   * #3221: the connector pass's landing reader and binders, so the tenant's door choosing which
+   * connection an install lands through binds exactly as the pass would. Absent, that door 501s.
+   */
+  connectionLandings?: ConnectionLandingOptionsInput;
   /**
    * The mail sender each provider that sends as a tenant's own addresses registers (#2098), by
    * provider — the same `{ provider → sender }` the email relay routes through. Behind
@@ -1787,6 +1794,9 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   // #2343: a mail connection's test send. The dashboard sends it only to the signed-in person.
   { method: 'POST', re: /\/tenants\/[^/]+\/connections\/[^/]+\/send-test$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/connections\/[^/]+\/senders$/, pin: 'path' },
+  // #3221: which of the tenant's connections an install's checkouts go through.
+  { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/connections\/[^/]+\/choice$/, pin: 'path' },
+  { method: 'PUT', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/connections\/[^/]+\/choice$/, pin: 'path' },
   // #2611: one app's mail-in address — read it, and request, rotate or revoke it.
   { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/mail-in$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/mail-in$/, pin: 'path' },
@@ -3968,6 +3978,45 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return failed('connector', 502, done.error, (reference) => `the ${row.provider} connector could not bind scope ${scopeId} (reference ${reference})`);
     }
     return c.json({ ...done.result, permissionHeld: true, ...('unrecorded' in done ? { auditWarning: done.unrecorded } : {}) });
+  });
+
+  /**
+   * #3221: which tenant connection one install lands through, for a provider that lands each install
+   * through one (a payment provider, `ConnectionBinder.exclusive`). Tenant-callable: the choice is the
+   * tenant's, made from its dashboard. See `connection-choice.ts`.
+   */
+  const choiceRefusal = (c: Context<{ Variables: Vars }>, err: unknown) => {
+    if (err instanceof ConnectionRelayError && err.status < 500) {
+      return err.code ? refuse(c, err.code, err.message) : refuseStatus(c, err.status, err.message);
+    }
+    throw err;
+  };
+  const choiceInput = (c: Context<{ Variables: Vars }>) => ({
+    tenantId: tenantIdSchema.parse(c.req.param('tenantId')),
+    scopeId: scopeIdSchema.parse(c.req.param('scopeId')),
+    provider: connectionProvider.parse(c.req.param('provider')),
+  });
+  app.get('/tenants/:tenantId/scopes/:scopeId/connections/:provider/choice', async (c) => {
+    const landings = options.connectionLandings;
+    if (!landings) return refuseStatus(c, 501, 'this control plane binds no connection landings');
+    try {
+      return c.json(await readScopeConnectionChoice(c.var.host, c.get('actor'), choiceInput(c), { landings }));
+    } catch (err) {
+      return choiceRefusal(c, err);
+    }
+  });
+  app.put('/tenants/:tenantId/scopes/:scopeId/connections/:provider/choice', async (c) => {
+    const landings = options.connectionLandings;
+    if (!landings) return refuseStatus(c, 501, 'this control plane binds no connection landings');
+    const body = z
+      .object({ connectionId: z.string().min(1), chosenBy: z.string().min(1).max(200).optional() })
+      .strict()
+      .parse(await c.req.json());
+    try {
+      return c.json(await chooseScopeConnection(c.var.host, c.get('actor'), { ...choiceInput(c), ...body }, { landings }));
+    } catch (err) {
+      return choiceRefusal(c, err);
+    }
   });
 
   /**

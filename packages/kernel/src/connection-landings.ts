@@ -40,6 +40,11 @@ import { ulid } from './ulid.js';
  * A landing declared `bind: 'on-request'` (#2732) is passed over: its connections are granted and
  * bound one scope at a time, when that scope asks, so the pass writes nothing for them.
  *
+ * A provider whose binder is `exclusive` (#3221, a payment provider) lands each scope through ONE
+ * connection: the one already bound there, else the oldest active one. The others are passed over
+ * for that scope, so a second connected account binds nowhere until a tenant chooses it for an
+ * install, and a choice the tenant made is never undone by a later pass.
+ *
  * Nothing is unbound. A version that stops declaring a landing (or makes it `on-request`) leaves its
  * bindings in place, and a pass that lands through an operation the version no longer has reports
  * the refusal on the connection's sweep row; `unbind` stays a person's act. A revoked connection is never reached:
@@ -91,6 +96,18 @@ export interface ConnectionBinder {
    * landed stays. Absent means the provider cannot unbind, and the relay refuses an unbind of it.
    */
   unbind?(host: ScopeHost, connection: Connection, scopeId: ScopeId): Promise<void>;
+  /**
+   * #3221: a scope lands through at most ONE connection of this provider, so the pass never adds a
+   * second. A payment provider is the case: a checkout goes through the one connection bound to the
+   * scope, and two bound is refused, since which account takes the money is never guessed. Under it
+   * the pass binds a scope only to the connection already bound there (re-writing it as usual) or,
+   * when none of the provider's tenant connections is, to the OLDEST active one. Every other
+   * connection of the provider is passed over for that scope, key and binding both. Which one an
+   * install uses is then the binding itself: the tenant moves it (`chooseScopeConnection`), and the
+   * pass, finding the scope bound, keeps it. Disconnecting the bound one leaves the scope unbound, and
+   * the next pass binds the oldest active one left. Absent, every live connection binds everywhere.
+   */
+  readonly exclusive?: true;
 }
 
 export interface ConnectionLandingOptionsInput {
@@ -111,10 +128,44 @@ export function binderOf(input: Pick<ConnectionLandingOptionsInput, 'binders' | 
   return input.binders[connection.provider] ?? input.binderFor?.(connection);
 }
 
+/** One landing a version declares for a provider, as the pass and the doors read it. */
+export interface DeclaredLanding {
+  operation: string;
+  permission: PermissionKey;
+  options?: ConnectionLandingOptions;
+  bind?: 'every-install' | 'on-request';
+}
+
+/**
+ * The landing `scope`'s RUNNING version declares for `provider`, or why there is none: read as the
+ * landing pass reads a version, so a door is held to the declaration the pass would apply there.
+ */
+export async function declaredLandingFor(
+  admin: Pick<ScopeHost['admin'], 'listVerticals'>,
+  actor: PlatformActorId,
+  read: ConnectionLandingOptionsInput['read'],
+  scope: Scope,
+  provider: string,
+): Promise<{ landing: DeclaredLanding } | { refused: string }> {
+  const [running] = await runningFactsOf<ManifestConnectionLandings>(admin, actor, [scope], read, (reason) => ({ kind: 'unreadable', reason }), 1);
+  const fact = running?.fact;
+  if (!fact || fact.kind === 'none') return { refused: `the version scope ${scope.id} runs declares no connection landings` };
+  if (fact.kind === 'unreadable') return { refused: `the declared connection landings of the version scope ${scope.id} runs cannot be read: ${fact.reason}` };
+  const landing = fact.rows.find((r) => r.provider === provider);
+  if (!landing) return { refused: `the version scope ${scope.id} runs declares no landing for '${provider}'` };
+  return {
+    landing: {
+      operation: landing.operation,
+      permission: landing.permission,
+      ...(landing.options ? { options: landing.options } : {}),
+      ...(landing.bind ? { bind: landing.bind } : {}),
+    },
+  };
+}
+
 /**
  * The `on-request` landing `scope`'s RUNNING version declares for `provider` (#2732), the one a
- * scope binds its own connection through, or why there is none: read as the landing pass reads a
- * version, so a scope is held to the declaration the pass would apply there.
+ * scope binds its own connection through, or why there is none.
  */
 export async function onRequestLandingFor(
   admin: Pick<ScopeHost['admin'], 'listVerticals'>,
@@ -123,16 +174,49 @@ export async function onRequestLandingFor(
   scope: Scope,
   provider: string,
 ): Promise<{ landing: { operation: string; permission: PermissionKey; options?: ConnectionLandingOptions } } | { refused: string }> {
-  const [running] = await runningFactsOf<ManifestConnectionLandings>(admin, actor, [scope], read, (reason) => ({ kind: 'unreadable', reason }), 1);
-  const fact = running?.fact;
-  if (!fact || fact.kind === 'none') return { refused: `the version scope ${scope.id} runs declares no connection landings` };
-  if (fact.kind === 'unreadable') return { refused: `the declared connection landings of the version scope ${scope.id} runs cannot be read: ${fact.reason}` };
-  const landing = fact.rows.find((r) => r.provider === provider);
-  if (!landing) return { refused: `the version scope ${scope.id} runs declares no landing for '${provider}'` };
-  if (landing.bind !== 'on-request') {
+  const declared = await declaredLandingFor(admin, actor, read, scope, provider);
+  if ('refused' in declared) return declared;
+  const { bind, ...landing } = declared.landing;
+  if (bind !== 'on-request') {
     return { refused: `the '${provider}' landing is bound to every install by the platform; only an on-request landing is bound by a scope` };
   }
-  return { landing: { operation: landing.operation, permission: landing.permission, ...(landing.options ? { options: landing.options } : {}) } };
+  return { landing };
+}
+
+/**
+ * For an {@link ConnectionBinder.exclusive} provider, the connections of one (tenant, vertical) a
+ * scope may land through: each scope's bound ones, and the one an unbound scope is given (the oldest
+ * active tenant connection, or none). Only the tenant's connections count: a scope's own is never
+ * landed by the pass, and its checkout reads it beside these.
+ */
+export interface ExclusiveLandings {
+  bound: ReadonlyMap<string, ReadonlySet<string>>;
+  first: Connection['id'] | null;
+}
+
+export async function exclusiveLandingsOf(
+  host: ScopeHost,
+  actor: PlatformActorId,
+  input: Pick<ConnectionLandingOptionsInput, 'binders' | 'binderFor'>,
+  of: { tenantId: TenantId; vertical: string; provider: string },
+): Promise<ExclusiveLandings> {
+  const rows = (await host.admin.listConnections(actor, { tenantId: of.tenantId, vertical: of.vertical, provider: of.provider, ownerScopeId: null })).filter(
+    (c) => c.revokedAt === null && c.ownerScopeId === null,
+  );
+  const bound = new Map<string, Set<string>>();
+  for (const c of rows) {
+    const binder = binderOf(input, c);
+    if (!binder) continue;
+    for (const b of await binder.list(host, c)) {
+      let set = bound.get(b.scopeId);
+      if (!set) bound.set(b.scopeId, (set = new Set()));
+      set.add(c.id);
+    }
+  }
+  const active = rows
+    .filter((c) => c.status === 'active')
+    .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return { bound, first: active[0]?.id ?? null };
 }
 
 /** What one connection's landing step did, folded into its sweep row and the pass report. */
@@ -160,6 +244,7 @@ interface Target {
 export class LandingPass {
   private readonly targets = new Map<string, Promise<Target[]>>();
   private readonly held = new Map<string, Promise<ProjectedConnectionGrant[]>>();
+  private readonly exclusive = new Map<string, Promise<ExclusiveLandings>>();
 
   constructor(
     private readonly host: ScopeHost,
@@ -182,6 +267,9 @@ export class LandingPass {
     const binder = binderOf(this.input, connection);
     if (!binder) return out;
     const targets = await this.targetsOf(connection.tenantId, connection.vertical);
+    // #3221: read once per (tenant, vertical, provider) per pass. A bind this pass makes is not seen
+    // by it, and need not be: an unbound scope is only ever given the one oldest active connection.
+    const exclusive = binder.exclusive && targets.length > 0 ? await this.exclusiveOf(connection) : undefined;
     let existing: Awaited<ReturnType<ConnectionBinder['list']>> | undefined;
     for (const t of targets) {
       const scopeId = t.scope.id;
@@ -193,6 +281,11 @@ export class LandingPass {
       const landing = t.fact.rows.find((r) => r.provider === connection.provider);
       // #2732: an `on-request` landing is bound by the scope that asks, never by this pass.
       if (!landing || landing.bind === 'on-request') continue;
+      if (exclusive) {
+        const holders = exclusive.bound.get(scopeId);
+        // Bound elsewhere: that is the install's choice, and this connection is passed over there.
+        if (holders && holders.size > 0 ? !holders.has(connection.id) : exclusive.first !== connection.id) continue;
+      }
       try {
         existing ??= await binder.list(this.host, connection);
         const current = existing.find((b) => b.scopeId === scopeId);
@@ -272,6 +365,17 @@ export class LandingPass {
         return running.map((r) => ({ scope: r.scope, versionId: r.versionId, fact: r.fact }));
       })();
       this.targets.set(key, found);
+    }
+    return found;
+  }
+
+  /** {@link exclusiveLandingsOf} for `connection`'s provider, read once per pass. */
+  private exclusiveOf(connection: Connection): Promise<ExclusiveLandings> {
+    const key = `${connection.tenantId}\u0000${connection.vertical}\u0000${connection.provider}`;
+    let found = this.exclusive.get(key);
+    if (!found) {
+      found = exclusiveLandingsOf(this.host, this.actor, this.input, connection);
+      this.exclusive.set(key, found);
     }
     return found;
   }

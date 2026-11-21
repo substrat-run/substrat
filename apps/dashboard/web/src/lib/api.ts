@@ -453,6 +453,13 @@ export interface AppIntegration {
   multiAccount: boolean;
   /** #2343: the connection sends mail as the tenant, so its detail offers a send test. */
   sendsMail: boolean;
+  /** #3221: the connection takes payments, so the app pays through one of them, chosen here. */
+  takesPayments?: boolean;
+  /**
+   * #3221: which connection this app's checkouts go through. `chosen` is null when none is bound,
+   * or several are (`bound`) and a choice is owed. Absent when the platform could not say.
+   */
+  paysThrough?: { chosen: string | null; bound: string[] };
   required: boolean;
   /** The single-connection answer (the null-ref row, else the newest). */
   connection: ConnectionView | null;

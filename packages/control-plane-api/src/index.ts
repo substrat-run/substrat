@@ -34,6 +34,7 @@ export {
   type ConnectionCheckoutRelayOptions,
   type ScopeSyncResult,
 } from './connection-binding-relay.js';
+export { chooseScopeConnection, readScopeConnectionChoice, type ScopeConnectionChoice, type ConnectionChoiceOptions } from './connection-choice.js';
 export type { ConnectionAccountFromProbe, ConnectionCandidateContext, ConnectionCandidatePrepare, ConnectionCandidatePreparer, ConnectionCandidateProbe, VerticalConnectorDeclarationOf } from './connection-relay.js';
 export { signConnectState, verifyConnectState, ConnectStateError } from './connect-state.js';
 export type { ConnectStateClaim } from './connect-state.js';

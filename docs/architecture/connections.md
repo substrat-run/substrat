@@ -856,13 +856,23 @@ on every door a credential comes in by:
   makes a keyed one. Nothing is backfilled.
 - **The connector opens a connection by its account.** With two accounts, `openConnection` without one
   throws, so the binding records the account (`accountOnBinding`, as Fortnox's does since #2316) and
-  every open names it. Bindings stay on the connection they were made on. An automatic landing binds the
-  new account's connection on every install as well, and a checkout goes through the one connection
-  bound to the scope, so two bound is a `409` until one is disconnected: which account takes the money
-  is never guessed. An app therefore pays through one Stripe account at a time, and two connected is a
-  move from one to the other. Different accounts for different installs is not reachable yet: the pass
-  re-binds an automatic landing every run, an `on-request` bind (`relayConnectionBind`) finds only a
-  connection the scope owns, and Stripe's are the tenant's (its registration is not `scopeOwned`).
+  every open names it. Bindings stay on the connection they were made on.
+- **An install pays through one account, and the tenant chooses which (#3221).** A checkout goes through
+  the one connection bound to the scope, and two bound is a `409`: which account takes the money is never
+  guessed. So a provider that takes payments (a registration with `checkout`) has an `exclusive` binder,
+  and the landing pass binds each install only to the connection already bound there or, when none is,
+  to the oldest active tenant connection; every other connection of the provider is passed over there,
+  key and binding both. A second account connected later therefore binds nowhere until the tenant
+  chooses it for an install, on the app's Integrations tab (`PUT /tenants/:t/scopes/:s/connections/:provider/choice`,
+  tenant-callable). The choice binds the chosen connection in the pass's order, audited with the person
+  who chose, and only then takes every other tenant connection off the install (its key revoked there,
+  its binding dropped). The choice is not stored beside the binding; it is the binding, and the pass,
+  finding the install bound, keeps it. Disconnecting the chosen connection leaves the install unbound
+  until the next pass gives it the oldest active one left. An install already bound to two (bound by
+  the pass before this rule) is left as it is and reads `chosen: null` until the tenant chooses.
+  Considered and not taken: letting an `on-request` bind reach a tenant connection (it moves #2732's
+  ownership boundary), and making Stripe `scopeOwned` (each install would paste its own key, where the
+  account is the tenant's).
 - **The door says so too** (`accountFromProbe` on the dashboard's `ProviderSpec`), which makes it list
   the connections as a fleet; `pnpm lint:connector-grants` holds the door and the registration equal.
 
