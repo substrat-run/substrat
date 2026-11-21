@@ -315,6 +315,7 @@ import {
   storeDriverDumpPageBytes,
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
+import { prePromoteSnapshotExpiresAt } from '@substrat-run/kernel';
 import {
   attachmentBlobKey,
   normalizeUploadMediaType,
@@ -9238,7 +9239,10 @@ export class CloudflareScopeHost implements ScopeHost {
           if (s.vertical_version_id === versionId) continue;
           const prev = s.vertical_version_id ? await this.cp.readVersion(s.vertical_version_id) : undefined;
           if (prev && prev.migration_digest !== incoming.migration_digest) {
-            await this.snapshotScope(actor, s.tenant_id as TenantId, s.scope_id as ScopeId);
+            await this.snapshotScope(actor, s.tenant_id as TenantId, s.scope_id as ScopeId, {
+              // #3314: a rollback point, not a keepsake, so it expires and the snapshot GC reaps it.
+              expiresAt: prePromoteSnapshotExpiresAt(Date.now()),
+            });
           }
           await this.cp.bindScopeVersion(s.scope_id, versionId, verticalSlug,
             undefined, undefined, undefined, undefined, undefined,
@@ -9320,7 +9324,8 @@ export class CloudflareScopeHost implements ScopeHost {
         if (opts?.snapshot && scope.vertical_version_id) {
           const outgoing = await this.cp.readVersion(scope.vertical_version_id);
           if (outgoing && outgoing.migration_digest !== v.migration_digest) {
-            await this.snapshotScope(actor, tenantId, scopeId);
+            // #3314: a rollback point, not a keepsake, so it expires and the snapshot GC reaps it.
+            await this.snapshotScope(actor, tenantId, scopeId, { expiresAt: prePromoteSnapshotExpiresAt(Date.now()) });
           }
         }
         const audit = this.adminEntry(actor, 'bindScopeVersion', { tenantId, scopeId },

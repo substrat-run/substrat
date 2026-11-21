@@ -68,6 +68,7 @@ import {
   rebindReviewRefusalOf,
   createUlid,
   ulid,
+  PRE_PROMOTE_SNAPSHOT_TTL_MS,
   WIRE_AUTH_FILTER_TEXT_MAX,
   type AuditLogFilter,
   type OperationHandler,
@@ -5028,7 +5029,9 @@ export function scopeHostContractSuite(
 
         const before = await countForks(sb);
         await host.admin.bindScopeVersion(staff, t1, sb, vA); // first bind — no prior version
+        const boundFrom = Date.now();
         await host.admin.bindScopeVersion(staff, t1, sb, vB, { snapshot: true }); // gA→gB — snapshot
+        const boundTo = Date.now();
         expect(await countForks(sb)).toBe(before + 1);
 
         // The snapshot is an archive bound to the OUTGOING version (vA) — the frontier
@@ -5038,6 +5041,11 @@ export function scopeHostContractSuite(
         );
         expect(forks.every((f) => f.kind === 'archive')).toBe(true);
         expect(forks.some((f) => f.verticalVersionId === vA)).toBe(true);
+        // #3314: a rollback point is born expiring, so the snapshot GC reaps it rather than
+        // keeping a full copy of the tenant's data forever.
+        const expiresAt = Date.parse(forks[0]!.expiresAt ?? '');
+        expect(expiresAt).toBeGreaterThanOrEqual(boundFrom + PRE_PROMOTE_SNAPSHOT_TTL_MS);
+        expect(expiresAt).toBeLessThanOrEqual(boundTo + PRE_PROMOTE_SNAPSHOT_TTL_MS);
 
         // A code-only rebind (same migration digest), even opted in, snapshots nothing.
         await host.admin.bindScopeVersion(staff, t1, sb, vBcode, { snapshot: true });
@@ -7902,6 +7910,38 @@ export function scopeHostContractSuite(
       await host.admin.promoteVersion(staff, 'callout', 'prod', v2, { permissionChange: true, review: await reviewOf('callout', v2) });
       const after = await host.admin.listChannels(staff, 'callout');
       expect(after.find((c) => c.channel === 'prod')?.versionId).toBe(v2);
+    });
+
+    it("a private prod promote across a migration snapshots the owner's scope, and the snapshot expires (#3314)", async () => {
+      // The promote's own re-point of an embedded vertical's owned scopes is a second
+      // fork-before-promote site beside `bindScopeVersion`'s, so it is held to the same expiry.
+      const slug = 'snapexpiry';
+      await host.admin.registerVertical(staff, { slug, name: 'Snap expiry', source: 'cli', ownerTenant: t1 });
+      const pub = async (version: string, mig: string) => {
+        const id = ulid();
+        await host.admin.publishVersion(staff, {
+          id, verticalSlug: slug, version, manifestDigest: `man-${version}`, permissionDigest: 'p',
+          ...(await heldMigrations(mig)), deploymentRef: null,
+        });
+        return id;
+      };
+      const vA = await pub('1.0.0', 'gA');
+      const vB = await pub('2.0.0', 'gB');
+      await host.admin.promoteVersion(staff, slug, 'prod', vA);
+      const owned = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: owned, jurisdiction: 'eu', vertical: slug });
+      await host.admin.activateScope(staff, t1, owned);
+      await host.admin.bindScopeVersion(staff, t1, owned, vA);
+
+      const promotedFrom = Date.now();
+      await host.admin.promoteVersion(staff, slug, 'prod', vB, { migrationChange: true, review: await reviewOf(slug, vB) });
+      const promotedTo = Date.now();
+
+      const forks = (await host.admin.listScopes(staff, { tenantId: t1 })).filter((sc) => sc.forkedFrom === owned);
+      expect(forks).toHaveLength(1);
+      const expiresAt = Date.parse(forks[0]!.expiresAt ?? '');
+      expect(expiresAt).toBeGreaterThanOrEqual(promotedFrom + PRE_PROMOTE_SNAPSHOT_TTL_MS);
+      expect(expiresAt).toBeLessThanOrEqual(promotedTo + PRE_PROMOTE_SNAPSHOT_TTL_MS);
     });
 
     it('refuses a promotion that changes migrations until it is acknowledged', async () => {

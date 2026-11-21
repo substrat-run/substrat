@@ -2530,7 +2530,8 @@ export interface HostAdmin {
    * the incoming version's `migration_digest` differs from the scope's current bound
    * version's, an `archive` snapshot of the pre-migration data is captured first, so a
    * bad upgrade has a rollback point. Gated on the digest change (a code-only rebind
-   * snapshots nothing) and opt-in until retention/GC ships.
+   * snapshots nothing). The snapshot is born with an `expiresAt`
+   * `PRE_PROMOTE_SNAPSHOT_TTL_MS` out (#3314), so the snapshot GC reaps it; pin one to keep it.
    *
    * `opts.expectedVersionId` (#1722) makes the pointer update compare-and-set. `null`
    * expects an unbound scope; omitting it keeps an unconditional bind. A changed binding

@@ -977,6 +977,7 @@ import {
   type PlatformRequestSettle,
 } from '@substrat-run/kernel';
 import { canonicalInstant } from '@substrat-run/kernel';
+import { prePromoteSnapshotExpiresAt } from '@substrat-run/kernel';
 import {
   ADMIN_LOG_INDEXES_SQL,
   SETTLE_INTENT_SQL,
@@ -10965,7 +10966,10 @@ export class SqliteScopeHost implements ScopeHost {
           if (s.vertical_version_id === versionId) continue;
           const prev = s.vertical_version_id ? await readVersion(s.vertical_version_id) : undefined;
           if (prev && prev.migrationDigest !== incoming.migrationDigest) {
-            await this.snapshotScope(actor, s.tenant_id as TenantId, s.scope_id as ScopeId);
+            await this.snapshotScope(actor, s.tenant_id as TenantId, s.scope_id as ScopeId, {
+              // #3314: a rollback point, not a keepsake, so it expires and the snapshot GC reaps it.
+              expiresAt: prePromoteSnapshotExpiresAt(Date.parse(this.clock())),
+            });
           }
           this.directoryWriteAndAudit(() => this.directory
             .prepare('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?')
@@ -11074,7 +11078,8 @@ export class SqliteScopeHost implements ScopeHost {
         if (opts?.snapshot && scope.vertical_version_id) {
           const outgoing = await readVersion(scope.vertical_version_id);
           if (outgoing && outgoing.migrationDigest !== v.migrationDigest) {
-            await this.snapshotScope(actor, tenantId, scopeId);
+            // #3314: a rollback point, not a keepsake, so it expires and the snapshot GC reaps it.
+            await this.snapshotScope(actor, tenantId, scopeId, { expiresAt: prePromoteSnapshotExpiresAt(Date.parse(this.clock())) });
           }
         }
         const audit = () => this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId },
