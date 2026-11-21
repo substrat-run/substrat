@@ -49,8 +49,12 @@ export interface ReviewConfig {
   readonly marginPercent?: number | undefined;
 }
 
-/** The ledger margin when the plane sets none: `control-plane-api`'s own default. */
-export const REVIEW_DEFAULT_MARGIN_PERCENT = 20;
+/**
+ * The ledger margin when the plane sets none: `control-plane-api`'s own default
+ * (`DEFAULT_MODEL_MARGIN_PERCENT`, which its public entry does not export). Keep the two equal: the
+ * spend limit counts at the rate the ledger bills at. 30%, the owner's rate for model tokens (#3316).
+ */
+export const REVIEW_DEFAULT_MARGIN_PERCENT = 30;
 
 export interface ReviewJobDeps {
   readonly bucket: R2Bucket;

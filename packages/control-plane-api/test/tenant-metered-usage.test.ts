@@ -288,13 +288,13 @@ it('prices a tenant\'s code reviews at zero beside what they would cost, on its 
   const usage = await (await reviewing.request(`/tenants/${reviewed}/metered-usage`, { headers: { [SERVICE_TOKEN_HEADER]: await mintTenantToken(secret, { tenantId: reviewed }) } })).json();
   expect(usage.reviews).toEqual({
     state: 'complete', calls: 3, reportedCalls: 3, inputTokens: 3000, outputTokens: 150, unpriced: 0,
-    wouldCostUsd: '0.642', chargedUsd: '0', zeroRated: true, lowerBound: false, since: usage.models.since, until: usage.models.until,
+    wouldCostUsd: '0.6955', chargedUsd: '0', zeroRated: true, lowerBound: false, since: usage.models.since, until: usage.models.until,
   });
   // A plane without the review scope configured prices nothing on the tenant's read.
   expect((await (await app.request(`/tenants/${own}/metered-usage`, { headers })).json()).reviews).toBeUndefined();
 
   const summary = await (await reviewing.request(`/model-usage/summary?tenantId=${reviewed}&since=${at.slice(0, 10)}T00:00:00.000Z&until=${today}T00:00:00.000Z`, { headers: { [DEV_ACTOR_HEADER]: actor } })).json();
-  expect(summary.totals).toMatchObject({ listUsd: '0.035', billedUsd: '0', zeroRatedCalls: 2, zeroRatedUsd: '0.042' });
+  expect(summary.totals).toMatchObject({ listUsd: '0.035', billedUsd: '0', zeroRatedCalls: 2, zeroRatedUsd: '0.0455' });
 });
 
 describe('POST /model-usage', () => {

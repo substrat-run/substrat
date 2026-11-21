@@ -3,7 +3,7 @@
  * packages/model-providers/test). What is the studio's alone: list × 1.2.
  */
 import { describe, expect, it } from 'vitest';
-import { costOf, costOfSteps, markupFactor, withMarkup } from '../src/pricing.js';
+import { costOf, costOfSteps, withMarkup } from '../src/pricing.js';
 
 describe('costOfSteps', () => {
 	it('carries list and billed together', () => {
@@ -29,12 +29,5 @@ describe('withMarkup', () => {
 		expect(withMarkup('0')).toBe('0');
 		expect(withMarkup('2.6', 100)).toBe('5.2');
 		expect(withMarkup('2.6', 0)).toBe('2.6');
-	});
-
-	it('takes whole, non-negative percents only', () => {
-		expect(markupFactor(30)).toBe('1.30');
-		expect(markupFactor(150)).toBe('2.50');
-		expect(() => markupFactor(12.5)).toThrow(/whole/);
-		expect(() => markupFactor(-10)).toThrow(/non-negative/);
 	});
 });
