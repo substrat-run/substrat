@@ -534,7 +534,12 @@ refuses them. Linking the two is a follow-up.
 1. ~~Retention/GC policy for preview vs. archive scopes~~ **Decided:** previews are
    ephemeral — reaped on PR close, and every preview carries an `expiresAt` (default 72h)
    that the platform sweep enforces as the backstop for an abandoned one. Archives remain
-   the deliberately-kept case.
+   the deliberately-kept case, with one exception (#3314): the fork-before-promote snapshot
+   (§4) is a rollback point, not a keepsake, so it is born with an `expiresAt` 30 days out
+   (`PRE_PROMOTE_SNAPSHOT_TTL_MS`) and the same sweep reaps it. Without one they never went:
+   a fleet with frequent migrating promotes had a full copy of each tenant's data for every
+   promote it ever made. Staff pin one worth keeping with `PUT …/scopes/:s/expires-at`
+   `{ "expiresAt": null }`.
 2. Masking: declarative per-vertical redaction rules, or a generic PII-column sweep?
    **Partly answered (#1034):** the sweep stays generic and name-based, but it now
    *pseudonymizes* rather than blanks — a PII cell gets a deterministic fake value of

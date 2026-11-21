@@ -39,7 +39,7 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
 - **Tenants** — `/tenants` (+ `/status`, `/reap`, `/identities`, `/entitlements`): the
   tenant registry, lifecycle, identity links, and per-tenant SKU grants.
 - **Scopes** — `/scopes`, `/tenants/:t/scopes/:s` and its lifecycle verbs (`configure`,
-  `version`, `snapshots`, `restore`, `rewind`, `bookmarks`, `migrations`, `reap`), the
+  `version`, `snapshots`, `expires-at`, `restore`, `rewind`, `bookmarks`, `migrations`, `reap`), the
   read-only data window (`tables`, `tables/:table`, `query`, `export`, `health`, and the
   six event reads over it — `history`, one record's story; `facets`, the outbox narrowed,
   grouped and counted; `cause` and `effects`, one event walked backwards to what started it
