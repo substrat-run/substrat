@@ -378,8 +378,9 @@ Usage:
                                               preview + its URL commented, closing it reaps.
                                               --release changesets when the repo owns its
                                               version (only a version move releases);
-                                              --previews on-request previews only a PR
-                                              labelled 'preview'
+                                              --previews defaults to on-request: only a PR
+                                              labelled 'preview' gets one; every-pr previews
+                                              every push to every PR
 
 'substrat push' defaults everything from the vertical's package.json — run it from inside the
 directory with no flags. Override any of: --slug, --name, --version. The slug/name come from a
@@ -1448,10 +1449,10 @@ async function cmdInit(): Promise<void> {
     console.error(`--release must be 'trunk' or 'changesets' (got '${releaseFlag}')`);
     process.exit(1);
   }
-  // `every-pr` is the file this command always wrote. `on-request` previews only a PR labelled
-  // `preview`; without the dashboard's GitHub App there is no Build preview link, so the label
-  // is added by hand.
-  const previewsFlag = flag('previews') ?? 'every-pr';
+  // `on-request` (the default) previews only a PR labelled `preview`; without the dashboard's
+  // GitHub App there is no Build preview link, so the label is added by hand. `every-pr`
+  // previews every push to every PR, each one a fork of prod's data.
+  const previewsFlag = flag('previews') ?? 'on-request';
   if (previewsFlag !== 'every-pr' && previewsFlag !== 'on-request') {
     console.error(`--previews must be 'every-pr' or 'on-request' (got '${previewsFlag}')`);
     process.exit(1);

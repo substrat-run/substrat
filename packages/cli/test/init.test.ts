@@ -57,10 +57,10 @@ describe('init --ci github', () => {
     expect(readFileSync(file, 'utf8')).toContain('name: Deploy to Substrat');
   });
 
-  it('threads --previews on-request into the file, and writes every-pr by default', () => {
-    const labelled = readFileSync(writeCiWorkflow({ ...base(), release: 'trunk', previews: 'on-request', force: true }).file, 'utf8');
+  it('writes on-request by default, and threads --previews every-pr into the file', () => {
+    const labelled = readFileSync(writeCiWorkflow({ ...base(), release: 'trunk', force: true }).file, 'utf8');
     expect(labelled).toContain('types: [opened, synchronize, reopened, labeled, closed]');
-    const every = readFileSync(writeCiWorkflow({ ...base(), release: 'trunk', force: true }).file, 'utf8');
+    const every = readFileSync(writeCiWorkflow({ ...base(), release: 'trunk', previews: 'every-pr', force: true }).file, 'utf8');
     expect(every).toContain('types: [opened, synchronize, reopened, closed]');
   });
 

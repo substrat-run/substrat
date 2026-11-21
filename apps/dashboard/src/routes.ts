@@ -2032,8 +2032,8 @@ export const dashboardRoutes = defineRoutes({
       /** The vertical's directory inside the repo (monorepo); omitted, the repo root. */
       path: z.string().min(1).max(300).optional(),
       /**
-       * Which PRs preview. Omitted: what the repo's link holds, else `every-pr` for a repo that
-       * already carried the workflow, else `on-request` for one set up for the first time.
+       * Which PRs preview. Omitted: the mode the repo's link stores explicitly, else
+       * `on-request` — also for a repo whose older workflow previews every PR.
        */
       previews: previewMode.optional(),
     }),
@@ -2047,7 +2047,7 @@ export const dashboardRoutes = defineRoutes({
   'dashboard/github-workflow-preview': {
     summary: "The deploy workflow to commit by hand, from the same generator one-click setup uses",
     // Omitted, `repo` reads `owner/app` and `branch` `main`; `path` is checked as setup-ci checks it.
-    // `previews` omitted reads `every-pr`, the file this route always rendered.
+    // `previews` omitted reads `on-request`, the generator's default.
     input: z.object({ repo: z.string().optional(), branch: z.string().optional(), path: z.string().optional(), previews: previewMode.optional() }),
     output: z.object({ workflowPath: z.string(), workflow: z.string() }),
     http: { method: 'GET', path: '/github/workflow-preview' },
@@ -2055,9 +2055,9 @@ export const dashboardRoutes = defineRoutes({
   'dashboard/github-repo-link': {
     summary: "Whether one-click setup linked a repo to this team, and the preview mode setup would commit",
     // A repo linked to another team reads as not linked: this answer names no other team.
-    // Not linked, `previews` is what setup would commit on `branch` unless told otherwise:
-    // `every-pr` when the workflow is already there, `on-request` when it is not (or no branch).
-    input: z.object({ repo: githubRepo, branch: z.string().min(1).max(200).optional(), account: z.string().min(1).optional() }),
+    // `previews` is what setup would commit unless told otherwise: the link's explicit choice,
+    // else `on-request`.
+    input: z.object({ repo: githubRepo }),
     output: z.object({ linked: z.boolean(), slug: z.string().nullable(), previews: previewMode }),
     http: { method: 'GET', path: '/github/repo-link' },
   },

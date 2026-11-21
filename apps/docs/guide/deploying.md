@@ -644,9 +644,10 @@ vertical imports when it lives in a monorepo (install only *links* a sibling; it
 what the bundle resolves), gates the push (below), and runs
 `substrat push --promote prod` — for a private vertical, merge-to-main *is* the deploy; a PR
 gets its [preview](#preview-a-pull-request) and the URL commented, and closing the PR reaps it.
-A repo set up for the first time previews **on request** — each PR's comment carries a **Build
-preview** button — and one set up before that keeps previewing every PR; the setup card's
-**Preview every PR** switches between them
+Previews are **on request** unless you tick **Preview every PR** on the setup card: each PR's
+comment carries a **Build preview** button. A workflow committed before that default keeps
+previewing every PR until you update the deployment, which commits the on-request file unless
+you tick the box
 ([which PRs get a preview](/guide/environments-and-previews#which-pull-requests-get-a-preview)). A manual copy-paste path shows the same file if you'd rather commit it yourself.
 
 ### The gate before the push

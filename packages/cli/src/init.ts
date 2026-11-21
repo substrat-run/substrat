@@ -97,7 +97,7 @@ export function detectDefaultBranch(dir: string): string {
 }
 
 /** The follow-up a generated workflow needs before its first run can authenticate. */
-export function nextStepsMessage(slug: string, release: ReleaseMode, previews: PreviewMode = 'every-pr'): string {
+export function nextStepsMessage(slug: string, release: ReleaseMode, previews: PreviewMode = 'on-request'): string {
   const lines = [
     '',
     'Next:',

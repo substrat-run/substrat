@@ -236,18 +236,19 @@ that is a snapshot of the sticky preview, not a per-build one.
 
 Hosted builds run **one at a time per vertical**: a preview build, a deploy from `main` and a
 builder-studio turn for the same vertical queue behind each other. A preview of every push to every PR
-puts every one of those builds in front of the merge that deploys prod. So the generated workflow has two
-modes:
+puts every one of those builds in front of the merge that deploys prod, and each preview forks prod's
+data, which is billed per row written. So the generated workflow has two modes:
 
 | Mode | Which PRs preview | How a PR asks |
 |---|---|---|
 | **On request** (`on-request`) | only a PR carrying the `preview` label | press **Build preview** in the PR comment, or add the label on GitHub |
 | **Every PR** (`every-pr`) | every PR, on every push | nothing to ask: opening the PR is enough |
 
-**A repo you set up in the dashboard for the first time previews on request.** A repo set up before the
-choice existed keeps previewing every PR. Change it where the repo is set up (Verticals → **Deploy from
-GitHub**, pick the repo, **Preview every PR**): updating the deployment commits the workflow again in the
-new mode. `substrat init --ci github` writes `every-pr` unless you pass `--previews on-request`.
+**Previews are on request unless you ask for every PR.** Choose where the repo is set up (Verticals →
+**Deploy from GitHub**, pick the repo, **Preview every PR**): updating the deployment commits the workflow
+again in the chosen mode. A workflow committed before on-request became the default keeps previewing every
+PR until then, and updating it without ticking the box turns that off. `substrat init --ci github` writes
+`on-request` unless you pass `--previews every-pr`.
 
 On request, it works like this:
 

@@ -58,14 +58,15 @@ export const buildPreviewTagPrefix = (prNumber: number): string => `pr-${prNumbe
 /**
  * Which PRs get a preview.
  *
- * - `every-pr` — every PR push builds one (the workflow this generator always produced).
- * - `on-request` — only a PR carrying the {@link PREVIEW_LABEL} label does. Hosted builds
- *   are serialized per vertical (#2795), so a preview of every push to every PR queues in
- *   front of the merge that deploys prod; asking for the previews somebody will open keeps
- *   that queue short. The platform's PR comment carries a Build preview link that adds the
- *   label for you.
+ * - `on-request` (the default) — only a PR carrying the {@link PREVIEW_LABEL} label does.
+ *   Hosted builds are serialized per vertical (#2795), so a preview of every push to every
+ *   PR queues in front of the merge that deploys prod, and every preview copies prod's data
+ *   into a fork, which is billed per row written. The platform's PR comment carries a Build
+ *   preview link that adds the label for you.
+ * - `every-pr` — every PR push builds one, opted into explicitly.
  *
- * Repos linked before the mode existed keep `every-pr`; a new repo link starts `on-request`.
+ * A workflow committed before the default moved keeps previewing every PR until it is
+ * regenerated; regenerating without asking for `every-pr` commits `on-request`.
  */
 export type PreviewMode = 'every-pr' | 'on-request';
 
@@ -170,8 +171,8 @@ export interface DeployWorkflowOptions {
    */
   path?: string;
   /**
-   * Which PRs get a preview ({@link PreviewMode}). Defaults to `every-pr`, the file this
-   * generator always produced; `on-request` previews only a PR labelled {@link PREVIEW_LABEL}.
+   * Which PRs get a preview ({@link PreviewMode}). Defaults to `on-request`, previewing only a
+   * PR labelled {@link PREVIEW_LABEL}; `every-pr` previews every push to every PR.
    */
   previews?: PreviewMode;
 }
@@ -245,7 +246,7 @@ const printfFormat = (body: string): string => body.replace(/\n/g, '\\n');
 export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
   const { branch, slug, cpUrl } = opts;
   const release = opts.release ?? 'trunk';
-  const onRequest = (opts.previews ?? 'every-pr') === 'on-request';
+  const onRequest = (opts.previews ?? 'on-request') === 'on-request';
   // The branch reaches the GitHub API inside a URL (the tip guard), and `#` and `&` are
   // legal in a git ref name but would truncate the query or the path there. Encoded per
   // segment, so the `/` a nested branch name needs stays a path separator

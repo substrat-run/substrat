@@ -1024,7 +1024,7 @@ export interface DashboardClient {
    *
    * `GET /github/repo-link` — `dashboard/github-repo-link`
    */
-  githubRepoLink(input: { repo: string; branch?: string; account?: string }): Promise<{ linked: boolean; slug: string | null; previews: "every-pr" | "on-request" }>;
+  githubRepoLink(input: { repo: string }): Promise<{ linked: boolean; slug: string | null; previews: "every-pr" | "on-request" }>;
 
   /**
    * The deploy workflow to commit by hand, from the same generator one-click setup uses

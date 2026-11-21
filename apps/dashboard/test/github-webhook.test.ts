@@ -111,17 +111,12 @@ describe('which PR events preview', () => {
     expect(previewActionFor('on-request', evt('closed'))).toBe('reap');
   });
 
-  it('keeps a repo that previewed every PR doing so, and starts a new one on request', () => {
-    // A choice made in the request wins over everything.
-    expect(resolvePreviewMode({ requested: 'every-pr', stored: 'on-request', workflowExisted: false })).toBe('every-pr');
-    expect(resolvePreviewMode({ requested: 'on-request', stored: 'every-pr', workflowExisted: true })).toBe('on-request');
-    // The link's mode (a link stored before the field existed arrives as every-pr).
-    expect(resolvePreviewMode({ stored: 'every-pr', workflowExisted: false })).toBe('every-pr');
-    expect(resolvePreviewMode({ stored: 'on-request', workflowExisted: true })).toBe('on-request');
-    // No link, but the workflow is already in the repo: it previews every PR today.
-    expect(resolvePreviewMode({ workflowExisted: true })).toBe('every-pr');
-    // A repo set up for the first time.
-    expect(resolvePreviewMode({ workflowExisted: false })).toBe('on-request');
+  it('commits a choice, else the link\'s explicit mode, else on request', () => {
+    expect(resolvePreviewMode({ requested: 'every-pr', stored: 'on-request' })).toBe('every-pr');
+    expect(resolvePreviewMode({ requested: 'on-request', stored: 'every-pr' })).toBe('on-request');
+    expect(resolvePreviewMode({ stored: 'every-pr' })).toBe('every-pr');
+    // No choice stored — a first setup, a hand-committed workflow, or a link older than the mode.
+    expect(resolvePreviewMode({})).toBe('on-request');
   });
 
   it('links the comment to the Build preview page, naming the team, repo and PR', () => {

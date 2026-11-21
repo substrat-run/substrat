@@ -1286,10 +1286,9 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
   const [needsPermissions, setNeedsPermissions] = useState(false);
   const [error, setError] = useState<string>();
   const [manual, setManual] = useState(false);
-  // Preview every PR, or only the PRs somebody asks to see (the default for a repo set up for
-  // the first time: hosted builds queue per vertical, so every PR's preview delays the deploy).
-  // Read from the repo's link; sent only once changed here, so a repo set up before the choice
-  // existed keeps previewing every PR unless somebody turns that off.
+  // Preview every PR, or only the PRs somebody asks to see (the default: hosted builds queue per
+  // vertical and every preview copies prod's data). Read from the repo's link, which holds an
+  // explicit choice; sent only once changed here, so a re-run keeps that choice.
   const [previews, setPreviews] = useState<PreviewMode>('on-request');
   const [previewsTouched, setPreviewsTouched] = useState(false);
   // The link read may land after the person already chose: it must not undo that choice.
@@ -1315,7 +1314,7 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
   useEffect(() => {
     let live = true;
     teamApi(teamId)
-      .githubRepoLink({ repo: repo.fullName, branch, account: repo.account })
+      .githubRepoLink({ repo: repo.fullName })
       .then((l) => {
         if (!live) return;
         setLinked(l.linked);
@@ -1326,8 +1325,7 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
     return () => {
       live = false;
     };
-    // Per branch: whether the workflow is already there (and so kept every-pr) is a fact of it.
-  }, [teamId, repo.fullName, repo.account, branch]);
+  }, [teamId, repo.fullName]);
 
   const setup = async () => {
     setBusy(true);

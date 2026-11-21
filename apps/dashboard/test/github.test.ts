@@ -239,16 +239,6 @@ describe('GitHub App client', () => {
       expect(wf.sha).toBe('abc123');
     });
 
-    it('tells a workflow function whether the file already existed, and commits what it returns', async () => {
-      // What keeps a repo that already previewed every PR doing so (resolvePreviewMode).
-      for (const existingSha of [undefined, 'abc123']) {
-        const { writes, fetchImpl } = fakeCiGithub(existingSha ? { existingSha } : {});
-        await setupRepoCi(cfgFor(fetchImpl), '987', { ...input, workflowContent: (existed) => `existed: ${existed}\n` });
-        const wf = writes[1]!.body as { content: string };
-        expect(Buffer.from(wf.content, 'base64').toString()).toBe(`existed: ${Boolean(existingSha)}\n`);
-      }
-    });
-
     const wf = (release?: 'trunk' | 'changesets') =>
       deployWorkflowYaml({ branch: 'main', slug: 'hr-portal', cpUrl: 'https://console.example/api', ...(release ? { release } : {}) });
 
@@ -419,8 +409,8 @@ describe('GitHub App client', () => {
       expect(yaml).not.toMatch(/scope bind[^\n]*\$\{\{/);
     });
 
-    it('generates PR-preview jobs that create on open/sync and reap on close', () => {
-      const yaml = wf();
+    it('generates PR-preview jobs that create on open/sync and reap on close, previewing every PR', () => {
+      const yaml = deployWorkflowYaml({ branch: 'main', slug: 'hr-portal', cpUrl: 'https://console.example/api', previews: 'every-pr' });
       // The PR trigger drives both the create and the cleanup jobs.
       expect(yaml).toContain('pull_request:');
       expect(yaml).toContain('types: [opened, synchronize, reopened, closed]');
@@ -448,9 +438,10 @@ describe('GitHub App client', () => {
 
     it('previews on request only a PR carrying the preview label, and every PR otherwise', () => {
       const base = { branch: 'main', slug: 'hr-portal', cpUrl: 'https://console.example/api' };
-      // `every-pr` is the file this generator always produced, byte for byte.
-      expect(deployWorkflowYaml({ ...base, previews: 'every-pr' })).toBe(deployWorkflowYaml(base));
-      const yaml = deployWorkflowYaml({ ...base, previews: 'on-request' });
+      // `on-request` is the default: a PR previews only when somebody asks.
+      expect(deployWorkflowYaml({ ...base, previews: 'on-request' })).toBe(deployWorkflowYaml(base));
+      expect(deployWorkflowYaml({ ...base, previews: 'every-pr' })).toContain('types: [opened, synchronize, reopened, closed]');
+      const yaml = deployWorkflowYaml(base);
       const previewJob = yaml.split('\n  preview:\n')[1]!.split('\n  preview_cleanup:\n')[0]!;
       // The label is added by an event of its own, so `labeled` has to start the workflow.
       expect(yaml).toContain('types: [opened, synchronize, reopened, labeled, closed]');
