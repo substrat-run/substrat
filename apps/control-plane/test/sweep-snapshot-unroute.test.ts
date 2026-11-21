@@ -235,7 +235,7 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     expect(await host.admin.resolveHostname(hostname)).toBeUndefined();
   });
 
-  it('a fork pinned after the sweep listed it is refused before the unroute, and a pin cannot land once a reap holds it (#3314)', async () => {
+  it('a fork pinned after the sweep listed it is refused before the unroute, and keeps its route and its pin (#3314)', async () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
     const { t, fork, hostname } = await routedFork(host);
     // The sweep listed it expired; staff pin it before the reap gets to it.
