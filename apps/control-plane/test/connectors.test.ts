@@ -5,6 +5,7 @@ import { SCRIVE_CALLBACK_ROUTE, SCRIVE_CONNECTION_GRANTS } from '@substrat-run/c
 import { FORTNOX_CONNECTION_GRANTS } from '@substrat-run/connector-fortnox';
 import { PLANIMA_CONNECTION_GRANTS } from '@substrat-run/connector-planima';
 import { WOOCOMMERCE_CONNECTION_GRANTS } from '@substrat-run/connector-woocommerce';
+import { SHOPIFY_CONNECTION_GRANTS } from '@substrat-run/connector-shopify';
 import { STRIPE_CALLBACK_ROUTE, STRIPE_CONNECTION_GRANTS } from '@substrat-run/connector-stripe';
 import {
   CONNECTORS,
@@ -36,11 +37,12 @@ describe('connector registry', () => {
     expect(providers).toContain('fortnox');
     expect(providers).toContain('planima');
     expect(providers).toContain('woocommerce');
+    expect(providers).toContain('shopify');
     expect(providers).toContain('stripe');
     expect(Object.keys(connectionInspectorsFor(ENV)).sort()).toEqual([...providers].sort());
     expect(Object.keys(connectorSweepersFor(ENV)).sort()).toEqual([...providers].sort());
     expect(Object.keys(connectorGrantsFor()).sort()).toEqual([...providers].sort());
-    expect(connectorSweepEveryMinutesFor()).toEqual({ planima: 120, woocommerce: 15 });
+    expect(connectorSweepEveryMinutesFor()).toEqual({ planima: 120, woocommerce: 15, shopify: 15 });
     // A provider that is not registered is absent everywhere — the inspection route
     // 501s honestly rather than the plane pretending it operates it.
     expect(connectionInspectorsFor(ENV)['docusign']).toBeUndefined();
@@ -103,6 +105,7 @@ describe('connector registry', () => {
     expect(connectorGrantsFor()['fortnox']).toBe(FORTNOX_CONNECTION_GRANTS);
     expect(connectorGrantsFor()['planima']).toBe(PLANIMA_CONNECTION_GRANTS);
     expect(connectorGrantsFor()['woocommerce']).toBe(WOOCOMMERCE_CONNECTION_GRANTS);
+    expect(connectorGrantsFor()['shopify']).toBe(SHOPIFY_CONNECTION_GRANTS);
     expect(connectorGrantsFor()['stripe']).toBe(STRIPE_CONNECTION_GRANTS);
   });
 
@@ -236,7 +239,7 @@ describe('connector registry', () => {
 it('registered poll binding doors preserve the vertical landing configuration', async () => {
   const id = connectionId.parse('01JZ0000000000000000000001');
   const target = { tenantId: '01JZ0000000000000000000002', scopeId: '01JZ0000000000000000000003', vertical: 'acme-crm' };
-  for (const [provider, operation, permission] of [['planima', 'maintenance/record-plan', 'plan:record'], ['fortnox', 'ledger/record-period', 'ledger:record'], ['woocommerce', 'shop/record-commerce', 'commerce:record'], ['stripe', 'shop/record-payment', 'payment:record'], ['bolagsverket', 'crm/record-organisation-lookup', 'organisation:record']] as const) {
+  for (const [provider, operation, permission] of [['planima', 'maintenance/record-plan', 'plan:record'], ['fortnox', 'ledger/record-period', 'ledger:record'], ['woocommerce', 'shop/record-commerce', 'commerce:record'], ['shopify', 'shop/record-commerce', 'commerce:record'], ['stripe', 'shop/record-payment', 'payment:record'], ['bolagsverket', 'crm/record-organisation-lookup', 'organisation:record']] as const) {
     const records = new Map<string, unknown>();
     const host = {
       connectionGrantsInScope: async () => [{ connectionId: id, permission: permissionKey.parse(permission) }],
@@ -250,8 +253,8 @@ it('registered poll binding doors preserve the vertical landing configuration', 
     const binding = await inspector.bindScope!(host, row, { ...target, operation: operation!, permission: permission!, ...(provider === 'planima' ? { organizationId: null, currency: 'SEK', window: null, horizonYears: 50 } : {}) });
     expect(binding).toMatchObject({ ...target, operation, permission });
     if (provider === 'planima') expect(binding).toMatchObject({ organizationId: null, currency: 'SEK', window: null, horizonYears: 50 });
-    // WooCommerce lists each binding with its health (#3241): a binding not yet synced has none to report.
-    const health = provider === 'woocommerce' ? { health: { caughtUp: null, stalled: [], skipped: [], skippedTotal: 0 } } : {};
+    // WooCommerce and Shopify list each binding with its health (#3241): one not yet synced has none to report.
+    const health = provider === 'woocommerce' || provider === 'shopify' ? { health: { caughtUp: null, stalled: [], skipped: [], skippedTotal: 0 } } : {};
     expect(await inspector.bindings!(host, row)).toEqual([{ ...binding, ...health }]);
     expect(records.size).toBe(1);
   }
@@ -262,7 +265,7 @@ describe('connection binders (#2316)', () => {
   it('binds from a declaration only for a provider whose inspector binds, with the door\'s options (#2316)', () => {
     const binders = connectionBindersFor(ENV);
     // Scrive is dispatched, not polled: nothing to bind, so a declaration for it binds nothing.
-    expect(Object.keys(binders).sort()).toEqual(['bolagsverket', 'fortnox', 'microsoft365', 'planima', 'stripe', 'woocommerce']);
+    expect(Object.keys(binders).sort()).toEqual(['bolagsverket', 'fortnox', 'microsoft365', 'planima', 'shopify', 'stripe', 'woocommerce']);
     expect(binders['stripe']!.bindBeforeGrant).toBeTypeOf('function');
     expect(binders['bolagsverket']!.bindBeforeGrant).toBeTypeOf('function');
     // A lookup's binding names its operation and permission, and takes no options.
@@ -270,6 +273,8 @@ describe('connection binders (#2316)', () => {
     expect(binders['woocommerce']!.bindBeforeGrant).toBeTypeOf('function');
     // No options: a WooCommerce binding names its operation and permission, and nothing else.
     expect(() => binders['woocommerce']!.options!({ window: null })).toThrow();
+    expect(binders['shopify']!.bindBeforeGrant).toBeTypeOf('function');
+    expect(() => binders['shopify']!.options!({ window: null })).toThrow();
     expect(binders['planima']!.options!({ organizationId: null, horizonYears: 50 })).toEqual({ organizationId: null, horizonYears: 50 });
     // The staff door's schema, strict: a typo'd option is refused rather than bound with a default.
     expect(() => binders['planima']!.options!({ horizonYear: 50 })).toThrow();
@@ -277,11 +282,11 @@ describe('connection binders (#2316)', () => {
     expect(binders['fortnox']!.options!(undefined)).toEqual({});
   });
 
-  it("lets a scope own its WooCommerce shop, and binds it with its store and its owner (#3219, #3201)", async () => {
-    expect(scopeOwnable('woocommerce')).toBe(true);
+  it.each(['woocommerce', 'shopify'])("lets a scope own its %s shop, and binds it with its store and its owner (#3219, #3201)", async (provider) => {
+    expect(scopeOwnable(provider)).toBe(true);
     expect(scopeOwnable('stripe')).toBe(false);
     const inspectors = connectionInspectorsFor(ENV);
-    expect(inspectors['woocommerce']).toMatchObject({ scopeOwned: true, accountFromProbe: true });
+    expect(inspectors[provider]).toMatchObject({ scopeOwned: true, accountFromProbe: true });
     expect(inspectors['stripe']!.scopeOwned).toBeUndefined();
     const written: unknown[] = [];
     const host = { admin: { putConnectorState: async (_id: unknown, _key: string, value: unknown) => void written.push(value) } } as unknown as ScopeHost;
@@ -290,11 +295,11 @@ describe('connection binders (#2316)', () => {
       NonNullable<ReturnType<typeof connectionBindersFor>[string]['bindBeforeGrant']>
     >[1];
     const target = { tenantId: tenantId.parse(ulid()), scopeId: owner, vertical: 'stores', operation: 'stores/record', permission: 'commerce:record' };
-    await connectionBindersFor(ENV)['woocommerce']!.bindBeforeGrant!(host, row, target);
+    await connectionBindersFor(ENV)[provider]!.bindBeforeGrant!(host, row, target);
     expect(written).toEqual([expect.objectContaining({ scopeId: owner, externalAccountRef: 'shop.example.com', ownerScopeId: owner })]);
     // A scope's own shop is bound to that scope alone.
     await expect(
-      connectionBindersFor(ENV)['woocommerce']!.bindBeforeGrant!(host, row, { ...target, scopeId: scopeId.parse(ulid()) }),
+      connectionBindersFor(ENV)[provider]!.bindBeforeGrant!(host, row, { ...target, scopeId: scopeId.parse(ulid()) }),
     ).rejects.toThrow(/lands in that scope alone/);
   });
 

@@ -324,6 +324,9 @@ importers:
       '@substrat-run/connector-scrive':
         specifier: workspace:^
         version: link:../../connectors/scrive
+      '@substrat-run/connector-shopify':
+        specifier: workspace:^
+        version: link:../../connectors/shopify
       '@substrat-run/connector-stripe':
         specifier: workspace:^
         version: link:../../connectors/stripe
