@@ -141,14 +141,18 @@ export async function chooseScopeConnection(
       throw refused(err);
     }
   }
-  const held = await host.connectionGrantsInScope(scope.tenantId, scope.id);
-  if (!held.some((g) => g.connectionId === connection.id && g.permission === landing.permission)) {
-    try {
+  // A binding this call added, and only that: one the install already held stays as it was.
+  const addedHere = needsBind && !current;
+  // The grant read is inside the rollback too: a staged binding with no key behind it would still
+  // count as bound, and the install's checkout would be refused for two.
+  try {
+    const held = await host.connectionGrantsInScope(scope.tenantId, scope.id);
+    if (!held.some((g) => g.connectionId === connection.id && g.permission === landing.permission)) {
       await host.admin.grantToConnection(actor, { connectionId: connection.id, permission: landing.permission, node, grantedBy: actor });
-    } catch (err) {
-      if (needsBind && binder.bindBeforeGrant && !current) await binder.unbind(host, connection, scope.id);
-      throw new ConnectionRelayError(`the landing key '${landing.permission}' cannot be granted to this connection: ${said(err)}`, 409);
     }
+  } catch (err) {
+    if (addedHere && binder.bindBeforeGrant) await binder.unbind(host, connection, scope.id);
+    throw new ConnectionRelayError(`the landing key '${landing.permission}' cannot be granted to this connection: ${said(err)}`, 409);
   }
   if (needsBind && !binder.bindBeforeGrant) {
     try {
@@ -174,11 +178,28 @@ export async function chooseScopeConnection(
         ...(input.chosenBy ? { revokedBy: input.chosenBy } : {}),
       });
     } catch (err) {
-      if (err instanceof ConnectorRevokeUnsupported) throw new ConnectionRelayError(err.message, 503);
+      if (err instanceof ConnectorRevokeUnsupported) {
+        // The deployment cannot take the old key back, so the move cannot finish. Nothing taken off
+        // yet, unless this is a later connection: put the install back on what it had by dropping the
+        // binding this call added, so its checkouts keep their account instead of finding two.
+        if (unbound.length === 0 && addedHere) await binder.unbind(host, connection, scope.id);
+        throw new ConnectionRelayError(err.message, 503);
+      }
       throw err;
     }
     await binder.unbind(host, other, scope.id);
     unbound.push(other.id);
   }
-  return { provider: input.provider, scopeId: scope.id, chosen: connection.id, bound: [connection.id], unbound };
+  // Two choices for one install can interleave (the plane holds no lock across these writes), and
+  // each takes the other's connection off. Success is answered only when the install is left on the
+  // chosen connection alone; otherwise the tenant is told to look again and choose.
+  const after = await exclusiveLandingsOf(host, actor, options.landings, { tenantId: scope.tenantId, vertical: scope.vertical, provider: input.provider });
+  const bound = [...(after.bound.get(scope.id) ?? [])].sort();
+  if (bound.length !== 1 || bound[0] !== connection.id) {
+    throw new ConnectionRelayError(
+      `another change to this install's ${input.provider} account ran at the same time; it is now bound to ${bound.length === 0 ? 'none' : bound.join(', ')}, so choose again`,
+      409,
+    );
+  }
+  return { provider: input.provider, scopeId: scope.id, chosen: connection.id, bound, unbound };
 }

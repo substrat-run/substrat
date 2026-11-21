@@ -73,7 +73,7 @@ if (CONNECTORS.length === 0) {
 }
 
 type Catalog = Record<string, { grants?: readonly string[]; sendsMail?: true; accountRefField?: string; accountFromProbe?: true; takesPayments?: true } | undefined>;
-type Connector = Pick<(typeof CONNECTORS)[number], 'provider' | 'grants' | 'mail' | 'inspector' | 'minted'>;
+type Connector = Pick<(typeof CONNECTORS)[number], 'provider' | 'grants' | 'mail' | 'inspector' | 'minted' | 'checkout'>;
 type EngineModule = { manifest: { id: string; permissions: readonly { key: string; description: string; holder?: 'system' }[] } };
 
 /**

@@ -293,6 +293,15 @@ export class LandingPass {
         // Providers may refuse a kind change even when the declaration omits its default kind.
         const bindingOptions = binder.options ? binder.options(landing.options, current) : {};
         const needsBind = !current || !sameLanding(current, landing.operation, landing.permission, bindingOptions) || !!binder.stale?.(current, connection);
+        // #3221: the pass's snapshot may predate a tenant's choice. Before an exclusive provider binds,
+        // its bindings are read again: if the install is now held by another connection, or this one's
+        // binding was taken off since the snapshot, the choice stands and this connection is passed over.
+        if (exclusive && needsBind) {
+          const now = await exclusiveLandingsOf(this.host, this.actor, this.input, connection);
+          const holders = now.bound.get(scopeId);
+          const mine = exclusive.bound.get(scopeId)?.has(connection.id) === true;
+          if (holders && holders.size > 0 ? !holders.has(connection.id) : mine || now.first !== connection.id) continue;
+        }
         const operationId = ulid();
         const audit = {
           tenantId: connection.tenantId,

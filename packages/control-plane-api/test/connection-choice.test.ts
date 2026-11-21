@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { runPlatformSweep, ulid, webCryptoSecretBox, type ConnectionBinder } from '@substrat-run/kernel';
+import { ConnectorRevokeUnsupported, runPlatformSweep, ulid, webCryptoSecretBox, type ConnectionBinder, type ScopeHost } from '@substrat-run/kernel';
 import { connectionId, permissionKey, platformActorId, principalId, scopeId, tenantId, type ConnectionId, type ScopeId } from '@substrat-run/contracts';
 import { bindPlanimaScope, listPlanimaBindings, unbindPlanimaScope } from '@substrat-run/connector-planima';
 import {
@@ -36,6 +36,9 @@ describe('choosing the connection an install lands through (#3221)', () => {
   const binder = (exclusive = true): ConnectionBinder => ({
     list: (h, row) => listPlanimaBindings(h, row.id),
     bind: (h, row, target) => bindPlanimaScope(h, { ...(target as Parameters<typeof bindPlanimaScope>[1]), connectionId: row.id }),
+    // Staged before the grant, as the control plane binds a payment provider.
+    bindBeforeGrant: (h, row, target) =>
+      bindPlanimaScope(h, { ...(target as Parameters<typeof bindPlanimaScope>[1]), connectionId: row.id, grantPreflighted: true }),
     options: (raw, current) => {
       const schema = connectionBindingOptions('planima');
       return schema.parse({ ...(current ? schema.strip().parse(current) : {}), ...(raw ?? {}) });
@@ -160,6 +163,37 @@ describe('choosing the connection an install lands through (#3221)', () => {
     expect(await read()).toEqual({ provider: 'planima', scopeId: b, chosen: first, bound: [first] });
     // Choosing again changes nothing.
     expect(await choose(b, first)).toMatchObject({ chosen: first, unbound: [] });
+  });
+
+  it('leaves an install on its one account when the move cannot finish: the key cannot be read, or the old key taken back', async () => {
+    const first = await connect('acct_first');
+    await pass();
+    const second = await connect('acct_second');
+    // The host the door runs against, with one of its reads or writes failing.
+    const failing = (fault: 'grants' | 'revoke'): ScopeHost =>
+      new Proxy(host, {
+        get(target, key) {
+          if (fault === 'grants' && key === 'connectionGrantsInScope') return async () => { throw new Error('directory unavailable'); };
+          if (fault === 'revoke' && key === 'admin') {
+            return new Proxy(target.admin, {
+              get(admin, k) {
+                if (k === 'revokeFromConnection') return async () => { throw new ConnectorRevokeUnsupported(SLUG); };
+                const v = Reflect.get(admin, k) as unknown;
+                return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(admin) : v;
+              },
+            });
+          }
+          const v = Reflect.get(target, key) as unknown;
+          return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+        },
+      }) as ScopeHost;
+    const chooseOn = (h: ScopeHost) =>
+      chooseScopeConnection(h, actor, { tenantId: t, scopeId: a, provider: 'planima', connectionId: second, chosenBy: person }, { landings: landings() });
+
+    for (const [fault, status] of [['grants', 409], ['revoke', 503]] as const) {
+      expect(await refusal(chooseOn(failing(fault))), fault).toBe(status);
+      expect(await boundTo(first, second), fault).toEqual({ [a]: [first], [b]: [first] });
+    }
   });
 
   it('refuses a provider that binds every connection, an unknown or revoked connection, an archived install and an on-request landing', async () => {
