@@ -2,14 +2,14 @@ import { env, runInDurableObject } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MockLanguageModelV3, simulateReadableStream } from 'ai/test';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { mulDecimal, platformActorId, tenantId, type EntitlementGrant, type TenantId } from '@substrat-run/contracts';
+import { marginFactor, mulDecimal, platformActorId, tenantId, type EntitlementGrant, type TenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { createModelHost } from '@substrat-run/vertical-host/model';
 import { walkReviewArchive } from '../src/review-archive.js';
 import { diffReview, type ChangedFile } from '../src/review-diff.js';
 import { lineChanges } from '../src/review-lines.js';
 import {
-  REVIEW_LIST_MAX, REVIEW_MAX_ATTEMPTS, REVIEW_MAX_OUTPUT_TOKENS, REVIEW_RETRY_DELAYS_MS, REVIEW_WRITE_EXPIRY_MARGIN_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MAX_MS, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, reviewOnce, runReviewJob, transientModelError,
+  REVIEW_DEFAULT_MARGIN_PERCENT, REVIEW_LIST_MAX, REVIEW_MAX_ATTEMPTS, REVIEW_MAX_OUTPUT_TOKENS, REVIEW_RETRY_DELAYS_MS, REVIEW_WRITE_EXPIRY_MARGIN_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MAX_MS, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, reviewOnce, runReviewJob, transientModelError,
   type ReviewConfig, type ReviewJobDeps,
 } from '../src/review-job.js';
 import { assemble, parseReply, redact, reviewPrompt, reviewSystem } from '../src/review-reader.js';
@@ -405,7 +405,7 @@ describe('the spend limit (Q1c, decided 2026-11-16)', () => {
 
     const second = await builderReview(tenant);
     await runReviewJob(second.id, 0, deps(model, limit));
-    const spent = mulDecimal(line!.listUsd!, '1.2');
+    const spent = mulDecimal(line!.listUsd!, marginFactor(REVIEW_DEFAULT_MARGIN_PERCENT));
     expect(await readReview(bucket, second.actor, second.id)).toMatchObject({
       state: 'skipped',
       reason: `spend limit reached: ${usdLabel(spent)} of $0.000001 for ${new Date().toISOString().slice(0, 10)} (UTC day)`,

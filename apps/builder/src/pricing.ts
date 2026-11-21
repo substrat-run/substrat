@@ -13,23 +13,29 @@ import {
 	type RateTier,
 	type StepTokens,
 } from '@substrat-run/model-providers';
-import { mulDecimal } from '@substrat-run/contracts';
+import { marginFactor, mulDecimal } from '@substrat-run/contracts';
 
 export { normalizeModelSpec, rateFor, type ModelRate, type RateTier, type StepTokens };
 
-export const MARKUP_PERCENT = 20;
-const MARKUP_FACTOR = '1.2';
+/**
+ * The markup on model tokens, in whole percent of the provider's list price: 30%, set by the
+ * owner on 2026-11-21 (#3316), the same rate the platform's model ledger bills vertical calls at
+ * (`DEFAULT_MODEL_MARGIN_PERCENT`). Until #3316's markup schedule exists this is the one rate for
+ * every team; the schedule replaces it with a default plus per-tenant overrides, which is why
+ * `withMarkup` takes the percent. The factor is contracts' `marginFactor`, the ledger's own.
+ */
+export const MARKUP_PERCENT = 30;
 
 export interface UsageCost {
 	/** Provider list price, USD decimal string. */
 	listUsd: string;
-	/** What the studio charges: list × 1.2 (MARKUP_PERCENT). */
+	/** What the studio charges: list plus the markup (MARKUP_PERCENT). */
 	billedUsd: string;
 }
 
 /** List → billed. For pricing ledger-recorded list costs at read time. */
-export function withMarkup(listUsd: string): string {
-	return mulDecimal(listUsd, MARKUP_FACTOR);
+export function withMarkup(listUsd: string, percent: number = MARKUP_PERCENT): string {
+	return mulDecimal(listUsd, marginFactor(percent));
 }
 
 /** Price a turn from its per-request steps. Null when the model is unpriced — never guessed. */

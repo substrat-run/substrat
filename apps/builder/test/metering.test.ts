@@ -105,13 +105,13 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 				cacheRead: 800_000,
 				cacheWrite: 0,
 				listUsd: '0.68',
-				billedUsd: '0.816',
+				billedUsd: '0.884',
 			},
 		]);
 		expect(report.byProject).toEqual([
 			{ projectId: 'proj-1', input: 1_000_000, output: 100_000, turns: 1 },
 		]);
-		expect(report.cost).toEqual({ listUsd: '0.68', billedUsd: '0.816', unpricedTokens: 0 });
+		expect(report.cost).toEqual({ listUsd: '0.68', billedUsd: '0.884', unpricedTokens: 0 });
 	});
 
 	describe('the team\'s bill (reportTurnUsage → the control plane\'s ledger)', () => {
@@ -179,7 +179,7 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 
 		const report = await metering.studioUsage(env);
 		expect(report.totals).toEqual({ input: 1_000_000, output: 100_000 });
-		expect(report.byModel[0]).toMatchObject({ listUsd: '1.4', billedUsd: '1.68' });
+		expect(report.byModel[0]).toMatchObject({ listUsd: '1.4', billedUsd: '1.82' });
 		expect(report.byProject[0]?.turns).toBe(1);
 	});
 
@@ -194,7 +194,7 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 			input: 2_000_000,
 			output: 100_000,
 			listUsd: '2.4',
-			billedUsd: '2.88',
+			billedUsd: '3.12',
 		});
 		expect(report.cost.unpricedTokens).toBe(0);
 	});
@@ -223,7 +223,7 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 			input: 2_040_000,
 			output: 102_000,
 			listUsd: '0.013',
-			billedUsd: '0.0156',
+			billedUsd: '0.0169',
 		});
 	});
 

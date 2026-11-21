@@ -57,6 +57,7 @@ import { devStatus, startDev, stopDev } from './devserver.js';
 import { loadEnvFiles } from './env.js';
 import { openReferences } from './reference.js';
 import { providerCatalog } from './hosting.js';
+import { MARKUP_PERCENT } from './pricing.js';
 import {
 	loadRegistry,
 	loadState,
@@ -570,7 +571,7 @@ const server = createServer((req, res) => {
 					byProject: [],
 					byModel: [],
 					cost: { listUsd: '0', billedUsd: '0', unpricedTokens: 0 },
-					markupPercent: 20,
+					markupPercent: MARKUP_PERCENT,
 					windowDays: 30,
 					generatedAt: new Date().toISOString(),
 				});

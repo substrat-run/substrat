@@ -1711,7 +1711,12 @@ const modelUsageSummaryQuery = z.object({
   until: z.string().optional(),
 });
 
-export const DEFAULT_MODEL_MARGIN_PERCENT = 20;
+/**
+ * The margin over list price on platform-provided model calls, whole percent, when the plane sets
+ * no `MODEL_MARGIN_PERCENT`: 30%, the owner's rate for model tokens (2026-11-21, #3316). Per-tenant
+ * rates are #3316's markup schedule; until it exists this is the one rate.
+ */
+export const DEFAULT_MODEL_MARGIN_PERCENT = 30;
 /**
  * The most review lines one tenant's metered-usage read folds. A tenant's reviews are capped far
  * below it at intake (50 kept in 30 days), so reaching it marks the figure a lower bound.
