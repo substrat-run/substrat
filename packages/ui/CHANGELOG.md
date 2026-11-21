@@ -1,5 +1,12 @@
 # @substrat-run/ui
 
+## 0.4.5
+
+### Patch Changes
+
+- Updated dependencies [7e681ed]
+  - @substrat-run/elements@0.9.0
+
 ## 0.4.4
 
 ### Patch Changes

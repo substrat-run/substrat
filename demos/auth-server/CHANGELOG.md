@@ -1,5 +1,24 @@
 # @substrat-run/demo-auth-server
 
+## 0.19.0
+
+### Minor Changes
+
+- 5608227: An Auth Server can now require a verified email address before a password signs anyone in: the new `REQUIRE_EMAIL_VERIFICATION` setting, a switch on the Username-Password connection's Settings tab, off by default. With it on, a new account is signed in by the link in its verification mail, and that link carries someone an application sent here back to that application. An unverified person who signs in with the right password is told to check their inbox and sent a fresh link.
+
+### Patch Changes
+
+- 3b8ba29: Platform sign-in can no longer leave an Auth Server holding a relay secret the relay has rotated away: overlapping reconciles take turns to hand out a secret, each secret carries a generation the install checks, and an install holding a dead one gets a fresh one on its next reconcile.
+- Updated dependencies [dccd345]
+- Updated dependencies [d7a79e5]
+- Updated dependencies [af44e9e]
+- Updated dependencies [3b8ba29]
+- Updated dependencies [b83cf97]
+- Updated dependencies [95a6184]
+  - @substrat-run/contracts@0.205.0
+  - @substrat-run/kernel@0.205.0
+  - @substrat-run/vertical-host@0.205.0
+
 ## 0.18.12
 
 ### Patch Changes

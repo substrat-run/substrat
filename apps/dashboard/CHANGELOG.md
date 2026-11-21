@@ -1,5 +1,31 @@
 # @substrat-run/dashboard
 
+## 0.49.23
+
+### Patch Changes
+
+- 16e5aa1: The dashboard works on a phone. Below 768px the sidebar is a drawer behind a menu button, the top bar shows only the current page, and tables stack into cards. Detail pages with two panels stack below 1200px. Pulse keeps its columns aligned and scrolls sideways.
+- d7a79e5: Pull request previews are on request by default. Each preview forks prod's data, which is billed per row written, so previewing every push to every PR is now something a repo asks for. The generated deploy workflow defaults to `previews: 'on-request'`, and `substrat init --ci github` writes it unless you pass `--previews every-pr`. In the dashboard, setting up a repo commits the on-request workflow unless Preview every PR is ticked. That now includes a repo whose workflow was already committed, and one linked before the choice existed. Only a repo where somebody chose every PR on an earlier run keeps it. A workflow already committed keeps previewing every PR until its deployment is updated.
+- af44e9e: Pull request previews can be opt-in. The generated deploy workflow takes `previews: 'on-request'`, which previews only a PR labelled `preview`, and contracts adds the "No preview yet" comment it pairs with. `substrat init --ci github --previews on-request` writes it. In the dashboard, a repo set up for the first time previews on request: each new PR's comment links to a Build preview page that labels the PR through the GitHub App. Two kinds of repo keep previewing every PR: one linked before this change, and one whose deploy workflow was already committed when it is set up (by hand, or before repo links existed). The setup card's Preview every PR switches between the two.
+- dccd345: A Shopify shop can be connected from the dashboard with its myshopify.com address and the client ID and secret of a Dev Dashboard app installed on it. Its products and orders land in your app every quarter of an hour as `commerceChange` records, the same shape WooCommerce's land in, so one operation takes either store. Test connection names the shop, and says whether its orders reach back further than 60 days and whether they name the customer account. Read-only, and not yet verified against a real shop.
+- b83cf97: Subject access (D-74), the door: `POST /tenants/:t/scopes/:s/subjects/:id/access` returns one person's package (their events and records, other people masked, recipients marked not available) with an HTML page, and records a `subjectAccess` admin row holding counts and the request's reference. A team's owner or admin runs it from a new Personal data section of the app's Data tab, behind `dashboard:subject-access`, and Audit shows it under their name.
+- Updated dependencies [dccd345]
+- Updated dependencies [d7a79e5]
+- Updated dependencies [af44e9e]
+- Updated dependencies [3b8ba29]
+- Updated dependencies [b83cf97]
+- Updated dependencies [95a6184]
+  - @substrat-run/contracts@0.205.0
+  - @substrat-run/control-plane-api@0.205.0
+  - @substrat-run/kernel@0.205.0
+  - @substrat-run/adapter-cloudflare@0.205.0
+  - @substrat-run/vertical-host@0.205.0
+  - @substrat-run/engine-invites@0.9.82
+  - @substrat-run/engine-protocol@0.14.5
+  - @substrat-run/connector-fortnox@0.8.3
+  - @substrat-run/control-plane-client@0.9.5
+  - @substrat-run/model-providers@0.5.95
+
 ## 0.49.22
 
 ### Patch Changes

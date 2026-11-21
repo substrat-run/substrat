@@ -1,5 +1,24 @@
 # @substrat-run/control-plane-api
 
+## 0.205.0
+
+### Minor Changes
+
+- b83cf97: Subject access (D-74), the door: `POST /tenants/:t/scopes/:s/subjects/:id/access` returns one person's package (their events and records, other people masked, recipients marked not available) with an HTML page, and records a `subjectAccess` admin row holding counts and the request's reference. A team's owner or admin runs it from a new Personal data section of the app's Data tab, behind `dashboard:subject-access`, and Audit shows it under their name.
+
+### Patch Changes
+
+- 3b8ba29: Platform sign-in can no longer leave an Auth Server holding a relay secret the relay has rotated away: overlapping reconciles take turns to hand out a secret, each secret carries a generation the install checks, and an install holding a dead one gets a fresh one on its next reconcile.
+- Updated dependencies [dccd345]
+- Updated dependencies [d7a79e5]
+- Updated dependencies [af44e9e]
+- Updated dependencies [3b8ba29]
+- Updated dependencies [b83cf97]
+- Updated dependencies [95a6184]
+  - @substrat-run/contracts@0.205.0
+  - @substrat-run/kernel@0.205.0
+  - @substrat-run/control-plane-client@0.9.5
+
 ## 0.204.0
 
 ### Patch Changes

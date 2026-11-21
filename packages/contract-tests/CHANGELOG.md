@@ -1,5 +1,24 @@
 # @substrat-run/contract-tests
 
+## 0.205.0
+
+### Minor Changes
+
+- dccd345: contract-tests: `commerceSourceSuite`, the behaviour every commerce-source connector shares, now exported; a product sold without variants is checked as one untitled variant, whatever id the store gives it.
+  contracts: the commerce-source vocabulary's notes name Shopify beside WooCommerce, and say a single variant's id is the store's to give.
+- 95a6184: Subject access (D-74), the read: `HostAdmin.readSubject` pages what a scope holds about one data subject, every event keyed to them and the rows of each declared entity, matched by the predicate erasure uses. A partial `subject_id` index serves it and erasure, and `subjectAccessContractSuite` holds the read to the shred's counts on every adapter.
+
+### Patch Changes
+
+- Updated dependencies [dccd345]
+- Updated dependencies [d7a79e5]
+- Updated dependencies [af44e9e]
+- Updated dependencies [3b8ba29]
+- Updated dependencies [b83cf97]
+- Updated dependencies [95a6184]
+  - @substrat-run/contracts@0.205.0
+  - @substrat-run/kernel@0.205.0
+
 ## 0.204.0
 
 ### Patch Changes

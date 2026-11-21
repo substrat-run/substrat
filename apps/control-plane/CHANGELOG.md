@@ -1,5 +1,32 @@
 # @substrat-run/control-plane
 
+## 0.19.7
+
+### Patch Changes
+
+- dccd345: A Shopify shop can be connected from the dashboard with its myshopify.com address and the client ID and secret of a Dev Dashboard app installed on it. Its products and orders land in your app every quarter of an hour as `commerceChange` records, the same shape WooCommerce's land in, so one operation takes either store. Test connection names the shop, and says whether its orders reach back further than 60 days and whether they name the customer account. Read-only, and not yet verified against a real shop.
+- Updated dependencies [dccd345]
+- Updated dependencies [d7a79e5]
+- Updated dependencies [af44e9e]
+- Updated dependencies [3b8ba29]
+- Updated dependencies [b83cf97]
+- Updated dependencies [95a6184]
+  - @substrat-run/contracts@0.205.0
+  - @substrat-run/control-plane-api@0.205.0
+  - @substrat-run/kernel@0.205.0
+  - @substrat-run/adapter-cloudflare@0.205.0
+  - @substrat-run/vertical-host@0.205.0
+  - @substrat-run/connector-mail-in@0.1.42
+  - @substrat-run/connector-microsoft365@0.0.66
+  - @substrat-run/connector-shopify@0.0.1
+  - @substrat-run/connector-woocommerce@0.0.11
+  - @substrat-run/connector-bolagsverket@0.1.1
+  - @substrat-run/connector-fortnox@0.8.3
+  - @substrat-run/connector-planima@0.2.102
+  - @substrat-run/connector-scrive@0.15.7
+  - @substrat-run/connector-stripe@0.0.7
+  - @substrat-run/model-providers@0.5.95
+
 ## 0.19.6
 
 ### Patch Changes
