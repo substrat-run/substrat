@@ -131,19 +131,36 @@ been asked to charge — is about that account and mode, and is meaningless to a
   checkouts, and the guard against charging a `reference` twice.
 - **A key for another account, or for the other mode, becomes a second connection**, and the
   first is left as it is. The dashboard lists each Stripe connection with the account and mode it
-  is for. With the landing above, the platform binds the new connection on every install too, and
-  a scope bound to two Stripe connections is refused a checkout (`409`) until one is disconnected:
-  which account takes the money is never guessed. So an app takes payments through **one Stripe
-  account at a time**; two connected is a step on the way from one to the other. Choosing a
-  different account for different installs of one app is not something your app or the dashboard
-  can do yet.
+  is for.
+
+### Which account an app is paid into
+
+Each install of your app takes payments through **one** Stripe connection: which account takes the
+money is never guessed. The first account you connect is the one every install uses. An account you
+connect after it is used by no install until you choose it: on the app's **Settings → Integrations**
+tab, press **Use for checkouts** beside it. That install's checkouts then go through it, and the
+account it used before comes off that install. Every other install keeps its own account, so two
+installs of one app can be paid into two accounts. The platform keeps your choice; nothing it does
+later moves an install back.
+
+**Switch only once the install has no open or settling checkout on the account it leaves.** An
+outcome lands through the install's binding to the account the checkout was opened on, and that
+binding goes with the switch. A checkout still open there is not lost (the platform keeps reading
+it), but nothing it reaches lands in your app, a `paid` included, until you choose that account for
+the install again. The connection's activity lists the open and settling checkouts.
+
+An install bound to two accounts by an earlier version of the platform is refused checkouts (`409`)
+until you choose one of them on that tab, which says so.
 
 A connection made before Stripe connections were told apart by account (before mid-November 2026)
 holds no account. A key for another account or mode is **refused** there, and nothing is stored;
 disconnect it first, and the next key you connect is kept per account.
 
-To move to another account, or **to go live from a test key**, connect the new key, then disconnect
-the old connection; checkouts are refused between the two. Before you disconnect it:
+To move an install to another account, or **to go live from a test key**, connect the new key and
+choose it for each install. Disconnecting the old connection is then optional; an install whose
+connection you disconnect without choosing another is given the oldest Stripe connection still
+working, and is refused checkouts only until that happens on the platform's next pass. Before you
+move away from an account:
 
 - **Let open checkouts finish.** Once disconnected, the platform stops reading the old account,
   so a payment made there after that never lands in your app. Check the app's open and settling

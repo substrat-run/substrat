@@ -382,6 +382,8 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
       'POST /apps/{scopeId}/update dashboard/update-installed-app',
       'PUT /apps/{scopeId}/auth dashboard/set-app-auth',
       'PUT /apps/{scopeId}/env dashboard/set-app-env',
+      // #3221: an app's payment account; its gate and attribution are held in choose-connection-door.test.ts.
+      'PUT /apps/{scopeId}/integrations/{provider}/connections/{connectionId}/chosen dashboard/choose-app-connection',
       'PUT /apps/{scopeId}/peers/binding dashboard/set-app-peer-binding',
     ]);
   });

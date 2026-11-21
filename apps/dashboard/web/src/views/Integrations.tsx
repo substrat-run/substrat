@@ -1262,13 +1262,22 @@ function FleetRows({
   provider,
   onDetail,
   onDisconnect,
+  onChoose,
 }: {
   provider: AppIntegration;
   onDetail: (c: ConnectionView) => void;
   onDisconnect: (c: ConnectionView) => void;
+  /** #3221: a payment provider's "pay through this account" for this app; absent elsewhere. */
+  onChoose?: (c: ConnectionView) => void;
 }) {
+  const pays = provider.takesPayments ? provider.paysThrough : undefined;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 4 }}>
+      {pays && pays.chosen === null && pays.bound.length > 1 && (
+        <div style={{ fontSize: 11.5, color: 'var(--status-warning-fg)' }}>
+          {pays.bound.length} accounts are in use by this app, so its checkouts are refused. Choose the one it is paid into.
+        </div>
+      )}
       {provider.connections.map((c) => (
         <div key={c.id} style={{ display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8, borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }}>
           <div style={{ flex: '1 1 200px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -1277,9 +1286,15 @@ function FleetRows({
               <span style={{ color: 'var(--text-primary)' }}>{c.label}</span>
               {c.externalAccountRef && <MonoTag>{c.externalAccountRef}</MonoTag>}
               {c.ownerScopeId && <Pill kind="info">This app's own</Pill>}
+              {pays && pays.chosen === c.id && <Pill kind="success">Checkouts go through this account</Pill>}
             </div>
             <HealthLine conn={c} />
           </div>
+          {pays && onChoose && pays.chosen !== c.id && !c.ownerScopeId && c.status === 'active' && (
+            <Button variant="ghost" size="sm" onClick={() => onChoose(c)}>
+              Use for checkouts
+            </Button>
+          )}
           <Button variant="ghost" size="sm" onClick={() => onDetail(c)}>
             Details
           </Button>
@@ -1305,6 +1320,8 @@ export function AppIntegrations({ teamId, app }: { teamId: string; app: AppRow }
   const [disconnect, setDisconnect] = useState<{ provider: AppIntegration; connection: ConnectionView; addressed: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [nonce, setNonce] = useState(0);
+  /** #3221: why choosing an app's payment account was refused, kept across the refetch. */
+  const [chooseErr, setChooseErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (DEV_MOCK) {
@@ -1325,6 +1342,20 @@ export function AppIntegrations({ teamId, app }: { teamId: string; app: AppRow }
 
   if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load integrations — {err}</div>;
   if (!view) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading integrations…</div>;
+
+  // #3221: move this app's checkouts to one account; the others come off the app.
+  const choose = async (p: AppIntegration, c: ConnectionView) => {
+    if (busy) return;
+    setBusy(true);
+    setChooseErr(null);
+    try {
+      await teamApi(teamId).chooseAppConnection({ scopeId: app.app_scope_id, provider: p.provider, connectionId: c.id });
+    } catch (e) {
+      setChooseErr(`Couldn’t change the account ${p.name} checkouts go through — ${isApiError(e) ? e.message : String(e)}`);
+    }
+    setBusy(false);
+    setNonce((n) => n + 1);
+  };
 
   const confirmDisconnect = async () => {
     if (!disconnect || busy) return;
@@ -1349,6 +1380,7 @@ export function AppIntegrations({ teamId, app }: { teamId: string; app: AppRow }
         secret, which is enough to recognise a credential and not enough to use one; replacing it means rotating.
         Disconnecting is permanent, and reconnecting creates a new connection.
       </HonestyBanner>
+      {chooseErr && <div style={{ ...card, padding: 12, fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{chooseErr}</div>}
       {view.length === 0 && (
         <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>
           This app declares no integrations — its vertical lists none in its manifest.
@@ -1392,6 +1424,7 @@ export function AppIntegrations({ teamId, app }: { teamId: string; app: AppRow }
                     provider={p}
                     onDetail={(c) => setDetail({ provider: p, connection: c })}
                     onDisconnect={(c) => setDisconnect({ provider: p, connection: c, addressed: true })}
+                    {...(p.takesPayments ? { onChoose: (c: ConnectionView) => void choose(p, c) } : {})}
                   />
                 </div>
                 <Button variant="secondary" size="sm" onClick={() => setDialog({ provider: p, rotate: false })}>

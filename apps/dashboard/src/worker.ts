@@ -2944,6 +2944,8 @@ const providerForm = (spec: ProviderSpec, env: Env) => ({
   multiAccount: spec.accountRefField !== undefined || spec.accountFromProbe === true,
   // #2343: the detail view offers a send test only for a provider that sends mail.
   sendsMail: spec.sendsMail === true,
+  // #3221: each app pays through one connection, chosen on its Integrations tab.
+  takesPayments: spec.takesPayments === true,
 });
 
 async function appIntegrationTarget({ host, node }: TeamContext, appScopeId: string) {
@@ -2975,11 +2977,25 @@ async function getAppIntegrationsIn(ctx: TeamContext, appScopeId: string) {
     if (Object.hasOwn(PROVIDERS, r.provider)) specs.push(PROVIDERS[r.provider]!);
     else if (isVerticalConnectorProvider(r.provider)) specs.push(undeclaredConnectorSpec(r.provider));
   }
+  // #3221: which connection a payment provider's checkouts go through for this app. A plane that
+  // cannot say (one deployed before the choice existed) leaves it out rather than failing the tab.
+  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+  const paysThrough = new Map<string, { chosen: string | null; bound: string[] }>();
+  await Promise.all(
+    specs
+      .filter((spec) => spec.takesPayments && liveConnectionsFor(rows, spec.provider).length > 0)
+      .map(async (spec) => {
+        const choice = await cp.connectionChoice(appRow.app_scope_id, spec.provider).catch(() => undefined);
+        if (choice) paysThrough.set(spec.provider, { chosen: choice.chosen, bound: choice.bound });
+      }),
+  );
   return {
     providers: specs.map((spec) => {
       const p = spec.provider;
       const live = liveConnectionFor(rows, p);
+      const pays = paysThrough.get(p);
       return {
+        ...(pays ? { paysThrough: pays } : {}),
         ...providerForm(spec, c.env),
         required: declared.includes(spec),
         // The single-connection answer, kept for clients that predate the fleet.
@@ -3081,6 +3097,32 @@ async function revocableProvider(
   const spec = declared ?? (liveConnectionsFor(rows, provider).length > 0 ? undeclaredConnectorSpec(provider) : undefined);
   if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
   return { spec, rows };
+}
+
+/**
+ * #3221: choose which of the team's connections one app's checkouts go through. A payment provider
+ * lands each app through one connection: the first one connected, until the team chooses another
+ * here. The choice is kept by every later landing pass; the connections not chosen come off the app.
+ * Gated like connecting, on the in-scope `dashboard:manage-integrations` check, and attributed to the
+ * person whose check passed.
+ */
+async function chooseAppConnectionIn(ctx: TeamContext, appScopeId: string, provider: string, connectionId: string) {
+  const { c, host, node } = ctx;
+  const { dash, appRow } = await appIntegrationTarget(ctx, appScopeId);
+  const spec = await appProviderSpec(host, c.env, node.tenantId, appRow.vertical_slug, provider);
+  if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
+  if (!spec.takesPayments) throw new HTTPException(409, { message: `${spec.name} has no account to choose per app` });
+  const authz = (await dash.invoke('dashboard/begin-connection', { provider: spec.provider })) as { principal: string };
+  const rows = await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug, appScopeId);
+  const row = liveConnectionsFor(rows, spec.provider).find((r) => r.id === connectionId && (r.ownerScopeId ?? null) === null);
+  if (!row) throw new HTTPException(404, { message: 'unknown connection' });
+  const choice = await controlPlaneFor(c.env, node.tenantId, node.principal).chooseConnection(
+    scopeId.parse(appRow.app_scope_id),
+    spec.provider,
+    row.id,
+    authz.principal,
+  );
+  return { chosen: choice.chosen, bound: choice.bound };
 }
 
 /** Disconnect — revoke is terminal: the sealed secret is deleted and the grants tombstone. */
@@ -6098,6 +6140,8 @@ const routeHandlers = {
     disconnectAppIntegrationIn(ctx, app, provider),
   'dashboard/disconnect-app-connection': async (ctx, { scopeId: app, provider, connectionId: id }) =>
     disconnectAppConnectionIn(ctx, app, provider, id),
+  'dashboard/choose-app-connection': async (ctx, { scopeId: app, provider, connectionId: id }) =>
+    chooseAppConnectionIn(ctx, app, provider, id),
   'dashboard/verify-app-integration': async (ctx, { scopeId: app, provider }) =>
     verifyAppIntegrationIn(ctx, app, provider),
   'dashboard/verify-app-connection': async (ctx, { scopeId: app, provider, connectionId: id }) =>

@@ -76,6 +76,14 @@ import type {
 } from '@substrat-run/contracts';
 import { logsIncompleteOf } from '@substrat-run/control-plane-api';
 import type { DeclaredSchedule } from './flow-graph.js';
+
+/** #3221: the tenant connection an install lands through, as the control plane answers it. */
+export interface ConnectionChoice {
+  provider: string;
+  scopeId: string;
+  chosen: string | null;
+  bound: string[];
+}
 import type { MeteredUsageOut } from './routes.js';
 import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
 import type { MailInAddress, MailInAddressAct, MailInStanding, SubjectAccessBody, SubjectAccessReceipt } from '@substrat-run/contracts';
@@ -612,6 +620,24 @@ export class TenantNarrowedControlPlane {
   verifyConnection(connectionId: string): Promise<ConnectionProbe> {
     return this.post<ConnectionProbe>(
       `/tenants/${this.tenantId}/connections/${encodeURIComponent(connectionId)}/verify`,
+    );
+  }
+
+  /**
+   * #3221: which of the tenant's connections an install of a payment provider lands through. `chosen`
+   * is null when none is bound, or several are (bound before the choice existed): a choice is owed.
+   */
+  connectionChoice(scopeId: string, provider: string): Promise<ConnectionChoice> {
+    return this.call<ConnectionChoice>(
+      `/tenants/${this.tenantId}/scopes/${encodeURIComponent(scopeId)}/connections/${encodeURIComponent(provider)}/choice`,
+    );
+  }
+
+  /** #3221: land the install through `connectionId` alone, attributed to `chosenBy`. */
+  chooseConnection(scopeId: string, provider: string, connectionId: string, chosenBy: string): Promise<ConnectionChoice> {
+    return this.call<ConnectionChoice>(
+      `/tenants/${this.tenantId}/scopes/${encodeURIComponent(scopeId)}/connections/${encodeURIComponent(provider)}/choice`,
+      { method: 'PUT', body: JSON.stringify({ connectionId, chosenBy }) },
     );
   }
 

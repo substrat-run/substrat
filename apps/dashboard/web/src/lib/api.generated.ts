@@ -705,6 +705,13 @@ export interface DashboardClient {
   businessVolumes(input: { scopeId?: string[]; hours?: string; since?: string; until?: string }): Promise<BusinessVolumesView>;
 
   /**
+   * Choose which of the team's connections one app's checkouts go through (#3221); the others come off the app
+   *
+   * `PUT /apps/{scopeId}/integrations/{provider}/connections/{connectionId}/chosen` — `dashboard/choose-app-connection`
+   */
+  chooseAppConnection(input: { scopeId: string; provider: string; connectionId: string }): Promise<{ chosen: string | null; bound: string[] }>;
+
+  /**
    * Connect or rotate one provider credential for an app
    *
    * `POST /apps/{scopeId}/integrations/{provider}` — `dashboard/connect-app-integration`
@@ -912,7 +919,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/integrations` — `dashboard/get-app-integrations`
    */
-  getAppIntegrations(input: { scopeId: string }): Promise<{ providers: ({ provider: string; name: string; description: string; monogram: string; fields: { key: string; label: string; secret: boolean; placeholder?: string; optional?: boolean; toggle?: boolean; choices?: { value: string; label: string; hint?: string; heldWhen?: string[] }[]; showWhen?: { field: string; values: string[] }; requiredWhen?: string[]; input?: "date"; file?: { accept: string } }[]; connectFlow: "redirect" | null; multiAccount: boolean; sendsMail: boolean; required: boolean; connection: { id: string; label: string; status: string; externalAccountRef: string | null; ownerScopeId: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string } | null; connections: ({ id: string; label: string; status: string; externalAccountRef: string | null; ownerScopeId: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string })[] })[] }>;
+  getAppIntegrations(input: { scopeId: string }): Promise<{ providers: ({ provider: string; name: string; description: string; monogram: string; fields: { key: string; label: string; secret: boolean; placeholder?: string; optional?: boolean; toggle?: boolean; choices?: { value: string; label: string; hint?: string; heldWhen?: string[] }[]; showWhen?: { field: string; values: string[] }; requiredWhen?: string[]; input?: "date"; file?: { accept: string } }[]; connectFlow: "redirect" | null; multiAccount: boolean; sendsMail: boolean; takesPayments: boolean; required: boolean; connection: { id: string; label: string; status: string; externalAccountRef: string | null; ownerScopeId: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string } | null; connections: ({ id: string; label: string; status: string; externalAccountRef: string | null; ownerScopeId: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string })[]; paysThrough?: { chosen: string | null; bound: string[] } })[] }>;
 
   /**
    * One app's mail-in address, the landing its vertical declares, and whether the platform receives mail
@@ -1255,7 +1262,7 @@ export interface DashboardClient {
    *
    * `GET /integrations` — `dashboard/list-team-integrations`
    */
-  listTeamIntegrations(): Promise<{ providers: ({ provider: string; name: string; description: string; monogram: string; fields: { key: string; label: string; secret: boolean; placeholder?: string; optional?: boolean; toggle?: boolean; choices?: { value: string; label: string; hint?: string; heldWhen?: string[] }[]; showWhen?: { field: string; values: string[] }; requiredWhen?: string[]; input?: "date"; file?: { accept: string } }[]; connectFlow: "redirect" | null; multiAccount: boolean; sendsMail: boolean; connections: ({ id: string; label: string; status: string; externalAccountRef: string | null; ownerScopeId: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string; vertical: string; apps: { scopeId: string; name: string }[]; sweepRuns: ({ id: string; outcome: string; at: string; error: string | null; elapsedMs: number | null })[] })[]; connectTargets: { scopeId: string; name: string; vertical: string; connected: boolean }[] })[] }>;
+  listTeamIntegrations(): Promise<{ providers: ({ provider: string; name: string; description: string; monogram: string; fields: { key: string; label: string; secret: boolean; placeholder?: string; optional?: boolean; toggle?: boolean; choices?: { value: string; label: string; hint?: string; heldWhen?: string[] }[]; showWhen?: { field: string; values: string[] }; requiredWhen?: string[]; input?: "date"; file?: { accept: string } }[]; connectFlow: "redirect" | null; multiAccount: boolean; sendsMail: boolean; takesPayments: boolean; connections: ({ id: string; label: string; status: string; externalAccountRef: string | null; ownerScopeId: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string; vertical: string; apps: { scopeId: string; name: string }[]; sweepRuns: ({ id: string; outcome: string; at: string; error: string | null; elapsedMs: number | null })[] })[]; connectTargets: { scopeId: string; name: string; vertical: string; connected: boolean }[] })[] }>;
 
   /**
    * One page of this team's events across all its apps from the event lake, newest first. `since` is required, and the window from it may span at most 31 days, ending at `until` or the platform's clock, whichever is earlier: a read without `until` should ask for a little under 31 days, or pin `until` while paging
@@ -1725,6 +1732,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/deployments/${encodeURIComponent(String(input.slug))}/previews/${encodeURIComponent(String(input.tag))}/domain`, "POST", omit(input, ["slug","tag"]), undefined),
     businessVolumes: (input: Args) =>
       send("/observability/business-volumes", "GET", undefined, input),
+    chooseAppConnection: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/connections/${encodeURIComponent(String(input.connectionId))}/chosen`, "PUT", omit(input, ["scopeId","provider","connectionId"]), undefined),
     connectAppIntegration: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}`, "POST", omit(input, ["scopeId","provider"]), undefined),
     connectGithub: () =>

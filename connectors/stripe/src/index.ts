@@ -112,7 +112,9 @@ export { StripeMock, type StripeMockOptions } from './mock.js';
  *   rotates that account's connection and keeps everything, and a key for another account, or the
  *   same account's other mode (going live from a test key), becomes a connection of its own. One
  *   app may hold several, each opened by its account ({@link StripeBinding.externalAccountRef}), and
- *   a checkout goes through the one bound to the scope.
+ *   a checkout goes through the one bound to the scope. Each install is bound to ONE (#3221): the
+ *   platform's landing pass binds an install to the first account connected, and the tenant chooses
+ *   another per install on the app's Integrations tab.
  * - **A replacement key is still judged before it is stored** ({@link prepareStripeCandidate}, the
  *   platform's preparation of a candidate credential), for the connection that holds no account: one
  *   made before connections were keyed, which a key for another account or mode cannot replace

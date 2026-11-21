@@ -944,6 +944,10 @@ export function connectionBindersFor(env: ConnectorEnv): Record<string, Connecti
         list: (h, row) => bindings(h, row),
         bind: (h, row, target) => bindScope(h, row, target as Parameters<typeof bindScope>[2]),
         ...(inspector.unbindScope ? { unbind: inspector.unbindScope } : {}),
+        // #3221: a provider that takes payments lands each install through ONE connection, since a
+        // checkout goes through the one bound there: the pass never adds a second, and the tenant's
+        // door chooses which.
+        ...(c.checkout ? { exclusive: true as const } : {}),
         ...(['fortnox', 'planima', 'woocommerce', 'shopify', 'stripe', 'bolagsverket'].includes(c.provider)
           ? {
               bindBeforeGrant: (h: ScopeHost, row: Parameters<typeof bindScope>[1], target: Parameters<typeof bindScope>[2]) =>

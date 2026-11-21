@@ -121,6 +121,13 @@ export interface ProviderSpec {
    */
   sendsMail?: true;
   /**
+   * #3221 — the connection takes payments: an app opens checkouts through it (the registration's
+   * `checkout`). Each install then pays through ONE of the tenant's connections, so the app's door
+   * says which, and lets the tenant choose another. `pnpm lint:connector-grants` holds this equal to
+   * the registration.
+   */
+  takesPayments?: true;
+  /**
    * #2100 — the connection may sign in with a certificate the PLATFORM generated, which the
    * tenant downloads from the connection and uploads on the provider's side, or (#3281) one the
    * owner generated and supplied. The detail view shows it; nothing about it is secret.
@@ -279,6 +286,8 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // the connection on that: a key for the same account and mode rotates it, a key for another (or a
     // test key beside a live one) becomes a second connection.
     accountFromProbe: true,
+    // #3221: each app pays through one of those accounts, chosen on its Integrations tab.
+    takesPayments: true,
   },
   bolagsverket: {
     provider: 'bolagsverket',

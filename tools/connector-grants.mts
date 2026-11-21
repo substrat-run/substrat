@@ -72,8 +72,8 @@ if (CONNECTORS.length === 0) {
   fail('connector wiring: no connector registrations to check — refusing to report green', 2);
 }
 
-type Catalog = Record<string, { grants?: readonly string[]; sendsMail?: true; accountRefField?: string; accountFromProbe?: true } | undefined>;
-type Connector = Pick<(typeof CONNECTORS)[number], 'provider' | 'grants' | 'mail' | 'inspector' | 'minted'>;
+type Catalog = Record<string, { grants?: readonly string[]; sendsMail?: true; accountRefField?: string; accountFromProbe?: true; takesPayments?: true } | undefined>;
+type Connector = Pick<(typeof CONNECTORS)[number], 'provider' | 'grants' | 'mail' | 'inspector' | 'minted' | 'checkout'>;
 type EngineModule = { manifest: { id: string; permissions: readonly { key: string; description: string; holder?: 'system' }[] } };
 
 /**
@@ -146,6 +146,19 @@ function wiringProblems(connectors: readonly Connector[], catalog: Catalog, engi
               `say \`sendsMail: true\` — a tenant connecting it would not be told it sends mail as them`
           : `${provider}: the dashboard door says \`sendsMail: true\`, but the connector registers ` +
               `no mail sender — the relay would refuse every message sent as its addresses`,
+      );
+    }
+    // #3221: a payment provider lands each install through one connection, and the app's door is
+    // where the tenant chooses which. Without the door's flag, the door would hide which account an
+    // app is paid into; without the registration's checkout, it offers a choice nothing acts on.
+    const registersCheckout = typeof connector.checkout === 'function';
+    if (registersCheckout !== (entry.takesPayments === true)) {
+      problems.push(
+        registersCheckout
+          ? `${provider}: the connector registers a checkout, but the dashboard door does not say ` +
+              `\`takesPayments: true\` — a tenant could not see or choose which account an app is paid into`
+          : `${provider}: the dashboard door says \`takesPayments: true\`, but the connector registers ` +
+              `no checkout — the door would offer an account choice nothing acts on`,
       );
     }
     // Belt to the type's braces — see the header.
@@ -248,7 +261,8 @@ if (problems.length > 0) {
       `from the connector's declaration if the authority now rides the dispatch (#726), or add ` +
       `the missing entry to \`CONNECTORS\` in apps/control-plane/src/connectors.ts. For mail, make ` +
       `the door's \`sendsMail\` and the registration's \`mail\` agree; for the account, the ` +
-      `door's \`accountFromProbe\` and its inspector's. A key reserved to a system ` +
+      `door's \`accountFromProbe\` and its inspector's; for payments, the door's \`takesPayments\` and the ` +
+      `registration's \`checkout\`. A key reserved to a system ` +
       `principal comes off both lists: no connection may hold one.`,
   );
   process.exit(1);
@@ -256,6 +270,6 @@ if (problems.length > 0) {
 
 console.log(
   `connector wiring: ${CONNECTORS.length} connector${CONNECTORS.length === 1 ? '' : 's'} checked ` +
-    `— each has a door, a probe, every declared grant the door carries, the same answer on mail and on keying by the probed account, ` +
+    `— each has a door, a probe, every declared grant the door carries, the same answer on mail, on payments and on keying by the probed account, ` +
     `no key reserved to a system principal, and no dotted (vertical-defined) slug`,
 );
