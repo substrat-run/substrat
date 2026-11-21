@@ -141,8 +141,11 @@ export const SHOPIFY_CONNECTION_GRANTS = [] as const;
 /** How often a binding's delivered ids are reconciled against the shop — every fourth 15-minute pass. */
 export const SHOPIFY_RECONCILE_EVERY_MS = 60 * 60 * 1000;
 
-/** How many pages of each resource one sync lands at most. */
-export const SHOPIFY_PAGES_PER_SYNC = 20;
+/**
+ * How many pages of each resource one sync lands at most: 600 products and 160 orders a pass, at the
+ * page sizes in `src/api.ts`, so a busy shop's first pass is spread over a few hours of passes.
+ */
+export const SHOPIFY_PAGES_PER_SYNC = 40;
 
 /** Changes younger than this are left for the next pass, for Shopify's search index to catch up. */
 export const SHOPIFY_SETTLE_MS = 2 * 60 * 1000;

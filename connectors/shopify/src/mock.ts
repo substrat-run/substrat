@@ -30,6 +30,8 @@ export type MockOrder = Record<string, unknown> & { id: string; updatedAt: strin
  *    order query without protected customer data access (`protectedCustomerData: false`), since every
  *    order query asks for the buyer's name, email, phone and addresses.
  * 6. A deleted record is one removed from its array: `null` by id and in `nodes`.
+ * 7. **A changed-list page over `maxQueryCost` is `MAX_COST_EXCEEDED`**, by a flat per-row cost
+ *    (`ROW_COST`): not Shopify's arithmetic, only its refusal, so the walk's answer to it is tested.
  */
 export interface ShopifyMockOptions {
   /** The handle; the shop is `<handle>.myshopify.com`. */
@@ -48,6 +50,8 @@ export interface ShopifyMockOptions {
   shopNotPermitted?: boolean;
   /** False: the app lacks protected customer data access, so every order query is `ACCESS_DENIED`. */
   protectedCustomerData?: boolean;
+  /** Refuse a changed-list page whose rows × `ROW_COST` exceed this, as Shopify refuses a query over 1 000 points. */
+  maxQueryCost?: number;
   /** Answer the first N GraphQL calls THROTTLED. */
   throttleFirst?: number;
   tokenLifetimeS?: number;
@@ -79,6 +83,8 @@ const gqlError = (message: string, code: string, extensions: Record<string, unkn
   respond(200, { errors: [{ message, extensions: { code } }], extensions });
 
 const SIXTY_DAYS_MS = 60 * 24 * 60 * 60 * 1000;
+/** The mock's flat requested cost of one changed-list row, for `maxQueryCost`. */
+export const ROW_COST = { ChangedProducts: 53, ChangedOrders: 120 } as const;
 const FILTER = /^updated_at:>='([^']+)'$/;
 
 /** A keyset cursor over (updatedAt, id), as Shopify's encodes its sort key. */
@@ -95,6 +101,8 @@ export class ShopifyMock {
   private readonly options: ShopifyMockOptions;
   private readonly tokens = new Map<string, number>();
   private throttled = 0;
+  /** Changed-list pages refused as too costly, per operation. */
+  readonly costRefusals = { ChangedProducts: 0, ChangedOrders: 0 };
 
   constructor(options: ShopifyMockOptions = {}) {
     this.options = options;
@@ -217,6 +225,11 @@ export class ShopifyMock {
       case 'ChangedProducts':
       case 'ChangedOrders': {
         const products = operation === 'ChangedProducts';
+        const requested = first * ROW_COST[operation];
+        if (this.options.maxQueryCost !== undefined && requested > this.options.maxQueryCost) {
+          this.costRefusals[operation] += 1;
+          return gqlError(`Query cost is ${requested}, which exceeds the single query max cost limit (${this.options.maxQueryCost}).`, 'MAX_COST_EXCEEDED', { cost: { requestedQueryCost: requested } });
+        }
         let from: string | null = null;
         if (v.query !== null && v.query !== undefined) {
           const m = FILTER.exec(String(v.query));

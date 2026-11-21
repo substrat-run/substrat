@@ -121,8 +121,8 @@ Each pass, for each bound install:
 5. Remember how far it got, and which ids it has delivered.
 
 A change from the last two minutes is left for the next pass, because Shopify answers a "changed
-since" question from a search index that can lag a save by a few seconds. A pass reads at most twenty
-pages of each, and the next pass reads on from exactly where it stopped, so a shop's first pass and a
+since" question from a search index that can lag a save by a few seconds. A pass reads at most 600
+products and 160 orders (smaller pages if Shopify finds a page too costly to answer), and the next pass reads on from exactly where it stopped, so a shop's first pass and a
 bulk edit of thousands of products are spread over several passes; the activity says **catching up**
 until it is done.
 

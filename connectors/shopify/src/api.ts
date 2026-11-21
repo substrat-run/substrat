@@ -27,15 +27,30 @@ declare const setTimeout: (handler: () => void, timeout: number) => unknown;
  * The version is pinned ({@link SHOPIFY_API_VERSION}) because Shopify removes a version a year after
  * it ships; moving it is a deliberate change with the live test run against it. Rate limiting is by
  * query cost: a throttled query answers `200` with a `THROTTLED` error and the bucket's restore rate,
- * and the client waits for what it needs. Every query here is sized to cost well under the 1 000
- * points a single query may request.
+ * and the client waits for what it needs. A single query may not REQUEST more than 1 000 points, and
+ * Shopify refuses one that does before running it (`MAX_COST_EXCEEDED`); the page sizes below are
+ * estimated to stay under it, and a changed-list page that is refused anyway is asked again at half
+ * the size (see {@link ShopifyApi.changedPage}), so an estimate that proves low slows a pass rather
+ * than stopping every one.
  */
 export const SHOPIFY_API_VERSION = '2026-10';
 
-/** Products per changed-list page. With {@link SHOPIFY_NESTED_PAGE} variants each, a page costs about 525 points. */
-export const SHOPIFY_PRODUCTS_PAGE = 25;
-/** Orders per changed-list page. With {@link SHOPIFY_NESTED_PAGE} lines each, a page costs about 720 points. */
-export const SHOPIFY_ORDERS_PAGE = 20;
+/**
+ * Products per changed-list page. By Shopify's documented rules (an object is 1 point; a connection is
+ * 2 plus `first` times its node), a product is 1 + its variants connection 2 + 10 × (variant 1 +
+ * inventoryItem 1 + up to 3 selected options) ≈ 53, so a page of 15 requests about 800. ESTIMATED,
+ * not measured: `test/live.test.ts` asserts a full page's reported cost against a real shop.
+ */
+export const SHOPIFY_PRODUCTS_PAGE = 15;
+/**
+ * Orders per changed-list page. An order is 1 + customer 1 + two addresses 2 + four money bags with
+ * their `presentmentMoney` 8 + up to 10 transactions 10 + its lines connection 2 + 10 × (line 1 +
+ * product 1 + variant 1 + original total 2 + discount and tax entries, counted at 2 each and
+ * 3 points apiece, 12) ≈ 194 at the outside, ≈ 74 counting the discount and tax lists as nothing; a
+ * page of 4 requests about 780 by the first count and 300 by the second. ESTIMATED as the products'
+ * is, and measured the same way.
+ */
+export const SHOPIFY_ORDERS_PAGE = 4;
 /** Variants or lines read with their product or order; the rest are read on their own, 100 at a time. */
 export const SHOPIFY_NESTED_PAGE = 10;
 /** Ids asked about in one `nodes` query (Shopify takes up to 250). */
@@ -279,6 +294,8 @@ export interface ShopifyApiOptions {
   /** How many throttled answers in a row a request sits out. Zero disables the wait, which is what a probe wants. */
   maxRateLimitRetries?: number;
   now?: () => number;
+  /** Told each answered operation's requested query cost, as Shopify reports it. For the live test's measurement. */
+  onCost?: (operation: ShopifyOperation, requestedQueryCost: number) => void;
 }
 
 /** A throttle with no usable restore rate waits this long; a longer computed wait is capped at three times it. */
@@ -305,7 +322,10 @@ export class ShopifyApi {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly maxRateLimitRetries: number;
   private readonly now: () => number;
+  private readonly onCost: ShopifyApiOptions['onCost'];
   private token: { value: string; expiresAtMs: number } | null = null;
+  /** The changed-list page size, halved for the rest of this instance's life by a `MAX_COST_EXCEEDED`. */
+  private readonly pageSize: Record<ShopifyResource, number> = { products: SHOPIFY_PRODUCTS_PAGE, orders: SHOPIFY_ORDERS_PAGE };
   /** The scopes the last mint granted, or `null` before one. */
   grantedScopes: string[] | null = null;
 
@@ -314,6 +334,7 @@ export class ShopifyApi {
     this.sleep = options?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.maxRateLimitRetries = options?.maxRateLimitRetries ?? 3;
     this.now = options?.now ?? (() => Date.now());
+    this.onCost = options?.onCost;
   }
 
   private secret(): ShopifySecret {
@@ -407,6 +428,8 @@ export class ShopifyApi {
         throw new ShopifyApiError(`Shopify ${operation} failed${code ? ` (${code})` : ''}: ${clip(message)}`, status, code);
       }
       if (json.data === undefined || json.data === null) throw new ShopifyApiError(`Shopify ${operation} answered no data`, 502);
+      const requested = Number((json.extensions as { cost?: { requestedQueryCost?: unknown } } | undefined)?.cost?.requestedQueryCost);
+      if (this.onCost && Number.isFinite(requested)) this.onCost(operation, requested);
       return json.data;
     }
   }
@@ -422,6 +445,10 @@ export class ShopifyApi {
    * One page of products or orders changed at or after `updatedFrom` (UTC, `…Z`), oldest change
    * first, continuing from the GraphQL cursor `after`. Rows are unparsed, as the walk reads them one
    * by one. `customers` asks an order for its customer account (needs `read_customers`).
+   *
+   * A page Shopify refuses as too costly (`MAX_COST_EXCEEDED`) is asked again at half the size, down
+   * to one row, and the smaller size is kept for the rest of this pass. The GraphQL cursor does not
+   * depend on the page size, so the walk reads on from the same place.
    */
   async changedPage(
     resource: ShopifyResource,
@@ -430,10 +457,20 @@ export class ShopifyApi {
     customers: boolean,
   ): Promise<{ nodes: unknown[]; hasNextPage: boolean; endCursor: string | null }> {
     const query = updatedFrom === null ? null : `updated_at:>='${updatedFrom}'`;
-    const data =
-      resource === 'products'
-        ? ((await this.graphql('ChangedProducts', { first: SHOPIFY_PRODUCTS_PAGE, after, query })) as { products?: unknown })?.products
-        : ((await this.graphql('ChangedOrders', { first: SHOPIFY_ORDERS_PAGE, after, query, customers })) as { orders?: unknown })?.orders;
+    let data: unknown;
+    for (;;) {
+      const first = this.pageSize[resource];
+      try {
+        data =
+          resource === 'products'
+            ? ((await this.graphql('ChangedProducts', { first, after, query })) as { products?: unknown })?.products
+            : ((await this.graphql('ChangedOrders', { first, after, query, customers })) as { orders?: unknown })?.orders;
+        break;
+      } catch (err) {
+        if (!(err instanceof ShopifyApiError && err.code === 'MAX_COST_EXCEEDED' && first > 1)) throw err;
+        this.pageSize[resource] = Math.ceil(first / 2);
+      }
+    }
     const parsed = z.object({ nodes: z.array(z.unknown()), pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }) }).safeParse(data);
     if (!parsed.success) throw new ShopifyApiError(`Shopify ${resource} list answered something other than a page`, 502);
     return { nodes: parsed.data.nodes, ...parsed.data.pageInfo };

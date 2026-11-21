@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CommerceChange } from '@substrat-run/contracts';
-import { ShopifyMock, type ShopifyMockOptions } from '../src/mock.js';
-import { SHOPIFY_PRODUCTS_PAGE } from '../src/api.js';
+import { ROW_COST, ShopifyMock, type ShopifyMockOptions } from '../src/mock.js';
+import { SHOPIFY_ORDERS_PAGE, SHOPIFY_PRODUCTS_PAGE } from '../src/api.js';
 import { NOW, ORDERS, PRODUCTS, gid, line, order, product, variant } from './fixture.js';
 import { touch, world, type World } from './world.js';
 
@@ -52,6 +52,16 @@ describe('shopify sweep', () => {
     const last = (await w.binding()).lastSync!;
     expect(last.caughtUp).toBe(true);
     expect(last.products.resume).toBeUndefined();
+  });
+
+  it('asks a page Shopify refuses as too costly again at half the size, keeps that size, and lands every row', async () => {
+    const orders = Array.from({ length: SHOPIFY_ORDERS_PAGE * 2 + 1 }, (_, i) => order(600 + i, `2026-11-02T09:${String(10 + i).padStart(2, '0')}:00Z`));
+    const { mock, w } = await start({ orders, products: [], maxQueryCost: ROW_COST.ChangedOrders * (SHOPIFY_ORDERS_PAGE / 2) });
+    const r = await w.sweep();
+    expect(r.failed).toEqual([]);
+    expect(ids(w.landed, 'order')).toEqual(orders.map((o) => o.id.split('/').pop()));
+    // Refused once, then the halved size is kept for the rest of the pass.
+    expect(mock.costRefusals.ChangedOrders).toBe(1);
   });
 
   it('leaves a change younger than the settle window for a later pass', async () => {

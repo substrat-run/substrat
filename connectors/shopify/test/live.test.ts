@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { connectionId, currencyCode } from '@substrat-run/contracts';
 import { globalFetch, type ConnectorConnection } from '@substrat-run/kernel';
-import { ShopifyApi, shopifyOrder, shopifyProduct } from '../src/api.js';
+import { ShopifyApi, SHOPIFY_ORDERS_PAGE, SHOPIFY_PRODUCTS_PAGE, shopifyOrder, shopifyProduct, type ShopifyOperation } from '../src/api.js';
 import { orderChange, productChange } from '../src/commerce.js';
 import { probeShopifySecret } from '../src/index.js';
 
@@ -23,6 +23,9 @@ import { probeShopifySecret } from '../src/index.js';
  *    answers by operation name and never parses one.
  * 3. `updated_at:>='…'` with `sortKey: UPDATED_AT` is accepted and filters.
  * 4. The sent shapes map: every product and order on the first page survives the mapping.
+ * 5. A full changed-list page REQUESTS less than Shopify's 1 000-point single-query limit, at the
+ *    page sizes `src/api.ts` estimated: the cost Shopify reports, not the estimate. Orders are
+ *    measured with and (where the app holds `read_customers`) without the customer field.
  */
 const env = process.env;
 const secret =
@@ -46,6 +49,20 @@ describe.skipIf(secret === null)('shopify, against a real shop', () => {
     expect(result, result.error ?? '').toMatchObject({ ok: true });
     expect(result.accountRef).toMatch(/\.myshopify\.com$/);
   });
+
+  it('requests less than 1 000 points for a full page of products and of orders', async () => {
+    const costs: [ShopifyOperation, number][] = [];
+    const api = new ShopifyApi(conn, { onCost: (operation, cost) => void costs.push([operation, cost]) });
+    const info = await api.shopInfo();
+    const customers = info.currentAppInstallation.accessScopes.some((s) => s.handle === 'read_customers');
+    await api.graphql('ChangedProducts', { first: SHOPIFY_PRODUCTS_PAGE, after: null, query: null });
+    for (const withCustomers of customers ? [false, true] : [false]) {
+      await api.graphql('ChangedOrders', { first: SHOPIFY_ORDERS_PAGE, after: null, query: null, customers: withCustomers });
+    }
+    const pages = costs.filter(([operation]) => operation !== 'ShopInfo');
+    expect(pages.length).toBe(customers ? 3 : 2);
+    for (const [operation, cost] of pages) expect(cost, operation).toBeLessThan(1000);
+  }, 60_000);
 
   it('reads and maps the first page of products and orders through every query the sync sends', async () => {
     const api = new ShopifyApi(conn);
