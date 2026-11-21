@@ -1,5 +1,46 @@
 # @substrat-run/control-plane
 
+## 0.19.8
+
+### Patch Changes
+
+- ec6c0ee: The access-log drain keeps going while a batch comes back full, up to eight batches a pass, so a backlog closes instead of growing (#3326).
+- 5244ed9: The platform keeps what Cloudflare bills it for, per tenant, vertical and scope: a daily cost rollup reads each closed day of Workers CPU, Durable Object requests, rows read and written, storage write units and duration from Cloudflare's analytics, with the 95% confidence interval where a dataset is sampled, and attributes each row through the directory (a Durable Object to the scope whose object id the directory recorded, a script to its vertical, version and owner on that day). Quantities only, no price. Each scope's object id is learned from the script that holds its data (`/internal/scope-object-id`), and staff read the rollup at `GET /meters/cloudflare-costs` and load an older snapshot day at `POST /meters/cloudflare-costs/days`.
+- ff7fc65: An app's installs can be paid into different Stripe accounts: the landing pass binds each install to one payment connection only (`ConnectionBinder.exclusive`), and a tenant chooses which on the app's Integrations tab (`PUT /tenants/:t/scopes/:s/connections/:provider/choice`).
+- 03d8f69: The markup schedule (#3316): what a tenant is charged over cost is now data in the control plane, a default plus dated overrides per tenant, billed dimension and kind, set by staff and recorded in the admin log. Prices are computed at read with the decimal helpers; the model ledger and the builder studio price model calls from it, at today's 30%.
+- 498e9a4: Model tokens are marked up 30% over the provider's list price, up from 20%, everywhere the platform prices them: the default margin on platform-provided model calls a vertical makes (`DEFAULT_MODEL_MARGIN_PERCENT`, still overridable with `MODEL_MARGIN_PERCENT`), the hosted code-review spend limit that counts at that rate, and the builder studio's Usage pane. The builder now computes its factor with the ledger's `marginFactor` instead of a second copy.
+- 866be58: Model usage is reconciled against what Cloudflare saw (#1054). Each closed UTC day of the model usage ledger is compared, per tenant, scope and model, with AI Gateway's analytics (the five attribution keys ride as gateway metadata) and Workers AI's. Each row is matched, a discrepancy (fewer successful gateway requests than ledger lines, or a cost difference beyond $0.01 and 10%), ledger-only, or gateway-only. A gateway-only row is a call no ledger line accounts for: the model host never raised a `model-usage` intent. Gateway calls with no attribution, calls for a tenant this directory does not hold (another environment in the same account), and Workers AI calls that went through no gateway (estimated at $0.011 per 1,000 neurons) are totalled beside the rows. The ledger is never corrected from either source.
+
+  - contracts: `modelReconciliationDay`, `modelReconciliationRow`, `modelReconciliationStatus` and `modelReconciliation`, and the `model-reconcile` sweep-run kind.
+  - control-plane-api: `reconcileModelDay` (the fold), `createCfModelCostReader` (one GraphQL read per day; it refuses an answer at the 10,000-group ceiling rather than reconcile part of a day), `reconcileModelDays`, `runModelReconciliationPass`, and the staff-only `GET /model-usage/reconciliation?since=&until=` (closed UTC days, at most 14, computed on request; 501 without a cost reader).
+  - control-plane: the scheduled pass reconciles each closed day once, two days a pass and seven days back. It files each gateway-only row, each discrepancy, and the day's no-gateway Workers AI total as staff ops-failure rows with no tenant (`sweep.model-reconcile`), and writes a `model-reconcile` sweep-run row per day. Production only, through the checked-in `MODEL_RECONCILIATION` var.
+  - console: Sweep runs can filter to "Model reconciliation".
+
+- a6146fc: A hosted scope object counts the SQLite rows each invocation writes and reads, by origin (the vertical's own operation, or a platform verb such as a preview fork's load, a migration pass, a drain or a sweep), into an Analytics Engine dataset the uploader binds, so platform work inside a tenant's scope can be told apart from the vertical's.
+- Updated dependencies [ec6c0ee]
+- Updated dependencies [5244ed9]
+- Updated dependencies [ff7fc65]
+- Updated dependencies [03d8f69]
+- Updated dependencies [498e9a4]
+- Updated dependencies [866be58]
+- Updated dependencies [a23e0a1]
+- Updated dependencies [a6146fc]
+  - @substrat-run/kernel@0.206.0
+  - @substrat-run/contracts@0.206.0
+  - @substrat-run/adapter-cloudflare@0.206.0
+  - @substrat-run/vertical-host@0.206.0
+  - @substrat-run/control-plane-api@0.206.0
+  - @substrat-run/connector-bolagsverket@0.1.2
+  - @substrat-run/connector-fortnox@0.8.4
+  - @substrat-run/connector-mail-in@0.1.43
+  - @substrat-run/connector-microsoft365@0.0.67
+  - @substrat-run/connector-planima@0.2.103
+  - @substrat-run/connector-scrive@0.15.8
+  - @substrat-run/connector-shopify@0.0.2
+  - @substrat-run/connector-stripe@0.0.8
+  - @substrat-run/connector-woocommerce@0.0.12
+  - @substrat-run/model-providers@0.5.96
+
 ## 0.19.7
 
 ### Patch Changes

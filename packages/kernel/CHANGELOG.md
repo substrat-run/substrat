@@ -1,5 +1,23 @@
 # @substrat-run/kernel
 
+## 0.206.0
+
+### Minor Changes
+
+- 5244ed9: The platform keeps what Cloudflare bills it for, per tenant, vertical and scope: a daily cost rollup reads each closed day of Workers CPU, Durable Object requests, rows read and written, storage write units and duration from Cloudflare's analytics, with the 95% confidence interval where a dataset is sampled, and attributes each row through the directory (a Durable Object to the scope whose object id the directory recorded, a script to its vertical, version and owner on that day). Quantities only, no price. Each scope's object id is learned from the script that holds its data (`/internal/scope-object-id`), and staff read the rollup at `GET /meters/cloudflare-costs` and load an older snapshot day at `POST /meters/cloudflare-costs/days`.
+- ff7fc65: An app's installs can be paid into different Stripe accounts: the landing pass binds each install to one payment connection only (`ConnectionBinder.exclusive`), and a tenant chooses which on the app's Integrations tab (`PUT /tenants/:t/scopes/:s/connections/:provider/choice`).
+- 03d8f69: The markup schedule (#3316): what a tenant is charged over cost is now data in the control plane, a default plus dated overrides per tenant, billed dimension and kind, set by staff and recorded in the admin log. Prices are computed at read with the decimal helpers; the model ledger and the builder studio price model calls from it, at today's 30%.
+- a23e0a1: The snapshot taken before an update now expires after 30 days, and the scheduled sweep deletes it, so these copies no longer pile up. Platform staff can move or pin a copy's expiry with `PUT /tenants/:t/scopes/:s/expires-at`.
+- a6146fc: A hosted scope object counts the SQLite rows each invocation writes and reads, by origin (the vertical's own operation, or a platform verb such as a preview fork's load, a migration pass, a drain or a sweep), into an Analytics Engine dataset the uploader binds, so platform work inside a tenant's scope can be told apart from the vertical's.
+
+### Patch Changes
+
+- ec6c0ee: The access-log drain keeps going while a batch comes back full, up to eight batches a pass, so a backlog closes instead of growing (#3326).
+- Updated dependencies [5244ed9]
+- Updated dependencies [03d8f69]
+- Updated dependencies [866be58]
+  - @substrat-run/contracts@0.206.0
+
 ## 0.205.0
 
 ### Minor Changes
