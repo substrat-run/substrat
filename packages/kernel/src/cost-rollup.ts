@@ -37,7 +37,11 @@ import { assertUtcDay, pruneBillingDays, pushDayWindow } from './billing-retenti
  *
  * `_substrat_cost_day_reads` is the request rollup's day ledger, for the same reason: a day without
  * a successful read has no rows to say anything with. Empty strings stand for "none" in the key
- * columns (`scope_id`, `object_class`), which a primary key cannot hold as NULL.
+ * columns (`scope_id`, `object_class`, `object_id`), which a primary key cannot hold as NULL.
+ *
+ * Every per-object row keeps its object id, so a day read before its scopes' ids were recorded
+ * (a pass that ran before a vertical could answer, a loaded snapshot) is attributed when they are:
+ * recording an id re-attributes that object's `unmapped` and `unknown` rows in the same transaction.
  *
  * `_substrat_scope_objects` is the directory's record of each scope's Durable Object id: the hex id
  * Cloudflare reports, which is `SCOPE.idFromName(scopeId)` inside the script that holds the scope's
@@ -52,6 +56,7 @@ export const COST_ROLLUP_DDL = `
     script TEXT NOT NULL,
     scope_id TEXT NOT NULL,
     object_class TEXT NOT NULL,
+    object_id TEXT NOT NULL,
     dimension TEXT NOT NULL,
     attribution TEXT NOT NULL,
     tenant_id TEXT,
@@ -62,9 +67,10 @@ export const COST_ROLLUP_DDL = `
     quantity TEXT NOT NULL,
     lower TEXT,
     upper TEXT,
-    PRIMARY KEY (day, script, scope_id, object_class, dimension)
+    PRIMARY KEY (day, script, scope_id, object_class, object_id, dimension)
   );
   CREATE INDEX IF NOT EXISTS _substrat_cost_days_tenant ON _substrat_cost_days (tenant_id, day);
+  CREATE INDEX IF NOT EXISTS _substrat_cost_days_object ON _substrat_cost_days (object_id, attribution);
   CREATE TABLE IF NOT EXISTS _substrat_cost_day_reads (
     day TEXT PRIMARY KEY,
     attempted_at TEXT NOT NULL,
@@ -243,7 +249,7 @@ export function attributeCostDay(usage: CloudflareUsageDay, dir: CostDirectory):
     const sampled = interval?.lower !== undefined && interval.upper !== undefined;
     const lower = sampled ? decimalOf(Math.max(0, interval.lower!)) : null;
     const upper = sampled ? decimalOf(Math.max(0, interval.upper!)) : null;
-    const key = [row.script, row.scopeId ?? '', row.objectClass ?? '', dimension].join('\u0000');
+    const key = [row.script, row.scopeId ?? '', row.objectClass ?? '', row.objectId ?? '', dimension].join('\u0000');
     const prior = byKey.get(key);
     if (prior) {
       byKey.set(key, { ...prior, quantity: addDecimal(prior.quantity, quantity), lower: addBound(prior.lower, lower), upper: addBound(prior.upper, upper) });
@@ -258,6 +264,7 @@ export function attributeCostDay(usage: CloudflareUsageDay, dir: CostDirectory):
       script,
       scopeId: null,
       objectClass,
+      objectId: null,
       attribution: info.attribution,
       tenantId: info.tenantId as TenantId | null,
       vertical: info.vertical,
@@ -290,6 +297,7 @@ export function attributeCostDay(usage: CloudflareUsageDay, dir: CostDirectory):
         script: ns?.script ?? scope.script,
         scopeId: scope.scopeId as ScopeId,
         objectClass: ns?.objectClass ?? null,
+        objectId: o.objectId,
         attribution: 'scope',
         tenantId: scope.tenantId as TenantId,
         vertical: scope.vertical,
@@ -299,9 +307,9 @@ export function attributeCostDay(usage: CloudflareUsageDay, dir: CostDirectory):
       };
     } else {
       // An object the directory recorded for no scope is reported apart: its script's vertical is a
-      // fact, whose it is is not, so it carries no tenant.
+      // fact, whose it is is not, so it carries no tenant. Its id stays, for when it is recorded.
       const base = scriptRow(ns?.script ?? '', ns?.objectClass ?? null);
-      row = { ...base, attribution: base.attribution === 'script' ? 'unmapped' : base.attribution, tenantId: null };
+      row = { ...base, objectId: o.objectId, attribution: base.attribution === 'script' ? 'unmapped' : base.attribution, tenantId: null };
     }
     add(row, 'do_rows_read', o.rowsRead);
     add(row, 'do_rows_written', o.rowsWritten);
@@ -412,13 +420,14 @@ export function recordCostDayRows(sql: RedactionSql, input: CostDayReadInput): n
   for (const r of rows) {
     sql(
       `INSERT INTO _substrat_cost_days
-         (day, script, scope_id, object_class, dimension, attribution, tenant_id, vertical, kind, version_id, preview_tag, quantity, lower, upper)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (day, script, scope_id, object_class, object_id, dimension, attribution, tenant_id, vertical, kind, version_id, preview_tag, quantity, lower, upper)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         day,
         r.script,
         r.scopeId ?? '',
         r.objectClass ?? '',
+        r.objectId ?? '',
         r.dimension,
         r.attribution,
         r.tenantId,
@@ -448,6 +457,7 @@ interface CostDayRow {
   script: string;
   scope_id: string;
   object_class: string;
+  object_id: string;
   dimension: string;
   attribution: string;
   tenant_id: string | null;
@@ -477,10 +487,10 @@ export function listCostDayRows(sql: RedactionSql, filter: CostDayFilter = {}): 
   pushDayWindow(filter, where, params);
   params.push(Math.min(assertRowLimit('limit', filter.limit ?? COST_ROLLUP_LIMIT_DEFAULT), COST_ROLLUP_LIMIT_MAX));
   const rows = sql(
-    `SELECT day, script, scope_id, object_class, dimension, attribution, tenant_id, vertical, kind, version_id, preview_tag, quantity, lower, upper
+    `SELECT day, script, scope_id, object_class, object_id, dimension, attribution, tenant_id, vertical, kind, version_id, preview_tag, quantity, lower, upper
        FROM _substrat_cost_days
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      ORDER BY day, script, scope_id, object_class, dimension LIMIT ?`,
+      ORDER BY day, script, scope_id, object_class, object_id, dimension LIMIT ?`,
     params,
   ) as CostDayRow[];
   return rows.map((r) =>
@@ -489,6 +499,7 @@ export function listCostDayRows(sql: RedactionSql, filter: CostDayFilter = {}): 
       script: r.script,
       scopeId: r.scope_id === '' ? null : r.scope_id,
       objectClass: r.object_class === '' ? null : r.object_class,
+      objectId: r.object_id === '' ? null : r.object_id,
       dimension: r.dimension,
       attribution: r.attribution,
       tenantId: r.tenant_id,
@@ -609,8 +620,10 @@ export function scopeObjectsDueRows(sql: RedactionSql, input: { nowMs: number; r
 
 /**
  * Record one target's answer. An object id replaces whatever the id was recorded as before (the
- * same id is the same object) and clears the target's failed attempt; a failure records only the
- * attempt, so the target waits `retryMs`. An id that is not Cloudflare's 64-hex shape is refused.
+ * same id is the same object), clears the target's failed attempt, and attributes every cost row
+ * already stored for that object that named no scope, so a day read before the id was known is not
+ * left without its tenant. A failure records only the attempt, so the target waits `retryMs`. An id
+ * that is not Cloudflare's 64-hex shape is refused.
  */
 export function recordScopeObjectRow(sql: RedactionSql, input: ScopeObjectReadInput): void {
   const attemptedAt = new Date(input.attemptedAt).toISOString();
@@ -634,4 +647,10 @@ export function recordScopeObjectRow(sql: RedactionSql, input: ScopeObjectReadIn
     [input.objectId, input.scopeId, input.tenantId, input.script, input.vertical, input.kind, input.versionId, input.previewTag, attemptedAt],
   );
   sql('DELETE FROM _substrat_scope_object_reads WHERE scope_id = ? AND script = ?', [input.scopeId, input.script]);
+  sql(
+    `UPDATE _substrat_cost_days
+        SET attribution = 'scope', scope_id = ?, tenant_id = ?, vertical = ?, kind = ?, version_id = ?, preview_tag = ?
+      WHERE object_id = ? AND attribution IN ('unmapped', 'unknown')`,
+    [input.scopeId, input.tenantId, input.vertical, input.kind, input.versionId, input.previewTag, input.objectId],
+  );
 }

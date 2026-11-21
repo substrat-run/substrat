@@ -105,7 +105,7 @@ describe('the Cloudflare cost rollup', () => {
     const { sql, host } = directory();
     const report = await sweep(host, { scopeObjects: { read: objectIdOf }, cloudflareCosts: costs(async () => USAGE) });
     expect(report.scopeObjects).toEqual({ asked: 2, recorded: 2, failed: 0, failures: [] });
-    expect(report.cloudflareCosts).toMatchObject({ due: 1, read: 1, failed: 0, recorded: 12 });
+    expect(report.cloudflareCosts).toMatchObject({ due: 1, read: 1, failed: 0, recorded: 14 });
     expect(report.errors).toEqual([]);
 
     const line = (r: ReturnType<typeof listCostDayRows>[number]) =>
@@ -116,9 +116,11 @@ describe('the Cloudflare cost rollup', () => {
       `substrat-router - - worker_cpu_us platform - live - - 99 - -`,
       // The script-grain CPU is the vertical's owner on the day, never the owner before.
       `${STABLE} - - worker_cpu_us script ${OWNER} live - - 1500 1400.4 1599.6`,
-      // An object no scope was recorded for is reported apart: its vertical, no tenant. Two sum.
-      `${STABLE} - IdentityDO do_duration_gb_s unmapped - live - - 0.2 - -`,
-      `${STABLE} - IdentityDO do_rows_read unmapped - live - - 12 - -`,
+      // An object no scope was recorded for is reported apart: its vertical, no tenant, one row per object.
+      `${STABLE} - IdentityDO do_duration_gb_s unmapped - live - - 0.1 - -`,
+      `${STABLE} - IdentityDO do_rows_read unmapped - live - - 5 - -`,
+      `${STABLE} - IdentityDO do_duration_gb_s unmapped - live - - 0.1 - -`,
+      `${STABLE} - IdentityDO do_rows_read unmapped - live - - 7 - -`,
       `${STABLE} - ScopeDO do_requests script ${OWNER} live - - 10 9 11`,
       // A listed vertical's scope is the installing tenant's, not the owner's. Zeros write no row.
       `${STABLE} ${LIVE} ScopeDO do_duration_gb_s scope ${INSTALLER} live - - 1.5 - -`,
@@ -128,7 +130,24 @@ describe('the Cloudflare cost rollup', () => {
       `${PER_VERSION} ${PREVIEW} - do_duration_gb_s scope ${OWNER} preview ${VERSION} pr-7 0.25 - -`,
       `${PER_VERSION} ${PREVIEW} - do_rows_written scope ${OWNER} preview ${VERSION} pr-7 1700000 - -`,
     ]);
-    expect(listCostRollupDayRows(sql)).toMatchObject([{ day: DAY, rows: 12, error: null, saturated: false }]);
+    expect(listCostRollupDayRows(sql)).toMatchObject([{ day: DAY, rows: 14, error: null, saturated: false }]);
+  });
+
+  it('attributes a day read before its scopes were known once their object ids are recorded', async () => {
+    const { sql, host } = directory();
+    await sweep(host, { cloudflareCosts: costs(async () => USAGE) });
+    const preview = () => listCostDayRows(sql).filter((r) => r.objectId === hex('b'));
+    expect(preview().map((r) => `${r.attribution} ${r.tenantId} ${r.scopeId} ${r.previewTag}`)).toEqual([
+      'unmapped null null null',
+      'unmapped null null null',
+    ]);
+    // The ids arrive on a later pass; the day is not read again, its rows are attributed in place.
+    const later = await sweep(host, { scopeObjects: { read: objectIdOf }, cloudflareCosts: costs(async () => Promise.reject(new Error('unused'))) });
+    expect(later.cloudflareCosts).toMatchObject({ due: 0, read: 0 });
+    expect(preview().map((r) => `${r.attribution} ${r.tenantId} ${r.scopeId} ${r.previewTag}`)).toEqual([
+      `scope ${OWNER} ${PREVIEW} pr-7`,
+      `scope ${OWNER} ${PREVIEW} pr-7`,
+    ]);
   });
 
   it('keeps a failed day unread and its rows untouched, and asks a failed scope again only after the retry', async () => {
@@ -148,7 +167,7 @@ describe('the Cloudflare cost rollup', () => {
     });
     expect(healed.scopeObjects).toMatchObject({ recorded: 2 });
     expect(healed.cloudflareCosts).toMatchObject({ read: 1, streak: null });
-    expect(listCostRollupDayRows(sql)).toMatchObject([{ day: DAY, error: null, rows: 12 }]);
+    expect(listCostRollupDayRows(sql)).toMatchObject([{ day: DAY, error: null, rows: 14 }]);
     // A scope whose data moves to another script holds a new object, so it is due again; the
     // preview fork comes first, newest.
     db.exec(`UPDATE scopes SET serving_ref = 'tenant-a-crm-eu' WHERE scope_id = '${LIVE}'`);

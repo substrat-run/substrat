@@ -2420,6 +2420,11 @@ export const costDay = z.object({
   scopeId: scopeId.nullable(),
   /** The Durable Object class the namespace holds, when Cloudflare still lists it; null otherwise. */
   objectClass: z.string().min(1).nullable(),
+  /**
+   * The Durable Object a per-object dimension was read from; null for a script-grain one. Kept so a
+   * row read before its scope's id was recorded is attributed once it is.
+   */
+  objectId: z.string().min(1).nullable(),
   dimension: costDimension,
   attribution: costAttribution,
   /** Null when the directory names no tenant for the row (`unmapped`, `platform`, `unknown`). */
