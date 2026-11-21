@@ -4,11 +4,11 @@
  * entry's origin. `MeteredScopeDO` (test/worker.ts) records the points where a hosted object would
  * write them; `UnmeteredScopeDO` is the same class with no dataset, the overhead probe's baseline.
  */
-import { env } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { permissionKey, principalId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { SCOPE_WORK_DATA_POINT_LAYOUT } from '../src/scope-work.js';
+import { SCOPE_WORK_DATA_POINT_LAYOUT, ScopeWorkMeter } from '../src/scope-work.js';
 import { CloudflareScopeHost } from './test-host.js';
 import { SCOPE_WORK_POINTS, SCOPE_WORK_REFUSES } from './worker.js';
 
@@ -112,6 +112,29 @@ describe('scope work: rows per invocation, by origin (#3316)', () => {
     expect(byEntry.get('migration-pass')!.written).toBeGreaterThan(0);
     // The invoke's own point holds what the refusal read, never the pass's writes.
     expect(byEntry.get('invoke')?.written ?? 0).toBeLessThan(byEntry.get('migration-pass')!.written);
+  });
+
+  it("counts every statement of a batch, the runtime's cursor reporting only the last", async () => {
+    // On the runtime's own handle, through a meter of its own: what a batch costs, statement by statement.
+    const stub = env.UNMETERED_SCOPE.get(env.UNMETERED_SCOPE.idFromName(ulid()));
+    await runInDurableObject(stub, async (_instance, state) => {
+      const points: Point[] = [];
+      const meter = new ScopeWorkMeter(
+        { writeDataPoint: (p) => void points.push(p as Point) },
+        { tenant: () => null, vertical: null, scopeId: null, objectId: 'o', versionId: null, kind: null },
+      );
+      const sql = meter.counting(state.storage.sql);
+      sql.exec('CREATE TABLE zb (id INTEGER PRIMARY KEY, v TEXT)');
+      const last = meter.run('batch', 'operation', () =>
+        sql.exec("INSERT INTO zb (v) VALUES ('a'); SELECT v FROM zb; -- a comment\nINSERT INTO zb (v) VALUES (?)", 'b'),
+      );
+      // The caller's binding reached the last statement, and its cursor is the one returned.
+      expect(last.toArray()).toEqual([]);
+      expect(sql.exec('SELECT v FROM zb ORDER BY id').toArray()).toEqual([{ v: 'a' }, { v: 'b' }]);
+      expect(points.map(named).find((p) => p.entry === 'batch')).toMatchObject({ written: 2, read: 1, statements: 3 });
+      // A parameter anywhere but the last statement is still refused, as the runtime refuses it.
+      expect(() => sql.exec("INSERT INTO zb (v) VALUES (?); INSERT INTO zb (v) VALUES ('c')", 'x')).toThrow(/parameter bindings/);
+    });
   });
 
   it('a dataset that refuses the point does not fail the work it counted', async () => {

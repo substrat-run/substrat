@@ -37,7 +37,7 @@ const SOURCE = 'packages/vertical-host/src/invocation-log.ts';
 const GATE_SOURCE = 'packages/control-plane-api/platform-entry/wire-gate.ts';
 const ROUTED_NODE_SOURCE = 'packages/vertical-host/src/routed-node.ts';
 /** #3316: the global key the entry publishes its \`AsyncLocalStorage\` under, for the scope-work meter. */
-const SCOPE_WORK_SOURCE = 'packages/adapter-cloudflare/src/scope-work.ts';
+const SCOPE_WORK_SOURCE = 'packages/adapter-cloudflare/src/async-local-storage-global.ts';
 /** Where the verifier spends a nonce (RFC wire-signing §4): the host the vertical registered. */
 const NONCE_STORE_SOURCE = 'packages/control-plane-api/platform-entry/nonce-store.ts';
 const PLACEHOLDER = '__SUBSTRAT_VERTICAL_ENTRY__';

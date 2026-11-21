@@ -37,6 +37,8 @@
  * Whose each origin is — the tenant's usage or the platform's — is an owner decision (#3316); this
  * only names them.
  */
+import { blankSqlComments, executableSqlStatements, piecesReproduce } from '@substrat-run/kernel';
+import { ASYNC_LOCAL_STORAGE_GLOBAL } from './async-local-storage-global.js';
 import type { AnalyticsEngineDatasetLike } from './connector-calls.js';
 
 /**
@@ -184,13 +186,7 @@ interface AsyncLocalStorageLike<T> {
 }
 type AsyncLocalStorageClass = new <T>() => AsyncLocalStorageLike<T>;
 
-/**
- * The global key the platform entry publishes its `AsyncLocalStorage` class under, at module load
- * (`tools/platform-entry-emit.mts`). A pushed script always has the class there (the uploader gives
- * it `nodejs_als`), but the adapter cannot import `node:async_hooks` itself: the scaffold and the
- * dashboard bundle it with no node flag (#2245, `lint:worker-node-imports`).
- */
-export const ASYNC_LOCAL_STORAGE_GLOBAL = 'substrat.AsyncLocalStorage';
+export { ASYNC_LOCAL_STORAGE_GLOBAL };
 
 /** The platform entry's class, else node's (`nodejs_compat`, the workerd test pool), else none. */
 export function asyncLocalStorageClass(): AsyncLocalStorageClass | undefined {
@@ -262,9 +258,30 @@ export class ScopeWorkMeter {
     return this.dropped;
   }
 
-  /** `raw` with every `exec` counted. Everything else on it passes straight through. */
+  /**
+   * `raw` with every `exec` counted. Everything else on it passes straight through.
+   *
+   * A call holding several statements is counted per statement: the runtime's cursor for such a
+   * call reports the LAST statement's rows only, so the batch is run as the kernel's splitter cuts
+   * it (`executableSqlStatements`, the boundaries `guardSpine` runs a schema change at), and only
+   * when the pieces are the whole call (`piecesReproduce`). That is the batch's own behaviour: the
+   * runtime runs a batch's statements in order, each to completion, keeping earlier writes when a
+   * later statement fails, and binds parameters to the last statement only — so the earlier pieces
+   * run unbound and are read to the end, and the last gets the caller's bindings and returns its
+   * cursor. A batch that misplaced a parameter is still refused, in the runtime's per-statement
+   * words. A call that does not split cleanly runs whole, as before, and counts its last statement.
+   */
   counting(raw: SqlStorage): SqlStorage {
     const exec = (query: string, ...bindings: unknown[]) => {
+      const pieces = this.paused ? null : this.batchOf(query);
+      if (pieces) {
+        for (let i = 0; i < pieces.length - 1; i++) {
+          const earlier = raw.exec(pieces[i]!);
+          for (const rows = earlier.raw(); !rows.next().done; );
+          this.note(earlier);
+        }
+        query = pieces[pieces.length - 1]!;
+      }
       const cursor = raw.exec(query, ...bindings);
       this.note(cursor);
       return cursor;
@@ -276,6 +293,22 @@ export class ScopeWorkMeter {
         return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
       },
     });
+  }
+
+  /** The batches this object has run, split once: a statement's text is almost always a constant. */
+  private readonly batches = new Map<string, readonly string[] | null>();
+
+  /** `query`'s statements when it holds more than one and they are the whole of it, else null. */
+  private batchOf(query: string): readonly string[] | null {
+    if (!query.includes(';')) return null;
+    let pieces = this.batches.get(query);
+    if (pieces === undefined) {
+      const split = executableSqlStatements(query);
+      pieces = split.length > 1 && piecesReproduce(blankSqlComments(query), split) ? split : null;
+      if (this.batches.size >= 256) this.batches.clear();
+      this.batches.set(query, pieces);
+    }
+    return pieces;
   }
 
   /**

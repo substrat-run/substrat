@@ -639,6 +639,9 @@ export const INDEX_VALUE_EXPORTS = [
   'pendingCopyKeepAliveParams',
   // #3108: the principal a persona is seated as in a deployed preview, stable across pushes.
   'personaPrincipal',
+  // #3316: whether a statement split is the whole call — the scope-work meter splits a batch
+  // to count each statement's rows only when it is, as `guardSpine` does.
+  'piecesReproduce',
   'planExportBatch',
   'planMigrations',
   'platformIntentFailureMessage',
