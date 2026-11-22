@@ -1,5 +1,19 @@
 # @substrat-run/demo-notes
 
+## 0.2.9
+
+### Patch Changes
+
+- Updated dependencies [ef699c1]
+- Updated dependencies [ef699c1]
+- Updated dependencies [98e8423]
+  - @substrat-run/contracts@0.207.0
+  - @substrat-run/kernel@0.207.0
+  - @substrat-run/vertical-host@0.207.0
+  - @substrat-run/demo-todo@1.0.20
+  - @substrat-run/adapter-sqlite@0.207.0
+  - @substrat-run/dev-issuer@0.9.9
+
 ## 0.2.8
 
 ### Patch Changes

@@ -1,5 +1,30 @@
 # @substrat-run/control-plane
 
+## 0.19.9
+
+### Patch Changes
+
+- ef699c1: The scheduled pass runs the connector sweep after every other phase, and `CONNECTOR_SWEEP_PAUSED` pauses named connections' sweeps.
+- 98e8423: Preview forks can copy less than all of prod (#3232). `substrat preview create --sample <n>` copies the newest n rows of each table, among those whose parents it copied, and the events, attachments, grants and links about them. `--max-rows <n>` counts the rows a fork would copy before it starts and refuses it above n, with the count and the largest tables; `--sample-over-cap <n>` copies that sample instead. The generated deploy workflow passes them from the `SUBSTRAT_PREVIEW_SAMPLE`, `SUBSTRAT_PREVIEW_MAX_ROWS` and `SUBSTRAT_PREVIEW_SAMPLE_OVER_CAP` repository variables; unset, a preview copies prod whole as before.
+- Updated dependencies [ef699c1]
+- Updated dependencies [ef699c1]
+- Updated dependencies [98e8423]
+  - @substrat-run/contracts@0.207.0
+  - @substrat-run/kernel@0.207.0
+  - @substrat-run/adapter-cloudflare@0.207.0
+  - @substrat-run/vertical-host@0.207.0
+  - @substrat-run/control-plane-api@0.207.0
+  - @substrat-run/connector-bolagsverket@0.1.3
+  - @substrat-run/connector-fortnox@0.8.5
+  - @substrat-run/connector-mail-in@0.1.44
+  - @substrat-run/connector-microsoft365@0.0.68
+  - @substrat-run/connector-planima@0.2.104
+  - @substrat-run/connector-scrive@0.15.9
+  - @substrat-run/connector-shopify@0.0.3
+  - @substrat-run/connector-stripe@0.0.9
+  - @substrat-run/connector-woocommerce@0.0.13
+  - @substrat-run/model-providers@0.5.97
+
 ## 0.19.8
 
 ### Patch Changes

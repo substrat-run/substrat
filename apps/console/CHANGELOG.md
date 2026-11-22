@@ -1,5 +1,18 @@
 # @substrat-run/console
 
+## 0.14.124
+
+### Patch Changes
+
+- ef699c1: The Sweeps view filters by the new connector-attempt kind and started outcome.
+- Updated dependencies [ef699c1]
+- Updated dependencies [ef699c1]
+- Updated dependencies [98e8423]
+  - @substrat-run/contracts@0.207.0
+  - @substrat-run/kernel@0.207.0
+  - @substrat-run/control-plane-api@0.207.0
+  - @substrat-run/elements@0.9.2
+
 ## 0.14.123
 
 ### Patch Changes

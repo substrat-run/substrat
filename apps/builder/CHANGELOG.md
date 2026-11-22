@@ -1,5 +1,23 @@
 # @substrat-run/builder
 
+## 0.14.11
+
+### Patch Changes
+
+- Updated dependencies [ef699c1]
+- Updated dependencies [ef699c1]
+- Updated dependencies [98e8423]
+  - @substrat-run/contracts@0.207.0
+  - @substrat-run/kernel@0.207.0
+  - @substrat-run/adapter-cloudflare@0.207.0
+  - @substrat-run/control-plane-api@0.207.0
+  - @substrat-run/cli@0.62.0
+  - @substrat-run/engine-assistant@0.1.59
+  - @substrat-run/engine-metering@0.6.91
+  - @substrat-run/builder-workspace@0.13.23
+  - @substrat-run/model-providers@0.5.97
+  - @substrat-run/builder-generator@0.12.24
+
 ## 0.14.10
 
 ### Patch Changes
