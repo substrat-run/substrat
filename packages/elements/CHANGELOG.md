@@ -1,5 +1,13 @@
 # @substrat-run/elements
 
+## 0.9.2
+
+### Patch Changes
+
+- Updated dependencies [ef699c1]
+- Updated dependencies [98e8423]
+  - @substrat-run/contracts@0.207.0
+
 ## 0.9.1
 
 ### Patch Changes
