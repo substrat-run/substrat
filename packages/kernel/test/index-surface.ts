@@ -792,6 +792,7 @@ export const INDEX_VALUE_EXPORTS = [
   'rowCountTable',
   'rowlessAttachmentIds',
   'runAttachmentExtractor',
+  'runConnectorSweep',
   'runCrossVerticalFrom',
   'runDueJobRuns',
   'runJobPass',

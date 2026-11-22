@@ -74,6 +74,12 @@ describe('sweep runs payload: only schedule and freshness entries are accepted (
     const parsed = sweepRunsPayload.safeParse({ version: null, entries: [entryFor('freshness')] });
     expect(parsed.success).toBe(true);
   });
+
+  // #3324: `started` is the platform's attempt note; a scope's row says how a run went.
+  it('refuses a scope-drained entry whose outcome is started', () => {
+    const parsed = sweepRunsPayload.safeParse({ version: null, entries: [{ ...entryFor('schedule'), outcome: 'started' }] });
+    expect(parsed.success).toBe(false);
+  });
 });
 
 describe('sweepRunEntry.platformRequests (#1840)', () => {

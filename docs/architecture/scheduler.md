@@ -132,6 +132,35 @@ edits. `ConnectorSweeper` is already the shape that seam would use.
 
 Good enough for the current fleet (single-digit tenants, one connector). Not the end state.
 
+### 3.2.1 One connection's sweep must not take the pass with it (#3324)
+
+The first bullet above happened. One connection's sweep downloaded more through the control
+plane's cron isolate than the isolate holds. The reset left no log and no sweep row, so the next
+pass ran the same sweep again. The connector phase ran before the drains, the failure digest and
+the directory backup, so for three days none of them ran either. What holds now:
+
+- **The connector sweep runs last.** The control plane calls `runPlatformSweep` with
+  `sweepConnectors: false` and runs `runConnectorSweep` at the end of `scheduled`, after the
+  digest, the hostname reconcile, the backup and the prunes. A sweep that still exhausts the
+  isolate now loses only the connections in flight.
+- **An attempt is on record before the work.** Each connection's sweep writes a
+  `connector-attempt` row (outcome `started`, no tenant) before its sweeper runs, and waits for
+  the write to land. An attempt with no `connector` row after it is one the pass died in. That
+  connection is waited out, 30 minutes after the first such attempt and doubling with each in a
+  row up to a day, and each retry files a staff ops-failure, so the digest names it.
+- **Each connection gets a share of the pass.** The `fetch` a sweeper is handed refuses past
+  64 MiB of response bodies or 10 minutes (`budgetedFetch`). Bytes are counted while a body
+  streams, so one response is never read past the share. A sweep that spends its share fails its
+  own row; the others continue.
+- **An operator can pause one connection.** `CONNECTOR_SWEEP_PAUSED` on the control plane is a
+  list of connection ids. Each is skipped with a `skipped` row saying it is paused until its id
+  is removed. Set it with `wrangler secret put` so it takes effect at once and survives deploys.
+  Revoking a connection also stops its sweep, but that is terminal for the tenant.
+
+Running each connection's sweep in its own invocation (a queue message per connection, or a
+connector script per provider, `docs/rfc/connector-scripts.md`) would bound one connection's memory
+on its own. It is not done here; the PR for #3324 sets out its cost.
+
 ### 3.3 The CP-less vertical's own timer (#461) — landed
 
 A **CP-less dispatch vertical** (scope-local-permissions.md §8 stage 3 — what `substrat push`
