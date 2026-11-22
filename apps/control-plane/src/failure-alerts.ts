@@ -100,13 +100,23 @@ export async function failureDigestWatermark(opts: {
   const floor = new Date(opts.passStartedAt.getTime() - SWEEP_INTERVAL_MS).toISOString();
   let previous: string | undefined;
   try {
-    const rows = await opts.admin.listSweepRuns(opts.actor, { limit: WATERMARK_ROWS });
-    for (const row of rows) {
+    // #3324: the pass's `platform-request` row too, written on every pass before its digest. The
+    // connector rows below are written after it, and a pass writes about two per connection, so
+    // they can fill the tail; this row still marks the previous pass when they do.
+    const [rows, passRows] = await Promise.all([
+      opts.admin.listSweepRuns(opts.actor, { limit: WATERMARK_ROWS }),
+      opts.admin.listSweepRuns(opts.actor, { kind: 'platform-request', limit: 1 }),
+    ]);
+    for (const row of [...rows, ...passRows]) {
       // #2672: a poll a vertical requested is written between passes, so it marks no pass: read as
       // the previous pass, it would move the window past a failure filed since that pass. The
       // sweep-run read cannot exclude them, so more than WATERMARK_ROWS of them since the pass leave
       // no pass row in the tail, and the window falls back to the floor: mailed twice, never zero.
       if (row.operation?.startsWith(SYNC_OPERATION_PREFIX)) continue;
+      // #3324: the connector sweep runs after the digest, so its rows are later than what that
+      // digest covered: read as the previous pass, a connector row would move the window past a
+      // connector failure filed before it in the same sweep, and that failure would never be mailed.
+      if (row.kind === 'connector' || row.kind === 'connector-attempt') continue;
       if (previous === undefined || row.at > previous) previous = row.at;
     }
   } catch (err) {

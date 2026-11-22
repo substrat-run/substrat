@@ -50,10 +50,10 @@ function failure(at: string, message: string, extra: Partial<OpsFailureEntry> = 
   };
 }
 
-function sweepRun(at: string): SweepRunEntry {
+function sweepRun(at: string, kind: SweepRunEntry['kind'] = 'schedule'): SweepRunEntry {
   return {
     id: ulid(),
-    kind: 'connector',
+    kind,
     unit: 'conn-1',
     outcome: 'ok',
     tenantId: null,
@@ -82,7 +82,7 @@ function stubAdmin(seed: { failures?: OpsFailureEntry[]; sweepRuns?: SweepRunEnt
     listSweepRuns: async (_actor, filter) => {
       calls.sweepFilters.push(filter);
       // Newest WRITTEN first — by id, as the adapter orders — never by `at`.
-      const rows = [...(seed.sweepRuns ?? [])].sort((a, b) => (a.id < b.id ? 1 : -1));
+      const rows = [...(seed.sweepRuns ?? [])].filter((r) => !filter?.kind || r.kind === filter.kind).sort((a, b) => (a.id < b.id ? 1 : -1));
       return filter?.limit !== undefined ? rows.slice(0, filter.limit) : rows;
     },
     recordOpsFailure: async (entry) => {
@@ -128,8 +128,26 @@ describe('failureDigestWatermark', () => {
     expect(await failureDigestWatermark({ admin: stub.admin, actor: ACTOR, passStartedAt: T0 })).toBe(
       '2026-09-18T09:46:00.000Z',
     );
-    // Bounded: it reads the recent tail, never the whole table.
-    expect(stub.calls.sweepFilters).toEqual([{ limit: 25 }]);
+    // Bounded: it reads the recent tail and the newest pass row, never the whole table.
+    expect(stub.calls.sweepFilters).toEqual([{ limit: 25 }, { kind: 'platform-request', limit: 1 }]);
+  });
+
+  // #3324: the connector sweep runs after the digest, so a failure it files and a connector row it
+  // writes after that are both later than the digest that pass sent.
+  it('mails a connector failure filed after the digest, though a connector row was written after it', async () => {
+    const pass = sweepRun('2026-09-18T09:45:30.000Z', 'platform-request');
+    const crashed = failure('2026-09-18T09:47:00.000Z', 'the sweep did not complete');
+    const after = [
+      sweepRun('2026-09-18T09:48:00.000Z', 'connector-attempt'),
+      sweepRun('2026-09-18T09:48:01.000Z', 'connector'),
+    ];
+    // A full tail of connector rows: the pass row is read on its own, not from the tail.
+    const filler = Array.from({ length: 30 }, (_, i) => sweepRun(`2026-09-18T09:49:${String(i).padStart(2, '0')}.000Z`, 'connector'));
+    const stub = stubAdmin({ sweepRuns: [pass, ...after, ...filler], failures: [crashed] });
+    expect(await failureDigestWatermark({ admin: stub.admin, actor: ACTOR, passStartedAt: T0 })).toBe(pass.at);
+    const transport = new MockEmailTransport();
+    expect((await runPhase(stub, transport)).status).toBe('sent');
+    expect(transport.last!.text).toContain('the sweep did not complete');
   });
 
   it('no sweep-run rows at all: one cron interval before the pass, not forever', async () => {
