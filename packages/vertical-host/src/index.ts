@@ -64,6 +64,7 @@ import {
   scopeLineage,
   type ScopeLineage,
   scopeId as scopeIdOf,
+  scopeDumpSample,
   tenantId as tenantIdOf,
   principalId as principalIdOf,
   connectionId as connectionIdOf,
@@ -159,6 +160,8 @@ import {
   type ScopeDumpChanges,
   type ScopeDumpPage,
   type ScopeDumpPageTable,
+  type ScopeDumpSample,
+  type ScopeCopyEstimate,
   type ScopeTable,
   type ScopeQueryResult,
   type EntitlementGrant,
@@ -399,10 +402,13 @@ export interface VerticalScopeHost {
   /** #2450: one page of the stamped export, for a scope too large to cross in one call. Optional,
    *  like `exportScopeStampedLocal`: the route answers 501 without it, and the platform then
    *  carries the scope whole. */
-  exportScopePageLocal?(scopeId: ScopeId, cursor: string | null, opts?: { stamp?: boolean; capture?: string }): Promise<ScopeDumpPage>;
+  exportScopePageLocal?(scopeId: ScopeId, cursor: string | null, opts?: { stamp?: boolean; capture?: string; sample?: ScopeDumpSample }): Promise<ScopeDumpPage>;
   /** #2450: one batch of what the scope took since a capture's first page. Optional: the route
    *  answers 501 without it, and the platform then copies only at a quiet moment. */
-  exportScopeChangesLocal?(scopeId: ScopeId, copyId: string, seq: number): Promise<ScopeDumpChanges>;
+  exportScopeChangesLocal?(scopeId: ScopeId, copyId: string, seq: number, opts?: { sample?: ScopeDumpSample }): Promise<ScopeDumpChanges>;
+  /** #3232: how many rows a copy would move, whole or under a sample. Optional: the route answers
+   *  501 without it, and the platform then copies without an estimate. */
+  estimateScopeCopyLocal?(scopeId: ScopeId, opts?: { sample?: { rows: number } }): Promise<ScopeCopyEstimate>;
   /** #2450: end a capture, if it is still open. */
   endScopeCaptureLocal?(scopeId: ScopeId, copyId: string): Promise<{ ended: boolean }>;
   /** #2450: stage one page of a dump into this scope; page 0 starts (and replaces) a stage. */
@@ -1621,12 +1627,26 @@ export function mountPlatformSurface<Env extends object>(
     // `stamp=1` is a carry's export, as on `/internal/export`: its first page mints the load stamp.
     // `capture=<copy id>`: the pages of a copy that catches up on the writes taken meanwhile.
     const capture = c.req.query('capture');
+    // #3232 `sample=<json>`: a sampled copy, its plan (`{ rows }` on the first page, the floors after).
+    const sample = sampleQuery(c.req.query('sample'));
     return c.json(
       await host.exportScopePageLocal(scopeId, cursor ? cursor : null, {
         stamp: c.req.query('stamp') === '1',
         ...(capture ? { capture } : {}),
+        ...(sample ? { sample } : {}),
       }),
     );
+  });
+
+  // #3232: how many rows a copy of the scope would move, read before a fork starts, so a fork too
+  // costly to copy is refused before it writes anything. `sample=<rows>` counts that sample instead.
+  app.get('/internal/copy-estimate', async (c) => {
+    const scopeId = scopeIdOf.parse(c.req.query('scopeId'));
+    const host = deps.hostFor(c.env);
+    if (!host.estimateScopeCopyLocal) return refuseStatus(c, 501, 'this deployment cannot estimate a copy (#3232) — redeploy it');
+    const rows = c.req.query('sample');
+    const sample = rows === undefined ? undefined : { rows: scopeDumpSample.shape.rows.parse(Number(rows)) };
+    return c.json(await host.estimateScopeCopyLocal(scopeId, sample ? { sample } : {}));
   });
 
   // #2450: a copy that needs no quiet moment. The capture its first page opened logs every row the
@@ -1635,8 +1655,10 @@ export function mountPlatformSurface<Env extends object>(
   app.post('/internal/export-changes', async (c) => {
     const host = deps.hostFor(c.env);
     if (!host.exportScopeChangesLocal) return refuseStatus(c, 501, 'this deployment cannot catch a copy up (#2450) — redeploy it');
-    const body = z.object({ scopeId: scopeIdOf, copyId: z.string().min(1), seq: z.number().int().nonnegative() }).parse(await c.req.json());
-    return c.json(await host.exportScopeChangesLocal(body.scopeId, body.copyId, body.seq));
+    const body = z
+      .object({ scopeId: scopeIdOf, copyId: z.string().min(1), seq: z.number().int().nonnegative(), sample: scopeDumpSample.optional() })
+      .parse(await c.req.json());
+    return c.json(await host.exportScopeChangesLocal(body.scopeId, body.copyId, body.seq, body.sample ? { sample: body.sample } : {}));
   });
 
   app.post('/internal/capture/end', async (c) => {
@@ -3431,3 +3453,20 @@ export {
   refuseStatus,
 } from './errors.js';
 export type { ClassifiedProblem, ErrorClassification } from './errors.js';
+
+/**
+ * #3232: the `sample` query of `/internal/export-page`, a JSON plan (`{ rows }`, or `{ rows, floors }`
+ * once the first page planned it). Absent is a whole copy; anything that is not a plan is a 400.
+ */
+function sampleQuery(raw: string | undefined): ScopeDumpSample | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new HTTPException(400, { message: 'sample: not a JSON sample plan' });
+  }
+  const plan = scopeDumpSample.safeParse(parsed);
+  if (!plan.success) throw new HTTPException(400, { message: `sample: ${plan.error.issues[0]?.message ?? 'not a sample plan'}` });
+  return plan.data;
+}

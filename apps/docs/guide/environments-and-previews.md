@@ -162,6 +162,40 @@ For a fork, `preview create` includes this settings line:
   Settings: only non-secret Env tab settings explicitly declared for preview carryover are delivered; other settings use the deployment's defaults.
 ```
 
+### Copying less than all of prod
+
+A fork copies every row of prod, and each row copied is several rows written into the preview (it
+is staged, then loaded, then indexed). For a large prod that is most of what a preview costs. Two
+options make it cheaper:
+
+```bash
+substrat preview create . --tag pr-42 --sample 1000            # the newest 1000 rows of each table
+substrat preview create . --tag pr-42 --max-rows 200000        # refuse a copy larger than this
+substrat preview create . --tag pr-42 --max-rows 200000 --sample-over-cap 1000   # whole while small, a sample once not
+```
+
+- **`--sample <n>`** copies the newest `n` rows of each of your tables (and your engines'), among
+  the rows whose parents it copied. A parent is what a column's `REFERENCES` names, so a message
+  is copied only with its conversation, and a conversation only with its contact. The spine
+  follows: an event, an attachment, a grant or a link about a row the sample left behind is left
+  behind too. Everything else (roles, settings, the migration journal) is copied whole. The newest
+  rows are fixed when the copy starts, and rows written while it runs are copied too, if their
+  parents were.
+- **`--max-rows <n>`** counts what the fork would copy before it copies anything. Above `n`, the
+  create is refused with the count and the largest tables, and the preview it would have replaced
+  is left as it was. With **`--sample-over-cap <n>`** it copies that sample instead, and is
+  refused only when the sample is over `n` too. The `Data:` line the create prints says which
+  copy you got.
+
+Two edges. A table that refers to itself (a reply to a message) keeps every row whose other
+parents were copied, so a reply can point at one the sample left behind. And a reference the
+database does not declare (an id held in a plain text column) is not followed. A prod deployment
+built before samples refuses `--sample`, and is copied ungated under `--max-rows`.
+
+In the [generated workflow](#sticky-per-pr-and-per-build-urls), the repository variables
+`SUBSTRAT_PREVIEW_SAMPLE`, `SUBSTRAT_PREVIEW_MAX_ROWS` and `SUBSTRAT_PREVIEW_SAMPLE_OVER_CAP` pass
+these to the preview step. Unset, a preview copies prod whole.
+
 ### A vertical's *first* environment — the clean room
 
 A fork needs something to fork. A brand-new vertical has no prod scope yet — exactly when a

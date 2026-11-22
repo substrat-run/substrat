@@ -357,13 +357,50 @@ export type ScopeDumpPageTable = z.infer<typeof scopeDumpPageTable>;
  * reader may catch up on writes instead of comparing `revision`. A host that predates the echo
  * leaves it out, and its pages are read as plain ones.
  */
+/** The largest `rows` a sampled copy takes (#3232): past it, a sample is not much cheaper than the scope. */
+export const SCOPE_DUMP_SAMPLE_MAX_ROWS = 100_000;
+
+/**
+ * A sampled copy (#3232): what a preview fork copies instead of the whole scope. `rows` is asked
+ * for: the newest `rows` rows of every table of the vertical's and its engines', among those whose
+ * declared parents (`REFERENCES`) were copied, so children follow their parents. The spine follows
+ * the rows: an event, attachment, grant or link naming a row the sample left behind is left behind
+ * too, and everything else of the spine is copied whole.
+ *
+ * `floors` is the source's answer, minted with the copy's first page: per table, the rowid its
+ * newest `rows` start at (`null`: fewer than that, so all of it), so every later page and change
+ * batch reads the same sample however the scope moves meanwhile. A reader hands it back unchanged.
+ */
+export const scopeDumpSample = z.object({
+  rows: z.number().int().min(1).max(SCOPE_DUMP_SAMPLE_MAX_ROWS),
+  floors: z.record(z.string(), z.number().int().nullable()).optional(),
+});
+export type ScopeDumpSample = z.infer<typeof scopeDumpSample>;
+
 export const scopeDumpPage = z.object({
   tables: z.array(scopeDumpPageTable),
   next: z.string().min(1).nullable(),
   loadStamp: z.string().min(1).nullable(),
   revision: z.string().min(1).nullable(),
   captured: z.literal(true).optional(),
+  /**
+   * The sample this page was read under (#3232), floors included: a page read without one, or by a
+   * host that predates samples, leaves it out, and a reader that asked for one refuses such a page.
+   */
+  sample: scopeDumpSample.optional(),
 });
+
+/**
+ * How many rows a copy of a scope would move (#3232), read before it starts: per table, and summed.
+ * With `sample`, the rows of that sample. A table too large to count under a sample's filter in one
+ * turn is counted on a probe of its rows and scaled (`estimated`); every other count is exact.
+ */
+export const scopeCopyEstimate = z.object({
+  rows: z.number().int().nonnegative(),
+  tables: z.array(z.object({ name: z.string().min(1), rows: z.number().int().nonnegative(), estimated: z.literal(true).optional() })),
+  sample: scopeDumpSample.optional(),
+});
+export type ScopeCopyEstimate = z.infer<typeof scopeCopyEstimate>;
 export type ScopeDumpPage = z.infer<typeof scopeDumpPage>;
 
 /**

@@ -7,10 +7,12 @@ export default defineConfig({
   // here. `SUBSTRAT_PROBE_DO_LIMITS=1` runs the exhaustive limit measurement (test/do-sql-limits.test.ts).
   // `SUBSTRAT_PROBE_WRITE_REVISION=1` runs #1722's write-revision cost measurement (test/write-revision-cost.test.ts).
   // `SUBSTRAT_PROBE_SCOPE_WORK=1` runs #3316's scope-work meter overhead measurement (test/scope-work.test.ts).
+  // `SUBSTRAT_PROBE_SAMPLED_COPY=1` runs #3232's rows-written measurement, whole vs sampled (test/sampled-copy.test.ts).
   define: {
     __PROBE_DO_LIMITS__: JSON.stringify(process.env.SUBSTRAT_PROBE_DO_LIMITS === '1'),
     __PROBE_WRITE_REVISION__: JSON.stringify(process.env.SUBSTRAT_PROBE_WRITE_REVISION === '1'),
     __PROBE_SCOPE_WORK__: JSON.stringify(process.env.SUBSTRAT_PROBE_SCOPE_WORK === '1'),
+    __PROBE_SAMPLED_COPY__: JSON.stringify(process.env.SUBSTRAT_PROBE_SAMPLED_COPY === '1'),
   },
   // The contract suites carry state across `it` blocks (e.g. a guard write read back by a later
   // test), and the plugin never rolls storage back per test. Fresh scope/tenant ids per suite

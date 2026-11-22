@@ -69,7 +69,7 @@ export const SCOPE_WORK_ORIGINS = {
     'routeExecutorEventToPlatform',
   ],
   'event-import': ['importApply', 'importCursorMove', 'importStateRead'],
-  export: ['exportDump', 'exportDumpPage', 'exportDumpChanges', 'exportDumpStamped', 'endDumpCapture'],
+  export: ['exportDump', 'exportDumpPage', 'exportDumpChanges', 'exportDumpStamped', 'endDumpCapture', 'estimateDump'],
   load: [
     'importDump', 'importDumpChecked', 'importDumpJudged', 'importDumpProjected', 'stageDumpPage', 'stageDumpChanges',
     'commitStagedDumpChecked', 'commitStagedDumpJudged', 'discardStagedDump', 'keptCopy', 'releaseKeptCopy',

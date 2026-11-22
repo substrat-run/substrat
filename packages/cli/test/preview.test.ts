@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   parseTtlHours,
+  parsePreviewCopy,
   formatPreviews,
   createPreview,
   deletePreview,
@@ -26,6 +27,24 @@ describe('parseTtlHours', () => {
   });
   it('rejects garbage rather than sending a nonsense TTL', () => {
     expect(() => parseTtlHours('soon')).toThrow(/invalid --ttl/);
+  });
+});
+
+describe('parsePreviewCopy (#3232)', () => {
+  it('reads the three counts, and an empty value as no flag (an unset workflow variable)', () => {
+    expect(parsePreviewCopy({ sample: '500' })).toEqual({ sample: 500 });
+    expect(parsePreviewCopy({ maxRows: '200000', sampleOverCap: '1000' })).toEqual({ maxRows: 200_000, sampleOverCap: 1000 });
+    expect(parsePreviewCopy({ sample: '', maxRows: ' ' })).toEqual({});
+  });
+  it.each([
+    [{ sample: 'many' }, /invalid --sample 'many'/],
+    [{ sample: '100001' }, /from 1 to 100000/],
+    [{ maxRows: '0' }, /invalid --max-rows/],
+    [{ sample: '5', empty: true }, /--empty copies nothing/],
+    [{ sampleOverCap: '5' }, /needs --max-rows/],
+    [{ sample: '5', maxRows: '9', sampleOverCap: '5' }, /not both/],
+  ])('refuses %j before anything is pushed', (raw, message) => {
+    expect(() => parsePreviewCopy(raw)).toThrow(message);
   });
 });
 
@@ -123,6 +142,15 @@ describe('preview client', () => {
     await createPreview({ ...base, tag: 'pr-1', versionId: '01J', empty: true });
     // No sourceScopeId when clean-room; `empty` rides as an explicit true.
     expect(calls[0]!.body).toEqual({ tag: 'pr-1', versionId: '01J', empty: true, async: true });
+  });
+
+  it('sends what a fork copies (#3232)', async () => {
+    const { calls } = stub(() => ({
+      status: 201,
+      body: { scopeId: 'S1', hostname: 'h--pr-2.x', url: 'https://h--pr-2.x', versionId: '01J', reused: false },
+    }));
+    await createPreview({ ...base, tag: 'pr-2', versionId: '01J', copy: { maxRows: 1000, sampleOverCap: 50 } });
+    expect(calls[0]!.body).toEqual({ tag: 'pr-2', versionId: '01J', maxRows: 1000, sampleOverCap: 50, async: true });
   });
 
   describe('a copy that runs in the background (#2450 step 2)', () => {
