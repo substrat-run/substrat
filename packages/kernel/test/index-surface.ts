@@ -387,6 +387,8 @@ export const INDEX_VALUE_EXPORTS = [
   'copyRestoreFence',
   'copyRestoreFenceLapsed',
   'countChecks',
+  // #3232: a preview fork's sample, planned and read by the hosting adapter's own SQL.
+  'countDumpRows',
   'createAtomic',
   'createAttachmentVerbs',
   'createCapabilityVerbs',
@@ -642,6 +644,8 @@ export const INDEX_VALUE_EXPORTS = [
   // #3316: whether a statement split is the whole call — the scope-work meter splits a batch
   // to count each statement's rows only when it is, as `guardSpine` does.
   'piecesReproduce',
+  // #3232: a preview fork's sample, planned and read by the hosting adapter's own SQL.
+  'planDumpSample',
   'planExportBatch',
   'planMigrations',
   'platformIntentFailureMessage',
@@ -802,6 +806,10 @@ export const INDEX_VALUE_EXPORTS = [
   // #2514: the runtime's running digest where it has one; the platform's client reads streams with it.
   'runtimeSha256',
   'samePeerVertical',
+  // #3232: a preview fork's sample, planned and read by the hosting adapter's own SQL.
+  'sampleFilters',
+  // #3232: a preview fork's sample, planned and read by the hosting adapter's own SQL.
+  'sampleGraph',
   'scheduleStateHasKind',
   'scopeMoveOf',
   'scopeNotHeldRefusal',
