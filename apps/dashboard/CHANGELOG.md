@@ -1,5 +1,29 @@
 # @substrat-run/dashboard
 
+## 0.49.24
+
+### Patch Changes
+
+- ff7fc65: An app's installs can be paid into different Stripe accounts: the landing pass binds each install to one payment connection only (`ConnectionBinder.exclusive`), and a tenant chooses which on the app's Integrations tab (`PUT /tenants/:t/scopes/:s/connections/:provider/choice`).
+- Updated dependencies [ec6c0ee]
+- Updated dependencies [5244ed9]
+- Updated dependencies [ff7fc65]
+- Updated dependencies [03d8f69]
+- Updated dependencies [498e9a4]
+- Updated dependencies [866be58]
+- Updated dependencies [a23e0a1]
+- Updated dependencies [a6146fc]
+  - @substrat-run/kernel@0.206.0
+  - @substrat-run/contracts@0.206.0
+  - @substrat-run/adapter-cloudflare@0.206.0
+  - @substrat-run/vertical-host@0.206.0
+  - @substrat-run/control-plane-api@0.206.0
+  - @substrat-run/connector-fortnox@0.8.4
+  - @substrat-run/engine-invites@0.9.83
+  - @substrat-run/engine-protocol@0.14.6
+  - @substrat-run/control-plane-client@0.9.6
+  - @substrat-run/model-providers@0.5.96
+
 ## 0.49.23
 
 ### Patch Changes

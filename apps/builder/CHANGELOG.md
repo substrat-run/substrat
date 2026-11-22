@@ -1,5 +1,30 @@
 # @substrat-run/builder
 
+## 0.14.10
+
+### Patch Changes
+
+- 03d8f69: The markup schedule (#3316): what a tenant is charged over cost is now data in the control plane, a default plus dated overrides per tenant, billed dimension and kind, set by staff and recorded in the admin log. Prices are computed at read with the decimal helpers; the model ledger and the builder studio price model calls from it, at today's 30%.
+- 498e9a4: Model tokens are marked up 30% over the provider's list price, up from 20%, everywhere the platform prices them: the default margin on platform-provided model calls a vertical makes (`DEFAULT_MODEL_MARGIN_PERCENT`, still overridable with `MODEL_MARGIN_PERCENT`), the hosted code-review spend limit that counts at that rate, and the builder studio's Usage pane. The builder now computes its factor with the ledger's `marginFactor` instead of a second copy.
+- Updated dependencies [ec6c0ee]
+- Updated dependencies [5244ed9]
+- Updated dependencies [ff7fc65]
+- Updated dependencies [03d8f69]
+- Updated dependencies [498e9a4]
+- Updated dependencies [866be58]
+- Updated dependencies [a23e0a1]
+- Updated dependencies [a6146fc]
+  - @substrat-run/kernel@0.206.0
+  - @substrat-run/contracts@0.206.0
+  - @substrat-run/adapter-cloudflare@0.206.0
+  - @substrat-run/control-plane-api@0.206.0
+  - @substrat-run/engine-assistant@0.1.58
+  - @substrat-run/engine-metering@0.6.90
+  - @substrat-run/builder-workspace@0.13.22
+  - @substrat-run/cli@0.61.1
+  - @substrat-run/model-providers@0.5.96
+  - @substrat-run/builder-generator@0.12.23
+
 ## 0.14.9
 
 ### Patch Changes
