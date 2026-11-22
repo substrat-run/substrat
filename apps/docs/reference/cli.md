@@ -538,6 +538,13 @@ the competing request receives the usual `202` progress answer and polls that jo
 `503` retry window ends first, rerun `create` after the active copy finishes. A failed, cancelled
 or superseded job discards its own staged copy. A stage whose job record is lost can be reclaimed
 only after the six-hour copy limit plus its lease safety margin.
+A fresh fork copies prod whole unless told otherwise. `--sample <n>` copies the newest `n` rows of
+each table, among those whose parents it copied, and the events, attachments and grants about
+them. `--max-rows <n>` counts the rows a fork would copy before it starts, and refuses it (`413`,
+with the count and the largest tables) above `n`. With `--max-rows`, `--sample-over-cap <n>` copies
+that sample instead of refusing. All three shape a fresh fork only: a push to an existing preview
+carries the preview's own data. See
+[copying less than all of prod](/guide/environments-and-previews#copying-less-than-all-of-prod).
 `--refresh` starts from a clean fork, and stops a copy still running, though not a newer push's:
 a refresh of an older version is refused as superseded, as any create of one is. `--ttl` defaults to `72h`; `--ttl none`
 **pins** the preview until you delete it. Default preview pushes use a semver *prerelease* label, so

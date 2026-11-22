@@ -253,6 +253,8 @@ import {
   type ScopeDumpChanges,
   type ScopeDumpPage,
   type ScopeDumpPageTable,
+  type ScopeDumpSample,
+  type ScopeCopyEstimate,
   type ScopeLineage,
   subjectShredReceipt,
   subjectAccessReceipt,
@@ -2228,9 +2230,11 @@ interface ScopeStubRpc {
   /** #1722: `exportDump` and the store's load stamp, read in one call. */
   exportDumpStamped(): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null }>;
   /** #2450: one page of `exportDumpStamped`; the first (`cursor` null) mints the load stamp. */
-  exportDumpPage(cursor: string | null, opts?: { stamp?: boolean; maxBytes?: number; capture?: string }): Promise<DoReply<ScopeDumpPage>>;
+  exportDumpPage(cursor: string | null, opts?: { stamp?: boolean; maxBytes?: number; capture?: string; sample?: ScopeDumpSample }): Promise<DoReply<ScopeDumpPage>>;
   /** #2450: one batch of what was written since the capture's first page; `final` ends it. */
-  exportDumpChanges(copyId: string, seq: number, opts?: { maxBytes?: number }): Promise<DoReply<ScopeDumpChanges>>;
+  exportDumpChanges(copyId: string, seq: number, opts?: { maxBytes?: number; sample?: ScopeDumpSample }): Promise<DoReply<ScopeDumpChanges>>;
+  /** #3232: how many rows a copy would move, whole or under a sample of `rows`. Reads only. */
+  estimateDump(opts?: { sample?: { rows: number } }): Promise<DoReply<ScopeCopyEstimate>>;
   /** #2450: end a capture, if it is open; the last one takes its triggers with it. */
   endDumpCapture(copyId: string): Promise<{ ended: boolean }>;
   /** #2450: stage one page for `commitStagedDumpChecked`; page 0 starts (and replaces) a stage. */
@@ -4279,15 +4283,24 @@ export class CloudflareScopeHost implements ScopeHost {
     cursor: string | null,
     /** `maxBytes`: a smaller page than `SCOPE_DUMP_PAGE_MAX_BYTES`, for a test that wants many.
      *  `capture`: a copy's id; its pages need no quiet moment (`exportScopeChangesLocal`). */
-    opts?: { stamp?: boolean; maxBytes?: number; capture?: string },
+    opts?: { stamp?: boolean; maxBytes?: number; capture?: string; sample?: ScopeDumpSample },
   ): Promise<ScopeDumpPage> {
     return unwrapReply(
       await this.scopeStub(scopeId).exportDumpPage(cursor, {
         stamp: opts?.stamp === true,
         ...(opts?.maxBytes !== undefined ? { maxBytes: opts.maxBytes } : {}),
         ...(opts?.capture !== undefined ? { capture: opts.capture } : {}),
+        ...(opts?.sample !== undefined ? { sample: opts.sample } : {}),
       }),
     );
+  }
+
+  /**
+   * How many rows a copy of this scope would move (#3232), behind the vertical's
+   * `/internal/copy-estimate`: whole, or under a sample of `rows` per table. Reads only.
+   */
+  async estimateScopeCopyLocal(scopeId: ScopeId, opts?: { sample?: { rows: number } }): Promise<ScopeCopyEstimate> {
+    return unwrapReply(await this.scopeStub(scopeId).estimateDump(opts?.sample ? { sample: opts.sample } : {}));
   }
 
   /**
@@ -4299,9 +4312,12 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     copyId: string,
     seq: number,
-    opts?: { maxBytes?: number },
+    opts?: { maxBytes?: number; sample?: ScopeDumpSample },
   ): Promise<ScopeDumpChanges> {
-    return unwrapReply(await this.scopeStub(scopeId).exportDumpChanges(copyId, seq, opts?.maxBytes !== undefined ? { maxBytes: opts.maxBytes } : {}));
+    return unwrapReply(await this.scopeStub(scopeId).exportDumpChanges(copyId, seq, {
+      ...(opts?.maxBytes !== undefined ? { maxBytes: opts.maxBytes } : {}),
+      ...(opts?.sample !== undefined ? { sample: opts.sample } : {}),
+    }));
   }
 
   /** End the capture `copyId` of this scope (#2450), if it is still open: a copy that stopped. */

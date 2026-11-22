@@ -436,6 +436,20 @@ describe('GitHub App client', () => {
       expect(yaml).toContain('set -euo pipefail');
     });
 
+    it('passes what a fork copies through three optional variables, so an unset one copies prod whole (#3232)', () => {
+      const yaml = deployWorkflowYaml({ branch: 'main', slug: 'hr-portal', cpUrl: 'https://console.example/api', previews: 'every-pr' });
+      for (const [name, flag] of [
+        ['SUBSTRAT_PREVIEW_SAMPLE', '--sample'],
+        ['SUBSTRAT_PREVIEW_MAX_ROWS', '--max-rows'],
+        ['SUBSTRAT_PREVIEW_SAMPLE_OVER_CAP', '--sample-over-cap'],
+      ]) {
+        // Read into the step's env, and passed as a flag only when set (`:+`), never interpolated into the script.
+        expect(yaml.split(`vars.${name} `)).toHaveLength(2);
+        expect(yaml).toContain(`${name}: \${{ vars.${name} }}`);
+        expect(yaml).toContain(`\${${name}:+${flag} "$${name}"}`);
+      }
+    });
+
     it('previews on request only a PR carrying the preview label, and every PR otherwise', () => {
       const base = { branch: 'main', slug: 'hr-portal', cpUrl: 'https://console.example/api' };
       // `on-request` is the default: a PR previews only when somebody asks.

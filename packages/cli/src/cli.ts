@@ -69,7 +69,7 @@ import { dataLossCheckRequired, formatDataLossCheck } from './data-loss-check.js
 import { cliVersion, warnIfDistStale } from './version.js';
 import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing, provisionScope, rebindScopeVertical, bindScopeVersion, scopeStatus } from './scope.js';
 import { printInstalls } from './installs.js';
-import { createPreview, deletePreview, listPreviews, formatPreviewLogin, formatPreviews, parseTtlHours } from './preview.js';
+import { createPreview, deletePreview, listPreviews, formatPreviewLogin, formatPreviews, parsePreviewCopy, parseTtlHours, type PreviewCopy } from './preview.js';
 import { writeCiWorkflow, detectDefaultBranch, nextStepsMessage } from './init.js';
 import { writeModelView } from './model.js';
 import { CannotRun, changesetCommand } from './changeset.js';
@@ -336,6 +336,12 @@ Usage:
                                               onto the same scope and renews its TTL; --refresh
                                               re-forks from prod. --ttl is the GC backstop
                                               (default 72h; 'none' pins the preview until deleted).
+                    [--sample <n>] [--max-rows <n>] [--sample-over-cap <n>]
+                                              --sample copies the newest n rows of each table
+                                              and what they reference, not all of prod;
+                                              --max-rows refuses a fork that would copy more
+                                              rows (estimated first); --sample-over-cap <n>
+                                              copies that sample instead of being refused.
                                               Takes push's own overrides too: --skip-lint,
                                               --allow-unserved-ui, --allow-unswept-schedules
                                               and --require-data-loss-check
@@ -1290,6 +1296,7 @@ async function cmdPreview(): Promise<void> {
   const sub = argv[1];
   const usage =
     'usage: substrat preview create [dir] --tag <tag> [--source-scope <id>] [--empty] [--ttl 72h|none] [--surface <s>] [--refresh]\n' +
+    '                               [--sample <n>] [--max-rows <n>] [--sample-over-cap <n>]\n' +
     '       substrat preview delete --tag <tag> [--slug <slug>]\n' +
     '       substrat preview ls [dir] [--slug <slug>]';
   const isDelete = sub === 'delete' || sub === 'rm' || sub === 'down';
@@ -1314,6 +1321,14 @@ async function cmdPreview(): Promise<void> {
     const slug = flag('slug') ?? meta.slug;
     if (!slug) {
       console.error('no --slug given and none in package.json');
+      process.exit(1);
+    }
+    // #3232: checked before the push, so a mistyped flag costs no build.
+    let copy: PreviewCopy;
+    try {
+      copy = parsePreviewCopy({ sample: flag('sample'), maxRows: flag('max-rows'), sampleOverCap: flag('sample-over-cap'), empty: argv.includes('--empty') });
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : String(e));
       process.exit(1);
     }
     const preparedWorker = undefined; // the platform builds previews from submitted source
@@ -1376,10 +1391,11 @@ async function cmdPreview(): Promise<void> {
       ...((ttlHours) => (ttlHours !== undefined ? { ttlHours } : {}))(parseTtlHours(flag('ttl'))),
       ...(flag('surface') ? { surface: flag('surface')! } : {}),
       refresh: argv.includes('--refresh'),
+      ...(Object.keys(copy).length > 0 ? { copy } : {}),
     });
     console.log(`✓ preview '${tag}' ${created.reused ? 'updated' : 'created'} → ${created.url}`);
     console.log(
-      `  scope ${created.scopeId} runs version ${created.versionId} against ${empty ? 'an empty clean-room scope' : 'a fork of prod'}`,
+      `  scope ${created.scopeId} runs version ${created.versionId} against ${empty ? 'an empty clean-room scope' : copy.sample ? 'a sample of prod' : 'a fork of prod'}`,
     );
     for (const line of formatPreviewLogin(created)) console.log(line);
     return;

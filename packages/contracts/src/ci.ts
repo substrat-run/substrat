@@ -448,11 +448,20 @@ ${cpEnv}
   //
   // Sticky first (it is the URL a reviewer bookmarks and must exist even if the optional
   // per-build one fails), then the frozen per-build clean room when the repo opted in.
+  //
+  // What the fork copies (#3232) is the repository's to choose, in three optional variables passed
+  // through only when set: unset, the preview copies prod whole, as it always has.
   const previewSteps = `      - name: Create/update the preview
 ${cpEnv}
+          SUBSTRAT_PREVIEW_SAMPLE: \${{ vars.SUBSTRAT_PREVIEW_SAMPLE }}
+          SUBSTRAT_PREVIEW_MAX_ROWS: \${{ vars.SUBSTRAT_PREVIEW_MAX_ROWS }}
+          SUBSTRAT_PREVIEW_SAMPLE_OVER_CAP: \${{ vars.SUBSTRAT_PREVIEW_SAMPLE_OVER_CAP }}
         run: |
           set -euo pipefail
-          ${cli} preview create ${dir} --slug ${slug} --tag pr-\${{ github.event.number }} | tee preview.out
+          ${cli} preview create ${dir} --slug ${slug} --tag pr-\${{ github.event.number }} \\
+            \${SUBSTRAT_PREVIEW_SAMPLE:+--sample "$SUBSTRAT_PREVIEW_SAMPLE"} \\
+            \${SUBSTRAT_PREVIEW_MAX_ROWS:+--max-rows "$SUBSTRAT_PREVIEW_MAX_ROWS"} \\
+            \${SUBSTRAT_PREVIEW_SAMPLE_OVER_CAP:+--sample-over-cap "$SUBSTRAT_PREVIEW_SAMPLE_OVER_CAP"} | tee preview.out
           # Take the URL from the CLI success line (the ✓ marker) only — the push it runs
           # first also prints an https:// *deploy endpoint* we must never mistake for a preview.
           grep -F '✓ preview' preview.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > preview.url || true
@@ -573,7 +582,10 @@ ${workflowPathFilters(path).map((p) => `      - '${p}'`).join('\n')}`
 #
 # Optional repository variables (Settings → Secrets and variables → Actions → Variables):
 #   SUBSTRAT_TEST_SCOPE_ID      a long-lived scope rebound to every merge (the test env)
-#   SUBSTRAT_PER_BUILD_PREVIEW  set to 1 to also mint a frozen per-build preview URL per push${
+#   SUBSTRAT_PER_BUILD_PREVIEW  set to 1 to also mint a frozen per-build preview URL per push
+#   SUBSTRAT_PREVIEW_SAMPLE     copy the newest N rows of each table into a new preview, not all of prod
+#   SUBSTRAT_PREVIEW_MAX_ROWS   refuse a new preview whose copy of prod would move more rows than this
+#   SUBSTRAT_PREVIEW_SAMPLE_OVER_CAP  with MAX_ROWS: copy a sample of N rows per table instead of refusing${
     onRequest
       ? `\n#\n# Previews are on request: only a PR carrying the '${PREVIEW_LABEL}' label builds one. To preview\n# every PR, turn on Preview every PR where this repo is set up in the dashboard, or\n# regenerate with \`substrat init --ci github --previews every-pr --force\` (which replaces\n# this file, local edits included).`
       : ''

@@ -429,4 +429,39 @@ describe('transferScope (#2450)', () => {
       expect(asked()).toBe(0);
     });
   });
+
+  describe('a sampled copy (#3232)', () => {
+    const pages = [[fragment([['a']])], [fragment([['b']])], [fragment([['c']])]];
+
+    it('asks the first page for the sample, and reads every later page and restart under the plan it answered', async () => {
+      const asked: unknown[] = [];
+      let attempt = 0;
+      const source = {
+        exportScopePage: async (_sid: string, cursor: string | null, opts?: { sample?: unknown }): Promise<ScopeDumpPage> => {
+          asked.push(opts?.sample);
+          if (cursor === null) attempt++;
+          const n = cursor === null ? 0 : Number(cursor);
+          const plan = { rows: 5, floors: { t_rows: attempt * 10 } };
+          // The first attempt's source is written under its second page, so the copy starts again.
+          return { tables: pages[n]!, next: n + 1 < pages.length ? String(n + 1) : null, loadStamp: null, revision: attempt === 1 && n === 1 ? 'moved' : `r${attempt}`, sample: plan };
+        },
+      } as unknown as VerticalClient;
+      const { dest, staged } = stagingDest();
+      await transferScope(source, dest, { from, to }, { stamp: false, sample: 5 });
+      expect(asked).toEqual([
+        { rows: 5 }, { rows: 5, floors: { t_rows: 10 } },
+        { rows: 5 }, { rows: 5, floors: { t_rows: 20 } }, { rows: 5, floors: { t_rows: 20 } },
+      ]);
+      expect(staged.map((s) => s.seq)).toEqual([0, 0, 1, 2]);
+    });
+
+    it('a source that answers without the sample is refused with 409, and nothing is staged', async () => {
+      const { source } = pagedSource(pages);
+      const { dest, staged } = stagingDest();
+      const refused = await transferScope(source, dest, { from, to }, { stamp: false, sample: 5 }).catch((e: unknown) => e);
+      expect((refused as ControlPlaneError).status).toBe(409);
+      expect((refused as Error).message).toContain('cannot copy a sample (#3232)');
+      expect(staged).toEqual([]);
+    });
+  });
 });

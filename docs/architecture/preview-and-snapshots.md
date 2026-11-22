@@ -165,8 +165,32 @@ Two adapter implementations behind one interface, mirroring the whole platform:
   and then fail at the commit. The size is the source's `databaseSize` (#1524). A deployment
   that cannot read one is copied as before. Two copies are not gated: a backup, whose destination
   is not a Durable Object, and the tombstone re-carry, since refusing it would leave the scope
-  routed to a wiped store. A subset or sample option for forks, and a cost cap below this limit,
-  are #3232.
+  routed to a wiped store.
+
+  A preview fork can copy less than this (#3232). The limit above is what a store can hold; the
+  cost of a copy is the rows it writes, about five and a half per row copied (staged, loaded,
+  indexed), so a large source is expensive long before it is refused.
+  - **A sample** (`sample: n`, `substrat preview create --sample n`) is read by the source itself,
+    in SQL, as a filter on the pages and change batches it already serves
+    (`packages/kernel/src/dump-sample.ts`). Each table of the vertical's and its engines' keeps its
+    newest `n` rows by rowid, among those whose declared parents (`pragma_foreign_key_list`) it
+    keeps: parents are planned first, so children follow them. The first page fixes each table's
+    floor (the rowid its newest `n` start at) and echoes the plan; every later page and change
+    batch is read under it, so the capture and catch-up keep the copy true at one moment, and a
+    row that leaves the sample during the copy (re-parented under a row it left behind) reads as a
+    delete. The spine follows the rows by id: outbox events, attachments, deliveries of those
+    events, and grants and links naming a row the sample left behind are left behind. Every other
+    spine table is copied whole. Not followed: a reference inside a cycle (a table referring to
+    itself), and a reference the schema does not declare. A source that does not echo the plan
+    predates samples, and the copy is refused rather than made whole.
+  - **A cost cap** (`maxRows`, `--max-rows`) is read before anything is reaped or provisioned: the
+    source counts the rows the copy would move (`estimateDump`, exactly, or on a probe of a large
+    filtered table), and over the cap the create is refused (413) with the count and the largest
+    tables, or with `sampleOverCap` copies that sample instead. A source that cannot count is
+    copied ungated, as an unknown size is above.
+  - **Masking** (`scope pull --masked`) is not changed: it pseudonymizes each value it reads, by
+    column name, so a masked dump of a sample would mask every value the sample carries. A preview
+    fork is not masked; a sample is what makes it smaller, not safer.
 
 Once a cloud export lands in a local file it's a real SQLite again — `cp`, `VACUUM INTO`,
 Datasette, a step debugger all return. **Pull once (logical, governed); branch freely after.**

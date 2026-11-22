@@ -116,6 +116,7 @@ import {
   mergeDumpPages,
   dataSubjectId as dataSubjectIdSchema,
   scopeId as scopeIdSchema,
+  scopeDumpSample,
   scopeStatus,
   requestRollupReading,
   costRollupReading,
@@ -1515,6 +1516,16 @@ const createPreviewBody = z.object({
   // never starts one: it answers the copy's progress, finishes it once it is done, or says it is gone.
   // A call after a 202 naming another push's copy (one being finished) is not a poll: it may start its own.
   poll: z.boolean().optional(),
+  // #3232: a fork copies a SAMPLE of its source: the newest `sample` rows of each table, among those
+  // whose parents it keeps, and the spine that follows them. A fresh fork only: a push to an existing
+  // preview carries the preview's own data, whatever it was forked as.
+  sample: scopeDumpSample.shape.rows.optional(),
+  // #3232: the cost cap. A fresh fork estimates the rows it would copy before it copies anything, and
+  // is refused (413, the estimate in the refusal) above `maxRows`.
+  maxRows: z.number().int().positive().optional(),
+  // #3232: with `maxRows`, a fork over the cap copies a sample of this many rows per table instead of
+  // being refused, and is refused only when that sample is over the cap too.
+  sampleOverCap: scopeDumpSample.shape.rows.optional(),
 });
 
 const listRolesQuery = z.object({
@@ -12524,13 +12535,76 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return `${slug.split('/').at(-1)}-${handle}.${jurisdiction}.${baseDomain}`;
   };
 
+  /** #3232: a sample asked of a scope this control plane holds itself, whose host copies only whole. */
+  const sampleNeedsVertical = (scopeId: ScopeId): ControlPlaneError =>
+    new ControlPlaneError(409, `scope ${scopeId} is held by the control plane's own host, which copies a scope only whole (#3232). Nothing was copied.`);
+
+  /**
+   * #3232: what a fresh fork copies, decided before it copies anything. With `maxRows`, the copy is
+   * estimated at its source first (rows, per table): at or under the cap it copies as asked, over it
+   * it copies `sampleOverCap` instead when that sample fits, and is otherwise refused (413) with the
+   * estimate, the cap and the largest tables in the refusal. A source that cannot estimate (a
+   * deployment that predates it) is copied as asked, ungated, and the note says so: the size gate
+   * (`COPY_MAX_BYTES`) treats an unknown size the same way.
+   */
+  const forkCopyPlan = async (
+    c: ReqCtx,
+    source: Scope,
+    opts: { sample?: number; maxRows?: number; sampleOverCap?: number },
+  ): Promise<{ sample?: number; note: string | null }> => {
+    const sampleNote = (rows: number, estimate?: number) =>
+      `Data: a sample of production, the newest ${rows} rows of each table and what they reference` +
+      `${estimate === undefined ? '' : ` (about ${estimate} rows)`}, not a whole copy.`;
+    if (opts.maxRows === undefined) return opts.sample === undefined ? { note: null } : { sample: opts.sample, note: sampleNote(opts.sample) };
+    const cap = opts.maxRows;
+    const client = await verticalForScope(c, source);
+    const estimate = (sample: number | undefined) =>
+      client ? retryTransient(() => client.estimateScopeCopy(source.id, sample === undefined ? {} : { sample })) : Promise.resolve('predates' as const);
+    const asked = opts.sample;
+    const first = await estimate(asked);
+    if (first === 'predates') {
+      return {
+        ...(asked === undefined ? {} : { sample: asked }),
+        note: `Data: the copy could not be estimated (its source predates estimates, #3232), so the --max-rows cap of ${cap} was not applied.`,
+      };
+    }
+    if (first.rows <= cap) {
+      return asked === undefined ? { note: `Data: a whole copy of production, about ${first.rows} rows (cap ${cap}).` } : { sample: asked, note: sampleNote(asked, first.rows) };
+    }
+    const largest = [...first.tables].sort((a, b) => b.rows - a.rows).slice(0, 3).map((t) => `${t.name} ${t.rows}`).join(', ');
+    if (asked === undefined && opts.sampleOverCap !== undefined) {
+      const fallback = await estimate(opts.sampleOverCap);
+      if (fallback !== 'predates' && fallback.rows <= cap) {
+        return {
+          sample: opts.sampleOverCap,
+          note: `${sampleNote(opts.sampleOverCap, fallback.rows)} A whole copy would move about ${first.rows} rows, over the cap of ${cap}.`,
+        };
+      }
+      throw new ControlPlaneError(
+        413,
+        `a copy of scope ${source.id} would move about ${first.rows} rows, and a sample of ${opts.sampleOverCap} rows per table ` +
+          `${fallback === 'predates' ? 'could not be estimated' : `about ${fallback.rows}`}: over the cap of ${cap} rows (--max-rows). ` +
+          `Largest tables: ${largest}. Nothing was copied (#3232). Lower --sample-over-cap, or raise --max-rows.`,
+      );
+    }
+    throw new ControlPlaneError(
+      413,
+      `a ${asked === undefined ? 'copy' : `sample of ${asked} rows per table`} of scope ${source.id} would move about ${first.rows} rows, ` +
+        `over the cap of ${cap} rows (--max-rows). Largest tables: ${largest}. Nothing was copied (#3232). ` +
+        (asked === undefined ? 'Pass --sample <n> to copy the newest n rows of each table instead, or raise --max-rows.' : 'Pass a smaller --sample, or raise --max-rows.'),
+    );
+  };
+
   const orchestratedPreview = async (
     c: ReqCtx,
     tenantId: TenantId,
     slug: string,
     // A FORK copies this scope's data; `null` provisions an empty clean-room scope (#509 (b)).
     source: Scope | null,
-    opts: { tag: string; versionId: string; ttlHours?: number | null; surface?: string; refresh?: boolean; async?: boolean; poll?: boolean; seed?: boolean },
+    opts: {
+      tag: string; versionId: string; ttlHours?: number | null; surface?: string; refresh?: boolean; async?: boolean; poll?: boolean; seed?: boolean;
+      sample?: number; maxRows?: number; sampleOverCap?: number;
+    },
   ): Promise<PreviewCopying | {
     scopeId: ScopeId;
     hostname: string;
@@ -12821,9 +12895,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           'Anyone on the team can, once signed in to Substrat.',
       };
     };
+    /** #3232: what this create decided to copy, said where the person pushing reads it. */
+    let copyNote: string | null = null;
     const notesFor = (parent: Scope | null): string[] =>
       parent
         ? [
+            ...(copyNote ? [copyNote] : []),
             "Settings: only non-secret Env tab settings explicitly declared for preview carryover are delivered; " +
               "other settings use the deployment's defaults.",
           ]
@@ -13204,6 +13281,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ],
       };
     }
+    // #3232: a fresh fork decides what it copies (whole, or a sample) before anything is reaped or
+    // provisioned, so a fork refused for its cost leaves the preview it would replace in place.
+    const copyPlan = source && !poll ? await forkCopyPlan(c, source, opts) : { note: null };
+    copyNote = copyPlan.note;
+    const sampled = copyPlan.sample === undefined ? {} : { sample: copyPlan.sample };
     // Free the tag: the slug is unique per tenant and the `--<tag>` hostname is still bound
     // to the old row, so the fresh fork below cannot be provisioned until this one is gone.
     // A marked row is also the GC sweep's to reap (its `expiresAt` has passed), so the sweep
@@ -13252,11 +13334,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       forkData = sourceClient
         ? async () => {
           const moved = await transferScope(sourceClient, target, { from: source.id, to: previewId },
-            { retry: retryTransient, stamp: false, maxBytes: copyMaxBytes });
+            { retry: retryTransient, stamp: false, maxBytes: copyMaxBytes, ...sampled });
           refuseWipedSource(moved.meta, source.id);
           return moved.dump;
         }
-        : async () => canonical.tables;
+        : async () => {
+          // #3232: this control plane's own host copies only whole; a sample asked for is never quietly dropped.
+          if (copyPlan.sample !== undefined) throw sampleNeedsVertical(source.id);
+          return canonical.tables;
+        };
       // Directory row FIRST as `provisioning` (K-31 two-phase): a crash before the data
       // copy leaves an inert row that — carrying `forkedFrom` + `expiresAt` — the GC sweep
       // reaps, never copied data with no record.
@@ -13336,7 +13422,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           const begun = await beginTransfer(
             { source: forkPaged.source, dest: target },
             { from: forkPaged.sourceScopeId, to: previewId },
-            { retry: retryTransient, stamp: false, alwaysStage: true, maxBytes: copyMaxBytes },
+            { retry: retryTransient, stamp: false, alwaysStage: true, maxBytes: copyMaxBytes, ...sampled },
           );
           if ('state' in begun) {
             const staged = begun.state;
@@ -13517,6 +13603,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // #3108: a sample world is seated only in a clean room; never in a fork of someone's data.
     if (body.seed && !body.empty) {
       return refuse(c, 'validation_failed', 'seed needs empty: a sample world is seated only in a clean-room preview');
+    }
+    // #3232: a sample and a cap shape a FORK's copy; a clean room copies nothing.
+    if (body.empty && (body.sample !== undefined || body.maxRows !== undefined || body.sampleOverCap !== undefined)) {
+      return refuse(c, 'validation_failed', 'sample, maxRows and sampleOverCap shape a fork\'s copy; a clean-room preview copies nothing');
+    }
+    if (body.sampleOverCap !== undefined && (body.maxRows === undefined || body.sample !== undefined)) {
+      return refuse(c, 'validation_failed', 'sampleOverCap needs maxRows, and replaces sample: pass sample to always copy a sample');
     }
     if (body.seed && !options.personaIssuer) {
       return refuse(c, 'unavailable', 'this control plane runs no persona issuer, so it cannot sign a seeded preview in');

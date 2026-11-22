@@ -49,6 +49,8 @@ import {
   type ScopeDumpChanges,
   type ScopeDumpPage,
   type ScopeDumpPageTable,
+  type ScopeDumpSample,
+  type ScopeCopyEstimate,
   SCOPE_DUMP_PAGE_MAX_BYTES,
   type ScopeQueryResult,
   type ScopeTable,
@@ -188,6 +190,10 @@ import {
   type RunSub,
   NotSearchable,
   isSearchIndexTable,
+  countDumpRows,
+  planDumpSample,
+  sampleFilters,
+  sampleGraph,
   rowCountTable,
   searchIndexPlans,
   NotListable,
@@ -1294,6 +1300,13 @@ const ROWID_NAMES: ReadonlySet<string> = new Set(['rowid', '_rowid_', 'oid']);
  * the stamp over beside one); every load writes its own. #2350: the orphan sweep's licence is this
  * store's own, so its rows never leave either.
  */
+/** `dumpRowFilter`, narrowed by a sample's filter for the table when it has one (#3232). */
+function sampledRowFilter(name: string, filters: ReadonlyMap<string, string> | undefined): { where: string; bindings: unknown[] } {
+  const base = dumpRowFilter(name);
+  const sampled = filters?.get(name);
+  return sampled ? { where: `(${base.where}) AND (${sampled})`, bindings: base.bindings } : base;
+}
+
 function dumpRowFilter(name: string): { where: string; bindings: unknown[] } {
   if (name === '_substrat_meta') {
     return { where: `key NOT IN (${STORE_LOCAL_META_KEYS.map(() => '?').join(', ')})`, bindings: [...STORE_LOCAL_META_KEYS] };
@@ -7859,7 +7872,7 @@ export function defineScopeDO(
      */
     exportDumpPage(
       cursor: string | null,
-      opts: { stamp?: boolean; maxBytes?: number; capture?: string } = {},
+      opts: { stamp?: boolean; maxBytes?: number; capture?: string; sample?: ScopeDumpSample } = {},
     ): Promise<DoReply<ScopeDumpPage>> {
       // Answered as data, so a refusal's code survives the hop (#113).
       return replyOf(() => this.dumpPage(cursor, opts));
@@ -7867,7 +7880,7 @@ export function defineScopeDO(
 
     private dumpPage(
       cursor: string | null,
-      { stamp = false, maxBytes = SCOPE_DUMP_PAGE_MAX_BYTES, capture }: { stamp?: boolean; maxBytes?: number; capture?: string },
+      { stamp = false, maxBytes = SCOPE_DUMP_PAGE_MAX_BYTES, capture, sample }: { stamp?: boolean; maxBytes?: number; capture?: string; sample?: ScopeDumpSample },
     ): ScopeDumpPage {
       let loadStamp = this.loadStamp();
       if (stamp && cursor === null && !loadStamp && !this.carriedAwayCopy) {
@@ -7881,6 +7894,8 @@ export function defineScopeDO(
         else this.heldCapture(capture, defs);
       }
       const at = cursor === null ? null : decodeDumpCursor(cursor);
+      // #3232: a sampled copy reads every page, and every change batch, under the plan its first page made.
+      const sampling = sample ? this.samplingOf(defs, sample) : null;
       const tables: ScopeDumpPageTable[] = [];
       let bytes = 0;
       let next: string | null = null;
@@ -7889,7 +7904,7 @@ export function defineScopeDO(
         // table that is gone resumes at the next name.
         if (at && name < at.table) continue;
         const after = at && name === at.table ? at.after : null;
-        const { where, bindings } = dumpRowFilter(name);
+        const { where, bindings } = sampledRowFilter(name, sampling?.filters);
         const { columns, byRowid } = this.tableShape(name, sql);
         // In batches, each read to its end: a cursor left part-read keeps its table locked, and
         // the next statement that drops or alters it fails with SQLITE_LOCKED.
@@ -7928,7 +7943,45 @@ export function defineScopeDO(
           break;
         }
       }
-      return { tables, next, loadStamp, revision: this.metaValue(WRITE_REVISION_KEY), ...(capture !== undefined ? { captured: true as const } : {}) };
+      return {
+        tables, next, loadStamp, revision: this.metaValue(WRITE_REVISION_KEY),
+        ...(capture !== undefined ? { captured: true as const } : {}),
+        ...(sampling ? { sample: sampling.plan } : {}),
+      };
+    }
+
+    /**
+     * #3232: the sample a copy reads under. Asked for by size alone (its first page), it is planned
+     * here, reading each table's floor; asked for with its floors (every later page and change
+     * batch), it is read as planned, so the whole copy reads one sample however the scope moved.
+     */
+    private samplingOf(
+      defs: readonly { name: string; sql: string }[],
+      sample: ScopeDumpSample,
+    ): { plan: Required<ScopeDumpSample>; filters: Map<string, string> } {
+      const reader = { all: (sql: string, ...params: unknown[]) => this.sql.exec(sql, ...params).toArray() as Record<string, unknown>[] };
+      const graph = sampleGraph(reader, defs.map(({ name, sql }) => ({ name, byRowid: this.tableShape(name, sql).byRowid })));
+      const plan = sample.floors ? { rows: sample.rows, floors: sample.floors } : planDumpSample(reader, graph, sample.rows);
+      return { plan, filters: sampleFilters(graph, plan) };
+    }
+
+    /**
+     * How many rows a copy of this scope would move (#3232), whole or under a sample of `rows`, read
+     * before the copy starts so a fork too costly to copy is refused before it writes anything.
+     * Reads only, in one turn; a large table read under a sample's filter is counted on a probe.
+     */
+    estimateDump(opts: { sample?: { rows: number } } = {}): Promise<DoReply<ScopeCopyEstimate>> {
+      return replyOf(() => {
+        const defs = this.dumpTableDefs();
+        const reader = { all: (sql: string, ...params: unknown[]) => this.sql.exec(sql, ...params).toArray() as Record<string, unknown>[] };
+        const tables = defs.map(({ name, sql }) => ({ name, byRowid: this.tableShape(name, sql).byRowid }));
+        const sampling = opts.sample ? this.samplingOf(defs, { rows: opts.sample.rows }) : null;
+        const counted = countDumpRows(reader, tables, {
+          base: (name) => dumpRowFilter(name),
+          ...(sampling ? { filters: sampling.filters, sample: sampling.plan } : {}),
+        });
+        return { ...counted, ...(sampling ? { sample: sampling.plan } : {}) };
+      });
     }
 
     /** A dumped table's columns, and whether its rows are read, and named, by rowid. */
@@ -8090,14 +8143,21 @@ export function defineScopeDO(
      * empty, so nothing was written between it and the moment its `revision` names, and the capture
      * ends with it (its triggers too, when it was the last).
      */
-    exportDumpChanges(copyId: string, seq: number, opts: { maxBytes?: number } = {}): Promise<DoReply<ScopeDumpChanges>> {
-      return replyOf(() => this.captureChanges(copyId, seq, opts.maxBytes ?? SCOPE_DUMP_PAGE_MAX_BYTES));
+    exportDumpChanges(
+      copyId: string,
+      seq: number,
+      opts: { maxBytes?: number; sample?: ScopeDumpSample } = {},
+    ): Promise<DoReply<ScopeDumpChanges>> {
+      return replyOf(() => this.captureChanges(copyId, seq, opts.maxBytes ?? SCOPE_DUMP_PAGE_MAX_BYTES, opts.sample));
     }
 
-    private captureChanges(copyId: string, seq: number, maxBytes: number): ScopeDumpChanges {
+    private captureChanges(copyId: string, seq: number, maxBytes: number, sample?: ScopeDumpSample): ScopeDumpChanges {
       if (!Number.isSafeInteger(seq) || seq < 0) throw substratError('validation_failed', 'a change batch is numbered from 0');
       const defs = this.dumpTableDefs();
       this.heldCapture(copyId, defs);
+      // #3232: a row the sample does not keep reads as gone, so a row that left it is deleted there.
+      if (sample && !sample.floors) throw substratError('validation_failed', 'a sampled copy catches up under the floors its first page answered');
+      const filters = sample ? this.samplingOf(defs, sample).filters : undefined;
       const sqlOf = new Map(defs.map((d) => [d.name, d.sql]));
       return this.revision.untracked(() => {
         this.sql.exec(`DELETE FROM _substrat_capture_changes WHERE copy_id = ? AND batch < ?`, copyId, seq);
@@ -8117,7 +8177,7 @@ export function defineScopeDO(
           if (bytes >= maxBytes) break;
           const ddl = sqlOf.get(name)!;
           const { columns, byRowid } = this.tableShape(name, ddl);
-          const { where, bindings } = dumpRowFilter(name);
+          const { where, bindings } = sampledRowFilter(name, filters);
           const served: number[] = [];
           if (!byRowid) {
             const rows = Array.from(this.sql.exec(`SELECT * FROM ${quoteIdent(name)} WHERE ${where}`, ...bindings).raw(), (r) => r as unknown[]);

@@ -143,6 +143,9 @@ import {
   MODULE_OBJECTS_NOT_CARRIED,
   type ModuleObjectsRecord,
   scopeDumpPage,
+  scopeCopyEstimate,
+  type ScopeCopyEstimate,
+  type ScopeDumpSample,
 } from '@substrat-run/contracts';
 import type { CopyRestoreFence, DeadlineOptions, FetchLike, IncrementalSha256, KeptCopy, LoadMarker, OpenedAttachment, OpenedAttachmentStream, OrphanSweepReport, RoleState, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { STREAM_IDLE_TIMEOUT_MS, STREAM_MAX_DURATION_MS, attachmentSha256, deadlineFetch, isSizedByteStream, knownLengthInit, runtimeSha256, scopeNotHeldRefusal, ulid, undrainedEventsOf, verifiedStream, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
@@ -1939,13 +1942,18 @@ export class VerticalClient {
   async exportScopePage(
     scopeId: ScopeId,
     cursor: string | null,
-    /** `capture`: a copy's id, for a copy that catches up on writes (`exportScopeChanges`). */
-    opts: { stamp?: boolean; capture?: string } = {},
+    /**
+     * `capture`: a copy's id, for a copy that catches up on writes (`exportScopeChanges`).
+     * `sample` (#3232): a sampled copy's plan, `{ rows }` on its first page and the floors that page
+     * answered after. A deployment that predates samples answers a page without `sample`.
+     */
+    opts: { stamp?: boolean; capture?: string; sample?: ScopeDumpSample } = {},
   ): Promise<ScopeDumpPage | 'predates'> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
     const query =
       `scopeId=${encodeURIComponent(scopeId)}${opts.stamp ? '&stamp=1' : ''}` +
       (opts.capture === undefined ? '' : `&capture=${encodeURIComponent(opts.capture)}`) +
+      (opts.sample === undefined ? '' : `&sample=${encodeURIComponent(JSON.stringify(opts.sample))}`) +
       (cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`);
     const answer = await withDeadline('export-page', PAGE_CALL_DEADLINE_MS, (signal) =>
       this.routeAnswer('export-page', FENCED, () =>
@@ -1988,13 +1996,40 @@ export class VerticalClient {
    * acknowledges those before it, and the same `seq` asked again is served afresh, so a lost
    * answer is retried safely. `'predates'` from a deployment that cannot catch a copy up.
    */
-  async exportScopeChanges(scopeId: ScopeId, copyId: string, seq: number): Promise<ScopeDumpChanges | 'predates'> {
+  async exportScopeChanges(
+    scopeId: ScopeId,
+    copyId: string,
+    seq: number,
+    /** #3232: a sampled copy's plan, as its first page answered it. */
+    opts: { sample?: ScopeDumpSample } = {},
+  ): Promise<ScopeDumpChanges | 'predates'> {
+    const body = { scopeId, copyId, seq, ...(opts.sample ? { sample: opts.sample } : {}) };
     const answer = await withDeadline('export-changes', PAGE_CALL_DEADLINE_MS, (signal) =>
-      this.routeAnswer('export-changes', FENCED, () => this.postRaw('/internal/export-changes', { scopeId, copyId, seq }, signal)));
+      this.routeAnswer('export-changes', FENCED, () => this.postRaw('/internal/export-changes', body, signal)));
     if (answer === PREDATES) return 'predates';
     const changes = scopeDumpChanges.safeParse(answer);
     if (!changes.success) throw new ControlPlaneError(502, 'export-changes: the vertical answered something that is not a change batch');
     return changes.data;
+  }
+
+  /**
+   * How many rows a copy of `scopeId` would move (#3232), whole or under a sample of `sample` rows
+   * per table, read before a fork starts. `'predates'` from a deployment built before the estimate.
+   */
+  async estimateScopeCopy(scopeId: ScopeId, opts: { sample?: number } = {}): Promise<ScopeCopyEstimate | 'predates'> {
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const query = `scopeId=${encodeURIComponent(scopeId)}${opts.sample === undefined ? '' : `&sample=${opts.sample}`}`;
+    const answer = await withDeadline('copy-estimate', PAGE_CALL_DEADLINE_MS, (signal) =>
+      this.routeAnswer('copy-estimate', FENCED, () =>
+        this.options.fetch(`${base}/internal/copy-estimate?${query}`, {
+          headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+          signal,
+        }),
+      ));
+    if (answer === PREDATES || scaffoldPointer.safeParse(answer).success) return 'predates';
+    const estimate = scopeCopyEstimate.safeParse(answer);
+    if (!estimate.success) throw new ControlPlaneError(502, 'copy-estimate: the vertical answered something that is not an estimate');
+    return estimate.data;
   }
 
   /** End the capture `copyId` of `scopeId` (#2450): a copy that stopped. Best effort, as a discard is. */
@@ -2825,6 +2860,11 @@ export interface TransferState {
   /** Absent from a copy read at a quiet moment, and from a record stored before captures. */
   capture?: true;
   batch?: number;
+  /**
+   * #3232: a sampled copy's plan, as its first page answered it (the floors included). Every later
+   * page and change batch is read under it. Absent from a whole copy.
+   */
+  sample?: ScopeDumpSample;
 }
 
 /** A copy finished (`done`), or one still to move (`state`). */
@@ -2858,7 +2898,22 @@ export interface TransferOptions {
    * nothing for the scope) is copied as before.
    */
   maxBytes?: number;
+  /**
+   * #3232: copy a sample instead of the whole scope: the newest `sample` rows of each table, among
+   * those whose parents it keeps, and the spine that follows them (`scopeDumpSample`). A source that
+   * cannot read one is refused (409) before anything is staged: a copier that asked for a sample
+   * never quietly copies the whole scope instead.
+   */
+  sample?: number;
 }
+
+/** #3232: a source asked for a sample that answered a page without one: it predates samples. */
+const sampleRefused = (from: ScopeId): ControlPlaneError =>
+  new ControlPlaneError(
+    409,
+    `scope ${from} is served by a deployment that cannot copy a sample (#3232): redeploy it on a current ` +
+      '@substrat-run/adapter-cloudflare, or copy it whole. Nothing was copied.',
+  );
 
 /** `bytes` for a person: GiB or MiB with one decimal. */
 const sizeLabel = (bytes: number): string =>
@@ -2973,15 +3028,22 @@ export async function beginTransfer(
   let refused = false;
   // A client without the paged verbs (one a caller assembled from part of this one) is read as a
   // deployment that predates them.
+  const asked = opts.sample === undefined ? {} : { sample: { rows: opts.sample } };
   const first = typeof source.exportScopePage !== 'function'
     ? ('predates' as const)
     : ask
-      ? await retry(() => source.exportScopePage(from, null, { stamp, capture: stageId })).catch((e: unknown) => {
+      ? await retry(() => source.exportScopePage(from, null, { stamp, capture: stageId, ...asked })).catch((e: unknown) => {
         if (!captureRefusal(e, 'expressionIndex')) throw e;
         refused = true;
-        return retry(() => source.exportScopePage(from, null, { stamp }));
+        return retry(() => source.exportScopePage(from, null, { stamp, ...asked }));
       })
-      : await retry(() => source.exportScopePage(from, null, { stamp }));
+      : await retry(() => source.exportScopePage(from, null, { stamp, ...asked }));
+  if (opts.sample !== undefined && (first === 'predates' || !first.sample)) {
+    if (first !== 'predates' && ask && !refused) await endCapture(ends, from, stageId);
+    throw sampleRefused(from);
+  }
+  /** The plan every later read of this copy is made under (#3232). */
+  const plan = first === 'predates' || !first.sample ? {} : { sample: first.sample };
   if (first === 'predates') {
     if (!stamp) {
       const tables = await retry(() => source.exportScope(from));
@@ -3012,6 +3074,7 @@ export async function beginTransfer(
     revision: first.revision, loadStamp: first.loadStamp,
     attempt: opts.attempt ?? 1, pages: 1, rows: rowsIn(first.tables), meta: metaOf([first.tables]),
     ...(captured && opened !== 'predates' ? { capture: true as const, batch: 0 } : {}),
+    ...plan,
   };
   if (opened !== 'predates') {
     if (state.cursor !== null) return { state };
@@ -3032,7 +3095,7 @@ export async function beginTransfer(
   const held: ScopeDumpTable[][] = [first.tables];
   for (let cursor = first.next; cursor !== null;) {
     const at: string = cursor;
-    const page = await retry(() => source.exportScopePage(from, at, { stamp }));
+    const page = await retry(() => source.exportScopePage(from, at, { stamp, ...plan }));
     if (page === 'predates') throw stoppedPaging(from);
     if (page.revision !== first.revision) return restart(ends, state, { ...opts, capture: false }, false);
     held.push(page.tables);
@@ -3066,7 +3129,8 @@ export async function transferStep(
   while (next.cursor !== null) {
     const at: string = next.cursor;
     const capture = next.capture ? { capture: next.stageId } : {};
-    const page = await retry(() => source.exportScopePage(next.from, at, { stamp: next.stamp, ...capture })).catch((e: unknown) => {
+    const sampled = next.sample ? { sample: next.sample } : {};
+    const page = await retry(() => source.exportScopePage(next.from, at, { stamp: next.stamp, ...capture, ...sampled })).catch((e: unknown) => {
       // A capture that is gone (ended, expired, its schema moved) cannot vouch for the pages.
       if (next.capture && captureRefusal(e, 'gone', 'schemaMoved')) return 'lost' as const;
       throw e;
@@ -3098,7 +3162,7 @@ export async function transferStep(
     const at = next;
     const changes = typeof source.exportScopeChanges !== 'function'
       ? ('predates' as const)
-      : await retry(() => source.exportScopeChanges!(at.from, at.stageId, batch)).catch((e: unknown) => {
+      : await retry(() => source.exportScopeChanges!(at.from, at.stageId, batch, at.sample ? { sample: at.sample } : {})).catch((e: unknown) => {
         // Gone, or its schema moved: a final answer that was lost, asked again, is gone too.
         if (captureRefusal(e, 'gone', 'schemaMoved')) return 'lost' as const;
         throw e;
@@ -3155,7 +3219,11 @@ async function restart(
         'one moment and nothing was moved (#2450). Retry when it is quieter.',
     );
   }
-  return beginTransfer(ends, { from: state.from, to: state.into }, { ...opts, stamp: state.stamp, attempt: state.attempt + 1 });
+  // A sampled copy starts again as one, planned afresh: the plan it had read a moment that is gone.
+  const sample = state.sample?.rows ?? opts.sample;
+  return beginTransfer(ends, { from: state.from, to: state.into }, {
+    ...opts, stamp: state.stamp, attempt: state.attempt + 1, ...(sample === undefined ? {} : { sample }),
+  });
 }
 
 /**

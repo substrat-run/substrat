@@ -274,6 +274,8 @@ export async function createPreview(opts: {
   ttlHours?: number | null;
   surface?: string;
   refresh?: boolean;
+  /** #3232: what a fresh fork copies ({@link parsePreviewCopy}). */
+  copy?: PreviewCopy;
   /** How long to wait for a copy that runs in the background (#2450), ms. */
   waitMs?: number;
   /** Default `setTimeout`; a test passes its own. */
@@ -312,6 +314,8 @@ export async function createPreview(opts: {
             // `null` (pinned) must reach the wire, so send whenever a value was given — not just truthy.
             ...(opts.ttlHours !== undefined ? { ttlHours: opts.ttlHours } : {}),
             ...(opts.surface ? { surface: opts.surface } : {}),
+            // #3232: read by a fresh fork only; a push onto an existing preview carries its data as it is.
+            ...(opts.copy ?? {}),
             // The first call only: on a later one it would stop the copy this call started.
             ...(opts.refresh && call === 1 ? { refresh: true } : {}),
             // #2450 step 2: this client takes a 202 and calls again, so a copy too large for one
@@ -420,4 +424,45 @@ export function parseTtlHours(raw: string | undefined): number | null | undefine
   if (!m) throw new Error(`invalid --ttl '${raw}' — use e.g. 72h, 3d, or none`);
   const n = Number(m[1]);
   return m[2] === 'd' ? n * 24 : n;
+}
+
+/** #3232: what a fresh fork copies, as `preview create` sends it. */
+export interface PreviewCopy {
+  sample?: number;
+  maxRows?: number;
+  sampleOverCap?: number;
+}
+
+/** The largest `--sample` the control plane takes (`SCOPE_DUMP_SAMPLE_MAX_ROWS`). */
+const SAMPLE_MAX = 100_000;
+
+/**
+ * Parse `--sample <n>`, `--max-rows <n>` and `--sample-over-cap <n>` (#3232), before anything is
+ * pushed, so a mistyped flag costs no build:
+ * - `--sample <n>`: copy a sample, the newest n rows of each table and what they reference.
+ * - `--max-rows <n>`: refuse a fork whose copy would move more than n rows, estimated first.
+ * - `--sample-over-cap <n>`: with `--max-rows`, copy a sample of n instead of being refused.
+ * An empty value is no flag, so a workflow can pass an unset repository variable straight through.
+ */
+export function parsePreviewCopy(raw: { sample?: string; maxRows?: string; sampleOverCap?: string; empty?: boolean }): PreviewCopy {
+  const count = (name: string, value: string | undefined, max?: number): number | undefined => {
+    if (value === undefined || value.trim() === '') return undefined;
+    const n = Number(value.trim());
+    if (!Number.isSafeInteger(n) || n < 1 || (max !== undefined && n > max)) {
+      throw new Error(`invalid ${name} '${value}': a whole number from 1${max === undefined ? '' : ` to ${max}`}`);
+    }
+    return n;
+  };
+  const sample = count('--sample', raw.sample, SAMPLE_MAX);
+  const maxRows = count('--max-rows', raw.maxRows);
+  const sampleOverCap = count('--sample-over-cap', raw.sampleOverCap, SAMPLE_MAX);
+  const copy: PreviewCopy = {
+    ...(sample === undefined ? {} : { sample }),
+    ...(maxRows === undefined ? {} : { maxRows }),
+    ...(sampleOverCap === undefined ? {} : { sampleOverCap }),
+  };
+  if (raw.empty && Object.keys(copy).length > 0) throw new Error('--sample, --max-rows and --sample-over-cap shape a fork; --empty copies nothing');
+  if (sampleOverCap !== undefined && maxRows === undefined) throw new Error('--sample-over-cap needs --max-rows: it is what a fork over the cap copies');
+  if (sampleOverCap !== undefined && sample !== undefined) throw new Error('pass --sample (always a sample) or --sample-over-cap (a sample only over --max-rows), not both');
+  return copy;
 }
