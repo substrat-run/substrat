@@ -55,6 +55,7 @@ import {
 } from './cost-rollup.js';
 import type { CloudflareUsageDay } from '@substrat-run/contracts';
 import { backoffAt, fetchLikeOf, type FetchLike } from './connector-transport.js';
+import { budgetedFetch, CONNECTOR_SWEEP_MAX_BYTES, CONNECTOR_SWEEP_MAX_MS } from './sweep-budget.js';
 import { assertRowLimit, TELEMETRY_PRUNE_BATCH, type TelemetryPruneReport } from './retention.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
@@ -239,6 +240,35 @@ export interface PlatformSweepOptions {
    * errors (the ops-failure recorder's shape, worker.ts).
    */
   recordSweepRun?: (entry: SweepRunInput) => void;
+  /**
+   * #3324: the `connector-attempt` row written BEFORE each connection's sweeper runs, and awaited,
+   * so a pass that dies inside a sweep (an isolate reset leaves no log and no outcome) leaves it
+   * behind. A connection whose newest attempt has no `connector` row after it is waited out with
+   * {@link connectorCrashBackoff} instead of being swept again on the next pass. A rejected write
+   * holds that connection's sweep back a pass. UNSET ⇒ no attempt is noted and none is waited out,
+   * as before.
+   */
+  recordSweepAttempt?: (entry: SweepRunInput) => Promise<unknown>;
+  /**
+   * #3324: false leaves the connector sweep out of this pass, for a caller that runs it with
+   * `runConnectorSweep` after everything else. Default true.
+   */
+  sweepConnectors?: boolean;
+  /**
+   * #3324: connection ids an operator has paused. Each is skipped and recorded `skipped` with
+   * {@link CONNECTOR_SWEEP_PAUSED} on every pass, and no landing, attempt or poll is made for it.
+   */
+  pausedConnections?: ReadonlySet<string>;
+  /** #3324: the wait after sweeps the pass died in. Defaults {@link CONNECTOR_CRASH_BACKOFF}. */
+  connectorCrashBackoff?: { baseDelayMs?: number; maxDelayMs?: number };
+  /**
+   * #3324: each connection's share of one pass — response bytes read and wall time — enforced on
+   * the `fetch` its sweeper is handed (`budgetedFetch`). Defaults `CONNECTOR_SWEEP_MAX_BYTES` and
+   * `CONNECTOR_SWEEP_MAX_MS`.
+   */
+  connectorBudget?: { maxBytes?: number; maxMs?: number };
+  /** #3324: the connector sweep's clock (budgets, crash backoff), in epoch ms. Default `Date.now`. */
+  clock?: () => number;
   /** The platform actor the enumeration reads run as (`listScopes`/`listConnections`). */
   actor: PlatformActorId;
   /** Sanctioned egress handed to each connector sweeper. */
@@ -622,8 +652,12 @@ export interface PlatformSweepReport {
   drainTotals: ExecutorDrainReport;
   /** Connections a sweeper ran for. */
   connectionsSwept: number;
-  /** Connections skipped — revoked, without a sweeper, or not yet due. */
+  /** Connections skipped — revoked, paused, backing off, without a sweeper, or not yet due. */
   connectionsSkipped: number;
+  /** #3324: of those, the ones an operator paused. */
+  connectionsPaused: number;
+  /** #3324: of those, the ones waited out after sweeps the pass died in. */
+  connectionsBackingOff: number;
   /**
    * #2316: what the landing step granted and bound from declarations, summed over connections, or
    * null when no `connectionLandings` was supplied. `failed` counts (connection, scope) pairs.
@@ -1621,6 +1655,7 @@ export async function runPlatformSweep(
   options: PlatformSweepOptions,
 ): Promise<PlatformSweepReport> {
   assertSweepBatches(options);
+  assertConnectorSweepOptions(options);
   const concurrency = options.concurrency ?? 8;
   const report: PlatformSweepReport = {
     scopesDrained: 0,
@@ -1628,6 +1663,8 @@ export async function runPlatformSweep(
     connectionsSwept: 0,
     connectionLandings: options.connectionLandings ? { granted: 0, bound: 0, failed: 0 } : null,
     connectionsSkipped: 0,
+    connectionsPaused: 0,
+    connectionsBackingOff: 0,
     snapshotsReaped: 0,
     archivedScopesReaped: 0,
     tenantsReaped: 0,
@@ -2156,159 +2193,11 @@ export async function runPlatformSweep(
     });
   }
 
-  const connections = await host.admin.listConnections(options.actor, {});
-  const landings = options.connectionLandings ? new LandingPass(host, options.actor, options.connectionLandings, concurrency, listScopes) : null;
-  await mapBounded(connections, concurrency, async (c) => {
-    // #1232: the connection's durable sweep record. A connection row carries no
-    // scope (a connection spans scopes by construction) and no version.
-    const record = (outcome: 'ok' | 'failed' | 'skipped' | 'unsupported', extra?: Partial<SweepRunInput>) =>
-      options.recordSweepRun?.({
-        kind: 'connector',
-        unit: c.id,
-        outcome,
-        tenantId: c.tenantId,
-        vertical: c.vertical,
-        operation: `sweep.connector:${c.provider}`,
-        connectionId: c.id,
-        ...extra,
-      });
-    if (c.revokedAt !== null) {
-      // Terminal — nothing to reconcile through it, and deliberately unrecorded:
-      // a revoked connection is not "waiting to be swept", and a skipped row per
-      // pass forever would be noise every strip has to filter back out.
-      report.connectionsSkipped += 1;
-      return;
-    }
-    const sweeper = options.sweepers[c.provider] ?? options.sweeperFor?.(c);
-    if (!sweeper) {
-      report.connectionsSkipped += 1;
-      // Recorded, unlike the revoked case: "bound but no sweeper registered" is a
-      // live connection nothing will ever poll — exactly the declared-vs-observed
-      // finding the signals views exist to surface.
-      record('skipped');
-      return;
-    }
-    const started = Date.now();
-    // #2316: what the running versions declare, granted and bound before the poll reads bindings.
-    // Never sinks the sweep: its failures join the poll's on the connection's row.
-    const landed = landings ? await landings.apply(c).catch((err) => ({ granted: [], bound: [], failed: [{ scopeId: '*', error: message(err) }] })) : null;
-    if (landed && report.connectionLandings) {
-      report.connectionLandings.granted += landed.granted.length;
-      report.connectionLandings.bound += landed.bound.length;
-      report.connectionLandings.failed += landed.failed.length;
-    }
-    const landingFailed = landed?.failed ?? [];
-    // #2316: the row is the connection's tenant's to read, so it says what became of the sweep, in
-    // the platform's words with counts, under one reference; the text (a provider's answer, a landing
-    // refusal) is staff's row under the same reference, or the report's when nothing files one.
-    //
-    // #3235: a failure that names the scope it belongs to is filed as a PAIR under that reference: a
-    // row for the connection's tenant, carrying the scope, so that app's Failures view and fleet
-    // health count it, saying in the platform's words what became of that binding (with the
-    // connector's `said` when it gave one); and staff's row with the failure's own text. Only a
-    // failure with no scope (a sweep that threw, a landing pass that could not start) stays staff's
-    // alone, as before.
-    const fail = (said: string[], failures: readonly SweepFailure[], neutralDetail?: string) => {
-      const reference = ulid();
-      if (options.recordFailure) {
-        const operation = `sweep.connector:${c.provider}`;
-        const opening = `connection ${c.id} of tenant ${c.tenantId}: `;
-        const unscoped: string[] = [];
-        // One pair per scope: a scope can fail twice in one pass (a declared landing, then its
-        // poll), and two pairs sharing the reference, the operation and the scope could not be told
-        // apart by a reader that pairs them.
-        const byScope = new Map<ScopeId, SweepFailure[]>();
-        for (const f of failures) {
-          const scope = f.scopeId === undefined ? undefined : scopeIdSchema.safeParse(f.scopeId);
-          if (!scope?.success) {
-            unscoped.push(f.scopeId === undefined ? f.error : `scope ${f.scopeId}: ${f.error}`);
-            continue;
-          }
-          byScope.set(scope.data, [...(byScope.get(scope.data) ?? []), f]);
-        }
-        for (const [scope, fs] of byScope) {
-          options.recordFailure(
-            withheldOpsFailure(
-              { operation, stage: 'sweep', tenantId: c.tenantId, scopeId: scope, vertical: c.vertical },
-              fs.map((f) => f.error).join('; '),
-              (ref) => `${[...new Set(fs.map((f) => tenantSentence(c.provider, f)))].join('; ')} (reference ${ref})`,
-              reference,
-              `${opening}scope ${scope}: `,
-            ),
-          );
-        }
-        if (unscoped.length > 0) {
-          options.recordFailure(withheldStaffFailure({ operation, stage: 'sweep', vertical: c.vertical }, unscoped.join('; '), reference, opening));
-        }
-      } else {
-        for (const f of failures) report.errors.push({ kind: 'sweep', id: c.id, error: f.scopeId === undefined ? f.error : `scope ${f.scopeId}: ${f.error}` });
-      }
-      const failureText = `${said.join('; ')} (reference ${reference})`;
-      record('failed', { error: neutralDetail ? `Unsupported bindings: ${neutralDetail}\n${failureText}` : failureText, elapsedMs: Date.now() - started });
-    };
-    const landingSaid = landingFailed.length > 0 ? [`${counted(landingFailed.length, 'declared landing')} could not be granted or bound`] : [];
-    const landingFailures: SweepFailure[] = landingFailed.map((f) => ({ ...f, landing: true }));
-    const everyMinutes = options.sweepEveryMinutes?.[c.provider];
-    if (everyMinutes) {
-      try {
-        const [ok, failed, unsupported] = await Promise.all([
-          host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'ok', limit: 1 }),
-          host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'failed', limit: 1 }),
-          host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'unsupported', limit: 1 }),
-        ]);
-        // Ignore skipped rows and future-dated receipts: neither proves a poll inside this interval.
-        const now = Date.now();
-        const lastAttempt = Math.max(0, ...[ok[0], failed[0], unsupported[0]].filter((row) => row !== undefined).map((row) => Date.parse(row.at)).filter((at) => at <= now));
-        if (now - lastAttempt < everyMinutes * 60_000) {
-          if (landingFailed.length > 0) fail(landingSaid, landingFailures);
-          report.connectionsSkipped += 1;
-          return;
-        }
-      } catch (err) {
-        // Without the ledger's clock, do not risk spending the provider's daily allowance.
-        if (landingFailed.length > 0) fail(landingSaid, landingFailures);
-        report.errors.push({ kind: 'sweep', id: c.id, error: `cannot read connector cadence: ${message(err)}` });
-        report.connectionsSkipped += 1;
-        return;
-      }
-    }
-    let result: unknown;
-    try {
-      // #2498: a sized stream body the connector sends reaches the injected fetch converted.
-      result = await sweeper(host, c.id, { fetch: fetchLikeOf(options.fetch) });
-    } catch (err) {
-      // The landing step's failures, if any, belong on the same row as the poll's throw.
-      fail([...landingSaid, 'the sweep did not complete'], [...landingFailures, { error: message(err) }]);
-      return;
-    }
-    const answer = options.connectionLandings && binderOf(options.connectionLandings, c) ? connectorSweepAnswerOf(result) : null;
-    // Skipped only when the row below is `unsupported`: a failed landing makes it `failed`, and swept.
-    if (answer && answer.found > 0 && answer.unsupported?.length === answer.found && answer.failed.length === 0 && landingFailed.length === 0) {
-      report.connectionsSkipped += 1;
-    } else {
-      report.connectionsSwept += 1;
-    }
-    // #2316: a resolved sweep is not a landed one. A binding the connector could not land, or a
-    // landing the platform could not seat, fails the row; a poll that found nothing to poll is
-    // `skipped`, which a console reads as "nothing polls this connection". A mixed connection
-    // records the result of its polled bindings and keeps unsupported bindings in the detail.
-    const pollFailed = answer?.failed ?? [];
-    const unsupported = answer?.unsupported ?? [];
-    const unsupportedDetail = unsupported.map((u) => `scope ${u.scopeId}: ${u.reason}`).join('; ');
-    if (landingFailed.length > 0 || pollFailed.length > 0) {
-      fail(
-        [...landingSaid, ...(pollFailed.length > 0 ? [`${pollFailed.length} of ${counted(answer!.found, 'binding')} did not land${saidOf(pollFailed)}`] : [])],
-        [...landingFailures, ...pollFailed],
-        unsupportedDetail || undefined,
-      );
-    } else if (answer && answer.found === 0) {
-      record('skipped', { error: NO_BINDING, elapsedMs: Date.now() - started });
-    } else if (unsupported.length > 0 && answer?.found === unsupported.length) {
-      record('unsupported', { error: unsupportedDetail, elapsedMs: Date.now() - started });
-    } else {
-      record('ok', { ...(unsupportedDetail ? { error: unsupportedDetail } : {}), elapsedMs: Date.now() - started });
-    }
-  });
+  // -- connector sweeps (#574, #3324) ------------------------------------------
+  // Skipped when the caller runs them itself, after everything else (`sweepConnectors: false`
+  // and `runConnectorSweep`): a connection's sweep reads a third party's data through this
+  // isolate, and a sweep that exhausts it takes every phase still to run with it.
+  if (options.sweepConnectors !== false) await sweepConnections(host, options, report, listScopes, concurrency);
 
   // -- cross-vertical event delivery (#1705) ------------------------------------
   // After the provision reconcile, so a peer grant a new version declares is seated before
@@ -3898,4 +3787,331 @@ async function sweepOrphanAttachmentWindow(
     }
   });
   return out;
+}
+
+/** The `error` of a paused connection's `skipped` row (#3324). */
+export const CONNECTOR_SWEEP_PAUSED = 'paused by an operator: this connection is not swept until the pause is lifted';
+
+/**
+ * How long a connection whose sweep the pass died in is waited out (#3324): `baseDelayMs` after the
+ * first, doubling with each attempt in a row that did not finish, never more than `maxDelayMs`.
+ * 30 minutes, then an hour, two, …, a day. Jittered by `backoffAt`.
+ */
+export const CONNECTOR_CRASH_BACKOFF = { baseDelayMs: 30 * 60_000, maxDelayMs: 24 * 3_600_000 } as const;
+
+/** Attempts read back to count a run of unfinished ones; past this many the delay is at its cap anyway. */
+const CRASH_STREAK_WINDOW = 8;
+
+interface CrashedAttempts {
+  /** Attempts in a row, newest first, with no outcome after them. */
+  streak: number;
+  /** When the newest of them started. */
+  lastAt: string;
+}
+
+/**
+ * The connection's attempts newer than its newest `connector` row: each is a sweep that started and
+ * recorded no outcome, so the pass running it ended inside it. Null when the newest attempt has an
+ * outcome after it (or there is none).
+ */
+async function crashedAttemptsOf(host: ScopeHost, actor: PlatformActorId, unit: string): Promise<CrashedAttempts | null> {
+  const [attempts, outcomes] = await Promise.all([
+    host.admin.listSweepRuns(actor, { kind: 'connector-attempt', unit, limit: CRASH_STREAK_WINDOW }),
+    host.admin.listSweepRuns(actor, { kind: 'connector', unit, limit: 1 }),
+  ]);
+  const last = outcomes[0];
+  let streak = 0;
+  for (const a of attempts) {
+    if (last !== undefined && (a.at < last.at || (a.at === last.at && a.id < last.id))) break;
+    streak += 1;
+  }
+  return streak === 0 ? null : { streak, lastAt: attempts[0]!.at };
+}
+
+/** What a connector sweep did: `runPlatformSweep`'s connector fields, on their own. */
+export type ConnectorSweepReport = Pick<
+  PlatformSweepReport,
+  'connectionsSwept' | 'connectionsSkipped' | 'connectionsPaused' | 'connectionsBackingOff' | 'connectionLandings' | 'errors'
+>;
+
+/** The part of {@link PlatformSweepOptions} a connector sweep reads. */
+export type ConnectorSweepOptions = Pick<
+  PlatformSweepOptions,
+  | 'actor'
+  | 'fetch'
+  | 'sweepers'
+  | 'sweepEveryMinutes'
+  | 'sweeperFor'
+  | 'connectionLandings'
+  | 'recordSweepRun'
+  | 'recordSweepAttempt'
+  | 'recordFailure'
+  | 'concurrency'
+  | 'pausedConnections'
+  | 'connectorCrashBackoff'
+  | 'connectorBudget'
+  | 'clock'
+>;
+
+/**
+ * The connector sweep alone (#3324), for a caller that runs it after every other phase of its pass
+ * (`runPlatformSweep` with `sweepConnectors: false`). A connection's sweep reads a third party's
+ * data through the calling isolate; run last, one that exhausts it ends a pass with nothing left
+ * to lose but the connections still in flight.
+ */
+export async function runConnectorSweep(host: ScopeHost, options: ConnectorSweepOptions): Promise<ConnectorSweepReport> {
+  assertConnectorSweepOptions(options);
+  const report: ConnectorSweepReport = {
+    connectionsSwept: 0,
+    connectionsSkipped: 0,
+    connectionsPaused: 0,
+    connectionsBackingOff: 0,
+    connectionLandings: options.connectionLandings ? { granted: 0, bound: 0, failed: 0 } : null,
+    errors: [],
+  };
+  await sweepConnections(host, options, report, scopeReaderFor(host.admin, options.actor, report), options.concurrency ?? 8);
+  return report;
+}
+
+/** The budget and backoff options, refused when they could not bound anything. */
+function assertConnectorSweepOptions(options: ConnectorSweepOptions): void {
+  const budget = options.connectorBudget;
+  if (budget?.maxBytes !== undefined && !(Number.isInteger(budget.maxBytes) && budget.maxBytes > 0)) {
+    throw substratError('validation_failed', `connectorBudget.maxBytes must be a positive whole number of bytes, got ${String(budget.maxBytes)}`);
+  }
+  if (budget?.maxMs !== undefined) assertPositiveMs('connectorBudget.maxMs', budget.maxMs);
+  for (const name of ['baseDelayMs', 'maxDelayMs'] as const) {
+    const ms = options.connectorCrashBackoff?.[name];
+    if (ms !== undefined) assertPositiveMs(`connectorCrashBackoff.${name}`, ms);
+  }
+}
+
+async function sweepConnections(
+  host: ScopeHost,
+  options: ConnectorSweepOptions,
+  report: ConnectorSweepReport,
+  listScopes: ScopeReader,
+  concurrency: number,
+): Promise<void> {
+  const clock = options.clock ?? Date.now;
+  const budget = {
+    maxBytes: options.connectorBudget?.maxBytes ?? CONNECTOR_SWEEP_MAX_BYTES,
+    maxMs: options.connectorBudget?.maxMs ?? CONNECTOR_SWEEP_MAX_MS,
+  };
+  const crashBackoff = {
+    maxAttempts: Number.MAX_SAFE_INTEGER,
+    baseDelayMs: options.connectorCrashBackoff?.baseDelayMs ?? CONNECTOR_CRASH_BACKOFF.baseDelayMs,
+    maxDelayMs: options.connectorCrashBackoff?.maxDelayMs ?? CONNECTOR_CRASH_BACKOFF.maxDelayMs,
+  };
+  const connections = await host.admin.listConnections(options.actor, {});
+  const landings = options.connectionLandings ? new LandingPass(host, options.actor, options.connectionLandings, concurrency, listScopes) : null;
+  await mapBounded(connections, concurrency, async (c) => {
+    // #1232: the connection's durable sweep record. A connection row carries no
+    // scope (a connection spans scopes by construction) and no version.
+    const record = (outcome: 'ok' | 'failed' | 'skipped' | 'unsupported', extra?: Partial<SweepRunInput>) =>
+      options.recordSweepRun?.({
+        kind: 'connector',
+        unit: c.id,
+        outcome,
+        tenantId: c.tenantId,
+        vertical: c.vertical,
+        operation: `sweep.connector:${c.provider}`,
+        connectionId: c.id,
+        ...extra,
+      });
+    if (c.revokedAt !== null) {
+      // Terminal — nothing to reconcile through it, and deliberately unrecorded:
+      // a revoked connection is not "waiting to be swept", and a skipped row per
+      // pass forever would be noise every strip has to filter back out.
+      report.connectionsSkipped += 1;
+      return;
+    }
+    // #3324: an operator's pause. Recorded, unlike a revoke: the connection is live and nothing
+    // polls it, which is what a reader of its row should see, pass after pass, until it is lifted.
+    if (options.pausedConnections?.has(c.id)) {
+      report.connectionsPaused += 1;
+      report.connectionsSkipped += 1;
+      record('skipped', { error: CONNECTOR_SWEEP_PAUSED });
+      return;
+    }
+    const sweeper = options.sweepers[c.provider] ?? options.sweeperFor?.(c);
+    if (!sweeper) {
+      report.connectionsSkipped += 1;
+      // Recorded, unlike the revoked case: "bound but no sweeper registered" is a
+      // live connection nothing will ever poll — exactly the declared-vs-observed
+      // finding the signals views exist to surface.
+      record('skipped');
+      return;
+    }
+    // #3324: a sweep the pass died in left its attempt and no outcome. Waited out, exponentially and
+    // capped, rather than run again on the next pass: run on every pass, it was every pass that died.
+    if (options.recordSweepAttempt) {
+      let crashed: CrashedAttempts | null;
+      try {
+        crashed = await crashedAttemptsOf(host, options.actor, c.id);
+      } catch (err) {
+        // Without the record, a sweep that kills its pass would be run again on every one.
+        report.errors.push({ kind: 'sweep', id: c.id, error: `cannot read the connection's sweep attempts: ${message(err)}` });
+        report.connectionsSkipped += 1;
+        return;
+      }
+      if (crashed) {
+        const retryAt = Date.parse(backoffAt(crashed.streak, crashBackoff, new Date(crashed.lastAt)));
+        const said = `the last ${counted(crashed.streak, 'sweep')} of connection ${c.id} did not finish: the pass running ${crashed.streak === 1 ? 'it' : 'them'} ended first`;
+        if (clock() < retryAt) {
+          report.connectionsBackingOff += 1;
+          report.connectionsSkipped += 1;
+          report.errors.push({ kind: 'sweep', id: c.id, error: `${said}; next attempt after ${new Date(retryAt).toISOString()}` });
+          return;
+        }
+        // Filed once per retry, so the failure digest names a connection whose sweeps keep dying.
+        options.recordFailure?.(
+          withheldStaffFailure({ operation: `sweep.connector:${c.provider}`, stage: 'sweep', vertical: c.vertical }, `${said}; trying again`, ulid(), `connection ${c.id} of tenant ${c.tenantId}: `),
+        );
+      }
+    }
+    const started = Date.now();
+    // #2316: what the running versions declare, granted and bound before the poll reads bindings.
+    // Never sinks the sweep: its failures join the poll's on the connection's row.
+    const landed = landings ? await landings.apply(c).catch((err) => ({ granted: [], bound: [], failed: [{ scopeId: '*', error: message(err) }] })) : null;
+    if (landed && report.connectionLandings) {
+      report.connectionLandings.granted += landed.granted.length;
+      report.connectionLandings.bound += landed.bound.length;
+      report.connectionLandings.failed += landed.failed.length;
+    }
+    const landingFailed = landed?.failed ?? [];
+    // #2316: the row is the connection's tenant's to read, so it says what became of the sweep, in
+    // the platform's words with counts, under one reference; the text (a provider's answer, a landing
+    // refusal) is staff's row under the same reference, or the report's when nothing files one.
+    //
+    // #3235: a failure that names the scope it belongs to is filed as a PAIR under that reference: a
+    // row for the connection's tenant, carrying the scope, so that app's Failures view and fleet
+    // health count it, saying in the platform's words what became of that binding (with the
+    // connector's `said` when it gave one); and staff's row with the failure's own text. Only a
+    // failure with no scope (a sweep that threw, a landing pass that could not start) stays staff's
+    // alone, as before.
+    const fail = (said: string[], failures: readonly SweepFailure[], neutralDetail?: string) => {
+      const reference = ulid();
+      if (options.recordFailure) {
+        const operation = `sweep.connector:${c.provider}`;
+        const opening = `connection ${c.id} of tenant ${c.tenantId}: `;
+        const unscoped: string[] = [];
+        // One pair per scope: a scope can fail twice in one pass (a declared landing, then its
+        // poll), and two pairs sharing the reference, the operation and the scope could not be told
+        // apart by a reader that pairs them.
+        const byScope = new Map<ScopeId, SweepFailure[]>();
+        for (const f of failures) {
+          const scope = f.scopeId === undefined ? undefined : scopeIdSchema.safeParse(f.scopeId);
+          if (!scope?.success) {
+            unscoped.push(f.scopeId === undefined ? f.error : `scope ${f.scopeId}: ${f.error}`);
+            continue;
+          }
+          byScope.set(scope.data, [...(byScope.get(scope.data) ?? []), f]);
+        }
+        for (const [scope, fs] of byScope) {
+          options.recordFailure(
+            withheldOpsFailure(
+              { operation, stage: 'sweep', tenantId: c.tenantId, scopeId: scope, vertical: c.vertical },
+              fs.map((f) => f.error).join('; '),
+              (ref) => `${[...new Set(fs.map((f) => tenantSentence(c.provider, f)))].join('; ')} (reference ${ref})`,
+              reference,
+              `${opening}scope ${scope}: `,
+            ),
+          );
+        }
+        if (unscoped.length > 0) {
+          options.recordFailure(withheldStaffFailure({ operation, stage: 'sweep', vertical: c.vertical }, unscoped.join('; '), reference, opening));
+        }
+      } else {
+        for (const f of failures) report.errors.push({ kind: 'sweep', id: c.id, error: f.scopeId === undefined ? f.error : `scope ${f.scopeId}: ${f.error}` });
+      }
+      const failureText = `${said.join('; ')} (reference ${reference})`;
+      record('failed', { error: neutralDetail ? `Unsupported bindings: ${neutralDetail}\n${failureText}` : failureText, elapsedMs: Date.now() - started });
+    };
+    const landingSaid = landingFailed.length > 0 ? [`${counted(landingFailed.length, 'declared landing')} could not be granted or bound`] : [];
+    const landingFailures: SweepFailure[] = landingFailed.map((f) => ({ ...f, landing: true }));
+    const everyMinutes = options.sweepEveryMinutes?.[c.provider];
+    if (everyMinutes) {
+      try {
+        const [ok, failed, unsupported] = await Promise.all([
+          host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'ok', limit: 1 }),
+          host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'failed', limit: 1 }),
+          host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'unsupported', limit: 1 }),
+        ]);
+        // Ignore skipped rows and future-dated receipts: neither proves a poll inside this interval.
+        const now = Date.now();
+        const lastAttempt = Math.max(0, ...[ok[0], failed[0], unsupported[0]].filter((row) => row !== undefined).map((row) => Date.parse(row.at)).filter((at) => at <= now));
+        if (now - lastAttempt < everyMinutes * 60_000) {
+          if (landingFailed.length > 0) fail(landingSaid, landingFailures);
+          report.connectionsSkipped += 1;
+          return;
+        }
+      } catch (err) {
+        // Without the ledger's clock, do not risk spending the provider's daily allowance.
+        if (landingFailed.length > 0) fail(landingSaid, landingFailures);
+        report.errors.push({ kind: 'sweep', id: c.id, error: `cannot read connector cadence: ${message(err)}` });
+        report.connectionsSkipped += 1;
+        return;
+      }
+    }
+    // #3324: the attempt, noted before the work and awaited, so a pass that dies inside the sweep
+    // leaves it behind. A note that cannot be written holds the sweep back a pass: without it, a
+    // sweep that kills its pass would be run again on every one.
+    if (options.recordSweepAttempt) {
+      try {
+        await options.recordSweepAttempt({
+          kind: 'connector-attempt',
+          unit: c.id,
+          outcome: 'started',
+          tenantId: null,
+          vertical: c.vertical,
+          operation: `sweep.connector:${c.provider}`,
+          connectionId: c.id,
+        });
+      } catch (err) {
+        if (landingFailed.length > 0) fail(landingSaid, landingFailures);
+        report.errors.push({ kind: 'sweep', id: c.id, error: `cannot note the sweep's attempt, so it waits for the next pass: ${message(err)}` });
+        report.connectionsSkipped += 1;
+        return;
+      }
+    }
+    let result: unknown;
+    try {
+      // #2498: a sized stream body the connector sends reaches the injected fetch converted.
+      // #3324: and the connection reads no more than its share of the pass (`budgetedFetch`).
+      result = await sweeper(host, c.id, { fetch: budgetedFetch(fetchLikeOf(options.fetch), { ...budget, clock }) });
+    } catch (err) {
+      // The landing step's failures, if any, belong on the same row as the poll's throw.
+      fail([...landingSaid, 'the sweep did not complete'], [...landingFailures, { error: message(err) }]);
+      return;
+    }
+    const answer = options.connectionLandings && binderOf(options.connectionLandings, c) ? connectorSweepAnswerOf(result) : null;
+    // Skipped only when the row below is `unsupported`: a failed landing makes it `failed`, and swept.
+    if (answer && answer.found > 0 && answer.unsupported?.length === answer.found && answer.failed.length === 0 && landingFailed.length === 0) {
+      report.connectionsSkipped += 1;
+    } else {
+      report.connectionsSwept += 1;
+    }
+    // #2316: a resolved sweep is not a landed one. A binding the connector could not land, or a
+    // landing the platform could not seat, fails the row; a poll that found nothing to poll is
+    // `skipped`, which a console reads as "nothing polls this connection". A mixed connection
+    // records the result of its polled bindings and keeps unsupported bindings in the detail.
+    const pollFailed = answer?.failed ?? [];
+    const unsupported = answer?.unsupported ?? [];
+    const unsupportedDetail = unsupported.map((u) => `scope ${u.scopeId}: ${u.reason}`).join('; ');
+    if (landingFailed.length > 0 || pollFailed.length > 0) {
+      fail(
+        [...landingSaid, ...(pollFailed.length > 0 ? [`${pollFailed.length} of ${counted(answer!.found, 'binding')} did not land${saidOf(pollFailed)}`] : [])],
+        [...landingFailures, ...pollFailed],
+        unsupportedDetail || undefined,
+      );
+    } else if (answer && answer.found === 0) {
+      record('skipped', { error: NO_BINDING, elapsedMs: Date.now() - started });
+    } else if (unsupported.length > 0 && answer?.found === unsupported.length) {
+      record('unsupported', { error: unsupportedDetail, elapsedMs: Date.now() - started });
+    } else {
+      record('ok', { ...(unsupportedDetail ? { error: unsupportedDetail } : {}), elapsedMs: Date.now() - started });
+    }
+  });
+
 }

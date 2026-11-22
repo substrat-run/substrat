@@ -1046,6 +1046,8 @@ export type {
 } from './job-run.js';
 export {
   runPlatformSweep,
+  // #3324: the connector sweep on its own, for a caller that runs it after every other phase.
+  runConnectorSweep,
   UNREADABLE_SCOPE_ROWS_NAMED,
   startPlatformSweeper,
   StorageReadUnsupported,
@@ -1076,6 +1078,8 @@ export type {
   AccessLogSweepReport,
   ConnectorSweeper,
   ConnectorSweepAnswer,
+  ConnectorSweepOptions,
+  ConnectorSweepReport,
   MigrationSweepReport,
   PlatformSweepOptions,
   PlatformSweepReport,

@@ -145,6 +145,8 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
             { value: 'platform-request', label: 'Platform requests' },
             // #1054: one row per reconciled UTC day of model usage; its findings are Issues rows.
             { value: 'model-reconcile', label: 'Model reconciliation' },
+            // #3324: a connection's sweep noted before its work; one with no connector row after it died with its pass.
+            { value: 'connector-attempt', label: 'Connector attempts' },
           ]}
           value={kindFilter}
           onChange={(e) => setKindFilter(e.target.value as typeof kindFilter)}
@@ -157,6 +159,7 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
             { value: 'failed', label: 'failed' },
             { value: 'skipped', label: 'skipped' },
             { value: 'unsupported', label: 'unsupported' },
+            { value: 'started', label: 'started' },
           ]}
           value={outcomeFilter}
           onChange={(e) => setOutcomeFilter(e.target.value as typeof outcomeFilter)}

@@ -57,6 +57,9 @@ import type { ManifestImports, PlatformActorId, Scope, Tenant, TenantId, ScopeId
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
 import {
   runPlatformSweep,
+  runConnectorSweep,
+  type ConnectorSweepOptions,
+  type OpsFailureInput,
   runCrossVerticalFrom,
   isPrimaryScope,
   StorageReadUnsupported,
@@ -524,6 +527,14 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * its bytes. docs/architecture/orphan-attachment-sweep.md has the rollout.
    */
   ORPHAN_ATTACHMENT_SWEEP?: string;
+  /**
+   * #3324: connection ids whose connector sweep an operator has paused, separated by commas or
+   * whitespace. Each is skipped on every pass, with a `skipped` row saying it is paused, until its id
+   * is taken off the list. The lever for a connection whose sweep keeps failing its pass, short of
+   * revoking it (which is terminal for its tenant). Set it as an encrypted value (`wrangler secret
+   * put`), not in `vars`: that takes effect at once, survives the next deploy, and needs no PR.
+   */
+  CONNECTOR_SWEEP_PAUSED?: string;
   /**
    * #3316: the daily Cloudflare cost rollup. `on` reads each closed day of the account's billed
    * Workers and Durable Objects analytics into the directory, attributed through it; anything else
@@ -2831,6 +2842,11 @@ function authFor(env: Env): PlatformActorAuth {
   return firstPlatformActorAuth(...readers);
 }
 
+/** #3324: `CONNECTOR_SWEEP_PAUSED` as the set the sweep reads; empty when unset. */
+export function pausedConnectionsOf(value: string | undefined): ReadonlySet<string> {
+  return new Set((value ?? '').split(/[\s,]+/).filter(Boolean));
+}
+
 export default {
   /**
    * Inbound mail (#2611): Email Routing on the receiving subdomain hands every message here. It is
@@ -2891,7 +2907,21 @@ export default {
     // when the phase reached no scope at all.
     const passStartedAt = new Date();
     const platformDrain = timedDrain((t: TenantId, s: ScopeId, o?: { skip?: readonly string[] }) => drainOneScope(env, t, s, o));
-    const report = await runPlatformSweep(host, {
+    // #1232: the durable sweep record. Fire-and-forget — a recorder failure must
+    // never sink the pass it is recording (the ops-failure recorder's shape).
+    const recordSweepRun = (e: SweepRunInput) => void host.admin.recordSweepRun(e).catch(() => undefined);
+    // #2316: a failed connection sweep's own text, staff's row under the reference its sweep row
+    // names; the digest lists it from the ledger. Fire-and-forget, as the row above — but this
+    // row is the text's only copy, so a write that fails leaves the reference in the tail. The
+    // reference and the write's own error only: the text can carry a provider's answer.
+    const recordFailure = (entry: Omit<OpsFailureInput, 'actor'>) =>
+      void host.admin.recordOpsFailure({ actor: SWEEP_ACTOR, ...entry }).catch((err: unknown) =>
+        console.error('sweep-failure record failed', { reference: entry.reference, error: err instanceof Error ? err.message : String(err) }),
+      );
+    // #3324: the connector sweep, run LAST in this pass (below), after every phase that keeps the
+    // fleet moving. A connection's sweep downloads a third party's data through this isolate; when
+    // one exhausted it, the reset took every phase after it, on every pass, for three days.
+    const connectorSweep: ConnectorSweepOptions = {
       actor: SWEEP_ACTOR,
       // Sanctioned egress for the connector sweepers below.
       fetch: globalFetch,
@@ -2915,17 +2945,22 @@ export default {
         binders: connectionBindersFor(env),
         binderFor: verticalConnectorBinderFor(env, host, SWEEP_ACTOR),
       },
-      // #1232: the durable sweep record. Fire-and-forget — a recorder failure must
-      // never sink the pass it is recording (the ops-failure recorder's shape).
-      recordSweepRun: (e) => void host.admin.recordSweepRun(e).catch(() => undefined),
-      // #2316: a failed connection sweep's own text, staff's row under the reference its sweep row
-      // names; the digest lists it from the ledger. Fire-and-forget, as the row above — but this
-      // row is the text's only copy, so a write that fails leaves the reference in the tail. The
-      // reference and the write's own error only: the text can carry a provider's answer.
-      recordFailure: (entry) =>
-        void host.admin.recordOpsFailure({ actor: SWEEP_ACTOR, ...entry }).catch((err: unknown) =>
-          console.error('sweep-failure record failed', { reference: entry.reference, error: err instanceof Error ? err.message : String(err) }),
-        ),
+      recordSweepRun,
+      recordFailure,
+      // #3324: awaited, unlike the row above: the attempt must be on record before the sweep can
+      // take the isolate down, or a sweep that does is run again on every pass. A rejected write
+      // holds that connection back a pass.
+      recordSweepAttempt: (e) => host.admin.recordSweepRun(e),
+      pausedConnections: pausedConnectionsOf(env.CONNECTOR_SWEEP_PAUSED),
+    };
+    const report = await runPlatformSweep(host, {
+      actor: SWEEP_ACTOR,
+      fetch: globalFetch,
+      sweepers: {},
+      // #3324: run at the end of `scheduled`, by `runConnectorSweep`.
+      sweepConnectors: false,
+      recordSweepRun,
+      recordFailure,
       drainRetries: false,
       deleteSnapshotFn: (tenantId, scopeId) => reapExpiredSnapshot({
         host,
@@ -3192,8 +3227,8 @@ export default {
       }
     }
 
-    // #40 — the platform's own disaster recovery. LAST in the pass, deliberately: the
-    // phases above mutate the directory (reaps, hostname transitions, intent settling),
+    // #40 — the platform's own disaster recovery. After every phase that changes the directory
+    // (only the connector sweep follows it, #3324), deliberately: the phases above mutate the directory (reaps, hostname transitions, intent settling),
     // so a copy taken after them is a copy of a settled directory rather than of one
     // mid-sweep. The cadence guard lives in `backupDirectoryIfDue` and reads the newest
     // stored copy, so a quarter-hourly cron takes one a day and a missed tick means the
@@ -3255,6 +3290,19 @@ export default {
       } catch (err) {
         console.error('review-retention failed', err instanceof Error ? err.message : String(err));
       }
+    }
+
+    // #3324 — the connector sweep, LAST. Everything above has run by now, so a sweep that exhausts
+    // this isolate costs the connections still in flight and nothing else. Its failures are ledger
+    // rows (`recordFailure`), so the next pass's digest carries them. Contained like the steps
+    // above: loud, never sunk.
+    try {
+      const connectors = await runConnectorSweep(host, connectorSweep);
+      if (connectors.errors.length > 0 || connectors.connectionsPaused > 0 || connectors.connectionsBackingOff > 0) {
+        console.log('connector-sweep', connectors);
+      }
+    } catch (err) {
+      console.error('connector-sweep failed', err instanceof Error ? err.message : String(err));
     }
   },
 

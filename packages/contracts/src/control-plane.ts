@@ -1276,12 +1276,20 @@ export type IssueEntry = z.infer<typeof issueEntry>;
  * `model-reconcile` (#1054) is one closed UTC day of model usage reconciled against what
  * Cloudflare saw: `unit` is the day, `YYYY-MM-DD`. The `ok` row is what says the day is done,
  * so a later pass does not file its findings again; a `failed` row is retried.
+ *
+ * `connector-attempt` (#3324) is one connection's sweep, noted as `started` BEFORE the sweeper
+ * runs: `unit` is the connection id, the unit its `connector` row names. A sweep that finishes
+ * writes its `connector` row after it, so an attempt with no `connector` row newer than it is one
+ * the pass died in (an isolate reset leaves no other trace), and the sweep backs that connection
+ * off instead of running it again on the next pass. Staff's alone: the row carries no tenant, so a
+ * tenant's read never meets it, and its readers are the sweep itself and the console.
  */
-export const sweepRunKind = z.enum(['connector', 'schedule', 'freshness', 'vertical-events', 'platform-request', 'model-reconcile']);
+export const sweepRunKind = z.enum(['connector', 'schedule', 'freshness', 'vertical-events', 'platform-request', 'model-reconcile', 'connector-attempt']);
 export type SweepRunKind = z.infer<typeof sweepRunKind>;
 /** `skipped` records a pass with nothing to poll; `unsupported` records a known binding
- * awaiting a connector capability, without counting it as a failed poll. */
-export const sweepRunOutcome = z.enum(['ok', 'failed', 'skipped', 'unsupported']);
+ * awaiting a connector capability, without counting it as a failed poll. `started` is the
+ * `connector-attempt` row's only outcome (#3324): work begun, its outcome on the row after it. */
+export const sweepRunOutcome = z.enum(['ok', 'failed', 'skipped', 'unsupported', 'started']);
 export type SweepRunOutcome = z.infer<typeof sweepRunOutcome>;
 
 /**
@@ -1452,6 +1460,11 @@ export const sweepRunsPayload = z.object({
             if (e.eventType !== undefined || e.observedAt !== undefined) {
               ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['eventType'], message: 'a schedule entry carries no freshness fields' });
             }
+          }
+          // #3324: `started` is the platform's note of an attempt it is about to make, never a
+          // scope's verdict: a schedule or freshness row says how something went.
+          if (e.outcome === 'started') {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['outcome'], message: 'a scope-drained entry says how a run went, never that one started' });
           }
           if (e.kind === 'freshness') {
             if (!e.eventType) {
