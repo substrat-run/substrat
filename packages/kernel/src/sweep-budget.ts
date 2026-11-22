@@ -23,11 +23,15 @@ import type { ByteStream, ByteStreamReader } from './byte-stream.js';
 import type { ConnectorResponse, FetchLike } from './connector-transport.js';
 
 /**
- * The most response bytes one connection's sweep may read in one pass: 64 MiB. Under half the
- * 128 MB a Worker isolate holds, so a connection that spends its whole share leaves the pass room
- * to finish; far above what a healthy incremental poll reads (a page of JSON is kilobytes).
+ * The most response bytes one connection's sweep may read in one pass: 32 MiB. A buffered read can
+ * hold up to twice its body at once (the bytes, then the string `text()` decodes from them), so a
+ * connection that spends its whole share in one response peaks near half the 128 MB a Worker
+ * isolate holds, leaving the pass room to finish. Far above what a healthy incremental poll reads
+ * (a page of JSON is kilobytes). A per-connection share cannot bound the isolate as a whole when
+ * several connections read at once; what keeps a pass that still dies from repeating is the
+ * attempt each sweep notes before its work (`runConnectorSweep`).
  */
-export const CONNECTOR_SWEEP_MAX_BYTES = 64 * 1024 * 1024;
+export const CONNECTOR_SWEEP_MAX_BYTES = 32 * 1024 * 1024;
 
 /**
  * The most wall time one connection's sweep may take in one pass: 10 minutes. Above the longest
@@ -82,14 +86,20 @@ export function budgetedFetch(fetch: FetchLike, budget: SweepBudget): FetchLike 
   return async (input, init) => {
     check();
     const res = await fetch(input, init);
-    // A declared length is the transfer's size only when nothing decodes it on the way (gzip, br).
-    const declared = res.headers?.get('content-encoding') ? Number.NaN : Number(res.headers?.get('content-length') ?? Number.NaN);
-    if (Number.isFinite(declared) && used + declared > budget.maxBytes) {
+    const declared = declaredLength(res);
+    if (declared !== null && used + declared > budget.maxBytes) {
       await res.body?.getReader().cancel(bytesSpent()).catch(() => {});
       throw bytesSpent();
     }
     return counted(res, charge);
   };
+}
+
+/** The body's length as sent, when the response says it: only when nothing decodes it on the way (gzip, br). */
+function declaredLength(res: ConnectorResponse): number | null {
+  if (res.headers?.get('content-encoding')) return null;
+  const n = Number(res.headers?.get('content-length') ?? Number.NaN);
+  return Number.isSafeInteger(n) && n >= 0 ? n : null;
 }
 
 /** `res`, its body read once through `charge`, however the connector reads it. */
@@ -122,8 +132,12 @@ function counted(res: ConnectorResponse, charge: (n: number) => void): Connector
     };
   }
   let stream: ByteStream | undefined;
+  // A buffered read holds the body once: written into one buffer of the declared length as it
+  // arrives, or, with no length to size it by, its chunks joined at the end (once there are two).
   const bytes = async (): Promise<Uint8Array> => {
     const reader = body.getReader();
+    const declared = declaredLength(res);
+    const sized = declared === null ? null : new Uint8Array(declared);
     const chunks: Uint8Array[] = [];
     let total = 0;
     try {
@@ -132,16 +146,23 @@ function counted(res: ConnectorResponse, charge: (n: number) => void): Connector
         if (done) break;
         if (!value) continue;
         charge(value.byteLength);
-        chunks.push(value);
+        if (sized) {
+          if (total + value.byteLength > sized.byteLength) throw new Error('the response body is longer than its declared length');
+          sized.set(value, total);
+        } else {
+          chunks.push(value);
+        }
         total += value.byteLength;
       }
     } catch (err) {
       await reader.cancel(err).catch(() => {});
       throw err;
     }
+    if (sized) return total === sized.byteLength ? sized : sized.subarray(0, total);
+    if (chunks.length === 1) return chunks[0]!;
     const out = new Uint8Array(total);
     let at = 0;
-    for (const c of chunks) {
+    for (const c of chunks.splice(0)) {
       out.set(c, at);
       at += c.byteLength;
     }
@@ -156,7 +177,8 @@ function counted(res: ConnectorResponse, charge: (n: number) => void): Connector
     json: async () => JSON.parse(await text()) as unknown,
     arrayBuffer: async () => {
       const b = await bytes();
-      return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+      // The buffer itself when the bytes fill it, as they do once read: no second copy.
+      return (b.byteOffset === 0 && b.byteLength === b.buffer.byteLength ? b.buffer : b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)) as ArrayBuffer;
     },
     get body() {
       stream ??= countedStream(body, charge);
@@ -186,8 +208,10 @@ function countedStream(body: ByteStream, charge: (n: number) => void): ByteStrea
           controller.error(err);
         }
       },
+      // Before the first read too: a body taken and cancelled unread still lets go of the provider's.
       cancel: async (reason) => {
-        await reader?.cancel(reason).catch(() => {});
+        reader ??= body.getReader();
+        await reader.cancel(reason).catch(() => {});
       },
     },
     { highWaterMark: 0 },

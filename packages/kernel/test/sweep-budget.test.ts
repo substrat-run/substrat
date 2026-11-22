@@ -63,6 +63,20 @@ describe('budgetedFetch (#3324)', () => {
     expect(seen.pulled).toBe(0);
   });
 
+  it('reads a body of declared length into one buffer, whole, and hands that buffer out', async () => {
+    const f = budgetedFetch(fetchOf(() => streamed([10, 20, 5], { 'content-length': '35' }).res), { maxBytes: 100, maxMs: 60_000, clock: () => 0 });
+    const buffer = await (await f('https://p.example/sized')).arrayBuffer();
+    expect(buffer.byteLength).toBe(35);
+    expect(new Uint8Array(buffer).every((b) => b === 0x61)).toBe(true);
+  });
+
+  it('lets go of the provider\'s body when the stream is cancelled before its first read', async () => {
+    const { res, seen } = streamed([10]);
+    const f = budgetedFetch(fetchOf(() => res), { maxBytes: 100, maxMs: 60_000, clock: () => 0 });
+    await (await f('https://p.example/unread')).body!.getReader().cancel('not needed');
+    expect(seen).toEqual({ pulled: 0, cancelled: true });
+  });
+
   it('refuses the next call once the share\'s time has passed', async () => {
     let now = 1_000;
     let calls = 0;

@@ -149,7 +149,7 @@ the directory backup, so for three days none of them ran either. What holds now:
   connection is waited out, 30 minutes after the first such attempt and doubling with each in a
   row up to a day, and each retry files a staff ops-failure, so the digest names it.
 - **Each connection gets a share of the pass.** The `fetch` a sweeper is handed refuses past
-  64 MiB of response bodies or 10 minutes (`budgetedFetch`). Bytes are counted while a body
+  32 MiB of response bodies or 10 minutes (`budgetedFetch`). Bytes are counted while a body
   streams, so one response is never read past the share. A sweep that spends its share fails its
   own row; the others continue.
 - **An operator can pause one connection.** `CONNECTOR_SWEEP_PAUSED` on the control plane is a
