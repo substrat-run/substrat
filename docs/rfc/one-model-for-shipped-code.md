@@ -389,12 +389,10 @@ Cloudflare's documentation for Workers for Platforms lists Workflows among the b
 Worker can carry. That was not tried here. What is not known is how an instance behaves when the
 platform changes the script under it. A push only uploads an archive script; it is a production
 promote that replaces the serving script in place (K-33), so an instance started on one version
-wakes on another version's code. A preview runs on an archive
-script against a copy that must stay inert
-([#2005](https://github.com/substrat-run/substrat/issues/2005)). Phase 1's spike tests both, and
-the candidate stays or is dropped on the rule §8 gives for that spike. Also uncertain is who a
-step acts as after a long wait.
-*Lean:* it runs as the app, and a step needing a person's right is an approval step a person takes.
+wakes on another version's code. A preview runs on an archive script against a copy that must
+stay inert ([#2005](https://github.com/substrat-run/substrat/issues/2005)). Phase 1's spike tests
+both, and the candidate stays or is dropped on the rule §8 gives for that spike. Also uncertain is
+who a step acts as after a long wait. *Lean:* it runs as the app, and a step needing a person's right is an approval step a person takes.
 
 **7.7 The home scope as the one place for tenant data.** It takes one call at a time, so everything
 tenant-wide queues. Nobody knows the limit until it is measured. *Lean:* shrink what has to live
@@ -468,8 +466,10 @@ when it has answered five questions:
 - **Cost.** What does an instance that sleeps or waits for weeks cost?
 
 This is the one rule for whether Workflows stays the default. It stays only if the spike shows all
-three of the following:
+four of the following:
 
+- The uploader binds a Workflow class to a script in the dispatch namespace, and an instance
+  started from it runs scope operations through the same door as any other call.
 - An event committed in a scope reaches the instance waiting for it, through a deliverer the spike
   names. Delivery is at least once, a repeat is harmless, and an event that arrives before the wait
   is not lost.
