@@ -1,17 +1,22 @@
 ---
 status: proposed
 layer: plan
-description: "A review of how engines, connectors, verticals, the control plane and the router fit together today, and a direction that reduces it to three concepts (scope, module, app), two places code runs, and one version rule. It names what gets worse, and decides nothing."
+description: "One target model for apps, the code they ship and how they depend on each other: five concepts (scope, module, app, store, dependency), one door, one edge between apps, one version rule. It combines two proposals, sets them against the repository, names what gets worse and what is uncertain, and proposes an order. It decides nothing."
 ---
 
-# RFC: one model for shipped code
+# RFC: one model for apps, the code they ship and how they depend
 
-**Status: proposed.** This is a review of the current model and a direction. It decides nothing,
-adds no decision record and amends none. It leans on three records that are themselves proposed
-([D-64](../decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md),
-[D-73](../decisions/D-073-a-connector-is-its-own-deployable-unit-with-one-call-contract.md),
-[K-58](../decisions/K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md)),
-so they are settled before anything here is relied on.
+**Status: proposed.** This combines two proposals. One is about which code exists, where it runs
+and how its version is fixed. The other is about how apps hang together: dependencies, people,
+master data, stores and processes. It decides nothing, adds no decision record and amends none.
+Six records it rests on are themselves proposed
+([K-58](../decisions/K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md),
+[K-62](../decisions/K-062-an-operation-does-not-await-an-outside-call-inside-its-transaction.md),
+[D-61](../decisions/D-061-do-originated-egress-is-observed-and-never-refused-d-46-s-limit.md),
+[D-64](../decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md),
+[D-70](../decisions/D-070-a-store-driver-s-code-runs-in-its-own-loaded-isolate-outside-the-verifier-with-no-network.md),
+[D-73](../decisions/D-073-a-connector-is-its-own-deployable-unit-with-one-call-contract.md)),
+and phase 0 of §8 settles them before anything is built.
 
 ## 1. Problem
 
@@ -21,23 +26,86 @@ A builder, and a reviewer, now meet:
 
 - **eight names for code somebody ships**: engine, module, vertical, plugin, first-party connector,
   vertical-defined connector, store kind, extension;
-- **five places that code runs** (§2.1);
-- **six ways a version is fixed** (§2.2), with two documents that disagree about one of them;
-- **a local run that is a different topology** from the hosted one (§2.3).
+- **five places that code runs** (§4.1) and **six ways a version is fixed** (§4.2);
+- **several separate declarations between two apps**: `calls` and `peers`, exported and consumed
+  events, `provides` and `requires`, `delegations`, and where an app takes its people from;
+- **a local run that is a different topology** from the hosted one (§4.3).
 
-None of these is wrong on its own. Together they are hard to hold in one head, and the goal of
-this RFC is a model that fits there without giving up speed, isolation or flexibility.
+There are several ways to do nearly everything. The goal is a model with one.
 
-## 2. How it fits together today
+## 2. The target
 
-### 2.1 Where code runs
+**A tenant and its apps.** A tenant has a number of apps. An app is what is deployed: a set of
+modules at fixed versions. The code calls it a vertical. A CRM is an app, a plugin for it is
+another, and the auth server that signs people in is a third. None of them is special to the
+platform.
+
+**Five concepts.** Scope, module, app, store and dependency.
+
+**Three places inside an app.**
+
+- **The scope** is the data: one database, one transaction at a time, one unit of isolation. The
+  modules' operations run there, and every permission is checked there. An app often has many
+  scopes, one per project say, and a home scope for what concerns the whole tenant.
+- **The worker** is the app's code outside the scope. It has no state of its own, takes HTTP,
+  composes answers, and is the only part that calls anything else.
+- **The store** is data that belongs to a scope and lives in an object the platform runs: a graph,
+  files, a search index.
+
+**One kind of code.** Everything anybody writes is a module. It declares entities, operations,
+events, permissions and migrations. An engine is a module published for reuse. A connector is a
+module with a network part. An app's author writes the model and the modules; the entry and the
+wiring to the platform are generated.
+
+**One edge between apps.** Between two apps there is a dependency and nothing else. Both sides
+declare it. It says which contracts are used and how: as the app or as the signed-in person, with
+or without personal data.
+
+**One door.** Everything between apps passes it. Every call carries a signed envelope naming the
+calling app and who it acts for, and the receiver checks for itself. A read is made directly. A
+write in another app is queued, because two apps are always two transactions.
+
+**People have one owner.** An app owns the people, not the platform. That app is the master. It
+decides who exists, who is blocked and which base roles each has. Other apps ask the master and
+keep the answer briefly. A person has one id across the apps that share a master.
+
+**Data has one owner.** Every entity has a master: the module where it is created and removed.
+Other apps point at it, keep their own data beside it, and may hold copies they only read. When
+the master merges or erases a record, every holder of a copy is told and has to confirm.
+
+**One version rule** (§6).
+
+**A smaller platform.** The router dispatches and signs envelopes. The control plane keeps the
+directory and the credentials and runs sweeps and delivery, and runs no provider code (§5.9). What
+runs on a developer's machine speaks the contract the hosted platform does.
+
+## 3. Two flows
+
+**A read across apps, as the person.** A person opens a customer in a CRM and wants the
+customer's vehicles, which a plugin owns. The CRM's worker reads the customer from its own scope
+and calls the plugin as that person, having exchanged the person's sign-in for a short-lived token
+valid only at the plugin. The plugin checks the person's own permissions and answers with what
+they may see. The CRM does not need the plugin's rules, and the plugin does not need to trust that
+the CRM checked. The call is made from the worker and never inside an operation: otherwise the
+CRM's scope stands still while the plugin answers, and two apps calling each other can lock.
+
+**A write across apps, through a queue.** When the CRM wants the accounting app to do something,
+its operation saves its own change and a request in one transaction. If the change rolls back
+there is no request. The platform delivers it, and the accounting app runs its own operation in
+its own transaction. The client is answered one of three ways: done, accepted with a request id,
+or failed. There is never a shared transaction. If the receiver fails, the first change stands,
+and the flow has to handle that.
+
+## 4. Today
+
+### 4.1 Where code runs
 
 | Place | What runs there | Record |
 |---|---|---|
 | Inside a scope's Durable Object | the kernel, the engines and the vertical's modules, on one SQLite database | [K-28](../decisions/K-028-workers-for-platforms-fits-the-architecture-unchanged-a-user.md): a vertical does not talk to a Durable Object, it is one |
-| The vertical's worker | the HTTP surface, sign-in, host code, the vertical's own connectors, a call made between two transactions | D-64, [K-62](../decisions/K-062-an-operation-does-not-await-an-outside-call-inside-its-transaction.md) |
+| The vertical's worker | the HTTP surface, sign-in, host code, the vertical's own connectors, a call made between two transactions | D-64, K-62 |
 | The control plane | the directory, sweeps, the intent drain, uploads, and every first-party connector, in process | `apps/control-plane/src/connectors.ts` |
-| A platform script in the dispatch namespace | a store driver per (kind, vertical); one connector, as a pilot in the test environment | [D-63](../decisions/D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md), D-73 |
+| A platform script in the dispatch namespace | a store driver per (driver, vertical); one connector, as a pilot in the test environment | [D-63](../decisions/D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md), D-73 |
 | A sandboxed iframe | an extension an end user installs at runtime | [K-56](../decisions/K-056-a-runtime-installed-extension-acts-only-as-a-capability-the-vertical-mints-for-it.md) |
 
 One router per environment sits in front of all of it
@@ -56,7 +124,7 @@ deployed and isolated; the second is where state lives. A vertical is one script
 | Outbound network | through the egress worker, held to the declared hosts ([D-46](../decisions/D-046-a-hosted-vertical-s-outbound-egress-is-a-declared-per-versio.md)) | no policy; observed only ([D-58](../decisions/D-058-d-46-s-durable-object-limit-is-enforcement-only-do-originat.md)) |
 | Used for | HTTP, sign-in, calls to the outside | operations, events, migrations, permissions |
 
-### 2.2 How a version is fixed
+### 4.2 How a version is fixed
 
 | What | Mechanism | Who decides when it moves |
 |---|---|---|
@@ -68,92 +136,101 @@ deployed and isolated; the second is where state lives. A vertical is one script
 | Event payloads | `schemaVersion`; a change replaces, it is never emitted twice ([K-39](../decisions/K-039-payload-changes-are-loud-failure-replaces-until-dispatch-rou.md)) | the emitting engine |
 
 **Two documents disagree.** [marketplace-publish.md](../architecture/marketplace-publish.md) §5.1 says
-an installed instance pins its version, upgrading is the owner's call, and a publisher cannot
-force an upgrade. K-33 serves a vertical from one script and gives up per-scope rollout, and the
-code agrees with K-33: `runningVersionOf` (`packages/control-plane-api/src/platform-scope-stores.ts`)
-answers the serving script's version for a scope on it. The bound version is a pointer. A promote
-reaches every install.
+an installed instance pins its version and a publisher cannot force an upgrade. K-33 serves a
+vertical from one script, and the code agrees with K-33: `runningVersionOf`
+(`packages/control-plane-api/src/platform-scope-stores.ts`) answers the serving script's version
+for a scope on it. A promote reaches every install.
 
-### 2.3 What runs locally
+### 4.3 What runs locally
 
-A vertical runs on node against the SQLite adapter: one file per scope, its own directory file, and
-`@substrat-run/dev-issuer` for sign-in ([running-locally.md](../../apps/docs/guide/running-locally.md)).
-`substrat dev` wraps the project's own `dev` script and adds a request trace.
+A vertical runs on node against the SQLite adapter, with `@substrat-run/dev-issuer` for sign-in
+([running-locally.md](../../apps/docs/guide/running-locally.md)). `substrat dev` wraps the project's
+own `dev` script and adds a request trace. There is no router, no egress policy and no dispatch on
+a laptop. A vertical-defined connector runs only in its tests
+([vertical-connectors.md](../architecture/vertical-connectors.md) §9), and mock profiles are a later
+phase of [connector-scripts.md](./connector-scripts.md) §4, not built.
 
-There is no router, no egress policy and no dispatch on a laptop. A first-party connector that is
-published can be wired into the node harness by hand, with the developer's own credential. A
-vertical-defined connector runs only in its tests: running it in process outside them is a
-follow-up ([vertical-connectors.md](../architecture/vertical-connectors.md) §9). Mock profiles and a
-local proxy are later phases of [connector-scripts.md](./connector-scripts.md) §4, not built.
+### 4.4 Where the repository is further along than the proposals
 
-## 3. Where today's model costs
+- **People.** An app can already take its people from another app
+  ([dependent-people.md](./dependent-people.md)). The contract is `identity.person@1`, and it is a
+  question: the dependent asks the master who a sign-in is, keeps the answer 300 seconds, and lets
+  nobody in when the master does not answer. The master can call its plugin as the signed-in
+  person, with a token the auth server exchanged
+  ([#3161](https://github.com/substrat-run/substrat/issues/3161)).
+- **Sign-in** is out of the apps. They are OIDC clients, and the auth server is itself a vertical
+  ([vertical-auth-detach.md](../architecture/vertical-auth-detach.md)).
 
-**Concepts.** Eight names, five places, three router entrypoints for one kind of call, and three
-connector implementations: in the control plane with a `ScopeHost`, in the vertical's worker with
-a `ConnectionContext`, and as a script with a request shape of its own.
+### 4.5 Where the distance is greatest
 
-**Security.** The strong part is structural: a scope is unreachable from another scope, and a
-vertical asks the platform through an intent instead of holding a credential that reaches upward.
-Three parts are weaker.
+1. Between two apps there are separate declarations where the target has one dependency.
+2. A store is reached from host code through a door that checks the (tenant, scope) pair and the
+   declared binding, and no permission
+   ([K-49](../decisions/K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md)).
+   One driver is registered and no release of it is approved.
+3. The platform's connectors run in the control plane with a `ScopeHost` whose `HostAdmin` reaches
+   every tenant ([connector-scripts.md](./connector-scripts.md) §1).
+4. A process that waits over time does not exist. No code in the repository uses a workflow engine.
 
-1. A first-party connector is handed a `ScopeHost` whose `HostAdmin` reaches every tenant
-   (connector-scripts.md §1).
-2. The outbound allowlist binds a worker's requests, not a Durable Object's. That module code makes
-   no network call is held by boundary-lint, which the CLI runs before upload;
-   [self-serve-deploy.md](../architecture/self-serve-deploy.md) §4 says the upload's own guarantees
-   are narrower than containment of uncooperative bundle code.
-3. A call from the platform to a vertical rests on
-   [K-27](../decisions/K-027-the-router-presents-a-shared-secret-and-the-vertical-verifie.md) until K-58 is
-   ratified.
+Of the 136 decision records, 16 are proposed. Four accepted records point another way than this
+target and are taken up where they bite: K-33 (one serving version per vertical), K-39 (a changed
+event replaces the old one), K-49 (the store's door is in the host) and
+[K-53](../decisions/K-053-a-tenant-level-store-is-a-named-instance-that-a-tenant-s-verticals-connect-to-explicitly.md)
+(stores at tenant level).
 
-Several records the model rests on are proposed, not accepted: D-61, D-64, D-70, D-73, K-58, K-62.
+## 5. The changes, one at a time
 
-**Performance.** The strong part is in-scope composition: an engine runs in the caller's
-transaction with no hop, and a read is local SQLite. The costs are at the edges. For a
-vertical-defined connector, a sweep is one call per bound scope and its state travels with every
-call, capped (vertical-connectors.md §6.1, §6.2). Every first-party connector call for every tenant
-runs in the worker that holds the directory. The hop a connector script adds has not been measured;
-it is what D-73's pilot is for.
+Each states what it is, what it gives and what it costs.
 
-**Developer experience.** One push, mechanical gates, previews and generated artifacts are the
-strong part. The weak part is that local and hosted differ, and each difference was found after a
-suite passed on node and failed hosted. The `LIKE` pattern limit
-([#1655](https://github.com/substrat-run/substrat/issues/1655)), the SQL limits
-([#1786](https://github.com/substrat-run/substrat/issues/1786)), the bound `fetch`
-([#1291](https://github.com/substrat-run/substrat/issues/1291)) and the worker import lint
-([#2245](https://github.com/substrat-run/substrat/issues/2245)) each exist for one of them. A
-connector cannot be run, mocked or tunnelled locally.
+**5.1 Five concepts and one glossary.** Engine and connector become kinds of module, and a plugin
+becomes an app with a dependency on its host. A rule then attaches to a property, not to a noun.
+*Costs:* the lints and directories keyed on `engines/` and `connectors/` are reviewed, and a module
+with five flags is not simpler than three concepts. Renaming vertical to app in code is expensive
+and buys little: change the word outward and leave the code.
 
-## 4. Direction
+**5.2 One door with one envelope.** Every call into a scope carries K-58's signed envelope with the
+app and the actor, and a deployed vertical holds public keys only. One check, one stamp in the
+history and one log, whoever calls. *Costs:* a transition in three states on the platform's most
+sensitive path, which cannot be done half-way.
 
-### 4.1 Three concepts
+**5.3 A generated entry.** The entry is generated from the model and the modules, by a generator
+that ships with the kernel version the vertical pinned. Less code per app, a protocol change is a
+new push, and the same entry runs locally and hosted. *Costs:* freedom. A vertical doing something
+unusual needs room in the generator or a declared HTTP route of its own. D-61 says no
+platform-authored code enters a customer's bundle, so the generator is code the app imported at a
+pinned version, not something added at build.
 
-1. **Scope.** The data. One database, one consistency domain, one unit of isolation.
-2. **Module.** The one unit of code anybody writes. It declares entities, operations, events,
-   permissions, migrations and schedules, and it may declare a connection and a network part. An
-   engine is a module published for reuse. A connector is a module with a network part.
-3. **App** (today's vertical). What is deployed: modules at pinned versions, surfaces, and scope
-   types ([#2993](https://github.com/substrat-run/substrat/issues/2993)).
+**5.4 One dependency in place of the separate declarations.** `substrat push` reads it and checks
+it against installed consumers, and an install binds the two apps. Properties are set per contract
+inside the dependency, since one pair of apps already has both calls as the app and calls as the
+person. *Costs:* a migration of every manifest, a period where both spellings work, and a
+dependency graph the platform keeps consistent per tenant, which it does not do today.
 
-A rule attaches to a property, not to a noun. A published module evolves additively. A module
-composed by another states whether it is composed by call or by event. Neither needs a separate
-word for the thing it applies to.
+**5.5 People are owned by a master.** Built in a first form (§4.4). What remains: a declaration
+`substrat push` reads, the binding at install, an erasure at the master that reaches every
+dependent, and where names and addresses live (§7.4). *Costs:* the master is a point everything
+depends on. If it is down longer than the answer lives, every dependent closes.
 
-### 4.2 Two places, one bridge
+**5.6 Calls as the person, in both directions.** A plugin cannot read the master's data as the
+person today (dependent-people.md §5.3), and a peer call names a vertical, not a scope in it
+(`packages/contracts/src/peer-transport.ts`). Most real cases need both. *Costs:* a token exchange
+per receiver, and a new kind of trust: the calling app holds the person's refresh token while the
+session lives. The history has to show which app made a call before this is used widely.
 
-- **In the scope:** transactional, no network, no credential.
-- **In a stateless worker:** network through the allowlist, one credential per call, no storage of
-  its own.
-- **The bridge is always the same.** Inward, an operation invoked as a principal under declared
-  grants. Outward, an event or a platform intent from the outbox.
+**5.7 Master data and entity contracts.** A contract carries lifecycle events, a paged list for
+start-up and a sequence number per entity. A consumer that does not handle merge and erasure is not
+installed. *Costs:* the most discipline of anything here. Every consumer handles gaps, order and
+late delivery. Personal data in copies needs the export rule changed, and two versions of one event
+cannot be emitted side by side today (K-39).
 
-This is how K-62, platform intents and D-64's landing already work. The direction is to make it
-the only shape, so that "where does this code go" has one answer: code that touches data goes in
-the scope, and code that touches the outside goes in a worker.
+**5.8 Storage belongs to a scope.** A store is reached only after an operation has checked the
+permission. What concerns the whole tenant moves to a home scope. *Costs:* how an operation reaches
+its store is not settled (§7.2), the home scope may be a bottleneck (§7.7), and K-53 is accepted, so
+a record that replaces it has to say how its requirement is met: several apps writing to one store
+while a user waits.
 
-### 4.3 Placement is a registration fact
-
-A network part speaks one contract, D-73's. Where it runs is recorded in its registration.
+**5.9 One connector contract, and placement as a registration fact.** A network part speaks one
+contract, D-73's. Where it runs is recorded in its registration.
 
 | Placement | When |
 |---|---|
@@ -162,129 +239,219 @@ A network part speaks one contract, D-73's. Where it runs is recorded in its reg
 | A mock profile answering from recorded calls | local runs, CI, previews |
 | A developer's machine, through a tunnel | debugging against a preview; never production |
 
-**In process in the control plane is an interim placement, not a fifth row.** Step 1 of §6 leaves
-the platform's connectors where they run today and changes only what they are handed. It ends
-connector by connector, when step 5 gives that connector a script of its own. If D-73's pilot
-finds the hop costs too much for some connector, that connector stays in process, and §4.6 does
-not hold for it.
-
 **Who may see the credential decides the placement.** A credential entered on the dashboard does
-not reach a vertical's code for a first-party connector today, because the platform makes the
-call. Moving that call into the app's worker would hand the token to the app's author, which is a
-step back for an app its tenant does not own. So the app's worker is the placement only for a
-network part the app's author wrote.
+not reach a vertical's code for a first-party connector today. Moving that call into the app's
+worker would hand the token to the app's author, a step back for an app its tenant does not own.
 
-### 4.4 One version rule
+**In process in the control plane is an interim placement, not a fifth row.** Phase 1 leaves the
+platform's connectors where they run and changes what they are handed. It ends connector by
+connector, when one is given a script of its own. If D-73's pilot finds the hop costs too much for
+some connector, that connector stays in process and the control plane still runs its code.
 
-> Code you import, you pin. A service the platform runs for you is versioned per major and patched
-> in place within it. Nothing else changes under you without a push of your own.
+*Costs,* once connectors move out: a hop per call nobody has measured, several versions live at
+once, and operations spread over more scripts. A change is then no longer a control-plane deploy,
+but it does not reach fewer tenants: a patch replaced in place reaches every tenant on that major.
+What narrows is what a faulty change can take down, and what can arrive unasked.
+
+**5.10 One version rule.** §6.
+
+**5.11 Commands with three outcomes, and processes.** A command answers done, accepted with a
+request id, or failed, declared from the start so an operation can later become a process without
+breaking a caller. A query always answers directly. Processes are a layer of their own (§7.6).
+*Costs:* the three outcomes are cheap now and expensive later. The process layer is the largest
+single build in the target and has no first user.
+
+**5.12 Tracing and a local run.** A W3C trace id follows a call through the router, egress, calls
+between apps and connector calls. `substrat dev` runs network parts through the hosted contract,
+holds them to the declared hosts and answers from recorded calls. Each difference between local
+and hosted was found so far after a suite passed on node and failed hosted
+([#1655](https://github.com/substrat-run/substrat/issues/1655),
+[#1786](https://github.com/substrat-run/substrat/issues/1786),
+[#1291](https://github.com/substrat-run/substrat/issues/1291),
+[#2245](https://github.com/substrat-run/substrat/issues/2245)). *Costs:* local emulation is a second
+implementation that can drift, and a recording of real calls can hold customer data.
+
+**5.13 Plugins.** A plugin is an app that depends on its host. The host declares what can be
+extended: entity contracts, events and places in the interface. A synchronous hook, where a plugin
+may stop the host's write, is not allowed in a first version. *Costs:* a script per plugin, and a
+host that stops knowing its plugins by name, which the reference pair does not do yet.
+
+## 6. One version rule
+
+> Code you import, you pin. What the platform or another app runs for you is versioned per major
+> and changes additively within it. A breaking change is a new major that lives beside the old one
+> until a stated date.
 
 **"You" is the app's owner,** the party that pins and pushes.
 
 - A module, an engine included, is pinned in the app's `package.json` and bundled at build.
-- A network part the platform runs has a major in its registration and its script name. A minor or
-  a patch replaces it in place, and so reaches every app on that major at once. A new major runs
-  beside the old one, which is retired on a stated date.
-- A contract between the platform and an app is additive within a version, as an engine surface is.
-- An app's scopes move together when its owner promotes (K-33).
+- A network part the platform runs, a store driver, and a contract another app serves each have a
+  major. A minor or a patch replaces it in place, and so reaches everyone on that major at once.
+- An app has one serving version (K-33). It carries a contract's old and new major during a
+  transition.
 
-**The rule does not cover a tenant that installed a listed app, and today it is not true for
-one.** The publisher's promote changes the code serving that tenant's scopes with no push of the
-tenant's own. That is what marketplace-publish.md §5.1 promised would not happen. Whether an
-installer gets the rule, or the stated contract becomes "the publisher promotes and every install
-follows", is question 6 in §7. This RFC does not answer it. §5.1 and K-33 are reconciled by that
-answer.
+**A tenant that installed a listed app is the open case.** Today the publisher's promote changes
+the code serving that tenant's scopes with no push of the tenant's own, which
+marketplace-publish.md §5.1 promised would not happen. The proposed answer is §7.5: an install
+follows the publisher within a major. It is a proposal. §5.1 and K-33 are reconciled by the
+decision, not by this RFC.
 
-### 4.5 Local runs the same contract
+*Costs:* old majors are kept alive, tested and retired on a date somebody answers for. Additive is
+a promise that can be broken by mistake.
 
-`substrat dev` runs a network part in process through the contract the platform uses, holds its
-outbound calls to the declared hosts, and answers from a mock profile unless told otherwise. A live
-call goes through the platform's proxy, so the credential stays on the platform (connector-scripts.md
-§4). The transport is already a parameter (vertical-connectors.md §9).
+## 7. Where the answer is not given
 
-### 4.6 The control plane shrinks
+For each: the alternatives, what this RFC leans to, and what would settle it.
 
-This is the end state, reached connector by connector at step 5 of §6 (§4.3). The control plane
-keeps the directory, the custody of credentials and the orchestration, and runs no provider code.
+**7.1 One app or two: scope types against dependencies.** Scope types
+([#2993](https://github.com/substrat-run/substrat/issues/2993)) give a parent and child scopes with
+their own modules, roles and stores. That is a second mechanism beside dependencies. The other
+view is that whatever does not share a transaction is its own app, which is one mechanism but puts
+a versioned contract, two deploys and two router hops between parts that always ship together. The
+target's home scope is already a second sort of scope. *Lean:* two built-in sorts, a home scope and
+an instance scope, and no child scopes. Split an app in two when a second consumer of the inner
+part exists, since a contract cut from one case is seldom right. *Against:* a seam nothing enforces
+tends to leak, and splitting later costs more.
 
-A change to a connector is then no longer a control-plane deploy. It does not follow that it
-reaches fewer tenants: a patch replaced in place reaches every tenant on that major (§4.4). Two
-things narrow. What a faulty change can take down is one connector's script, not the worker that
-holds every tenant's directory. And what can arrive unasked is a minor or a patch, since a breaking
-change waits for a new major.
+**7.2 How an operation reaches its store.** `ctx.store` inside the operation is the simplest code.
+Against it: a call from a Durable Object does not pass egress, the scope's queue stands still
+while the store answers, and K-62 says an operation does not await an outside call in its
+transaction. The alternative is that the operation checks the permission and mints a narrow,
+short-lived capability, and the host makes the call, with the router requiring the proof before it
+signs. That keeps the kernel's check and a line in the history with no network in the scope, at the
+price of two steps and no read from the store mid-logic. Neither gives one transaction across the
+database and the store. *Lean:* the proof, with moderate confidence. A spike showing a call from
+inside the scope works and does not stall the queue would change it.
 
-## 5. What gets worse
+**7.3 What guarantees a revocation.** A push from the master is fast but can be dropped. An answer
+that expires needs no delivery guarantee but is never faster than the expiry. *Lean:* the expiry is
+the guarantee and the push is the fast path, with the auth server's sessions revoked at the block
+so a session never outlives its token. The number is less certain: 300 seconds may be too long for
+some apps and should be settable per dependency, at the cost of more questions to the master.
 
-A direction with no cost was not looked at closely. These are the costs.
+**7.4 Where people and their details live.** An app owns them, or the tenant directory does (one
+copy, a stronger guarantee, and no reason left for a product to be the master). *Lean:* an app,
+as the code does. The answer is kept once per vertical and tenant, not once per scope
+([K-22](../decisions/K-022-the-membership-seam-is-a-connector-and-orgid-becomes-a-brand.md) turned
+copies per scope down for membership). For names and addresses, the built contract carries
+neither, so each plugin will cache them where no erasure reaches. *Lean:* the platform-held profile
+copy of dependent-people.md §5.2, the only alternative where erasure can be shown. Decide it before
+a second plugin exists.
+
+**7.5 Who decides when an install changes version.** Every install stays on its version: safest
+for the installer, but it needs a serving script per version, which K-33 gave up because a Durable
+Object's data belongs to its script. Every install follows the publisher: what happens today, and a
+publisher can change code that runs on a tenant's data unasked. *Lean:* an install follows within a
+major, with notice and the code-only or schema-change badge K-33 already has. A breaking change is
+a new major in its own script, and the installer moves there with the adopt-serving hop K-33
+already has. Less certain: how often a new major is needed. If often, that hop is an everyday
+routine, and it is not proven as one.
+
+**7.6 The process engine: when, and on what.** For building now: the contract's shape reaches every
+client. For waiting: nothing uses one, the one written need
+([#3289](https://github.com/substrat-run/substrat/issues/3289)) is met by K-62's committed attempt,
+and it would be the largest new surface while the aim is to remove things. *Lean:* the three
+outcomes now, the engine at the first flow that waits on a person or a time across two apps. Two
+things are uncertain at any time: whether a workflow engine runs in a script served through Workers
+for Platforms, which a cheap spike answers, and who a step acts as after a long wait. *Lean:* it
+runs as the app, and a step needing a person's right is an approval step a person takes.
+
+**7.7 The home scope as the one place for tenant data.** It takes one call at a time, so everything
+tenant-wide queues. Nobody knows the limit until it is measured. *Lean:* shrink what has to live
+there (people stay in the directory's answer, a person's projects are a read across scopes) and
+remove storage per tenant only after measuring.
+
+**7.8 Permissions that depend on another app.** "Who may see the customer may see its vehicles"
+works for one record and not for a list of a thousand. Copy the access facts (fast, and a copy of
+access data to revoke), filter at the source (one truth, a call per page, hard paging), or turn the
+question round: the host lists what the person sees and asks the plugin for those. *Lean:* the
+third first, the second when a plugin needs a list of its own.
+
+**7.9 A plugin's interface.** Deployed, a host and its plugin are two origins with two sessions.
+The host draws the plugin's features itself (works today; the host must know every plugin), the
+plugin ships an interface mounted in an isolated frame with a narrow capability per frame (K-56),
+or the plugin ships components built into the host (best experience; the plugin's code in the
+host's origin). *Lean:* the frame for plugins a customer builds, the first for plugins built
+alongside the host. It is settled with a real plugin, not on paper.
+
+**7.10 Previews when apps depend on each other.** A fork or a preview is never an end of an edge
+between apps today ([cross-vertical-events.md](../architecture/cross-vertical-events.md)). The
+preview talks to the other app's production version read-only, gets a fork of the other app too, or
+is answered from recorded calls. *Lean:* recorded calls first, then read-only. It is settled before
+any app is split in two.
+
+## 8. Order
+
+Four phases in sequence, a storage track beside them, and a list that waits on need. Each phase
+removes something, and none rests on a record that is not decided. The phases are not dated.
+
+**Phase 0: decisions.** Nothing is built. The six proposed records are ratified or withdrawn.
+dependent-people.md becomes a decision. K-53 and the scope-types tracking issue
+([#2992](https://github.com/substrat-run/substrat/issues/2992)) are settled together, being one
+question. The version rule is written once, with the answer to §7.5. The words are fixed. *Done
+when* no coming build rests on a proposed record.
+
+**Phase 1: one door.** The platform's connectors move onto the shared contract and stay in
+process, with a sweep role per connection first, so a rate-limited provider is not polled once per
+scope. The entry is generated. K-58's envelope rolls out. A trace id follows calls. `substrat dev`
+runs network parts locally with recorded answers. Three spikes run meanwhile: a workflow engine in
+Workers for Platforms, a call from inside a scope to its store, and no network in scope code as a
+mechanism. *Removes* `HostAdmin` from provider code, one of three connector implementations, the
+hand-written entry and the shared secret between router and vertical
+([K-27](../decisions/K-027-the-router-presents-a-shared-secret-and-the-vertical-verifie.md)). *Done
+when* no provider code reaches `HostAdmin` and every vertical runs a generated entry.
+
+**Phase 2: one edge.** The dependency enters the manifest and replaces the separate declarations.
+Push and install check against consumers. A peer call can name a scope, and calls as the person
+work in both directions. The three outcomes become convention. Two decisions are taken here,
+because the first plugin needs them: §7.9 and §7.10. *Done when* a plugin is installed and bound
+to its host with no hand-written wiring, and the old spellings are gone.
+
+**Phase 3: master data.** The person contract is finished: the profile copy, an erasure that
+reaches every dependent, and a history showing which app acted. The block gets its fast path.
+Entity contracts arrive with lifecycle events and a paged list. *Done when* a person erased at the
+master is shown to be gone from every dependent.
+
+**Beside them: storage.** First, a store driver in operation, which needs D-70 and
+[D-71](../decisions/D-071-a-store-object-a-deletion-has-fenced-refuses-what-it-left-in-flight.md)
+settled and a release approved. Then store calls are allowed while a vertical serves a peer call,
+and the door starts requiring a proof. A vector index follows
+[K-57](../decisions/K-057-a-semantic-index-is-scope-local-a-semantic-read-is-declared-eventual-an-external-index-only-as-a-store-driver.md)
+when an app needs one. The home scope is measured, and only then is storage per tenant removed.
+
+**Waiting on a named need.** The process engine, at the first flow that waits across two apps.
+Connectors in scripts of their own, when the pilot has measured the hop. A connector's data part
+as a module, after two or three mirrors written by hand, and only for the app's own code and the
+platform's: a module in the scope has `ctx.sql` on the same database as the app's tables, and that
+modules leave each other's tables alone
+([D-28](../decisions/D-028-engine-compatibility-surface-pinned.md)) is held by boundary-lint, not by
+the kernel. Derived permissions for lists, and more than one master.
+
+**Least certain in the order.** Phase 1 gives nothing a customer sees. The connector contract and
+tracing are independent of the rest and can run beside phase 2. The envelope and the generated
+entry come before the dependency, which builds on a call carrying app and actor. If a plugin is
+urgent, build it on what exists, with the host drawing its interface, and move it to the
+dependency in phase 2.
+
+## 9. What gets worse
 
 | What gets worse | Why |
 |---|---|
-| A fix goes from one deploy to many pushes | Today one control-plane deploy fixes a connector for every tenant. A data part bundled with the app is upgraded by each app when a provider changes a field. This is the price of nothing changing under an app unasked. |
-| Several versions live at once | Today there is one version of each connector in production. Pinning gives a matrix to test and support, and old majors to keep until they are retired. |
-| "Patched in place" can still break somebody | A patch meant to be harmless can change behaviour an app came to depend on. A fully pinned engine has no such case. |
-| The contract is rigid | With a `HostAdmin` in reach, a new need is one pull request. After, it is a general role in a contract that only grows. |
-| Operations spread out | Connector code, logs and state are in one place today. After, they are in several scripts and scopes, and a trace does not cross the dispatch hop. |
-| Local emulation is a second implementation | It can drift from the hosted one, which is the problem it was built to end. More layers also slow the dev loop. |
-| Mock profiles go stale and hold customer data | A recording passes after the provider changed. A recording of real calls is sensitive material. |
-| A tunnel reaches a laptop | Preview data and a credential arrive on a developer's machine. No such surface exists today. |
-| A sweep per connection is harder than one per scope | One poll is handed to several scopes, which may run different app versions, and some may land while others fail. |
-| One word does not remove the rules | "Engine" carries star topology and an additive surface. A module with five flags is not simpler than three concepts. |
-| The transition adds paths before it removes any | Stopping half-way leaves more than there is today. Each step in §6 has to remove something. |
+| A fix goes from one deploy to many pushes | Today one control-plane deploy fixes a connector for every tenant. A part bundled with the app is upgraded by each app. |
+| Several versions live at once | Pinning gives a matrix to test and support, and old majors to keep until they are retired. |
+| "Changes additively" can still break somebody | A change meant to be harmless can alter behaviour an app came to depend on. |
+| Contracts are rigid | With a `HostAdmin` in reach, a new need is one pull request. After, it is a role in a contract that only grows. |
+| The master is a point of failure | Every dependent closes when it does not answer. |
+| Copies have to be kept in step | People and entities are held in more places, and erasure has to reach each. |
+| Operations spread out | Code, logs and state sit in several scripts and scopes. |
+| The transition adds paths before it removes any | Stopping half-way leaves more than there is today. |
 
-**A data part in the scope lowers one wall.** A connector today writes only through operations
-under declared grants. A module in the scope has `ctx.sql` on the same database as the app's own
-tables; that modules leave each other's tables alone
-([D-28](../decisions/D-028-engine-compatibility-surface-pinned.md)) is held by boundary-lint, not by the
-kernel.
-So a bundled data part is for the app's own code and the platform's. A third party's connector
-keeps landing through the app's operations.
+## 10. Not verified, not measured
 
-## 6. Phasing
-
-Worth doing now, because each removes more than it adds:
-
-1. **One connector contract, in process.** Move the first-party connectors onto
-   `ConnectionContext` and call them through the caller the vertical-defined ones use. Add a sweep
-   role per connection first, so a rate-limited provider is not polled once per scope. Removes
-   `HostAdmin` from provider code and one of the three implementations.
-2. **A local run and mock profiles in `substrat dev`,** with the allowlist applied. No production
-   risk.
-3. **The version rule written once.** It waits on question 6: marketplace-publish.md §5.1 and K-33
-   are reconciled by that answer, not by this step.
-
-Only on a named need, because this is where §5 bites:
-
-4. **A connector's data part as a module,** for the app's own code and the platform's. A declared
-   mirror (external key, cursor, reconcile of deletions) follows two or three written by hand.
-5. **Placement per registration,** with a script per major for a network part the platform runs.
-   This is the step that moves a platform connector out of the control plane (§4.3, §4.6).
-6. **A spike: no network in scope code, as a mechanism.**
-   [D-70](../decisions/D-070-a-store-driver-s-code-runs-in-its-own-loaded-isolate-outside-the-verifier-with-no-network.md)'s
-   loaded isolate is a candidate. Its likely price is that every `ctx.sql` crosses an isolate
-   boundary, which would spend the synchronous SQLite that makes a scope fast. It is measured
-   before anything is designed on it, and
-   [D-61](../decisions/D-061-do-originated-egress-is-observed-and-never-refused-d-46-s-limit.md) argues the
-   other way.
-
-## 7. Open questions
-
-1. **Does a connector module follow the engine rule?** It never imports the app, and cooperates
-   through events and `EntityRef`s. Proposed: yes, since that is what makes it reusable.
-2. **Is one word worth it?** If "module" replaces "engine" and "connector", which rules and which
-   lints keyed on `engines/*` and `connectors/*` move, and does a reader have fewer things to learn
-   or the same number under other names?
-3. **Partial fan-out.** When one poll feeds several scopes and some fail to land, what is retried,
-   and where is the cursor kept?
-4. **Mock profiles.** Where is a recording stored, who may read it, and how is it scrubbed?
-5. **How long an old major lives,** and who is told when it is retired.
-6. **Installs of a listed app.** Is "the publisher promotes and every install follows" the stated
-   contract, or should an install be able to stay on a major (a script per major, and the existing
-   adopt-serving hop to move a scope between them)? If the first, what replaces §5.1's promise to an
-   installer: notice before a promote, the code-only or schema-change badge and the rewind K-33
-   already has, or nothing? §4.4's rule is scoped to the app's owner until this is answered.
-
-## 8. Not measured
-
-- The hop a connector script adds. D-73's pilot exists to measure it.
-- The load every tenant's connector calls put on the control plane.
-- Whether step 6 is possible on the platform today.
+- The proposal on dependencies is carried here as its synthesis states it. Its own text was not at
+  hand.
+- Nothing was run. "Built" means the repository's documents and code say so.
+- Not measured: the hop a connector script adds, the response time of a call between two apps
+  through the router and egress, and the home scope as a bottleneck.
+- Not known: whether a workflow engine runs in a script served through Workers for Platforms, and
+  whether no network in scope code can be a mechanism on the platform today.
