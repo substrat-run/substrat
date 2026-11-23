@@ -178,8 +178,10 @@ html[data-console-theme='dark'] body { background: var(--gray-950); }
 
 /* `.editor code` (tokens.css) draws a code SAMPLE as a block — right for the snippets an editor
    shows, wrong for a word of code inside a field's hint, which it turned into a full-width box
-   that read as one more input. Inline code in a hint stays inline. */
-.console-root .editor .hint code {
+   that read as one more input. Inline code in a hint, or in a checkbox's label (a machine
+   client's scope names), stays inline. */
+.console-root .editor .hint code,
+.console-root .editor .toggle code {
   display: inline;
   padding: 0;
   border: 0;
