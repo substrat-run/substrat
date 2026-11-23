@@ -30,6 +30,7 @@ import worker, {
   drainTarget,
   meterSnapshotLogOf,
   oncePerScope,
+  pendingWrites,
   platformRequestSweepRun,
   recordPlatformRequestPass,
   requestRollupFor,
@@ -227,6 +228,31 @@ describe('timedDrain (#1840)', () => {
 
   it('falls back to the pass start when no drain ran', () => {
     expect(timedDrain(async () => 'ok').finishedAt(PASS_START)).toBe(PASS_START);
+  });
+});
+
+describe('pendingWrites: the pass settles its ledger writes before it returns (#3324 follow-up)', () => {
+  // The connector sweep is the pass's last phase, so its final outcome row was still in flight
+  // when `scheduled` returned, and the runtime dropped it: the next pass read the attempt as a
+  // crashed sweep and backed a healthy connection off.
+  it('waits for a late write, one tracked while it waits, and a rejected one', async () => {
+    const writes = pendingWrites();
+    const landed: string[] = [];
+    let releaseLate!: () => void;
+    const late = new Promise<void>((resolve) => (releaseLate = resolve)).then(() => {
+      landed.push('late');
+      // A write made while the pass is settling — tracked after `settle` began.
+      writes.track(Promise.resolve().then(() => landed.push('follow-up')));
+    });
+    writes.track(late);
+    writes.track(Promise.reject(new Error('directory unavailable')));
+    let settled = false;
+    const settling = writes.settle().then(() => (settled = true));
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releaseLate();
+    await settling;
+    expect(landed).toEqual(['late', 'follow-up']);
   });
 });
 
