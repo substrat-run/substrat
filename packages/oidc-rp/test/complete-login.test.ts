@@ -3,6 +3,7 @@ import { SignJWT, decodeJwt, exportJWK, generateKeyPair } from 'jose';
 import {
   beginLogin,
   completeLogin,
+  forwardedPrompt,
   mintSession,
   verifySession,
   verifySessionEnvelope,
@@ -44,6 +45,8 @@ let issueAccessToken: boolean;
 /** The refresh token the stubbed token endpoint hands back, or null for none. */
 let refreshToken: string | null;
 let userInfoRequests: { authorization: string | null; deadline: boolean }[];
+/** The discovery document's `prompt_values_supported`, or undefined for none advertised. */
+let promptValues: string[] | undefined;
 
 beforeAll(async () => {
   const pair = await generateKeyPair('RS256');
@@ -65,6 +68,7 @@ beforeEach(() => {
   issueAccessToken = true;
   refreshToken = null;
   userInfoRequests = [];
+  promptValues = undefined;
 
   vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
@@ -75,6 +79,7 @@ beforeEach(() => {
         token_endpoint: `${ISSUER}/token`,
         jwks_uri: `${ISSUER}/jwks`,
         ...(advertiseUserInfo ? { userinfo_endpoint: `${ISSUER}/userinfo` } : {}),
+        ...(promptValues ? { prompt_values_supported: promptValues } : {}),
       });
     }
     if (url === `${ISSUER}/jwks`) return Response.json(jwks);
@@ -325,6 +330,31 @@ describe('email_verified, carried and not decided', () => {
     // Most issuers never emit the claim, and `undefined` is already the honest answer.
     expect(userInfoRequests).toEqual([]);
     expect(user.emailVerified).toBeUndefined();
+  });
+});
+
+/**
+ * `prompt=create` (#3345): an invite link asks for the issuer's sign-up screen. Sent only to an
+ * issuer that lists it, since one that does not may refuse the request outright; `screen_hint`
+ * asks either way.
+ */
+describe('asking for the sign-up screen', () => {
+  const params = async () =>
+    new URL((await beginLogin(env, APP, { loginHint: 'invitee@example.test', prompt: 'create' })).location).searchParams;
+
+  it('sends prompt=create only to an issuer that advertises it, and screen_hint=signup to both', async () => {
+    const silent = await params();
+    expect([silent.get('prompt'), silent.get('screen_hint'), silent.get('login_hint')]).toEqual([null, 'signup', 'invitee@example.test']);
+    promptValues = ['login', 'create'];
+    ISSUER = `https://issuer-${++issuers}.test`; // discovery is cached per issuer
+    env = { ...env, OIDC_ISSUER: ISSUER };
+    const advertised = await params();
+    expect([advertised.get('prompt'), advertised.get('screen_hint')]).toEqual(['create', 'signup']);
+  });
+
+  it('forwards from a login link only the prompts it knows', () => {
+    expect(['login', 'select_account', 'create', 'none', 'consent', null].map(forwardedPrompt))
+      .toEqual(['login', 'select_account', 'create', undefined, undefined, undefined]);
   });
 });
 

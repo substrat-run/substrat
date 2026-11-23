@@ -26,7 +26,7 @@ import type { MessageKey } from '../../../src/messages.js';
 import { PhoneFactor } from './PhoneFactor';
 
 export function SignIn({
-  onDone, signupEnabled, oauthQuery, onSignUp, signIn, socialError, theme,
+  onDone, signupEnabled, oauthQuery, onSignUp, signIn, socialError, loginHint = null, signUpClosed = false, theme,
 }: {
   onDone: () => void;
   signupEnabled: boolean;
@@ -35,11 +35,15 @@ export function SignIn({
   /** What THIS client accepts (`src/sign-in-policy.ts`), already narrowed server-side. */
   signIn: ClientSignIn;
   socialError: string | null;
+  /** The relying party's `login_hint`, already judged an address: pre-fills, proves nothing. */
+  loginHint?: string | null;
+  /** Sign-up was asked for and is not open to this client: this screen says so. */
+  signUpClosed?: boolean;
   theme: ClientTheme;
 }) {
   const t = useT();
   const signInTitle = useTitle(theme);
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(loginHint ?? '');
   const [password, setPassword] = useState('');
   const [err, setErr] = useState<string | null>(socialError);
   const [notice, setNotice] = useState<string | null>(null);
@@ -118,6 +122,7 @@ export function SignIn({
     return (
       <IdentifierFirst
         signIn={signIn} oauthQuery={oauthQuery} theme={theme} signupEnabled={signupEnabled} socialError={socialError}
+        loginHint={loginHint} signUpClosed={signUpClosed}
         onSignUp={onSignUp} onDone={onDone} onBankId={() => setBankidOpen(true)} onSms={() => setPhoneOpen(true)}
       />
     );
@@ -146,6 +151,7 @@ export function SignIn({
         <p className="muted">
           {forOidc ? t('signin.forOidc') : t('signin.forConsole')}
         </p>
+        {signUpClosed && <p className="notice">{t('signin.signUpClosed')}</p>}
         {providers.length > 0 && (
           <div className="providers">
             {providers.map((provider) => (
@@ -243,19 +249,23 @@ export function SignIn({
  * when the client requires one. The answer is not enforcement; `/oauth2/authorize` is.
  */
 function IdentifierFirst({
-  signIn, oauthQuery, theme, signupEnabled, socialError, onSignUp, onDone, onBankId, onSms,
+  signIn, oauthQuery, theme, signupEnabled, socialError, loginHint, signUpClosed, onSignUp, onDone, onBankId, onSms,
 }: {
   signIn: ClientSignIn;
   oauthQuery: string | null;
   theme: ClientTheme;
   signupEnabled: boolean;
   socialError: string | null;
+  loginHint: string | null;
+  signUpClosed: boolean;
   onSignUp: () => void;
   onDone: () => void;
   onBankId: () => void;
   onSms: () => void;
 }) {
-  const [email, setEmail] = useState('');
+  // Pre-filled, not submitted: the person still presses Continue, so a hint never routes
+  // anyone to a directory on its own.
+  const [email, setEmail] = useState(loginHint ?? '');
   const [password, setPassword] = useState('');
   const t = useT();
   const [route, setRoute] = useState<SignInRoute | null>(null);
@@ -369,6 +379,7 @@ function IdentifierFirst({
     <Centered>
       <Card title={title} logo={theme.logoUrl}>
         <p className="muted">{t('signin.forOidc')}</p>
+        {signUpClosed && <p className="notice">{t('signin.signUpClosed')}</p>}
         {signIn.providers.length > 0 && (
           <div className="providers">
             {signIn.providers.map((provider) => (

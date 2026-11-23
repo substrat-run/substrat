@@ -56,6 +56,8 @@ describe('member invites on a dev server (K-61 phase 3)', () => {
   let calls: string[];
   let host: DevInviteHost;
   let routes: Hono<{ Bindings: object }>;
+  /** What the vertical's `send` was handed, one entry per invite. */
+  let sent: { email: string; signInUrl: string }[];
   let login: ReturnType<typeof devLogin>;
   let admit: ReturnType<typeof vi.fn>;
 
@@ -104,10 +106,11 @@ describe('member invites on a dev server (K-61 phase 3)', () => {
       admit: admit as never,
     });
     routes = new Hono<{ Bindings: object }>();
+    sent = [];
     members.mount(routes, {
       login,
       scope: async () => ({}) as never,
-      invites: { roles: ['rep'], send: async () => ({}), cancel: async () => ({}) },
+      invites: { roles: ['rep'], send: async (_scope, i) => sent.push(i), cancel: async () => ({}) },
     });
   });
 
@@ -123,6 +126,10 @@ describe('member invites on a dev server (K-61 phase 3)', () => {
 
   it('admits the invitee by their verified address on first sign-in, links them, and resolves them as anyone after', async () => {
     const invited = await invite('cleo@example.test');
+    // The mail's link (#3345): this server's login, asking the issuer for sign-up with the address.
+    expect(sent.map((i) => new URL(i.signInUrl))).toEqual([expect.objectContaining({ pathname: '/api/auth/login' })]);
+    expect(Object.fromEntries(new URL(sent[0]!.signInUrl).searchParams))
+      .toEqual({ login_hint: 'cleo@example.test', prompt: 'create', screen_hint: 'signup' });
     const headers = await bearer('dev|cleo');
     expect(await login.caller(headers)).toMatchObject({ principal: invited, tenantId: T1, scopeId: S1, verifiedEmail: 'Cleo@Example.test' });
     expect(calls).toEqual([`exchange ${T1} ${S1} member invite`, 'link dev|cleo']);

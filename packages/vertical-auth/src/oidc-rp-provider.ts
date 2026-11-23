@@ -2,6 +2,7 @@ import { recordAuthCheck } from '@substrat-run/contracts/auth-diagnostics';
 import {
   identifyEmail,
   beginLogin,
+  forwardedPrompt,
   completeLogin,
   federatedLogout,
   verifySessionEnvelope,
@@ -265,7 +266,9 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider & Required<P
 
     if (url.pathname === '/api/auth/login') {
       const screen = url.searchParams.get('screen_hint');
-      // `prompt` is forwarded (allowlisted to the two IdP-recognised values) for the same
+      // `prompt=create` is forwarded too, for an invite link (#3345); `beginLogin` sends it only
+      // to an issuer that advertises it.
+      // `prompt` is forwarded (allowlisted to the IdP-recognised values) for the same
       // reason `mountOidcRoutes` forwards it: without it, "sign in as someone else" cannot
       // work against an issuer holding a live SSO session — it silently re-authenticates
       // the user already signed in, and no amount of clicking changes who you are.
@@ -274,7 +277,7 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider & Required<P
         returnTo: safePath(url.searchParams.get('returnTo')),
         loginHint: url.searchParams.get('login_hint') || undefined,
         screenHint: screen === 'signup' || screen === 'login' ? screen : undefined,
-        prompt: prompt === 'login' || prompt === 'select_account' ? prompt : undefined,
+        prompt: forwardedPrompt(prompt),
         ...(store ? { offlineAccess: true } : {}),
       });
       return redirectWith(location, [cookie(FLOW_COOKIE, flow, origin, FLOW_MAXAGE, null, '/', 'Lax', framed), ...cleanup]);

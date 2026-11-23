@@ -496,8 +496,14 @@ export interface MemberInvites {
    * It must not grant anything to `invitation.principal`. The invite's link is judged against what
    * that principal held when it was minted, so a grant made here revokes it, and the person is
    * answered 401 at sign-in. What they hold comes from the role, and from the vertical's join.
+   *
+   * `signInUrl` is the link the mail can carry (#3345): this vertical's `/api/auth/login` with the
+   * invited address as `login_hint` and `prompt=create` + `screen_hint=signup`, so the invitee
+   * lands on the issuer's "Create account" with the address filled in. It admits nobody: the
+   * person is still admitted by the address their issuer verifies, so a forwarded link opens
+   * nothing for anyone else.
    */
-  send: (scope: ScopeStub, invitation: MemberInvitation & { email: string; expiresAt: Instant }) => Promise<unknown>;
+  send: (scope: ScopeStub, invitation: MemberInvitation & { email: string; expiresAt: Instant; signInUrl: string }) => Promise<unknown>;
   /**
    * The vertical's withdrawal, as the caller, before the platform's half is taken: its own check of
    * who may withdraw, and its own record. A throw is the route's answer, and the invite stays open.
@@ -525,6 +531,16 @@ export interface MemberInviteHost {
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, input: PrincipalBecomeCapabilityInput,
   ): Promise<BoundedBecomeMint>;
   revokeBecomeCapability(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, by: PrincipalId): Promise<BoundedBecomeRevoke>;
+}
+
+/**
+ * The sign-in link a member invite's mail carries (#3345): `origin`'s own `/api/auth/login`, asking
+ * the issuer for its sign-up screen with `address` filled in. `prompt=create` is forwarded only to
+ * an issuer that advertises it (`beginLogin`); `screen_hint=signup` asks the rest.
+ */
+export function inviteSignInUrl(origin: string, address: string): string {
+  const query = new URLSearchParams({ login_hint: address, prompt: 'create', screen_hint: 'signup' });
+  return `${origin.replace(/\/$/, '')}/api/auth/login?${query}`;
 }
 
 /** What `mountMemberInvites` needs: who is asking, where invites are filed, the host, and the vertical's operations. */
@@ -584,7 +600,7 @@ export function mountMemberInvites<E extends object, N extends { tenantId: Tenan
         // vertical said yes asks the vertical to take its own record back too.
         record: async (principal, tokenHash, link, expiresAt) => {
           const invitation = { principal, email, roleKey };
-          await invites.send(scope, { ...invitation, expiresAt: expiresAt! });
+          await invites.send(scope, { ...invitation, expiresAt: expiresAt!, signInUrl: inviteSignInUrl(new URL(c.req.url).origin, email) });
           try {
             await directory.createInvite(node.scopeId, principal, roleKey, email, tokenHash, link);
           } catch (err) {
