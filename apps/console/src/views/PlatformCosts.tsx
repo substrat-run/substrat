@@ -38,13 +38,16 @@ export function PlatformCosts({ api, tenants, onOpenTenant }: { api: Api; tenant
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | undefined>();
 
+  // A slower answer for the period before must not replace the one now selected.
   const load = useCallback(() => {
+    let current = true;
     setReading(null);
     setError(null);
     api
       .readPlatformCosts({ days: Number(period) })
-      .then(setReading)
-      .catch((e: Error) => setError(e instanceof ApiError && e.status === 501 ? 'This control plane keeps no Cloudflare cost rollup.' : e.message));
+      .then((r) => { if (current) setReading(r); })
+      .catch((e: Error) => { if (current) setError(e instanceof ApiError && e.status === 501 ? 'This control plane keeps no Cloudflare cost rollup.' : e.message); });
+    return () => { current = false; };
   }, [api, period]);
   useEffect(load, [load]);
 
