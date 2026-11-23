@@ -104,7 +104,9 @@ say) keep the page they started on. Use the theme's selectors in `THEMING.md` to
 - **At most 102,400 bytes**, Auth0's limit.
 - **A bounded amount of work.** A page may render up to 300,000 steps, counting each block it
   renders (every loop iteration is one) and each character it writes. A real page uses a few
-  thousand. A template over the budget is refused on save.
+  thousand. Where the runtime's clock moves while a page renders (it does not in a Cloudflare
+  worker, so there the budget is what holds), a render also stops after one second. A template over
+  either limit is refused on save.
 - **Checked on every screen.** A save renders the template for each screen above in both languages,
   with a sample application and, on the consent screen, a sample signed-in person. A template that
   fails on any of them is refused, naming the screen and the reason.

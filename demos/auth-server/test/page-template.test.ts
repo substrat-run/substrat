@@ -158,6 +158,8 @@ describe('a save refuses a template that cannot draw every screen', () => {
     ['an unknown filter', ok + '{{ locale | nope }}', 'undefined filter: nope'],
     ['the widget left off one screen', '{%- auth0:head -%}{% unless prompt.name == "consent" %}{%- auth0:widget -%}{% endunless %}', 'on the consent screen'],
     ['the widget drawn twice', ok + '{%- auth0:widget -%}', 'drawn exactly once, and was drawn 2 times'],
+    // ~130 ms unloaded; on a loaded runner liquidjs's 1 s clock limit ends it first, which a save
+    // reports in the same words, so the case holds either way and never runs past ~1 s.
     [
       'loops that would spend the page’s budget',
       ok + '{% assign a = "1,2,3,4,5,6,7,8,9,10" | split: "," %}{% for i in a %}{% for j in a %}{% for k in a %}{% for l in a %}{% for m in a %}{% for n in a %}{% endfor %}{% endfor %}{% endfor %}{% endfor %}{% endfor %}{% endfor %}',

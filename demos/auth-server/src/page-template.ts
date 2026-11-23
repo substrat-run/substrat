@@ -383,7 +383,8 @@ export function templateProblems(template: unknown): string[] {
     } catch (e) {
       const problem = `on the ${c.screen} screen (${c.locale}${c.signedIn ? ', signed in' : ''}): ${messageOf(e)}`;
       problems.push(problem);
-      if (problems.length >= 3) break;
+      // A limit is hit on every screen alike; rendering the rest would only spend it again.
+      if (problems.length >= 3 || problem.includes(OVER_LIMIT)) break;
     }
   }
   return problems;
@@ -401,13 +402,18 @@ export function sampleVariables(screen: ScreenName, locale: Locale, signedIn: bo
   });
 }
 
+/** How a render that hit either limit is described; a save stops judging at the first one. */
+const OVER_LIMIT = 'the template does more work than a page may';
+
 function messageOf(e: unknown): string {
   const message = e instanceof Error ? e.message : String(e);
   // liquidjs's own words for the budget name a resource the author never asked for.
-  return message.replace(
-    /memory alloc limit exceeded/,
-    `the template does more work than a page may (${RENDER_BUDGET.toLocaleString('en')} steps: blocks rendered plus characters written)`,
-  );
+  return message
+    .replace(
+      /memory alloc limit exceeded/,
+      `${OVER_LIMIT}: more than ${RENDER_BUDGET.toLocaleString('en')} steps (blocks rendered plus characters written)`,
+    )
+    .replace(/template render limit exceeded/, `${OVER_LIMIT}: longer than ${RENDER_TIME_MS} ms`);
 }
 
 /** A render failure, readable: what a refused save says and what the request-time log records. */
