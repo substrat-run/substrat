@@ -391,7 +391,8 @@ platform changes the script under it. A push replaces the serving script in plac
 instance started on one version wakes on another version's code. A preview runs on an archive
 script against a copy that must stay inert
 ([#2005](https://github.com/substrat-run/substrat/issues/2005)). Phase 1's spike tests both, and
-the candidate stays or is dropped on the rule §8 gives for that spike. Also uncertain is who a step acts as after a long wait.
+the candidate stays or is dropped on the rule §8 gives for that spike. Also uncertain is who a
+step acts as after a long wait.
 *Lean:* it runs as the app, and a step needing a person's right is an approval step a person takes.
 
 **7.7 The home scope as the one place for tenant data.** It takes one call at a time, so everything
