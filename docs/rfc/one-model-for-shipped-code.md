@@ -158,9 +158,15 @@ A network part speaks one contract, D-73's. Where it runs is recorded in its reg
 | Placement | When |
 |---|---|
 | The app's own worker | the app's author wrote the network part |
-| Run by the platform (in the control plane through the same contract, or as its own script) | the platform's own connectors, and code from a third party |
+| Run by the platform, as its own script | the platform's own connectors, and code from a third party |
 | A mock profile answering from recorded calls | local runs, CI, previews |
 | A developer's machine, through a tunnel | debugging against a preview; never production |
+
+**In process in the control plane is an interim placement, not a fifth row.** Step 1 of §6 leaves
+the platform's connectors where they run today and changes only what they are handed. It ends
+connector by connector, when step 5 gives that connector a script of its own. If D-73's pilot
+finds the hop costs too much for some connector, that connector stays in process, and §4.6 does
+not hold for it.
 
 **Who may see the credential decides the placement.** A credential entered on the dashboard does
 not reach a vertical's code for a first-party connector today, because the platform makes the
@@ -173,13 +179,21 @@ network part the app's author wrote.
 > Code you import, you pin. A service the platform runs for you is versioned per major and patched
 > in place within it. Nothing else changes under you without a push of your own.
 
+**"You" is the app's owner,** the party that pins and pushes.
+
 - A module, an engine included, is pinned in the app's `package.json` and bundled at build.
 - A network part the platform runs has a major in its registration and its script name. A minor or
-  a patch replaces it in place. A new major runs beside the old one, which is retired on a stated
-  date.
+  a patch replaces it in place, and so reaches every app on that major at once. A new major runs
+  beside the old one, which is retired on a stated date.
 - A contract between the platform and an app is additive within a version, as an engine surface is.
-- An app's scopes move together when its owner promotes. That is what K-33 already does, and
-  marketplace-publish.md §5.1 is corrected to say it (§7, question 6).
+- An app's scopes move together when its owner promotes (K-33).
+
+**The rule does not cover a tenant that installed a listed app, and today it is not true for
+one.** The publisher's promote changes the code serving that tenant's scopes with no push of the
+tenant's own. That is what marketplace-publish.md §5.1 promised would not happen. Whether an
+installer gets the rule, or the stated contract becomes "the publisher promotes and every install
+follows", is question 6 in §7. This RFC does not answer it. §5.1 and K-33 are reconciled by that
+answer.
 
 ### 4.5 Local runs the same contract
 
@@ -190,8 +204,14 @@ call goes through the platform's proxy, so the credential stays on the platform 
 
 ### 4.6 The control plane shrinks
 
-It keeps the directory, the custody of credentials and the orchestration. It runs no provider
-code, so a change to a connector is never a deploy that reaches every tenant.
+This is the end state, reached connector by connector at step 5 of §6 (§4.3). The control plane
+keeps the directory, the custody of credentials and the orchestration, and runs no provider code.
+
+A change to a connector is then no longer a control-plane deploy. It does not follow that it
+reaches fewer tenants: a patch replaced in place reaches every tenant on that major (§4.4). Two
+things narrow. What a faulty change can take down is one connector's script, not the worker that
+holds every tenant's directory. And what can arrive unasked is a minor or a patch, since a breaking
+change waits for a new major.
 
 ## 5. What gets worse
 
@@ -229,13 +249,15 @@ Worth doing now, because each removes more than it adds:
    `HostAdmin` from provider code and one of the three implementations.
 2. **A local run and mock profiles in `substrat dev`,** with the allowlist applied. No production
    risk.
-3. **The version rule written once,** and marketplace-publish.md §5.1 corrected.
+3. **The version rule written once.** It waits on question 6: marketplace-publish.md §5.1 and K-33
+   are reconciled by that answer, not by this step.
 
 Only on a named need, because this is where §5 bites:
 
 4. **A connector's data part as a module,** for the app's own code and the platform's. A declared
    mirror (external key, cursor, reconcile of deletions) follows two or three written by hand.
 5. **Placement per registration,** with a script per major for a network part the platform runs.
+   This is the step that moves a platform connector out of the control plane (§4.3, §4.6).
 6. **A spike: no network in scope code, as a mechanism.**
    [D-70](../decisions/D-070-a-store-driver-s-code-runs-in-its-own-loaded-isolate-outside-the-verifier-with-no-network.md)'s
    loaded isolate is a candidate. Its likely price is that every `ctx.sql` crosses an isolate
@@ -257,7 +279,9 @@ Only on a named need, because this is where §5 bites:
 5. **How long an old major lives,** and who is told when it is retired.
 6. **Installs of a listed app.** Is "the publisher promotes and every install follows" the stated
    contract, or should an install be able to stay on a major (a script per major, and the existing
-   adopt-serving hop to move a scope between them)?
+   adopt-serving hop to move a scope between them)? If the first, what replaces §5.1's promise to an
+   installer: notice before a promote, the code-only or schema-change badge and the rewind K-33
+   already has, or nothing? §4.4's rule is scoped to the app's owner until this is answered.
 
 ## 8. Not measured
 
