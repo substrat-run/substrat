@@ -532,4 +532,5 @@ dependency in phase 2.
   through the router and egress, and the home scope as a bottleneck.
 - Not known: how a Workflow instance in flight behaves when a push replaces its script in place, and
   in a preview, and how an event committed in a scope reaches an instance waiting for it.
-  Cloudflare documents the binding for a user Worker, and it was not tried. Also not known: whether no network in scope code can be a mechanism on the platform today.
+  Cloudflare documents the binding for a user Worker, and it was not tried. Also not known: whether
+  no network in scope code can be a mechanism on the platform today.
