@@ -228,7 +228,7 @@ import type { ModelUsageFilter, ModelUsageInput, ModelUsagePricing, ModelUsageWi
 import type { FindingPruneReport } from './findings.js';
 import type { ScopeStorageAttempt, ScopeStorageFilter, ScopeStorageReadingInput } from './storage-gauge.js';
 import type { RequestDayFilter, RequestDayReadInput, RequestRollupDayFilter, TenantRequestMeterRow, RequestMeterDayRow } from './request-rollup.js';
-import type { CostDayFilter, CostDayReadInput, CostRollupDayFilter, ScopeObjectReadInput, ScopeObjectTarget } from './cost-rollup.js';
+import type { CostDayFilter, CostDayReadInput, CostDayTotals, CostDayTotalsFilter, CostRollupDayFilter, ScopeObjectReadInput, ScopeObjectTarget } from './cost-rollup.js';
 import type { MeterDayFilter, MeterDayTakeFilter, MeterDayTakeInput, MeterDayTakeResult } from './meter-days.js';
 import type { SealedSecret } from './secret-box.js';
 import type { OnSubjectErased } from './module-erasure.js';
@@ -4622,6 +4622,11 @@ export interface HostAdmin {
   listCostDays?(actor: PlatformActorId, filter?: CostDayFilter): Promise<CostDay[]>;
   /** The cost rollup's record of each day it tried (#3316). Access-logged. */
   listCostRollupDays?(actor: PlatformActorId, filter?: CostRollupDayFilter): Promise<RequestRollupDay[]>;
+  /**
+   * The window's cost rows summed per (day, tenant, attribution, vertical, kind, dimension), and the
+   * scopes they name (#3316): what the priced platform-usage reads fold. Access-logged.
+   */
+  sumCostDays?(actor: PlatformActorId, filter: CostDayTotalsFilter): Promise<CostDayTotals>;
   /** Delete cost rows past a retention, as `pruneRequestDays` does. Not audited. */
   pruneCostDays?(actor: PlatformActorId, limit: number, retentionMonths: number | null): Promise<number>;
   /**

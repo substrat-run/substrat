@@ -693,6 +693,34 @@ describe('members & invites under /api/teams/:teamId (#2170)', () => {
     expect((await req('GET', inTeam(t, '/metered-usage'), { sub: 'sub-admin' })).status).toBe(200);
   });
 
+  it('reads platform usage for an owner or admin only, forwards the period and drops any cost or markup', async () => {
+    const t = await team('sub-owner');
+    await join_(t, 'sub-member', 'member');
+    await join_(t, 'sub-admin', 'admin');
+    const quantities = { rowsWritten: '2000000', rowsRead: '0', storage: '0', requests: '0', cpu: '0', doRequests: '0', duration: '0' };
+    const urls: URL[] = [];
+    const fetch = vi.fn(async (url: string | URL | Request) => {
+      const u = new URL(String(url));
+      if (u.pathname === '/api/tenant-tokens') return Response.json({ token: 'test-token' }, { status: 201 });
+      urls.push(u);
+      return Response.json({
+        since: '2026-11-14', until: '2026-11-20', readAt: '2026-11-21T08:00:00.000Z', state: 'complete', readDays: 7, totalDays: 7,
+        lastReadAt: '2026-11-21T03:10:00.000Z', wouldCostUsd: '4', liveWouldCostUsd: '4', previewWouldCostUsd: '0', chargedUsd: '0', quantities,
+        apps: [{ vertical: 'acme/crm', kind: 'live', wouldCostUsd: '4', quantities, costUsd: '2', markupUsd: '2' }],
+        days: [], truncated: false, costUsd: '2', markupPercent: 100,
+      });
+    });
+    env.CONTROL_PLANE_SVC = { fetch };
+    expect((await req('GET', inTeam(t, '/platform-usage?days=7'), { sub: 'sub-member' })).status).toBe(403);
+    expect(fetch).not.toHaveBeenCalled();
+    const res = await req('GET', inTeam(t, '/platform-usage?days=7'), { sub: 'sub-admin' });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const text = await res.text();
+    expect(JSON.parse(text)).toMatchObject({ wouldCostUsd: '4', apps: [{ vertical: 'acme/crm', wouldCostUsd: '4' }] });
+    expect(text).not.toMatch(/"costUsd"|"markup/);
+    expect(urls.map((u) => `${u.pathname}${u.search}`)).toEqual([`/api/tenants/${t.tenant}/platform-usage?days=7`]);
+  });
+
   it('refuses a foreign team metered-usage read before opening its scope or plane', async () => {
     await team('sub-stranger');
     const t = await team('sub-other');

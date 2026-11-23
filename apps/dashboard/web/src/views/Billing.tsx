@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Page } from '../components/layout';
+import { PlatformUsage } from '../components/PlatformUsage';
 import { UsageChart } from '../components/UsageChart';
 import { card, PageTitle, Pill, type PillKind } from '../components/ui';
 import { isApiError, teamApi } from '../lib/api';
@@ -158,7 +159,7 @@ function UsageCards({ usage, names }: { usage: Usage; names: VerticalNames }) {
   );
 }
 
-/** The team's persisted usage, per vertical by name; no payments, and no prices but a code review's. */
+/** The team's persisted usage, per vertical by name; no payments. Code reviews and platform usage show what they would cost. */
 export function Billing({ teamId, canRead, names }: { teamId: string; canRead: boolean; names: VerticalNames }) {
   const [usageResult, setUsageResult] = useState<UsageResult | null>(null);
 
@@ -190,6 +191,7 @@ export function Billing({ teamId, canRead, names }: { teamId: string; canRead: b
         <>
           <UsageSummary usage={shownUsage.usage} />
           <UsageChart days={shownUsage.usage.days} names={names} />
+          <PlatformUsage teamId={teamId} names={names} />
           <details style={{ marginTop: 12 }}>
             <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Meter details</summary>
             <UsageCards usage={shownUsage.usage} names={names} />

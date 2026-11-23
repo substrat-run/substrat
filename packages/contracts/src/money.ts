@@ -59,6 +59,21 @@ export function addDecimal(a: string, b: string): string {
   return fromMicro(toMicro(a) + toMicro(b));
 }
 
+/**
+ * a × b ÷ divisor, half-up at 6 dp, rounded once at the end. For a rate quoted per many units
+ * (USD per million rows): dividing either side first would round a small quantity to zero.
+ * `divisor` is a positive integer.
+ */
+export function mulDivDecimal(a: string, b: string, divisor: number | bigint): string {
+  const d = BigInt(divisor);
+  if (d <= 0n) throw new RangeError(`divisor must be a positive integer, got ${String(divisor)}`);
+  const product = toMicro(a) * toMicro(b);
+  const sign = product < 0n ? -1n : 1n;
+  const abs = product < 0n ? -product : product;
+  const den = SCALE * d;
+  return fromMicro(sign * ((abs + den / 2n) / den));
+}
+
 export function compareDecimal(a: string, b: string): -1 | 0 | 1 {
   const [ma, mb] = [toMicro(a), toMicro(b)];
   return ma < mb ? -1 : ma > mb ? 1 : 0;

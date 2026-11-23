@@ -78,6 +78,7 @@ import {
   importCursorMoved,
   versionOrigin,
   verticalSlug,
+  tenantPlatformUsage,
   z,
 } from '@substrat-run/contracts';
 import { LOGS_INCOMPLETE_HEADER } from '@substrat-run/control-plane-api/browser';
@@ -984,6 +985,12 @@ export const dashboardRoutes = defineRoutes({
     summary: "Read this team's persisted metered usage (owner or admin). Only code reviews are priced: what they would cost, and what is charged",
     output: meteredUsageOut,
     http: { method: 'GET', path: '/metered-usage' },
+  },
+  'dashboard/read-platform-usage': {
+    summary: "What this team's apps used of the platform per day, and what it would cost at the platform's price (owner or admin). Price only, never charged yet",
+    input: z.object({ days: z.number().int().min(1).max(92).optional() }),
+    output: tenantPlatformUsage,
+    http: { method: 'GET', path: '/platform-usage' },
   },
   // -- apps: the read side (#2170) --------------------------------------------
   'dashboard/list-apps': {

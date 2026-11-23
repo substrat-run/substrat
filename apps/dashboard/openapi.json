@@ -25532,6 +25532,418 @@
         }
       }
     },
+    "/api/teams/{teamId}/platform-usage": {
+      "get": {
+        "operationId": "dashboard-read-platform-usage",
+        "summary": "What this team's apps used of the platform per day, and what it would cost at the platform's price (owner or admin). Price only, never charged yet",
+        "parameters": [
+          {
+            "name": "teamId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 92
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "since": {
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                    },
+                    "until": {
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                    },
+                    "readAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "not-read",
+                        "empty",
+                        "partial",
+                        "complete"
+                      ]
+                    },
+                    "readDays": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "totalDays": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "lastReadAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "wouldCostUsd": {
+                      "type": "string",
+                      "pattern": "^\\d+(\\.\\d{1,6})?$"
+                    },
+                    "liveWouldCostUsd": {
+                      "type": "string",
+                      "pattern": "^\\d+(\\.\\d{1,6})?$"
+                    },
+                    "previewWouldCostUsd": {
+                      "type": "string",
+                      "pattern": "^\\d+(\\.\\d{1,6})?$"
+                    },
+                    "chargedUsd": {
+                      "type": "string",
+                      "const": "0"
+                    },
+                    "quantities": {
+                      "type": "object",
+                      "properties": {
+                        "rowsWritten": {
+                          "type": "string",
+                          "pattern": "^\\d+(\\.\\d{1,6})?$"
+                        },
+                        "rowsRead": {
+                          "type": "string",
+                          "pattern": "^\\d+(\\.\\d{1,6})?$"
+                        },
+                        "storage": {
+                          "type": "string",
+                          "pattern": "^\\d+(\\.\\d{1,6})?$"
+                        },
+                        "requests": {
+                          "type": "string",
+                          "pattern": "^\\d+(\\.\\d{1,6})?$"
+                        },
+                        "cpu": {
+                          "type": "string",
+                          "pattern": "^\\d+(\\.\\d{1,6})?$"
+                        },
+                        "doRequests": {
+                          "type": "string",
+                          "pattern": "^\\d+(\\.\\d{1,6})?$"
+                        },
+                        "duration": {
+                          "type": "string",
+                          "pattern": "^\\d+(\\.\\d{1,6})?$"
+                        }
+                      },
+                      "required": [
+                        "rowsWritten",
+                        "rowsRead",
+                        "storage",
+                        "requests",
+                        "cpu",
+                        "doRequests",
+                        "duration"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "apps": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "vertical": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "live",
+                              "preview"
+                            ]
+                          },
+                          "wouldCostUsd": {
+                            "type": "string",
+                            "pattern": "^\\d+(\\.\\d{1,6})?$"
+                          },
+                          "quantities": {
+                            "type": "object",
+                            "properties": {
+                              "rowsWritten": {
+                                "type": "string",
+                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                              },
+                              "rowsRead": {
+                                "type": "string",
+                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                              },
+                              "storage": {
+                                "type": "string",
+                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                              },
+                              "requests": {
+                                "type": "string",
+                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                              },
+                              "cpu": {
+                                "type": "string",
+                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                              },
+                              "doRequests": {
+                                "type": "string",
+                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                              },
+                              "duration": {
+                                "type": "string",
+                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                              }
+                            },
+                            "required": [
+                              "rowsWritten",
+                              "rowsRead",
+                              "storage",
+                              "requests",
+                              "cpu",
+                              "doRequests",
+                              "duration"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "vertical",
+                          "kind",
+                          "wouldCostUsd",
+                          "quantities"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "days": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "day": {
+                            "type": "string",
+                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                          },
+                          "read": {
+                            "type": "boolean"
+                          },
+                          "wouldCostUsd": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "liveWouldCostUsd": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "previewWouldCostUsd": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "quantities": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "rowsWritten": {
+                                    "type": "string",
+                                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                  },
+                                  "rowsRead": {
+                                    "type": "string",
+                                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                  },
+                                  "storage": {
+                                    "type": "string",
+                                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                  },
+                                  "requests": {
+                                    "type": "string",
+                                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                  },
+                                  "cpu": {
+                                    "type": "string",
+                                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                  },
+                                  "doRequests": {
+                                    "type": "string",
+                                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                  },
+                                  "duration": {
+                                    "type": "string",
+                                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                  }
+                                },
+                                "required": [
+                                  "rowsWritten",
+                                  "rowsRead",
+                                  "storage",
+                                  "requests",
+                                  "cpu",
+                                  "doRequests",
+                                  "duration"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "byApp": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "vertical": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "live",
+                                    "preview"
+                                  ]
+                                },
+                                "wouldCostUsd": {
+                                  "type": "string",
+                                  "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                }
+                              },
+                              "required": [
+                                "vertical",
+                                "kind",
+                                "wouldCostUsd"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": [
+                          "day",
+                          "read",
+                          "wouldCostUsd",
+                          "liveWouldCostUsd",
+                          "previewWouldCostUsd",
+                          "quantities",
+                          "byApp"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "since",
+                    "until",
+                    "readAt",
+                    "state",
+                    "readDays",
+                    "totalDays",
+                    "lastReadAt",
+                    "wouldCostUsd",
+                    "liveWouldCostUsd",
+                    "previewWouldCostUsd",
+                    "chargedUsd",
+                    "quantities",
+                    "apps",
+                    "days",
+                    "truncated"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
     "/api/teams/{teamId}/apps/{id}": {
       "delete": {
         "operationId": "dashboard-remove-app",

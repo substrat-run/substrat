@@ -48,6 +48,7 @@ import type {
   StorageMeterReading,
   RequestRollupReading,
   CostRollupReading,
+  StaffPlatformCosts,
   CostAttribution,
   MeterDaysReading,
   VerticalOwnersReading,
@@ -412,6 +413,11 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   readCloudflareCosts = (
     q: { tenantId?: TenantId; scopeId?: ScopeId; vertical?: string; attribution?: CostAttribution; since?: string; until?: string; limit?: number } = {},
   ): Promise<CostRollupReading> => this.call(`/meters/cloudflare-costs${query({ ...q })}`);
+  // Platform cost (#3316): per tenant and day, the attributed Cloudflare cost at list price, the
+  // markup and the price, each tenant's costliest verticals and preview share, and the residual no
+  // tenant is charged for, over `days` closed UTC days (default 30) ending `until` (default yesterday).
+  readPlatformCosts = (q: { days?: number; until?: string } = {}): Promise<StaffPlatformCosts> =>
+    this.call(`/meters/platform-costs${query({ ...q })}`);
   // Meter days (#2501): meters 1 and 2 per tenant as the first scheduled pass of each UTC day found
   // them, over an inclusive window of days (by default the 31 days ending today), and which of
   // those days were taken. Omit `tenantId` for the fleet.

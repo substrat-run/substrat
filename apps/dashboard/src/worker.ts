@@ -25,7 +25,7 @@ import { refuseUnlistedModels } from './model-setting.js';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { MAIL_IN_PROVIDER, type SubjectAccessBody } from '@substrat-run/contracts';
-import { grantableEntitlements, FINDINGS_LIMIT_MAX, findingKind, findingStatus, isSubstratError, type EdgeHealth, type FindingEntry, type ModelUsageLine, type OpsFailureEntry, type SweepRunEntry, type VerticalConnectorDeclaration, isVerticalConnectorProvider } from '@substrat-run/contracts';
+import { grantableEntitlements, tenantPlatformUsage, FINDINGS_LIMIT_MAX, findingKind, findingStatus, isSubstratError, type EdgeHealth, type FindingEntry, type ModelUsageLine, type OpsFailureEntry, type SweepRunEntry, type VerticalConnectorDeclaration, isVerticalConnectorProvider } from '@substrat-run/contracts';
 import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, promoteReviewReasonIn, substratError, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type BindAcknowledgement, type ScopeDumpTable, type ScopeStoreDump, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery, type Page, type PromotionReviewBinding } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type DirectoryInventory, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
@@ -5966,6 +5966,13 @@ const routeHandlers = {
         storedBytes: row.storedBytes, storedScopes: row.storedScopes,
       })),
     };
+  },
+  'dashboard/read-platform-usage': async (ctx, { days }) => {
+    await assertMayReadBilling(ctx);
+    const raw = await telemetry(ctx.c, ctx.node.tenantId, 'platform-usage', { days }, () => teamPlane(ctx).readPlatformUsage(days));
+    // The projection is the parse: the price-only shape names every field the browser gets, and
+    // drops whatever else a newer plane answers with.
+    return tenantPlatformUsage.parse(raw);
   },
   'dashboard/get-app-concept': async (ctx, { scopeId: requested, section, versionId: expected, offset }) => {
     const dash = await teamScope(ctx);

@@ -514,6 +514,89 @@ export function listCostDayRows(sql: RedactionSql, filter: CostDayFilter = {}): 
   );
 }
 
+/** Filter for `sumCostDays`: an inclusive window of UTC days, optionally one tenant's rows. */
+export interface CostDayTotalsFilter {
+  tenantId?: TenantId;
+  since: string;
+  until: string;
+}
+
+/** One group's summed quantity: the rows of one (day, tenant, attribution, vertical, kind, dimension). */
+export interface CostDayTotal {
+  day: string;
+  tenantId: string | null;
+  attribution: CostAttribution;
+  vertical: string | null;
+  kind: 'live' | 'preview';
+  dimension: CostDimension;
+  quantity: string;
+}
+
+/** A scope the window's rows name, with the vertical and kind they attributed it to. */
+export interface CostScope {
+  scopeId: string;
+  vertical: string | null;
+  kind: 'live' | 'preview';
+}
+
+/** `sumCostDays`: the window's totals per group, and the scopes behind them. */
+export interface CostDayTotals {
+  totals: CostDayTotal[];
+  scopes: CostScope[];
+}
+
+/**
+ * The stored cost rows of a window, summed per (day, tenant, attribution, vertical, kind,
+ * dimension) with `addDecimal` (#3316): what a priced read needs, without carrying every
+ * per-object row across the RPC. Sums are exact; nothing is floated in SQL or here. Also the
+ * distinct scopes the rows name, with their vertical and kind, so request and storage figures
+ * kept per scope can be split the same way.
+ */
+export function sumCostDayRows(sql: RedactionSql, filter: CostDayTotalsFilter): CostDayTotals {
+  const where: string[] = [];
+  const params: (string | number)[] = [];
+  if (filter.tenantId !== undefined) {
+    where.push('tenant_id = ?');
+    params.push(filter.tenantId);
+  }
+  pushDayWindow(filter, where, params);
+  const clause = `WHERE ${where.join(' AND ')}`;
+  const rows = sql(
+    `SELECT day, tenant_id, attribution, vertical, kind, dimension, quantity FROM _substrat_cost_days ${clause}`,
+    params,
+  ) as { day: string; tenant_id: string | null; attribution: CostAttribution; vertical: string | null; kind: 'live' | 'preview'; dimension: CostDimension; quantity: string }[];
+  const groups = new Map<string, CostDayTotal>();
+  for (const r of rows) {
+    const key = JSON.stringify([r.day, r.tenant_id, r.attribution, r.vertical, r.kind, r.dimension]);
+    const held = groups.get(key);
+    if (held) held.quantity = addDecimal(held.quantity, r.quantity);
+    else
+      groups.set(key, {
+        day: r.day,
+        tenantId: r.tenant_id,
+        attribution: r.attribution,
+        vertical: r.vertical,
+        kind: r.kind,
+        dimension: r.dimension,
+        quantity: r.quantity,
+      });
+  }
+  const scopes = sql(
+    `SELECT scope_id, MAX(vertical) AS vertical, MAX(kind) AS kind FROM _substrat_cost_days ${clause} AND scope_id <> '' GROUP BY scope_id ORDER BY scope_id`,
+    params,
+  ) as { scope_id: string; vertical: string | null; kind: 'live' | 'preview' }[];
+  const totals = [...groups.values()].sort(
+    (a, b) =>
+      a.day.localeCompare(b.day) ||
+      (a.tenantId ?? '').localeCompare(b.tenantId ?? '') ||
+      a.attribution.localeCompare(b.attribution) ||
+      (a.vertical ?? '').localeCompare(b.vertical ?? '') ||
+      a.kind.localeCompare(b.kind) ||
+      a.dimension.localeCompare(b.dimension),
+  );
+  return { totals, scopes: scopes.map((s) => ({ scopeId: s.scope_id, vertical: s.vertical, kind: s.kind })) };
+}
+
 /** The rollup's record of each day it tried, in day order, in the request rollup's shape (never saturated). */
 export function listCostRollupDayRows(sql: RedactionSql, filter: CostRollupDayFilter = {}): RequestRollupDay[] {
   const where: string[] = [];

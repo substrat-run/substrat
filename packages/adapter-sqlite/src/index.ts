@@ -429,11 +429,14 @@ import {
   COST_ROLLUP_DDL,
   listCostDayRows,
   listCostRollupDayRows,
+  sumCostDayRows,
   pruneCostDayRows,
   recordCostDayRows,
   recordScopeObjectRow,
   scopeObjectsDueRows,
   type CostDayFilter,
+  type CostDayTotals,
+  type CostDayTotalsFilter,
   type CostDayReadInput,
   type CostRollupDayFilter,
   type ScopeObjectReadInput,
@@ -14378,6 +14381,11 @@ export class SqliteScopeHost implements ScopeHost {
           rows.length,
         );
         return rows;
+      },
+      sumCostDays: async (actor, filter: CostDayTotalsFilter) => {
+        const sums = sumCostDayRows(redactionSqlOf(this.directory), filter);
+        this.recordAccess(actor, 'sumCostDays', { tenantId: filter.tenantId ?? null }, filter, sums.totals.length);
+        return sums;
       },
       listCostRollupDays: async (actor, filter?: CostRollupDayFilter) => {
         const rows = listCostRollupDayRows(redactionSqlOf(this.directory), filter);
