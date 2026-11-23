@@ -1,5 +1,12 @@
 # @substrat-run/builder-workspace
 
+## 0.13.25
+
+### Patch Changes
+
+- Updated dependencies [fa85e62]
+  - @substrat-run/contracts@0.209.0
+
 ## 0.13.24
 
 ### Patch Changes

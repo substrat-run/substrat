@@ -1,5 +1,26 @@
 # @substrat-run/demo-auth-server
 
+## 0.20.0
+
+### Minor Changes
+
+- 29f25bc: "Require email verification" is now a setting of the Username-Password connection, saved on the connection from its Settings tab, rather than the issuer-wide `REQUIRE_EMAIL_VERIFICATION` environment setting. An issuer that set the environment setting keeps its behaviour: it is read until the connection has a value of its own, and the Settings tab says when that is happening. The environment setting is deprecated.
+- fdb06f6: Invite links open sign-up with the address filled in (#3345).
+  - `@substrat-run/demo-auth-server`: `prompt=create` and `screen_hint=signup` open "Create account", and the request now resumes to the application after sign-up or sign-in instead of returning to sign-up.
+  - `@substrat-run/demo-auth-server-app`: `login_hint` pre-fills the sign-in, identifier-first and sign-up forms. With sign-up closed, the sign-in form says so.
+  - `@substrat-run/oidc-rp`: `beginLogin` and `/api/auth/login` accept `prompt=create`, sent only to an issuer that advertises it, with `screen_hint=signup`.
+  - `@substrat-run/vertical-auth`: `mountMemberInvites` hands `send` a `signInUrl` for the invite mail, and `/api/auth/login` forwards `prompt=create`.
+
+### Patch Changes
+
+- c1192a7: Deleting a user works again for anyone who had signed in to an app: it no longer fails halfway. Their sessions, refresh tokens and consents end at once; an access token an API verifies by itself stays valid until it expires. Both Remove buttons ask first.
+- Updated dependencies [fa85e62]
+- Updated dependencies [fdb06f6]
+  - @substrat-run/contracts@0.209.0
+  - @substrat-run/kernel@0.209.0
+  - @substrat-run/oidc-rp@0.16.0
+  - @substrat-run/vertical-host@0.209.0
+
 ## 0.19.3
 
 ### Patch Changes
