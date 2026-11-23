@@ -241,8 +241,9 @@ describe('pendingWrites: the pass settles its ledger writes before it returns (#
     let releaseLate!: () => void;
     const late = new Promise<void>((resolve) => (releaseLate = resolve)).then(() => {
       landed.push('late');
-      // A write made while the pass is settling — tracked after `settle` began.
-      writes.track(Promise.resolve().then(() => landed.push('follow-up')));
+      // A write made while the pass is settling, tracked after `settle` began and landing on a
+      // later task than everything `settle` saw first.
+      writes.track(new Promise((resolve) => setTimeout(resolve, 0)).then(() => landed.push('follow-up')));
     });
     writes.track(late);
     writes.track(Promise.reject(new Error('directory unavailable')));
