@@ -2847,6 +2847,29 @@ export function pausedConnectionsOf(value: string | undefined): ReadonlySet<stri
   return new Set((value ?? '').split(/[\s,]+/).filter(Boolean));
 }
 
+/**
+ * The scheduled pass's ledger writes, fired without waiting so a slow or failing write never holds
+ * up or sinks the phase that made it, and settled before `scheduled` returns. A write still in
+ * flight when the handler returns is dropped by the runtime. After #3324 moved the connector sweep
+ * to the end of the pass, that dropped the last connection's outcome row on every pass, and the
+ * next pass read the attempt it closed as a crashed sweep and backed a healthy connection off.
+ * A rejected write is settled like any other; the recorders log their own. `settle` also waits
+ * for writes tracked while it waits.
+ */
+export function pendingWrites(): { track(write: Promise<unknown>): void; settle(): Promise<void> } {
+  const pending = new Set<Promise<unknown>>();
+  return {
+    track(write) {
+      pending.add(write);
+      const done = () => void pending.delete(write);
+      void write.then(done, done);
+    },
+    async settle() {
+      while (pending.size > 0) await Promise.allSettled([...pending]);
+    },
+  };
+}
+
 export default {
   /**
    * Inbound mail (#2611): Email Routing on the receiving subdomain hands every message here. It is
@@ -2907,16 +2930,20 @@ export default {
     // when the phase reached no scope at all.
     const passStartedAt = new Date();
     const platformDrain = timedDrain((t: TenantId, s: ScopeId, o?: { skip?: readonly string[] }) => drainOneScope(env, t, s, o));
-    // #1232: the durable sweep record. Fire-and-forget — a recorder failure must
-    // never sink the pass it is recording (the ops-failure recorder's shape).
-    const recordSweepRun = (e: SweepRunInput) => void host.admin.recordSweepRun(e).catch(() => undefined);
+    // #1232: the durable sweep record. Not awaited where it is made — a recorder failure must
+    // never sink the pass it is recording (the ops-failure recorder's shape) — but settled before
+    // the pass returns (`writes`, the end of this handler), or the last ones are dropped.
+    const writes = pendingWrites();
+    const recordSweepRun = (e: SweepRunInput) => writes.track(host.admin.recordSweepRun(e).catch(() => undefined));
     // #2316: a failed connection sweep's own text, staff's row under the reference its sweep row
-    // names; the digest lists it from the ledger. Fire-and-forget, as the row above — but this
+    // names; the digest lists it from the ledger. Not awaited, as the row above — but this
     // row is the text's only copy, so a write that fails leaves the reference in the tail. The
     // reference and the write's own error only: the text can carry a provider's answer.
     const recordFailure = (entry: Omit<OpsFailureInput, 'actor'>) =>
-      void host.admin.recordOpsFailure({ actor: SWEEP_ACTOR, ...entry }).catch((err: unknown) =>
-        console.error('sweep-failure record failed', { reference: entry.reference, error: err instanceof Error ? err.message : String(err) }),
+      writes.track(
+        host.admin.recordOpsFailure({ actor: SWEEP_ACTOR, ...entry }).catch((err: unknown) =>
+          console.error('sweep-failure record failed', { reference: entry.reference, error: err instanceof Error ? err.message : String(err) }),
+        ),
       );
     // #3324: the connector sweep, run LAST in this pass (below), after every phase that keeps the
     // fleet moving. A connection's sweep downloads a third party's data through this isolate; when
@@ -3304,6 +3331,9 @@ export default {
     } catch (err) {
       console.error('connector-sweep failed', err instanceof Error ? err.message : String(err));
     }
+    // Every ledger write this pass made, the connector outcomes just above included, lands before
+    // the handler returns. A connector outcome dropped here reads to the next pass as a crash.
+    await writes.settle();
   },
 
   fetch(request: Request, env: Env): Response | Promise<Response> {
