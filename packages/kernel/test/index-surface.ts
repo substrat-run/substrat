@@ -867,6 +867,7 @@ export const INDEX_VALUE_EXPORTS = [
   'strandJudgmentsOf',
   'subjectErasureClaimParams',
   'subjectGrantState',
+  'sumCostDayRows',
   'sweepOrphanAttachments',
   'sweepRunsIntentHasKind',
   'switchActionOf',

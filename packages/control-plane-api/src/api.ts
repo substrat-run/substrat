@@ -120,6 +120,8 @@ import {
   scopeStatus,
   requestRollupReading,
   costRollupReading,
+  staffPlatformCosts,
+  tenantPlatformUsage,
   costAttribution,
   cloudflareUsageDay,
   meterDaysReading,
@@ -411,6 +413,7 @@ import {
 } from './wire-walk.js';
 import { wireKeyDropSince, wireReadinessReport, WIRE_READINESS_LIMIT_DEFAULT, WIRE_READINESS_LIMIT_MAX } from './wire-readiness.js';
 import { STORAGE_PAGE_DEFAULT, STORAGE_PAGE_MAX, readStoragePage } from './storage-meter.js';
+import { foldStaffPlatformCosts, foldTenantPlatformUsage, PLATFORM_USAGE_DAYS_MAX, type PlatformUsageInputs } from './platform-usage.js';
 import { usageDays, utcDaysBetween, type UsageDayModels, type UsageDayRequests, type UsageDayStorage } from './metered-usage-days.js';
 import { queryLakeEvents, teamWindowRefusal, type LakeQueryEngine } from './lake-gateway.js';
 import { LakeQueryError } from './r2-sql-engine.js';
@@ -1876,6 +1879,8 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'DELETE', re: /\/tenants\/[^/]+\/role-assignments$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/entitlements$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/metered-usage$/, pin: 'path' },
+  // #3316: the team's platform usage at the platform's price. The handler returns prices only.
+  { method: 'GET', re: /\/tenants\/[^/]+\/platform-usage$/, pin: 'path' },
   // An install's entitlement. The handler narrows WHICH key a tenant credential may
   // grant (`tenantGrantableEntitlement`): the pin alone would let it grant itself any.
   { method: 'PUT', re: /\/tenants\/[^/]+\/entitlements\/[^/]+$/, pin: 'path' },
@@ -3503,6 +3508,63 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (read?.readAt) return refuse(c, 'conflict', `${usage.day} was already read at ${read.readAt}; a snapshot does not replace it`);
     const { recorded } = await admin.recordCostDay(actor, { day: usage.day, attemptedAt: new Date().toISOString(), usage });
     return c.json({ day: usage.day, recorded }, 201);
+  });
+
+  // Platform usage, priced (#3316): the cost rollup, router requests and stored bytes over a window
+  // of closed UTC days, costed at Cloudflare's list price and priced at the markup schedule. Two
+  // readings of one fold: the tenant's (`/tenants/:tenantId/platform-usage`, price only, never cost
+  // or markup) and staff's (`/meters/platform-costs`, cost, markup and price side by side, plus the
+  // residual no tenant is charged for). `?days=` (1–92, default 30) ending `?until=` (default
+  // yesterday). A day the cost rollup has not read counts nothing, and says so.
+  const platformWindow = (c: Context): { since: string; until: string } | Response => {
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const q = z
+      .object({
+        days: z.coerce.number().int().min(1).max(PLATFORM_USAGE_DAYS_MAX).default(30),
+        until: utcDay.default(yesterday),
+      })
+      .parse({ days: c.req.query('days') || undefined, until: c.req.query('until') || undefined });
+    if (q.until > yesterday) return refuse(c, 'validation_failed', `${q.until} has not ended`);
+    const since = new Date(Date.parse(`${q.until}T00:00:00Z`) - (q.days - 1) * 86_400_000).toISOString().slice(0, 10);
+    return { since, until: q.until };
+  };
+  const platformUsageInputs = async (
+    admin: HostAdmin,
+    actor: PlatformActorId,
+    window: { since: string; until: string },
+    tenantId?: TenantId,
+  ): Promise<PlatformUsageInputs | null> => {
+    // Every source or none: a host without request or storage history would read as zero usage.
+    if (!admin.sumCostDays || !admin.listCostRollupDays || !admin.listRequestDays || !admin.listScopeStorage) return null;
+    const schedule = await markupScheduleFor(admin, actor, tenantId);
+    if (!schedule) return null;
+    const filter = { ...(tenantId ? { tenantId } : {}), ...window };
+    // The day ledger first: a day's marker and its rows commit together, so every day it calls
+    // read has its rows in the totals read after it. Read the other way, a day committed between
+    // the two reads would count as read with no usage.
+    const reads = await admin.listCostRollupDays(actor, window);
+    const [costs, requests, storage] = await Promise.all([
+      admin.sumCostDays(actor, filter),
+      admin.listRequestDays(actor, { ...filter, limit: REQUEST_ROLLUP_LIMIT_MAX }).then((rows) => ({ rows, truncated: rows.length >= REQUEST_ROLLUP_LIMIT_MAX })),
+      admin.listScopeStorage(actor, { ...filter, limit: STORAGE_HISTORY_LIMIT_MAX }).then((rows) => ({ rows, truncated: rows.length >= STORAGE_HISTORY_LIMIT_MAX })),
+    ]);
+    return { ...window, readAt: new Date().toISOString(), costs, reads, requests, storage, schedule };
+  };
+  app.get('/tenants/:tenantId/platform-usage', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    if (outsideTenant(c.get('principal'), tenantId)) return refuse(c, 'forbidden', 'forbidden');
+    const window = platformWindow(c);
+    if (window instanceof Response) return window;
+    const inputs = await platformUsageInputs(c.var.admin, c.get('actor'), window, tenantId);
+    if (!inputs) return refuseStatus(c, 501, 'this control plane keeps no Cloudflare cost rollup, request or storage history, or markup schedule');
+    return c.json(tenantPlatformUsage.parse(foldTenantPlatformUsage(inputs, tenantId)));
+  });
+  app.get('/meters/platform-costs', async (c) => {
+    const window = platformWindow(c);
+    if (window instanceof Response) return window;
+    const inputs = await platformUsageInputs(c.var.admin, c.get('actor'), window);
+    if (!inputs) return refuseStatus(c, 501, 'this control plane keeps no Cloudflare cost rollup, request or storage history, or markup schedule');
+    return c.json(staffPlatformCosts.parse(foldStaffPlatformCosts(inputs)));
   });
 
   // The daily meter snapshot (#2501): meters 1 and 2 as the first scheduled pass of each UTC day

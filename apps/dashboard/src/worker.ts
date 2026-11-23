@@ -32,7 +32,7 @@ import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, type ScopeStub, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
-import { accountRoutes, dashboardRoutes, fieldReadsView, inviteRole, publicRoutes, type appEvent, type domainRow, type explanationView, type installAppInput, type memberRow } from './routes.js';
+import { accountRoutes, dashboardRoutes, fieldReadsView, inviteRole, platformUsageOut, publicRoutes, type appEvent, type domainRow, type explanationView, type installAppInput, type memberRow } from './routes.js';
 import { answered, mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardRequestId, withRequestIdOf } from './request-id.js';
 import { dashboardManifest, dashboardModule, type AppAuthView, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume, type ExplanationBudget } from './module.js';
@@ -5966,6 +5966,13 @@ const routeHandlers = {
         storedBytes: row.storedBytes, storedScopes: row.storedScopes,
       })),
     };
+  },
+  'dashboard/read-platform-usage': async (ctx, { days }) => {
+    await assertMayReadBilling(ctx);
+    const raw = await telemetry(ctx.c, ctx.node.tenantId, 'platform-usage', { days }, () => teamPlane(ctx).readPlatformUsage(days));
+    // The projection is the parse: the price-only shape names every field the browser gets, and
+    // drops whatever else a newer plane answers with.
+    return platformUsageOut.parse(raw);
   },
   'dashboard/get-app-concept': async (ctx, { scopeId: requested, section, versionId: expected, offset }) => {
     const dash = await teamScope(ctx);

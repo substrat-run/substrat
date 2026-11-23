@@ -25532,6 +25532,365 @@
         }
       }
     },
+    "/api/teams/{teamId}/platform-usage": {
+      "get": {
+        "operationId": "dashboard-read-platform-usage",
+        "summary": "What this team's apps used of the platform per day, and what it would cost at the platform's price (owner or admin). Price only, never charged yet",
+        "parameters": [
+          {
+            "name": "teamId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 92
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "since": {
+                      "type": "string"
+                    },
+                    "until": {
+                      "type": "string"
+                    },
+                    "readAt": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "readDays": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "totalDays": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "lastReadAt": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "wouldCostUsd": {
+                      "type": "string"
+                    },
+                    "liveWouldCostUsd": {
+                      "type": "string"
+                    },
+                    "previewWouldCostUsd": {
+                      "type": "string"
+                    },
+                    "chargedUsd": {
+                      "type": "string"
+                    },
+                    "quantities": {
+                      "type": "object",
+                      "properties": {
+                        "rowsWritten": {
+                          "type": "string"
+                        },
+                        "rowsRead": {
+                          "type": "string"
+                        },
+                        "storage": {
+                          "type": "string"
+                        },
+                        "requests": {
+                          "type": "string"
+                        },
+                        "cpu": {
+                          "type": "string"
+                        },
+                        "doRequests": {
+                          "type": "string"
+                        },
+                        "duration": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "rowsWritten",
+                        "rowsRead",
+                        "storage",
+                        "requests",
+                        "cpu",
+                        "doRequests",
+                        "duration"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "apps": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "vertical": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "kind": {
+                            "type": "string"
+                          },
+                          "wouldCostUsd": {
+                            "type": "string"
+                          },
+                          "quantities": {
+                            "type": "object",
+                            "properties": {
+                              "rowsWritten": {
+                                "type": "string"
+                              },
+                              "rowsRead": {
+                                "type": "string"
+                              },
+                              "storage": {
+                                "type": "string"
+                              },
+                              "requests": {
+                                "type": "string"
+                              },
+                              "cpu": {
+                                "type": "string"
+                              },
+                              "doRequests": {
+                                "type": "string"
+                              },
+                              "duration": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "rowsWritten",
+                              "rowsRead",
+                              "storage",
+                              "requests",
+                              "cpu",
+                              "doRequests",
+                              "duration"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "vertical",
+                          "kind",
+                          "wouldCostUsd",
+                          "quantities"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "days": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "day": {
+                            "type": "string"
+                          },
+                          "read": {
+                            "type": "boolean"
+                          },
+                          "wouldCostUsd": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "liveWouldCostUsd": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "previewWouldCostUsd": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "quantities": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "rowsWritten": {
+                                    "type": "string"
+                                  },
+                                  "rowsRead": {
+                                    "type": "string"
+                                  },
+                                  "storage": {
+                                    "type": "string"
+                                  },
+                                  "requests": {
+                                    "type": "string"
+                                  },
+                                  "cpu": {
+                                    "type": "string"
+                                  },
+                                  "doRequests": {
+                                    "type": "string"
+                                  },
+                                  "duration": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "rowsWritten",
+                                  "rowsRead",
+                                  "storage",
+                                  "requests",
+                                  "cpu",
+                                  "doRequests",
+                                  "duration"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "byApp": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "vertical": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "kind": {
+                                  "type": "string"
+                                },
+                                "wouldCostUsd": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "vertical",
+                                "kind",
+                                "wouldCostUsd"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": [
+                          "day",
+                          "read",
+                          "wouldCostUsd",
+                          "liveWouldCostUsd",
+                          "previewWouldCostUsd",
+                          "quantities",
+                          "byApp"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "since",
+                    "until",
+                    "readAt",
+                    "state",
+                    "readDays",
+                    "totalDays",
+                    "lastReadAt",
+                    "wouldCostUsd",
+                    "liveWouldCostUsd",
+                    "previewWouldCostUsd",
+                    "chargedUsd",
+                    "quantities",
+                    "apps",
+                    "days",
+                    "truncated"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
     "/api/teams/{teamId}/apps/{id}": {
       "delete": {
         "operationId": "dashboard-remove-app",

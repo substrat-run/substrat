@@ -609,6 +609,8 @@ import {
   type RequestDayReadInput,
   type RequestRollupDayFilter,
   type CostDayFilter,
+  type CostDayTotals,
+  type CostDayTotalsFilter,
   type CostDayReadInput,
   type CostRollupDayFilter,
   type ScopeObjectReadInput,
@@ -1156,6 +1158,7 @@ interface ControlPlaneStub {
   recordCostDay(input: CostDayReadInput): Promise<{ recorded: number }>;
   listCostDays(filter?: CostDayFilter): Promise<CostDay[]>;
   listCostRollupDays(filter?: CostRollupDayFilter): Promise<RequestRollupDay[]>;
+  sumCostDays(filter: CostDayTotalsFilter): Promise<CostDayTotals>;
   pruneCostDays(limit: number, retentionMonths: number | null): Promise<number>;
   listScopeObjectsDue(input: { limit: number; retryMs: number }): Promise<ScopeObjectTarget[]>;
   recordScopeObject(input: ScopeObjectReadInput): Promise<void>;
@@ -11473,6 +11476,11 @@ export class CloudflareScopeHost implements ScopeHost {
           rows.length,
         );
         return rows;
+      },
+      sumCostDays: async (actor, filter: CostDayTotalsFilter) => {
+        const sums = await this.cp.sumCostDays(filter);
+        await this.recordAccess(actor, 'sumCostDays', { tenantId: filter.tenantId ?? null }, filter, sums.totals.length);
+        return sums;
       },
       listCostRollupDays: async (actor, filter?: CostRollupDayFilter) => {
         const rows = (await this.cp.listCostRollupDays(filter)).map((r) => requestRollupDay.parse(r));

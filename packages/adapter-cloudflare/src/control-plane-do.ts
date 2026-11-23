@@ -49,11 +49,14 @@ import {
   COST_ROLLUP_DDL,
   listCostDayRows,
   listCostRollupDayRows,
+  sumCostDayRows,
   pruneCostDayRows,
   recordCostDayRows,
   recordScopeObjectRow,
   scopeObjectsDueRows,
   type CostDayFilter,
+  type CostDayTotals,
+  type CostDayTotalsFilter,
   type CostDayReadInput,
   type CostRollupDayFilter,
   type ScopeObjectReadInput,
@@ -5280,6 +5283,10 @@ export class ControlPlaneDO extends DurableObject {
 
   listCostDays(filter?: CostDayFilter): CostDay[] {
     return listCostDayRows(doRedactionSql(this.sql), filter);
+  }
+
+  sumCostDays(filter: CostDayTotalsFilter): CostDayTotals {
+    return sumCostDayRows(doRedactionSql(this.sql), filter);
   }
 
   listCostRollupDays(filter?: CostRollupDayFilter): RequestRollupDay[] {

@@ -480,6 +480,11 @@ export class TenantNarrowedControlPlane {
     return this.call(`/tenants/${this.tenantId}/metered-usage`);
   }
 
+  /** The tenant's platform usage at the platform's price (#3316): prices only, never cost or markup. */
+  readPlatformUsage(days?: number): Promise<unknown> {
+    return this.call(`/tenants/${this.tenantId}/platform-usage${days === undefined ? '' : `?days=${days}`}`);
+  }
+
   /** Write the directory row for a new scope (`provisioning`) in the pinned tenant. */
   provisionScope(input: { scopeId: ScopeId; slug: string; name: string; vertical: string; jurisdiction: 'global' }): Promise<void> {
     return this.post('/scopes', { tenantId: this.tenantId, ...input });

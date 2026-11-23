@@ -7,9 +7,10 @@ import { Billing } from '../src/views/Billing';
 
 const read = vi.hoisted(() => vi.fn());
 const readUsage = vi.hoisted(() => vi.fn());
+const readPlatform = vi.hoisted(() => vi.fn());
 vi.mock('../src/lib/api', async (importOriginal) => ({
   ...await importOriginal<typeof import('../src/lib/api')>(),
-  teamApi: () => ({ listEntitlements: read, readMeteredUsage: async () => ({ days: [], ...await readUsage() }) }),
+  teamApi: () => ({ listEntitlements: read, readMeteredUsage: async () => ({ days: [], ...await readUsage() }), readPlatformUsage: readPlatform }),
 }));
 
 let container: HTMLDivElement;
@@ -18,6 +19,8 @@ beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   read.mockReset();
   readUsage.mockReset();
+  readPlatform.mockReset();
+  readPlatform.mockResolvedValue(platformReading({ state: 'not-read', readDays: 0, lastReadAt: null, days: [] }));
   readUsage.mockResolvedValue({
     readAt: '2026-10-29T00:00:00Z',
     retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
@@ -32,6 +35,13 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+});
+
+const zero = { rowsWritten: '0', rowsRead: '0', storage: '0', requests: '0', cpu: '0', doRequests: '0', duration: '0' };
+const platformReading = (over: object) => ({
+  since: '2026-10-22', until: '2026-11-20', readAt: '2026-11-21T08:00:00.000Z', state: 'complete', readDays: 30, totalDays: 30,
+  lastReadAt: '2026-11-21T03:10:00.000Z', wouldCostUsd: '0', liveWouldCostUsd: '0', previewWouldCostUsd: '0', chargedUsd: '0',
+  quantities: zero, apps: [], days: [], truncated: false, ...over,
 });
 
 const render = async (canRead = true, names: ReadonlyMap<string, string> = new Map()) => act(async () => { root.render(<Billing teamId="team-a" canRead={canRead} names={names} />); });
@@ -100,7 +110,10 @@ it('shows metered usage coverage, estimate and freshness without prices', async 
   expect(container.textContent).toContain('13 months');
   expect(container.textContent).toContain('400 days');
   expect(container.textContent).toContain('2026-10-28');
-  expect(container.textContent).not.toMatch(/price|margin|usd|cost|amount|invoice|checkout|payment/i);
+  // The metered cards carry no price; the Platform usage section beside them is priced on purpose.
+  const metered = container.cloneNode(true) as HTMLElement;
+  metered.querySelector('section[aria-label="Platform usage"]')?.remove();
+  expect(metered.textContent).not.toMatch(/price|margin|usd|cost|amount|invoice|checkout|payment/i);
 });
 
 it.each([
@@ -281,4 +294,47 @@ it('marks a capped review read as a lower bound on the count, the tokens and the
   expect(text).toContain('At least 500 reviews, at least 6,000,000 input and 400,000 output tokens as reported');
   expect(text).toContain("Would cost at least $7.20 at the platform's rate");
   expect(text).toContain('read capped, so every figure here is a lower bound');
+});
+
+it('says the daily pass has not read the period yet, rather than showing zero usage', async () => {
+  await render();
+  expect(readPlatform).toHaveBeenCalledWith({ days: 30 });
+  expect(container.textContent).toContain('No usage has been read for this period yet.');
+  expect(container.textContent).toContain('does not mean your apps used nothing');
+});
+
+it('says the apps used nothing when the read days hold no usage', async () => {
+  readPlatform.mockResolvedValue(platformReading({ state: 'empty', readDays: 28 }));
+  await render();
+  expect(container.textContent).toContain('Your apps used nothing billable on the 28 days read in this period; 2 more days have not been read yet.');
+});
+
+it('shows what platform usage would cost by app and kind, marked not charged', async () => {
+  const quantities = { ...zero, rowsWritten: '5000000', requests: '1000000' };
+  readPlatform.mockResolvedValue(platformReading({
+    state: 'partial', readDays: 29, wouldCostUsd: '8', liveWouldCostUsd: '5', previewWouldCostUsd: '3', quantities,
+    apps: [
+      { vertical: 'acme/crm', kind: 'live', wouldCostUsd: '5', quantities: { ...zero, rowsWritten: '2000000', requests: '1000000' } },
+      { vertical: 'acme/crm', kind: 'preview', wouldCostUsd: '3', quantities: { ...zero, rowsWritten: '3000000' } },
+    ],
+    days: [
+      { day: '2026-11-19', read: true, wouldCostUsd: '8', liveWouldCostUsd: '5', previewWouldCostUsd: '3', quantities, byApp: [{ vertical: 'acme/crm', kind: 'live', wouldCostUsd: '5' }, { vertical: 'acme/crm', kind: 'preview', wouldCostUsd: '3' }] },
+      { day: '2026-11-20', read: false, wouldCostUsd: null, liveWouldCostUsd: null, previewWouldCostUsd: null, quantities: null, byApp: [] },
+    ],
+  }));
+  await render(true, new Map([['acme/crm', 'CRM']]));
+  const section = container.querySelector('section[aria-label="Platform usage"]')!;
+  expect(section.textContent).toContain('Not charged');
+  expect(section.textContent).toContain('Would cost$8.00Charged $0.00');
+  expect(section.textContent).toContain('CRM · preview');
+  expect(section.querySelector('[data-gap="2026-11-20"]')).not.toBeNull();
+  expect(section.textContent).not.toMatch(/markup|our cost/i);
+});
+
+it('shows platform usage even when the metered read fails', async () => {
+  readUsage.mockRejectedValue(new Error('metered read failed'));
+  readPlatform.mockResolvedValue(platformReading({ state: 'empty', readDays: 30 }));
+  await render();
+  expect(container.textContent).toContain('Usage is unavailable. Try again later.');
+  expect(container.querySelector('section[aria-label="Platform usage"]')?.textContent).toContain('No platform usage.');
 });

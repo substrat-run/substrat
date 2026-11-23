@@ -13,6 +13,7 @@ import type { TableColumn } from '../components';
 import { tenantTone } from '../lib/fleet';
 import type { Api } from '../lib/api';
 import { EXCLUSION_LABEL, gaugeView } from '../lib/storage';
+import { PlatformCosts } from './PlatformCosts';
 
 /**
  * §5's meters, rendered (#38) — and the two that are missing, said out loud.
@@ -296,6 +297,9 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
           emptyText="No model usage recorded this month — no vertical has answered through the platform’s model host yet."
         />
       </Card>
+
+      {/* #3316 — Cloudflare cost per tenant and day, with the markup and price beside it, and the residual. */}
+      <PlatformCosts api={api} tenants={tenants} onOpenTenant={onOpenTenant} />
 
       {/* Meter 1, per tenant — the base fee is per tenant AND per active scope. */}
       <Card
