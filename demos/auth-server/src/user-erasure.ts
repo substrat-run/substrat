@@ -96,6 +96,9 @@ interface VerificationRow {
   value: string;
 }
 
+/** A key whose VALUE is the person's id: a password reset (Better Auth's), an invitation. Only these —
+ *  a bare value is no proof of ownership elsewhere: a phone attempt's value is the word `attempt`. */
+const ID_VALUE_KEYS = ['reset-password:', 'account-invite:'];
 /** A key a flow builds from the person's id alone. */
 const ID_KEYS = ['invite-password:', 'phone-enrollment:', 'phone-send:'];
 /** A key a flow builds from the person's id and trailing counters — the id is what precedes them. */
@@ -116,7 +119,7 @@ function jsonOwner(value: string): unknown[] {
 }
 
 function owns(row: VerificationRow, userId: string): boolean {
-  if (row.value === userId) return true; // a password reset, an invitation
+  if (row.value === userId && ID_VALUE_KEYS.some((prefix) => row.identifier.startsWith(prefix))) return true;
   if (ID_KEYS.some((prefix) => row.identifier === `${prefix}${userId}`)) return true;
   for (const [prefix, counters] of COUNTED_KEYS) {
     if (row.identifier.startsWith(prefix) && counters.exec(row.identifier.slice(prefix.length))?.[1] === userId) return true;
@@ -126,7 +129,8 @@ function owns(row: VerificationRow, userId: string): boolean {
 
 /**
  * The `verification` rows that are this person's, by row id. `instr` only narrows the read to rows
- * that mention the id somewhere; `owns` is the decision, and it compares whole values. Then the
+ * that mention the id somewhere — raw, or as JSON writes it inside a string, since an imported id
+ * may hold a `"` or a `\`; `owns` is the decision, and it compares whole values. Then the
  * rows that never name the person: a phone challenge, keyed by one of their sessions, and the rows
  * hanging off an owned step — a GitHub address proof (its JSON names the step's key), a BankID
  * email challenge and its send counters (keyed by the step's token digest).
@@ -134,7 +138,12 @@ function owns(row: VerificationRow, userId: string): boolean {
 function ownedVerificationRows(sql: SqlExec, userId: string): string[] {
   const owned = (
     sql
-      .exec('SELECT id, identifier, value FROM verification WHERE instr(value, ?) > 0 OR instr(identifier, ?) > 0', userId, userId)
+      .exec(
+        'SELECT id, identifier, value FROM verification WHERE instr(value, ?) > 0 OR instr(value, ?) > 0 OR instr(identifier, ?) > 0',
+        userId,
+        JSON.stringify(userId).slice(1, -1),
+        userId,
+      )
       .toArray() as unknown as VerificationRow[]
   ).filter((row) => owns(row, userId));
   const ids = owned.map((row) => row.id);

@@ -7,7 +7,7 @@ import { schema } from '../src/auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { buildAuth, type Auth } from '../src/auth.js';
 import { createAdminApi } from '../src/admin-api.js';
-import { adminEraseUser } from '../src/user-erasure.js';
+import { adminEraseUser, eraseUser } from '../src/user-erasure.js';
 import type { SqlExec } from '../src/introspect.js';
 import type { SessionSubject } from '../src/do-contract.js';
 
@@ -254,6 +254,27 @@ describe('an administrator deletes a person who has signed in to an app', () => 
     expect(count('user', 'id', memberId)).toBe(1);
     expect(count('account', 'user_id', memberId)).toBe(1);
   });
+});
+
+// An imported id is whatever the previous issuer used (#3346 review): a common word, or one JSON
+// has to escape. Ownership must come from each flow's row shape, not from the id looking unique.
+it('erases an imported id by its rows, not by what other rows happen to contain', () => {
+  const now = Date.now();
+  for (const id of ['attempt', 'a"b']) {
+    db.prepare("INSERT INTO user (id, name, email, email_verified) VALUES (?, 'Imported', ?, 1)").run(id, `${id.length}@import.test`);
+  }
+  const verification = db.prepare('INSERT INTO verification (id, identifier, value, expires_at) VALUES (?, ?, ?, ?)');
+  for (const [id, identifier, value] of [
+    ['v-reset', 'reset-password:tok', 'attempt'],
+    ['keep-attempt', `phone-attempt:${memberId}:5:0`, 'attempt'],
+    ['v-quoted', 'github-email:digest-q', JSON.stringify({ userId: 'a"b' })],
+  ]) {
+    verification.run(id, identifier, value, now + 60_000);
+  }
+  const sql = sqlExecOf(db);
+  eraseUser(sql, 'attempt');
+  eraseUser(sql, 'a"b');
+  expect((db.prepare('SELECT id FROM verification').all() as { id: string }[]).map((r) => r.id)).toEqual(['keep-attempt']);
 });
 
 describe('the guard rails', () => {
