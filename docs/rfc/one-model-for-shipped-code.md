@@ -196,9 +196,29 @@ sensitive path, which cannot be done half-way.
 **5.3 A generated entry.** The entry is generated from the model and the modules, by a generator
 that ships with the kernel version the vertical pinned. Less code per app, a protocol change is a
 new push, and the same entry runs locally and hosted. *Costs:* freedom. A vertical doing something
-unusual needs room in the generator or a declared HTTP route of its own. D-61 says no
-platform-authored code enters a customer's bundle, so the generator is code the app imported at a
-pinned version, not something added at build.
+unusual needs room in the generator or a declared HTTP route of its own.
+
+**A platform entry already exists, and the generated entry sits beside it.** The uploader puts a
+platform-authored entry module in front of every pushed vertical's bundle
+(`tools/platform-entry-emit.mts`, gated by `lint:platform-entry`,
+[#1893](https://github.com/substrat-run/substrat/issues/1893)). It carries the invocation stamp, the
+wire-signing gate and its nonce store, and it supplies a sweeper to a vertical that declares
+schedules and exports none ([#1902](https://github.com/substrat-run/substrat/issues/1902)). So there
+are two shapes for code the app's author does not write, and which one a piece takes is a choice,
+not a consequence of D-61:
+
+- **Written into the upload by the platform.** It is the same for every vertical at the platform's
+  current version, whatever the vertical pinned. This fits what the platform has to own: verifying
+  the envelope and stamping the request.
+- **Generated from a package the app imports at a pinned version.** It moves when the app pushes.
+  This fits the wiring that depends on the app's own model and modules, and it is what replaces the
+  hand-written entry.
+
+The proposal is that the generated entry replaces the vertical's hand-written one and does not
+absorb the platform entry, which stays in front. D-61's clause that no platform-authored code is
+injected into a customer's bundle is written about Durable-Object egress. Read as a general rule
+it contradicts the platform entry, which is shipped, so phase 0 has to narrow its wording or
+withdraw the clause before ratifying it.
 
 **5.4 One dependency in place of the separate declarations.** `substrat push` reads it and checks
 it against installed consumers, and an install binds the two apps. Properties are set per contract
@@ -385,7 +405,9 @@ any app is split in two.
 Four phases in sequence, a storage track beside them, and a list that waits on need. Each phase
 removes something, and none rests on a record that is not decided. The phases are not dated.
 
-**Phase 0: decisions.** Nothing is built. The six proposed records are ratified or withdrawn.
+**Phase 0: decisions.** Nothing is built. The six proposed records are ratified or withdrawn. D-61
+is not ratified as titled, since its clause on platform-authored code contradicts the platform
+entry that is shipped (§5.3).
 dependent-people.md becomes a decision. K-53 and the scope-types tracking issue
 ([#2992](https://github.com/substrat-run/substrat/issues/2992)) are settled together, being one
 question. The version rule is written once, with the answer to §7.5. The words are fixed. *Done
@@ -397,7 +419,8 @@ scope. The entry is generated. K-58's envelope rolls out. A trace id follows cal
 runs network parts locally with recorded answers. Three spikes run meanwhile: a workflow engine in
 Workers for Platforms, a call from inside a scope to its store, and no network in scope code as a
 mechanism. *Removes* `HostAdmin` from provider code, one of three connector implementations, the
-hand-written entry and the shared secret between router and vertical
+vertical's hand-written entry (not the platform entry of §5.3, which stays) and the shared secret
+between router and vertical
 ([K-27](../decisions/K-027-the-router-presents-a-shared-secret-and-the-vertical-verifie.md)). *Done
 when* no provider code reaches `HostAdmin` and every vertical runs a generated entry.
 
