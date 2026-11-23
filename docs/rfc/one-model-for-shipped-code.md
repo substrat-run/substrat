@@ -9,12 +9,13 @@ description: "One target model for apps, the code they ship and how they depend 
 **Status: proposed.** This combines two proposals. One is about which code exists, where it runs
 and how its version is fixed. The other is about how apps hang together: dependencies, people,
 master data, stores and processes. It decides nothing, adds no decision record and amends none.
-Six records it rests on are themselves proposed
+Seven records it rests on are themselves proposed
 ([K-58](../decisions/K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md),
 [K-62](../decisions/K-062-an-operation-does-not-await-an-outside-call-inside-its-transaction.md),
 [D-61](../decisions/D-061-do-originated-egress-is-observed-and-never-refused-d-46-s-limit.md),
 [D-64](../decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md),
 [D-70](../decisions/D-070-a-store-driver-s-code-runs-in-its-own-loaded-isolate-outside-the-verifier-with-no-network.md),
+[D-71](../decisions/D-071-a-store-object-a-deletion-has-fenced-refuses-what-it-left-in-flight.md),
 [D-73](../decisions/D-073-a-connector-is-its-own-deployable-unit-with-one-call-contract.md)),
 and phase 0 of §8 settles them before anything is built.
 
@@ -405,7 +406,8 @@ any app is split in two.
 Four phases in sequence, a storage track beside them, and a list that waits on need. Each phase
 removes something, and none rests on a record that is not decided. The phases are not dated.
 
-**Phase 0: decisions.** Nothing is built. The six proposed records are ratified or withdrawn. D-61
+**Phase 0: decisions.** Nothing is built. The seven proposed records are ratified or withdrawn, D-71
+among them because the storage track needs it. D-61
 is not ratified as titled, since its clause on platform-authored code contradicts the platform
 entry that is shipped (§5.3).
 dependent-people.md becomes a decision. K-53 and the scope-types tracking issue
@@ -435,9 +437,8 @@ reaches every dependent, and a history showing which app acted. The block gets i
 Entity contracts arrive with lifecycle events and a paged list. *Done when* a person erased at the
 master is shown to be gone from every dependent.
 
-**Beside them: storage.** First, a store driver in operation, which needs D-70 and
-[D-71](../decisions/D-071-a-store-object-a-deletion-has-fenced-refuses-what-it-left-in-flight.md)
-settled and a release approved. Then store calls are allowed while a vertical serves a peer call,
+**Beside them: storage.** First, a store driver in operation, which needs D-70 and D-71
+settled in phase 0 and a release approved. Then store calls are allowed while a vertical serves a peer call,
 and the door starts requiring a proof. A vector index follows
 [K-57](../decisions/K-057-a-semantic-index-is-scope-local-a-semantic-read-is-declared-eventual-an-external-index-only-as-a-store-driver.md)
 when an app needs one. The home scope is measured, and only then is storage per tenant removed.
