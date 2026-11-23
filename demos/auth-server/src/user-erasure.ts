@@ -22,10 +22,9 @@ import type { SqlExec } from './introspect.js';
  *    browser is signed out on its next request.
  *  - `account` — every sign-in method: the password hash, the upstreams' subjects and tokens,
  *    the BankID personal number.
- *  - `verification` — the person's pending one-time rows (a password reset or an invitation
- *    holds their id as its value, a GitHub address step inside its JSON, a phone attempt or an
- *    invitation's password cooldown in its key). Matched on the id, never the address: an
- *    address can be a substring of somebody else's, a random 32-character id is not.
+ *  - `verification` — the person's pending one-time rows, each matched to them exactly by the
+ *    shape its flow writes (`ownedVerificationRows`). Never by substring: an imported id is any
+ *    string the previous issuer used, so a short one is part of other people's keys and values.
  *  - `place_member` — which apps bound this `sub`. The binding is the app's to drop; this is
  *    only the issuer's index of it, and an index of a person who is gone is a row about them.
  *  - `user_activity`, `user_client_activity`, `scim_user` — cascade from `user` already, and
@@ -51,12 +50,12 @@ export function eraseUser(sql: SqlExec, userId: string): void {
     userId,
     userId,
   );
+  // Before the sessions go: a phone challenge is keyed by the session, not the person.
+  for (const id of ownedVerificationRows(sql, userId)) sql.exec('DELETE FROM verification WHERE id = ?', id);
   for (const table of ['oauth_refresh_token', 'oauth_consent', 'session', 'account']) {
     sql.exec(`DELETE FROM ${table} WHERE user_id = ?`, userId);
   }
   sql.exec('UPDATE oauth_client SET user_id = NULL WHERE user_id = ?', userId);
-  // `instr`, not LIKE: a pattern built from input is held to a Durable Object's 50-byte limit.
-  sql.exec('DELETE FROM verification WHERE instr(value, ?) > 0 OR instr(identifier, ?) > 0', userId, userId);
   sql.exec('DELETE FROM place_member WHERE sub = ?', userId);
   for (const table of ['user_activity', 'user_client_activity', 'scim_user']) {
     sql.exec(`DELETE FROM ${table} WHERE user_id = ?`, userId);
@@ -89,4 +88,83 @@ export function adminEraseUser(sql: SqlExec, userId: string, actorSub: string): 
   }
   eraseUser(sql, userId);
   return { erased: userId };
+}
+
+interface VerificationRow {
+  id: string;
+  identifier: string;
+  value: string;
+}
+
+/** A key a flow builds from the person's id alone. */
+const ID_KEYS = ['invite-password:', 'phone-enrollment:', 'phone-send:'];
+/** A key a flow builds from the person's id and trailing counters — the id is what precedes them. */
+const COUNTED_KEYS: [prefix: string, counters: RegExp][] = [
+  ['phone-attempt:', /^(.*):\d+:\d+$/],
+  ['bankid-email-skip:', /^(.*):\d+$/],
+];
+
+/** The person named in a row's JSON value: a GitHub address step, a BankID email step or order, an OAuth link. */
+function jsonOwner(value: string): unknown[] {
+  if (!value.startsWith('{')) return [];
+  try {
+    const v = JSON.parse(value) as { userId?: unknown; linkUserId?: unknown; link?: { userId?: unknown } };
+    return [v.userId, v.linkUserId, v.link?.userId];
+  } catch {
+    return [];
+  }
+}
+
+function owns(row: VerificationRow, userId: string): boolean {
+  if (row.value === userId) return true; // a password reset, an invitation
+  if (ID_KEYS.some((prefix) => row.identifier === `${prefix}${userId}`)) return true;
+  for (const [prefix, counters] of COUNTED_KEYS) {
+    if (row.identifier.startsWith(prefix) && counters.exec(row.identifier.slice(prefix.length))?.[1] === userId) return true;
+  }
+  return jsonOwner(row.value).includes(userId);
+}
+
+/**
+ * The `verification` rows that are this person's, by row id. `instr` only narrows the read to rows
+ * that mention the id somewhere; `owns` is the decision, and it compares whole values. Then the
+ * rows that never name the person: a phone challenge, keyed by one of their sessions, and the rows
+ * hanging off an owned step — a GitHub address proof (its JSON names the step's key), a BankID
+ * email challenge and its send counters (keyed by the step's token digest).
+ */
+function ownedVerificationRows(sql: SqlExec, userId: string): string[] {
+  const owned = (
+    sql
+      .exec('SELECT id, identifier, value FROM verification WHERE instr(value, ?) > 0 OR instr(identifier, ?) > 0', userId, userId)
+      .toArray() as unknown as VerificationRow[]
+  ).filter((row) => owns(row, userId));
+  const ids = owned.map((row) => row.id);
+  const byIdentifier = (identifier: string) =>
+    (sql.exec('SELECT id FROM verification WHERE identifier = ?', identifier).toArray() as { id: string }[]).map((r) => r.id);
+  const sessions = sql.exec('SELECT id FROM session WHERE user_id = ?', userId).toArray() as { id: string }[];
+  for (const { id } of sessions) ids.push(...byIdentifier(`phone-challenge:${id}`));
+  for (const row of owned) {
+    if (row.identifier.startsWith('github-email:')) {
+      const proofs = sql
+        .exec("SELECT id, identifier, value FROM verification WHERE substr(identifier, 1, 19) = 'github-email-proof:' AND instr(value, ?) > 0", row.identifier)
+        .toArray() as unknown as VerificationRow[];
+      for (const proof of proofs) {
+        try {
+          if ((JSON.parse(proof.value) as { pendingKey?: unknown }).pendingKey === row.identifier) ids.push(proof.id);
+        } catch {
+          /* not a proof this step wrote */
+        }
+      }
+    }
+    if (row.identifier.startsWith('bankid-email:')) {
+      const hash = row.identifier.slice('bankid-email:'.length);
+      ids.push(...byIdentifier(`bankid-email-challenge:${hash}`));
+      const sends = `bankid-email-sends:${hash}:`;
+      ids.push(
+        ...(
+          sql.exec('SELECT id FROM verification WHERE substr(identifier, 1, ?) = ?', sends.length, sends).toArray() as { id: string }[]
+        ).map((r) => r.id),
+      );
+    }
+  }
+  return [...new Set(ids)];
 }

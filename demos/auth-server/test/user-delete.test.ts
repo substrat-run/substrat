@@ -163,8 +163,28 @@ describe('an administrator deletes a person who has signed in to an app', () => 
     // The rest of what can name a person, planted where no flow in a unit test reaches.
     const now = Date.now();
     db.prepare("INSERT INTO account (id, account_id, provider_id, user_id, access_token, updated_at) VALUES ('acc-gh', 'gh-42', 'github', ?, 'up-at', ?)").run(memberId, now);
-    db.prepare("INSERT INTO verification (id, identifier, value, expires_at) VALUES ('v-reset', 'reset-password:tok', ?, ?), ('v-key', ?, 'set', ?), ('v-other', 'reset-password:x', 'someone-else', ?)")
-      .run(memberId, now + 60_000, `invite-password:${memberId}`, now + 60_000, now + 60_000);
+    // One row per shape a flow writes for a person, and decoys that only CONTAIN the member's id —
+    // an imported id is any string, so `${id}b` and `${id}:1` are other people (#3346 review).
+    const sessionId = (db.prepare('SELECT id FROM session WHERE user_id = ? LIMIT 1').get(memberId) as { id: string }).id;
+    const verification = db.prepare('INSERT INTO verification (id, identifier, value, expires_at) VALUES (?, ?, ?, ?)');
+    for (const [id, identifier, value] of [
+      ['v-reset', 'reset-password:tok', memberId],
+      ['v-invite', `invite-password:${memberId}`, 'set'],
+      ['v-attempt', `phone-attempt:${memberId}:5:0`, 'attempt'],
+      ['v-skip', `bankid-email-skip:${memberId}:1`, 'skipped'],
+      ['v-challenge', `phone-challenge:${sessionId}`, '{"phone":"+46700000000","enrolled":false}'],
+      ['v-github', 'github-email:digest-1', JSON.stringify({ userId: memberId, email: MEMBER.email })],
+      ['v-github-proof', 'github-email-proof:digest-2', JSON.stringify({ pendingKey: 'github-email:digest-1', email: MEMBER.email })],
+      ['v-bankid', 'bankid-email:hash-1', JSON.stringify({ userId: memberId, personalNumber: '190001010000', name: 'M' })],
+      ['v-bankid-challenge', 'bankid-email-challenge:hash-1', 'code'],
+      ['v-bankid-sends', 'bankid-email-sends:hash-1:0', 'sent'],
+      ['keep-value', 'reset-password:x', `${memberId}b`],
+      ['keep-attempt', `phone-attempt:${memberId}:1:5:0`, 'attempt'],
+      ['keep-json', 'github-email:digest-3', JSON.stringify({ userId: `${memberId}b` })],
+      ['keep-challenge', 'phone-challenge:another-session', '{}'],
+    ]) {
+      verification.run(id, identifier, value, now + 60_000);
+    }
     db.prepare("INSERT INTO place_member (sub, app_scope_id) VALUES (?, 'app-a')").run(memberId);
     db.prepare('INSERT INTO user_activity (user_id, last_login_at, logins_count) VALUES (?, ?, 3)').run(memberId, now);
     db.prepare("INSERT INTO user_client_activity (user_id, client_id, last_token_at) VALUES (?, ?, ?)").run(memberId, rp.clientId, now);
@@ -199,7 +219,12 @@ describe('an administrator deletes a person who has signed in to an app', () => 
     ] as const) {
       expect(count(table, column, memberId), `${table}.${column}`).toBe(0);
     }
-    expect((db.prepare('SELECT id FROM verification ORDER BY id').all() as { id: string }[]).map((r) => r.id)).toEqual(['v-other']);
+    expect((db.prepare('SELECT id FROM verification ORDER BY id').all() as { id: string }[]).map((r) => r.id)).toEqual([
+      'keep-attempt',
+      'keep-challenge',
+      'keep-json',
+      'keep-value',
+    ]);
     // Kept: the client (it is the app's, not the person's) and the log row, without its who.
     expect(count('oauth_client', 'client_id', rp.clientId)).toBe(1);
     expect((db.prepare('SELECT count(*) AS n FROM sign_in_attempt').get() as { n: number }).n).toBe(1);

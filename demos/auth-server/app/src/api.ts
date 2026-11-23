@@ -275,7 +275,7 @@ export async function removeUser(userId: string): Promise<void> {
 
 /** What both Remove buttons ask before they call `removeUser` — one sentence, so they cannot drift. */
 export const removeUserWarning = (email: string): string =>
-  `Delete ${email}? They are signed out everywhere at once: their sessions end, and every app they signed in to loses its tokens and consent. Their sign-in methods are deleted, and an app keeps only what it stored under their user id. This cannot be undone.`;
+  `Delete ${email}? Their sessions here end at once, and the tokens and consent every app holds from this issuer are revoked; an API that checks its tokens itself may accept one until it expires. Their sign-in methods are deleted. An app keeps its own session and whatever it stored under their user id. This cannot be undone.`;
 
 /* ---- one person: what the user-detail screen at /users/:id reads and does ---- */
 
