@@ -6,6 +6,7 @@ import { ensureMachineResource, machineCaller, machineTokenVerifier, type Machin
 import { looksLikePersonalNumber, normalizePersonalNumber } from './personal-number.js';
 import { bankidPlaceholderAddress, isPlaceholderAddress } from './placeholder-address.js';
 import { wallClock } from './user-import.js';
+import { eraseUser } from './user-erasure.js';
 
 /**
  * A SCIM 2.0 server (RFC 7643, RFC 7644) for provisioning people ahead of their first sign-in
@@ -586,12 +587,9 @@ function writable(sql: SqlExec, id: string, clientId: string): UserRow {
   return row;
 }
 
+/** The console's erasure (`user-erasure.ts`): one list of what identifies a person, for every door. */
 function deleteUser(sql: SqlExec, row: UserRow): void {
-  endSignIns(sql, row.id);
-  // The OAuth tables do not cascade from `user` (`account-merge.ts` deletes the same way).
-  sql.exec('DELETE FROM oauth_consent WHERE user_id = ?', row.id);
-  sql.exec('UPDATE oauth_client SET user_id = NULL WHERE user_id = ?', row.id);
-  sql.exec('DELETE FROM user WHERE id = ?', row.id);
+  eraseUser(sql, row.id);
 }
 
 /* ---- operations, shared by the single routes and Bulk ---- */

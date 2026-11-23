@@ -1090,6 +1090,12 @@ function betterAuthFor(deps: AuthDeps) {
           diagnoseSignInCallback(ctx.context, callbackMethod, ctx.request, deps.fetchSignInDiagnostic);
         }
         if (ctx.path === '/admin/update-user') await refuseVerifiedPlaceholder(ctx);
+        // The library's delete is three statements with no transaction, and its last one is
+        // refused for anybody holding an OAuth token or consent — after their sessions and
+        // sign-in methods are already gone (#3346). The issuer's own route erases in one.
+        if (ctx.path === '/admin/remove-user') {
+          throw new APIError('FORBIDDEN', { message: 'Delete users with DELETE /api/admin/users/:userId' });
+        }
         if (ctx.path === '/oauth2/token') return machineGrantCeiling(ctx, machineScopes);
         if (deps.requireEmailVerification && (ctx.path === '/sign-up/email' || ctx.path === '/sign-in/email')) {
           return verificationReturnsToClient(ctx);
