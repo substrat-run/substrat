@@ -309,6 +309,14 @@ fifteen minutes and nothing else. The operation answers for the company it is gi
   invoice that could not be booked stays held, and the comment log is append-only, so it goes last.
   Each step looks first, so a pass cut off part-way repeats nothing: a booked invoice is not booked
   again, and a comment already in the log is not added.
+- **A company that requires approval before booking** (Settings › Supplier invoices › Supplier invoice
+  approval) refuses the booking, and Fortnox's API cannot change an approved invoice's payment block.
+  There the decision is the approval: the sweep clears its hold while it still can, approves the
+  invoice, books it, and adds the comment. Fortnox records the connection's user as the approver, so
+  write who decided into the comment. Such a company cannot pay an unbooked invoice, so lifting the
+  hold first leaves nothing payable. If someone approved the invoice in Fortnox before the decision,
+  the receipt is `failed` and says the block must be lifted in Fortnox. An invoice approved before the
+  sweep could hold it is not held, and its row says so once.
 - **The receipt** goes to `record`, parsed by `fortnoxInvoiceWritebackReceipt`, as
   `{ key, status: 'done' | 'failed', error }`. A refusal in Fortnox's own words (a `4xx`, a locked
   period for example) is `failed` at once, because the next pass would get the same answer and a
@@ -316,18 +324,11 @@ fifteen minutes and nothing else. The operation answers for the company it is gi
   `failed` after eight. Answering the same key again after a `failed` is how a vertical retries.
 - **A write that fails** also fails the scope's row by the invoice's number. It never stops the
   invoices landing, and a landing that fails never stops the writes.
-- **Budget.** A hold costs two calls and a decision up to five, from the pass's 200, and the 90-second
+- **Budget.** A hold costs two calls and a decision up to seven, from the pass's 200, and the 90-second
   deadline applies. What does not fit is answered again next pass.
 
-::: warning A company that books only attested invoices cannot use the release yet
-Measured in a Fortnox sandbox on 2026-11-11: there, `bookkeep` refuses an invoice nobody has
-attested, and once an invoice is attested Fortnox lets a write change only its OCR, invoice number
-and due date. So the hold can be set before attest and never cleared after it. An approved invoice
-is booked, stays blocked from payment, and gets no comment, and the vertical receives `failed` with
-Fortnox's message. An invoice attested before it is held cannot be held at all. Whether a company
-without that rule can clear a booked invoice's block is not measured yet. See
+Both company settings were measured against a Fortnox sandbox on 2026-11-11. See
 [what's missing](#what-s-missing).
-:::
 
 ### Bind a hosted connection by hand
 
@@ -661,9 +662,7 @@ bind time rather than disappearing — see `bindFortnoxScope` above.
    with `pnpm fortnox:measure-writeback`. The answers, verbatim, are in
    [`MEASUREMENTS-writeback.md`](https://github.com/substrat-run/substrat/blob/main/connectors/fortnox/MEASUREMENTS-writeback.md).
    A block set over the API changes nothing else, `bookkeep` books with no body, and the comment log
-   keeps its order and takes at least 65,536 characters. The release does not work where booking
-   needs attest (the warning under [writing back](#writing-back)). Still open, for a person in the
-   sandbox's web UI:
-   - Can an unbooked supplier invoice be paid at all?
-   - Does a block set over the API hide the invoice from the payment view?
-   - Without the attest rule, can a booked invoice's block be cleared?
+   keeps its order and takes at least 65,536 characters. Both company settings were measured,
+   including the approval path under [writing back](#writing-back). In the sandbox's web UI, an
+   unbooked invoice could not be selected for payment, and the block did not stop a payment
+   registered by hand. Still open: does a blocked invoice stay out of a payment file?
