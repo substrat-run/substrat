@@ -64,7 +64,7 @@ deployed and isolated; the second is where state lives. A vertical is one script
 | A vertical's versions | each push is an immutable version; a prod promote re-uploads it onto one serving script, and every scope on it migrates in place ([K-33](../decisions/K-033-verticals-serve-in-place-from-one-stable-script-per-version-.md)) | the vertical's owner |
 | Previews and forks | an archive script per version, against a copy of the data ([preview-and-snapshots.md](../architecture/preview-and-snapshots.md)) | the owner |
 | First-party connectors | whatever the control plane was last deployed with | the platform, for every tenant at once |
-| Store drivers | a release pinned in this repository and approved by a person (D-63, [D-65](../decisions/D-065-a-store-driver-release-runs-after-a-person-approves-its-uploaded-bytes.md)) | the platform |
+| Store drivers | the driver is registered in this repository; a release runs once a person has approved it in the control plane, where its bytes are stored by driver and sha256 (D-63, [D-65](../decisions/D-065-a-store-driver-release-runs-after-a-person-approves-its-uploaded-bytes.md)) | the platform |
 | Event payloads | `schemaVersion`; a change replaces, it is never emitted twice ([K-39](../decisions/K-039-payload-changes-are-loud-failure-replaces-until-dispatch-rou.md)) | the emitting engine |
 
 **Two documents disagree.** [marketplace-publish.md](../architecture/marketplace-publish.md) §5.1 says
