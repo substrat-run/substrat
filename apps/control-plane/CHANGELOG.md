@@ -1,5 +1,30 @@
 # @substrat-run/control-plane
 
+## 0.19.10
+
+### Patch Changes
+
+- 512bad5: The scheduled pass waits for its sweep-run and ops-failure writes before it returns, so the last connector sweep's outcome is no longer dropped and a healthy connection is no longer backed off as if its sweep had crashed.
+- 188d7a2: Platform usage, priced (#3316): the Billing page shows per day what a team's apps used of the platform and what it would cost at the platform's price, by app and live or preview, marked not charged. The console shows staff each tenant's cost, markup and price per day, with its costliest verticals, its preview share and the unattributed residual.
+- Updated dependencies [f1325d4]
+- Updated dependencies [f1325d4]
+- Updated dependencies [188d7a2]
+  - @substrat-run/connector-fortnox@0.9.0
+  - @substrat-run/contracts@0.208.0
+  - @substrat-run/kernel@0.208.0
+  - @substrat-run/adapter-cloudflare@0.208.0
+  - @substrat-run/control-plane-api@0.208.0
+  - @substrat-run/connector-bolagsverket@0.1.4
+  - @substrat-run/connector-mail-in@0.1.45
+  - @substrat-run/connector-microsoft365@0.0.69
+  - @substrat-run/connector-planima@0.2.105
+  - @substrat-run/connector-scrive@0.15.10
+  - @substrat-run/connector-shopify@0.0.4
+  - @substrat-run/connector-stripe@0.0.10
+  - @substrat-run/connector-woocommerce@0.0.14
+  - @substrat-run/model-providers@0.5.98
+  - @substrat-run/vertical-host@0.208.0
+
 ## 0.19.9
 
 ### Patch Changes

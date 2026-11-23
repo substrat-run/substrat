@@ -1,5 +1,13 @@
 # @substrat-run/vertical-auth
 
+## 0.37.9
+
+### Patch Changes
+
+- Updated dependencies [188d7a2]
+  - @substrat-run/contracts@0.208.0
+  - @substrat-run/kernel@0.208.0
+
 ## 0.37.8
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @substrat-run/dashboard-web
 
+## 0.21.45
+
+### Patch Changes
+
+- Updated dependencies [188d7a2]
+  - @substrat-run/contracts@0.208.0
+  - @substrat-run/elements@0.9.3
+  - @substrat-run/model-view@0.6.59
+
 ## 0.21.44
 
 ### Patch Changes

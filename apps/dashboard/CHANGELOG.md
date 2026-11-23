@@ -1,5 +1,24 @@
 # @substrat-run/dashboard
 
+## 0.49.26
+
+### Patch Changes
+
+- 188d7a2: Platform usage, priced (#3316): the Billing page shows per day what a team's apps used of the platform and what it would cost at the platform's price, by app and live or preview, marked not charged. The console shows staff each tenant's cost, markup and price per day, with its costliest verticals, its preview share and the unattributed residual.
+- Updated dependencies [f1325d4]
+- Updated dependencies [f1325d4]
+- Updated dependencies [188d7a2]
+  - @substrat-run/connector-fortnox@0.9.0
+  - @substrat-run/contracts@0.208.0
+  - @substrat-run/kernel@0.208.0
+  - @substrat-run/adapter-cloudflare@0.208.0
+  - @substrat-run/control-plane-api@0.208.0
+  - @substrat-run/engine-invites@0.9.85
+  - @substrat-run/engine-protocol@0.14.8
+  - @substrat-run/control-plane-client@0.9.8
+  - @substrat-run/model-providers@0.5.98
+  - @substrat-run/vertical-host@0.208.0
+
 ## 0.49.25
 
 ### Patch Changes
