@@ -3534,19 +3534,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     window: { since: string; until: string },
     tenantId?: TenantId,
   ): Promise<PlatformUsageInputs | null> => {
-    if (!admin.sumCostDays || !admin.listCostRollupDays) return null;
+    // Every source or none: a host without request or storage history would read as zero usage.
+    if (!admin.sumCostDays || !admin.listCostRollupDays || !admin.listRequestDays || !admin.listScopeStorage) return null;
     const schedule = await markupScheduleFor(admin, actor, tenantId);
     if (!schedule) return null;
     const filter = { ...(tenantId ? { tenantId } : {}), ...window };
-    const [costs, reads, requests, storage] = await Promise.all([
+    // The day ledger first: a day's marker and its rows commit together, so every day it calls
+    // read has its rows in the totals read after it. Read the other way, a day committed between
+    // the two reads would count as read with no usage.
+    const reads = await admin.listCostRollupDays(actor, window);
+    const [costs, requests, storage] = await Promise.all([
       admin.sumCostDays(actor, filter),
-      admin.listCostRollupDays(actor, window),
-      admin.listRequestDays
-        ? admin.listRequestDays(actor, { ...filter, limit: REQUEST_ROLLUP_LIMIT_MAX }).then((rows) => ({ rows, truncated: rows.length >= REQUEST_ROLLUP_LIMIT_MAX }))
-        : null,
-      admin.listScopeStorage
-        ? admin.listScopeStorage(actor, { ...filter, limit: STORAGE_HISTORY_LIMIT_MAX }).then((rows) => ({ rows, truncated: rows.length >= STORAGE_HISTORY_LIMIT_MAX }))
-        : null,
+      admin.listRequestDays(actor, { ...filter, limit: REQUEST_ROLLUP_LIMIT_MAX }).then((rows) => ({ rows, truncated: rows.length >= REQUEST_ROLLUP_LIMIT_MAX })),
+      admin.listScopeStorage(actor, { ...filter, limit: STORAGE_HISTORY_LIMIT_MAX }).then((rows) => ({ rows, truncated: rows.length >= STORAGE_HISTORY_LIMIT_MAX })),
     ]);
     return { ...window, readAt: new Date().toISOString(), costs, reads, requests, storage, schedule };
   };
@@ -3556,14 +3556,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const window = platformWindow(c);
     if (window instanceof Response) return window;
     const inputs = await platformUsageInputs(c.var.admin, c.get('actor'), window, tenantId);
-    if (!inputs) return refuseStatus(c, 501, 'this control plane keeps no Cloudflare cost rollup or markup schedule');
+    if (!inputs) return refuseStatus(c, 501, 'this control plane keeps no Cloudflare cost rollup, request or storage history, or markup schedule');
     return c.json(tenantPlatformUsage.parse(foldTenantPlatformUsage(inputs, tenantId)));
   });
   app.get('/meters/platform-costs', async (c) => {
     const window = platformWindow(c);
     if (window instanceof Response) return window;
     const inputs = await platformUsageInputs(c.var.admin, c.get('actor'), window);
-    if (!inputs) return refuseStatus(c, 501, 'this control plane keeps no Cloudflare cost rollup or markup schedule');
+    if (!inputs) return refuseStatus(c, 501, 'this control plane keeps no Cloudflare cost rollup, request or storage history, or markup schedule');
     return c.json(staffPlatformCosts.parse(foldStaffPlatformCosts(inputs)));
   });
 

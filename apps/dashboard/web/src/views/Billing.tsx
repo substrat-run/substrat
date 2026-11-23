@@ -191,13 +191,14 @@ export function Billing({ teamId, canRead, names }: { teamId: string; canRead: b
         <>
           <UsageSummary usage={shownUsage.usage} />
           <UsageChart days={shownUsage.usage.days} names={names} />
-          <PlatformUsage teamId={teamId} names={names} />
           <details style={{ marginTop: 12 }}>
             <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Meter details</summary>
             <UsageCards usage={shownUsage.usage} names={names} />
           </details>
         </>
       )}
+      {/* Its own read with its own states: a failed metered read does not hide it. */}
+      {!refused && <PlatformUsage teamId={teamId} names={names} />}
     </Page>
   );
 }

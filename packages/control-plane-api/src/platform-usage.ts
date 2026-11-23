@@ -7,8 +7,9 @@
  *
  * A day counts only once the cost rollup has read it: before that its rows say nothing, and a
  * request or storage figure on its own would read as the whole day. Requests and storage are
- * split by app and kind through the scopes the cost rows name (a scope no cost row names is
- * counted as live, under no app).
+ * split by kind through the scopes the cost rows name; a scope no cost row names counts as live.
+ * A request keeps the vertical the router resolved for it (the request rollup's own column),
+ * falling back to the scope's; stored bytes take the scope's vertical, or none.
  *
  * Cost is list price (`listCostOf`); price is cost × (1 + markup), each line at the markup in
  * force for its tenant, dimension and kind on its own day (`priceCostRows`). The tenant fold
@@ -54,8 +55,8 @@ export interface PlatformUsageInputs {
   costs: CostDayTotals;
   /** The cost rollup's day ledger over the window. */
   reads: readonly RequestRollupDay[];
-  requests: { rows: readonly { day: string; tenantId: string; vertical: string | null; scopeId: string; requests: number }[]; truncated: boolean } | null;
-  storage: { rows: readonly { day: string; tenantId: string; scopeId: string; bytes: number }[]; truncated: boolean } | null;
+  requests: { rows: readonly { day: string; tenantId: string; vertical: string | null; scopeId: string; requests: number }[]; truncated: boolean };
+  storage: { rows: readonly { day: string; tenantId: string; scopeId: string; bytes: number }[]; truncated: boolean };
   schedule: readonly MarkupRow[];
 }
 
@@ -114,12 +115,12 @@ export function platformLines(inputs: PlatformUsageInputs, readDays: ReadonlySet
     add({ day: t.day, tenantId: t.tenantId, attribution: t.attribution, vertical: t.vertical, kind: t.kind, dimension, quantity: platformQuantityOf(t.dimension, t.quantity) });
   }
   const scopes = new Map(inputs.costs.scopes.map((s) => [s.scopeId, s]));
-  for (const r of inputs.requests?.rows ?? []) {
+  for (const r of inputs.requests.rows) {
     if (r.requests === 0) continue;
     const scope = scopes.get(r.scopeId);
     add({ day: r.day, tenantId: r.tenantId, attribution: 'scope', vertical: r.vertical ?? scope?.vertical ?? null, kind: scope?.kind ?? 'live', dimension: 'requests', quantity: String(r.requests) });
   }
-  for (const r of inputs.storage?.rows ?? []) {
+  for (const r of inputs.storage.rows) {
     if (r.bytes === 0) continue;
     const scope = scopes.get(r.scopeId);
     add({ day: r.day, tenantId: r.tenantId, attribution: 'scope', vertical: scope?.vertical ?? null, kind: scope?.kind ?? 'live', dimension: 'storage', quantity: String(r.bytes) });
@@ -197,7 +198,7 @@ export function foldTenantPlatformUsage(inputs: PlatformUsageInputs, tenantId: s
         byApp: [...byApp.values()].sort(byCostDesc((a) => a.wouldCostUsd)),
       };
     }),
-    truncated: Boolean(inputs.requests?.truncated || inputs.storage?.truncated),
+    truncated: inputs.requests.truncated || inputs.storage.truncated,
   };
 }
 
@@ -278,6 +279,6 @@ export function foldStaffPlatformCosts(inputs: PlatformUsageInputs): StaffPlatfo
       ...residualSplit(residual),
       days: [...groupBy(residual, (l) => l.day)].map(([day, of]) => ({ day, costUsd: sum(of.map((l) => l.costUsd)), ...residualSplit(of) })).sort((a, b) => a.day.localeCompare(b.day)),
     },
-    truncated: Boolean(inputs.requests?.truncated || inputs.storage?.truncated),
+    truncated: inputs.requests.truncated || inputs.storage.truncated,
   };
 }

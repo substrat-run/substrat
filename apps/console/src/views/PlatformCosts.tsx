@@ -31,6 +31,8 @@ const usd = (s: string | null) =>
 const share = (part: string, whole: string) => (Number(whole) > 0 ? `${Math.round((Number(part) / Number(whole)) * 100)}%` : '—');
 const mono = { fontFamily: 'var(--font-mono)' } as const;
 const muted = { color: 'var(--text-tertiary)' } as const;
+/** A text-like button: reset only what draws a box, so the browser's focus ring still shows. */
+const plain = { background: 'none', border: 0, padding: 0, margin: 0, font: 'inherit', color: 'inherit', cursor: 'pointer' } as const;
 
 export function PlatformCosts({ api, tenants, onOpenTenant }: { api: Api; tenants: Map<TenantId, Tenant>; onOpenTenant: (id: TenantId) => void }) {
   const [period, setPeriod] = useState<Period>('30');
@@ -62,9 +64,21 @@ export function PlatformCosts({ api, tenants, onOpenTenant }: { api: Api; tenant
     {
       header: 'Tenant',
       render: (r) => (
-        <button type="button" onClick={(e) => { e.stopPropagation(); onOpenTenant(r.tenantId); }} style={{ all: 'unset', cursor: 'pointer', fontWeight: 500 }}>
-          {nameOf(r.tenantId)}
-        </button>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          {/* The keyboard's way to the per-day costs: a row click is a pointer's only. */}
+          <button
+            type="button"
+            aria-expanded={open === r.tenantId}
+            aria-label={`${open === r.tenantId ? 'Hide' : 'Show'} daily costs for ${nameOf(r.tenantId)}`}
+            onClick={(e) => { e.stopPropagation(); setOpen(open === r.tenantId ? undefined : r.tenantId); }}
+            style={{ ...plain, width: 16, color: 'var(--text-tertiary)' }}
+          >
+            {open === r.tenantId ? '▾' : '▸'}
+          </button>
+          <button type="button" onClick={(e) => { e.stopPropagation(); onOpenTenant(r.tenantId); }} style={{ ...plain, fontWeight: 500 }}>
+            {nameOf(r.tenantId)}
+          </button>
+        </span>
       ),
     },
     ...priced<Tenantly>(),

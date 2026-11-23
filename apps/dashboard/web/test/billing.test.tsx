@@ -330,3 +330,11 @@ it('shows what platform usage would cost by app and kind, marked not charged', a
   expect(section.querySelector('[data-gap="2026-11-20"]')).not.toBeNull();
   expect(section.textContent).not.toMatch(/markup|our cost/i);
 });
+
+it('shows platform usage even when the metered read fails', async () => {
+  readUsage.mockRejectedValue(new Error('metered read failed'));
+  readPlatform.mockResolvedValue(platformReading({ state: 'empty', readDays: 30 }));
+  await render();
+  expect(container.textContent).toContain('Usage is unavailable. Try again later.');
+  expect(container.querySelector('section[aria-label="Platform usage"]')?.textContent).toContain('No platform usage.');
+});
