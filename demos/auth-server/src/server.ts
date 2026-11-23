@@ -27,7 +27,8 @@ import { AUTH_SERVER_ENV } from './manifest.js';
 import { createAdminApi } from './admin-api.js';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
-import { ACCOUNT_LINKING, ALLOW_SIGNUP, MACHINE_SCOPES, REQUIRE_EMAIL_VERIFICATION, accountLinkingMode, deliveredConfig, isTruthy, machineScopesOf, supabaseBridgeFrom } from './settings.js';
+import { ACCOUNT_LINKING, ALLOW_SIGNUP, MACHINE_SCOPES, accountLinkingMode, deliveredConfig, isTruthy, machineScopesOf, supabaseBridgeFrom } from './settings.js';
+import { databaseConnectionSettings } from './database-connection.js';
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import { bankIdApiUrl, publicBankIdFrom, readBankIdConfig, type BankIdConfig } from './bankid.js';
 import { ISSUER_THEME, clientBranding, issuerTheme } from './branding.js';
@@ -169,7 +170,9 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     // rather than the workerd one this vertical also carries.
     fetchClientMetadataResource,
     allowSignup: overrides?.allowSignup ?? isTruthy(cfg[ALLOW_SIGNUP]),
-    requireEmailVerification: isTruthy(cfg[REQUIRE_EMAIL_VERIFICATION]),
+    // The Username-Password connection's own setting (#3344), read per request like the rest;
+    // the deprecated `REQUIRE_EMAIL_VERIFICATION` key only until the connection has a value.
+    requireEmailVerification: databaseConnectionSettings(sql, cfg).requireEmailVerification,
     machineScopes: machineScopesOf(cfg[MACHINE_SCOPES]).scopes,
     socialProviders: socialProvidersFrom(providers),
     genericProviders: genericProvidersFrom(providers),

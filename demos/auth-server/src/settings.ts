@@ -21,6 +21,10 @@ import type { SqlExec } from './introspect.js';
 export const ALLOW_SIGNUP = 'ALLOW_SIGNUP';
 
 /**
+ * DEPRECATED (#3344): the setting is the Username-Password connection's own now
+ * (`src/database-connection.ts`), and this key is only its fallback until the connection has a
+ * value. Still declared because that fallback reads it.
+ *
  * The declared key behind "a password sign-in needs a verified address". Read with
  * `isTruthy`, so absent ⇒ off — but for the opposite reason to `ALLOW_SIGNUP`'s: off is what
  * every install did before the key existed, and turning it on locks every unverified password

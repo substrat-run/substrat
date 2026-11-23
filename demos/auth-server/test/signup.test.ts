@@ -9,7 +9,8 @@ import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { buildAuth, type Auth } from '../src/auth.js';
 import { AUTH_SERVER_ENV } from '../src/manifest.js';
 import { createAdminApi } from '../src/admin-api.js';
-import { ACCOUNT_LINKING, ALLOW_SIGNUP, REQUIRE_EMAIL_VERIFICATION, deliveredConfig, isTruthy } from '../src/settings.js';
+import { ACCOUNT_LINKING, ALLOW_SIGNUP, REQUIRE_EMAIL_VERIFICATION, deliveredConfig, isTruthy, putDeliveredConfig } from '../src/settings.js';
+import { databaseConnectionSettings } from '../src/database-connection.js';
 import type { SqlExec } from '../src/introspect.js';
 import type { SessionSubject } from '../src/do-contract.js';
 import { publicProvidersFrom, readProviders } from '../src/providers.js';
@@ -76,7 +77,7 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth =>
     transport: mail,
     sender: { email: 'no-reply@send.substrat.test', name: 'Substrat Auth' },
     allowSignup: overrides?.allowSignup ?? isTruthy(config()[ALLOW_SIGNUP]),
-    requireEmailVerification: isTruthy(config()[REQUIRE_EMAIL_VERIFICATION]),
+    requireEmailVerification: databaseConnectionSettings(sql, config()).requireEmailVerification,
     signInPolicyFor: () => policy,
   });
 
@@ -176,7 +177,7 @@ describe('the dashboard toggle', () => {
     const cookie = await adminCookie();
 
     const before = await api.request('http://localhost/settings', { headers: { cookie } });
-    expect(await before.json()).toEqual({ allowSignup: false, requireEmailVerification: false, accountLinking: 'link', machineScopes: [], issuerTheme: {}, defaultLocale: 'en' });
+    expect(await before.json()).toEqual({ allowSignup: false, accountLinking: 'link', machineScopes: [], issuerTheme: {}, defaultLocale: 'en' });
 
     const patched = await api.request('http://localhost/settings', {
       method: 'PATCH',
@@ -184,7 +185,7 @@ describe('the dashboard toggle', () => {
       body: JSON.stringify({ allowSignup: true }),
     });
     expect(patched.status).toBe(200);
-    expect(await patched.json()).toEqual({ allowSignup: true, requireEmailVerification: false, accountLinking: 'link', machineScopes: [], issuerTheme: {}, defaultLocale: 'en' });
+    expect(await patched.json()).toEqual({ allowSignup: true, accountLinking: 'link', machineScopes: [], issuerTheme: {}, defaultLocale: 'en' });
 
     // It landed on the SAME declared key the platform's Env tab and a wrangler var write to,
     // so there is only ever one answer to "is sign-up open".
@@ -256,7 +257,7 @@ describe('the account-linking mode', () => {
       body: JSON.stringify({ accountLinking: 'block' }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ allowSignup: true, requireEmailVerification: false, accountLinking: 'block', machineScopes: [], issuerTheme: {}, defaultLocale: 'en' });
+    expect(await res.json()).toEqual({ allowSignup: true, accountLinking: 'block', machineScopes: [], issuerTheme: {}, defaultLocale: 'en' });
     // Same declared key the platform's Env tab and a wrangler var write to — one answer.
     expect(config()[ACCOUNT_LINKING]).toBe('block');
   });
@@ -287,6 +288,14 @@ async function patchSettings(patch: Record<string, unknown>): Promise<Response> 
     method: 'PATCH',
     headers: { 'content-type': 'application/json', cookie: await adminCookie() },
     body: JSON.stringify(patch),
+  });
+}
+
+/** The Username-Password connection's own settings, read or PATCHed as its Settings tab does. */
+async function passwordConnection(patch?: unknown): Promise<Response> {
+  return adminApi().request('http://localhost/connections/password', {
+    ...(patch === undefined ? {} : { method: 'PATCH', body: JSON.stringify(patch) }),
+    headers: { 'content-type': 'application/json', cookie: await adminCookie() },
   });
 }
 
@@ -350,7 +359,7 @@ describe('signing up mid-authorize returns to the relying party', () => {
   });
 });
 
-describe('with REQUIRE_EMAIL_VERIFICATION on, the verification link returns to the relying party', () => {
+describe('with email verification required, the verification link returns to the relying party', () => {
   const SESSION_COOKIE = /session_token=[^;]/;
   /** The link in the last verification mail, as the path this issuer serves it at. */
   const lastLink = (): URL => new URL(/(https?:\/\/\S+\/verify-email\?\S+)/.exec(mail.last!.text)![1]!);
@@ -358,7 +367,8 @@ describe('with REQUIRE_EMAIL_VERIFICATION on, the verification link returns to t
     (db.prepare('SELECT email_verified AS v FROM user WHERE email = ?').get(email) as { v: number }).v;
 
   beforeEach(async () => {
-    expect((await patchSettings({ allowSignup: true, requireEmailVerification: true })).status).toBe(200);
+    expect((await patchSettings({ allowSignup: true })).status).toBe(200);
+    expect((await passwordConnection({ requireEmailVerification: true })).status).toBe(200);
   });
 
   it('signs up, verifies, and lands at the application’s callback with a code', async () => {
@@ -519,8 +529,49 @@ describe('with REQUIRE_EMAIL_VERIFICATION on, the verification link returns to t
     expect(body.token).toBeTruthy();
   });
 
-  it('is the declared key, written beside the sign-up decision without touching it', () => {
-    expect(config()[REQUIRE_EMAIL_VERIFICATION]).toBe('true');
-    expect(config()[ALLOW_SIGNUP]).toBe('true');
+});
+
+describe('email verification is the Username-Password connection’s own setting (#3344)', () => {
+  const OTHER = { email: 'other@auth.test', password: 'other-pass-123', name: 'Other' };
+  /** A sign-up's session token: `null` while verification is required, a token otherwise. */
+  const signUpToken = async (who: typeof NEWCOMER): Promise<string | null> => {
+    const res = await signUpCall(who);
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { token: string | null }).token;
+  };
+
+  beforeEach(async () => {
+    expect((await patchSettings({ allowSignup: true })).status).toBe(200);
+  });
+
+  it('defaults off, round-trips a PATCH on the connection, and leaves the env key alone', async () => {
+    expect(await (await passwordConnection()).json()).toEqual({ requireEmailVerification: false, requireEmailVerificationSource: 'default' });
+
+    for (const refused of [{}, { requireEmailVerification: 'yes' }, { requireEmailVerification: true, allowSignup: true }]) {
+      expect((await passwordConnection(refused)).status).toBe(400);
+    }
+
+    const patched = await passwordConnection({ requireEmailVerification: true });
+    expect(patched.status).toBe(200);
+    expect(await patched.json()).toEqual({ requireEmailVerification: true, requireEmailVerificationSource: 'connection' });
+    expect(await (await passwordConnection()).json()).toEqual({ requireEmailVerification: true, requireEmailVerificationSource: 'connection' });
+    // Stored on the connection, not written to the environment.
+    expect(config()[REQUIRE_EMAIL_VERIFICATION]).toBeUndefined();
+  });
+
+  it('keeps an install that set only the deprecated env key requiring verification', async () => {
+    putDeliveredConfig(sql, [{ key: REQUIRE_EMAIL_VERIFICATION, value: 'true' }]);
+    expect(await (await passwordConnection()).json()).toEqual({ requireEmailVerification: true, requireEmailVerificationSource: 'env' });
+    expect(await signUpToken(NEWCOMER)).toBeNull();
+  });
+
+  it('lets the connection’s own value win over the env key, deciding the very next request', async () => {
+    putDeliveredConfig(sql, [{ key: REQUIRE_EMAIL_VERIFICATION, value: 'true' }]);
+
+    expect((await passwordConnection({ requireEmailVerification: false })).status).toBe(200);
+    expect(await signUpToken(NEWCOMER)).toBeTruthy();
+
+    expect((await passwordConnection({ requireEmailVerification: true })).status).toBe(200);
+    expect(await signUpToken(OTHER)).toBeNull();
   });
 });

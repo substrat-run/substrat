@@ -1,5 +1,5 @@
 /**
- * The one name the sign-in screen and the issuer share about `REQUIRE_EMAIL_VERIFICATION`.
+ * The one name the sign-in screen and the issuer share about the password connection's "require email verification".
  * Dependency-free on purpose, like the other `*-wire.ts` files: the admin app imports it, and
  * must not compile `auth.ts` to do so.
  */
