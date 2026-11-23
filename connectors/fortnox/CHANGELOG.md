@@ -1,5 +1,18 @@
 # @substrat-run/connector-fortnox
 
+## 0.9.0
+
+### Minor Changes
+
+- f1325d4: The supplier-invoice write-back works in a company that requires approval before booking: the decision lifts its hold, approves the invoice and books it. `FortnoxApi.approveSupplierInvoice` and `fortnoxErrorCode` are new.
+
+### Patch Changes
+
+- f1325d4: `FortnoxMock` refuses `bookkeep` on a cancelled invoice, the way a Fortnox sandbox did (`2000418`).
+- Updated dependencies [188d7a2]
+  - @substrat-run/contracts@0.208.0
+  - @substrat-run/kernel@0.208.0
+
 ## 0.8.5
 
 ### Patch Changes

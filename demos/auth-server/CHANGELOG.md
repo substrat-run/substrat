@@ -1,5 +1,15 @@
 # @substrat-run/demo-auth-server
 
+## 0.19.3
+
+### Patch Changes
+
+- d51de8b: A machine application's Scopes list shows each checkbox beside its scope name, instead of boxes in the middle of the row and wrapped names at the right edge.
+- Updated dependencies [188d7a2]
+  - @substrat-run/contracts@0.208.0
+  - @substrat-run/kernel@0.208.0
+  - @substrat-run/vertical-host@0.208.0
+
 ## 0.19.2
 
 ### Patch Changes

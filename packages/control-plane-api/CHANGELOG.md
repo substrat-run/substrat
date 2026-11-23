@@ -1,5 +1,18 @@
 # @substrat-run/control-plane-api
 
+## 0.208.0
+
+### Minor Changes
+
+- 188d7a2: Platform usage, priced (#3316): the Billing page shows per day what a team's apps used of the platform and what it would cost at the platform's price, by app and live or preview, marked not charged. The console shows staff each tenant's cost, markup and price per day, with its costliest verticals, its preview share and the unattributed residual.
+
+### Patch Changes
+
+- Updated dependencies [188d7a2]
+  - @substrat-run/contracts@0.208.0
+  - @substrat-run/kernel@0.208.0
+  - @substrat-run/control-plane-client@0.9.8
+
 ## 0.207.0
 
 ### Minor Changes
