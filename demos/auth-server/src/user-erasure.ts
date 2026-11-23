@@ -101,10 +101,14 @@ interface VerificationRow {
 const ID_VALUE_KEYS = ['reset-password:', 'account-invite:'];
 /** A key a flow builds from the person's id alone. */
 const ID_KEYS = ['invite-password:', 'phone-enrollment:', 'phone-send:'];
-/** A key a flow builds from the person's id and trailing counters — the id is what precedes them. */
+/**
+ * A key a flow builds from the person's id and trailing counters. The id is compared whole and the
+ * pattern covers only the counters, so no character an id may hold (a colon, a line break) can
+ * shift where it ends: `phone-attempt:a:` followed by `1:5:0` is the person `a:1`, not `a`.
+ */
 const COUNTED_KEYS: [prefix: string, counters: RegExp][] = [
-  ['phone-attempt:', /^(.*):\d+:\d+$/],
-  ['bankid-email-skip:', /^(.*):\d+$/],
+  ['phone-attempt:', /^\d+:\d+$/],
+  ['bankid-email-skip:', /^\d+$/],
 ];
 
 /** The person named in a row's JSON value: a GitHub address step, a BankID email step or order, an OAuth link. */
@@ -122,7 +126,8 @@ function owns(row: VerificationRow, userId: string): boolean {
   if (row.value === userId && ID_VALUE_KEYS.some((prefix) => row.identifier.startsWith(prefix))) return true;
   if (ID_KEYS.some((prefix) => row.identifier === `${prefix}${userId}`)) return true;
   for (const [prefix, counters] of COUNTED_KEYS) {
-    if (row.identifier.startsWith(prefix) && counters.exec(row.identifier.slice(prefix.length))?.[1] === userId) return true;
+    const start = `${prefix}${userId}:`;
+    if (row.identifier.startsWith(start) && counters.test(row.identifier.slice(start.length))) return true;
   }
   return jsonOwner(row.value).includes(userId);
 }

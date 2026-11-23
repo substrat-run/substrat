@@ -260,21 +260,28 @@ describe('an administrator deletes a person who has signed in to an app', () => 
 // has to escape. Ownership must come from each flow's row shape, not from the id looking unique.
 it('erases an imported id by its rows, not by what other rows happen to contain', () => {
   const now = Date.now();
-  for (const id of ['attempt', 'a"b']) {
-    db.prepare("INSERT INTO user (id, name, email, email_verified) VALUES (?, 'Imported', ?, 1)").run(id, `${id.length}@import.test`);
+  for (const [i, id] of ['attempt', 'a"b', 'a\nb'].entries()) {
+    db.prepare("INSERT INTO user (id, name, email, email_verified) VALUES (?, 'Imported', ?, 1)").run(id, `imported-${i}@import.test`);
   }
   const verification = db.prepare('INSERT INTO verification (id, identifier, value, expires_at) VALUES (?, ?, ?, ?)');
   for (const [id, identifier, value] of [
     ['v-reset', 'reset-password:tok', 'attempt'],
     ['keep-attempt', `phone-attempt:${memberId}:5:0`, 'attempt'],
     ['v-quoted', 'github-email:digest-q', JSON.stringify({ userId: 'a"b' })],
+    ['v-newline-attempt', 'phone-attempt:a\nb:5:0', 'attempt'],
+    ['v-newline-skip', 'bankid-email-skip:a\nb:1', 'skipped'],
+    ['keep-other-skip', 'bankid-email-skip:a\nb:2:1', 'skipped'],
   ]) {
     verification.run(id, identifier, value, now + 60_000);
   }
   const sql = sqlExecOf(db);
   eraseUser(sql, 'attempt');
   eraseUser(sql, 'a"b');
-  expect((db.prepare('SELECT id FROM verification').all() as { id: string }[]).map((r) => r.id)).toEqual(['keep-attempt']);
+  eraseUser(sql, 'a\nb');
+  expect((db.prepare('SELECT id FROM verification ORDER BY id').all() as { id: string }[]).map((r) => r.id)).toEqual([
+    'keep-attempt',
+    'keep-other-skip',
+  ]);
 });
 
 describe('the guard rails', () => {
