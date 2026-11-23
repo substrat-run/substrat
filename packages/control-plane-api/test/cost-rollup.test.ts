@@ -39,7 +39,17 @@ const DATASETS: Record<string, { key: string; rows: Row[] }> = {
       sum: { rowsRead: 1, rowsWritten: 2, storageWriteUnits: 0, duration: 0.5 },
     })),
   },
+  containersUsageAdaptiveGroups: {
+    key: 'instanceId',
+    rows: [
+      // Cloudflare answers a label the container was started without as an empty string.
+      { dimensions: { instanceId: 'i-2', applicationId: 'app-1', tenant: '', app: '' }, sum: { cpuTimeSec: 1, allocatedMemory: 2, allocatedDisk: 3, txBytes: 4 } },
+      { dimensions: { instanceId: 'i-1', applicationId: 'app-1', tenant: '01JZ0000000000000000TEN001', app: 'acme/crm' }, sum: { cpuTimeSec: 5, allocatedMemory: 6, allocatedDisk: 7, txBytes: 8 } },
+    ],
+  },
 };
+/** The reader's clock: 2026-11-20 is inside container usage's retention, 2026-10-01 is not. */
+const NOW = () => Date.parse('2026-11-21T12:00:00Z');
 
 function cloudflare(opts: { refuse?: string } = {}) {
   const calls: string[] = [];
@@ -67,8 +77,12 @@ function cloudflare(opts: { refuse?: string } = {}) {
 describe('the cost rollup reader', () => {
   it('reads every page of each dataset, keeps a valid interval only, and lists the namespaces once per reader', async () => {
     const cf = cloudflare();
-    const read = createCloudflareUsageDayReader({ accountId: 'acct', apiToken: 't', fetch: cf.fetch, pageSize: 2 });
+    const read = createCloudflareUsageDayReader({ accountId: 'acct', apiToken: 't', fetch: cf.fetch, pageSize: 2, now: NOW });
     const day = await read('2026-11-20');
+    expect(day.containers).toEqual([
+      { applicationId: 'app-1', instanceId: 'i-1', tenant: '01JZ0000000000000000TEN001', app: 'acme/crm', cpuTimeSec: 5, allocatedMemory: 6, allocatedDisk: 7, txBytes: 8 },
+      { applicationId: 'app-1', instanceId: 'i-2', tenant: null, app: null, cpuTimeSec: 1, allocatedMemory: 2, allocatedDisk: 3, txBytes: 4 },
+    ]);
     expect(day.workers).toEqual([
       { script: 'substrat-router', cpuTimeUs: 99 },
       { script: 'tenant-a-crm', cpuTimeUs: 1500, lower: 1400.5, upper: 1599.5 },
@@ -84,6 +98,14 @@ describe('the cost rollup reader', () => {
       'durableObjectsPeriodicGroups>b',
     ]);
     expect(cf.calls.filter((c) => c === 'namespaces')).toHaveLength(1);
+  });
+
+  it('reads a day older than Cloudflare keeps container usage without it, rather than having the day refused (#3316)', async () => {
+    const cf = cloudflare();
+    const day = await createCloudflareUsageDayReader({ accountId: 'acct', apiToken: 't', fetch: cf.fetch, now: NOW })('2026-10-01');
+    expect(day.containers).toBeUndefined();
+    expect(day.workers).toHaveLength(2);
+    expect(cf.calls.some((c) => c.startsWith('containersUsageAdaptiveGroups'))).toBe(false);
   });
 
   it('fails the day on a GraphQL refusal, rather than reading it as a day without usage', async () => {

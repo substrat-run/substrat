@@ -44,6 +44,8 @@ export const INDEX_VALUE_EXPORTS = [
   // #2732: the live-connection key, owner included, as both adapters build it.
   'CONNECTIONS_LIVE_INDEX',
   'CONNECT_LINKS_DDL',
+  'CONTAINER_OBJECT_CLASS',
+  'CONTAINER_SCRIPT_PREFIX',
   'CONTINUATION_POSITION_CAP',
   'COPY_BACKFILL_SCOPE_SQL',
   'COPY_BACKFILL_SQL',

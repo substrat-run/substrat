@@ -20,7 +20,7 @@ import { tenantId } from './ids.js';
 import { marginFactor } from './model-usage.js';
 import { mulDecimal } from './money.js';
 
-/** The dimensions a tenant is billed on: Cloudflare's, plus model calls and build time. */
+/** The dimensions a tenant is billed on: Cloudflare's, Containers', plus model calls and build time. */
 export const BILLED_DIMENSIONS = [
   'requests',
   'cpu',
@@ -31,6 +31,10 @@ export const BILLED_DIMENSIONS = [
   'storage',
   'model-calls',
   'build-time',
+  'container-cpu',
+  'container-memory',
+  'container-disk',
+  'container-egress',
 ] as const;
 export const billedDimension = z.enum(BILLED_DIMENSIONS);
 export type BilledDimension = z.infer<typeof billedDimension>;

@@ -186,8 +186,9 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
 - **Tenant platform usage** — `GET /tenants/:tenantId/platform-usage` is path-pinned like
   metered usage, and priced: per closed UTC day (`?days=` 1–92, default 30, ending `?until=`,
   default yesterday) what the team's apps used of the platform (rows written and read, storage,
-  requests, CPU, Durable Object requests, duration) and what it would cost at the platform's
-  price, by app and live or preview. It carries the price only, never the platform's cost or
+  requests, CPU, Durable Object requests, duration, and the Containers the platform ran for the
+  team, such as builder sandboxes: CPU, memory, disk and egress) and what it would cost at the
+  platform's price, by app and live or preview. It carries the price only, never the platform's cost or
   markup, and `chargedUsd` is `0`: nothing is charged yet. `state` is `not-read` while the daily
   cost rollup has read no day of the window, `empty` when it has and the team used nothing,
   else `partial` or `complete`; a day not read yet carries nulls, never zeros.

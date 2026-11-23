@@ -38,6 +38,10 @@ const COLUMNS: { key: keyof Quantities; label: string; format: (v: string) => st
   { key: 'requests', label: 'Requests', format: qty },
   { key: 'cpu', label: 'CPU', format: (v) => `${qty(v)} ms` },
   { key: 'doRequests', label: 'DO requests', format: qty },
+  // #3316: builder sandboxes and other platform containers run for the team. Disk and egress are
+  // in the would-cost but kept out of the table: they are a small share of a container's price.
+  { key: 'containerCpu', label: 'Container CPU', format: (v) => `${qty(v)} vCPU-s` },
+  { key: 'containerMemory', label: 'Container memory', format: (v) => `${qty(v)} GiB-s` },
 ];
 /** A kind this dashboard does not know yet is shown as the plane named it, never as live. */
 const kindLabel = (kind: string) => kind === 'preview' ? 'Preview' : kind === 'live' ? 'Live' : kind;
@@ -105,7 +109,7 @@ function DailyCost({ reading, split, names }: { reading: Reading; split: Split; 
  */
 function QuantityTable({ caption, rows, storageDays }: { caption: string; rows: { key: string; label: string; wouldCostUsd: string | null; quantities: Quantities | null }[]; storageDays?: number }) {
   const cell = (c: (typeof COLUMNS)[number], q: Quantities) =>
-    c.key === 'storage' && storageDays ? `${shortBytes(Number(q.storage) / storageDays)} avg` : c.format(q[c.key]);
+    c.key === 'storage' && storageDays ? `${shortBytes(Number(q.storage) / storageDays)} avg` : c.format(q[c.key] ?? '0');
   return (
     <div style={{ overflowX: 'auto' }}>
       <table aria-label={caption} style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
@@ -201,7 +205,7 @@ export function PlatformUsage({ teamId, names }: { teamId: string; names: Vertic
           key: kind,
           label: kindLabel(kind),
           wouldCostUsd: kind === 'live' ? reading.liveWouldCostUsd : reading.previewWouldCostUsd,
-          quantities: of.length === 0 ? null : Object.fromEntries(COLUMNS.map((c) => [c.key, String(of.reduce((n, a) => n + Number(a.quantities[c.key]), 0))])) as Quantities,
+          quantities: of.length === 0 ? null : Object.fromEntries(COLUMNS.map((c) => [c.key, String(of.reduce((n, a) => n + Number(a.quantities[c.key] ?? '0'), 0))])) as Quantities,
         };
       }).filter((row) => row.quantities !== null)
       : reading.apps.map((a) => ({ key: `${a.vertical}:${a.kind}`, label: `${appLabel(names, a.vertical)}${a.kind === 'preview' ? ' · preview' : ''}`, wouldCostUsd: a.wouldCostUsd, quantities: a.quantities }));

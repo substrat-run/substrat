@@ -1243,6 +1243,8 @@ export {
   recordScopeObjectRow,
   scopeObjectsDueRows,
   sumCostDayRows,
+  CONTAINER_OBJECT_CLASS,
+  CONTAINER_SCRIPT_PREFIX,
   type CostDayFilter,
   type CostDayTotal,
   type CostDayTotals,

@@ -2392,6 +2392,11 @@ export const costQuantity = z.string().regex(/^\d+(\.\d{1,6})?$/);
  * - `do_rows_read`, `do_rows_written`, `do_storage_write_units`, `do_duration_gb_s` (duration in
  *   GB-s, the billed figure; active time is not kept beside it): `durableObjectsPeriodicGroups`, an
  *   aggregate, not a sample.
+ * - `container_cpu_s` (vCPU-seconds of active CPU), `container_memory_gib_s` and
+ *   `container_disk_gb_s` (provisioned, while the container runs), `container_egress_bytes`:
+ *   `containersUsageAdaptiveGroups`, the figures Cloudflare bills Containers on, per instance.
+ *   Memory and disk are converted from the byte-seconds Cloudflare reports to the units it prices
+ *   them in (GiB-s and GB-s), so no stored figure outgrows a safe integer.
  */
 export const costDimension = z.enum([
   'worker_cpu_us',
@@ -2400,6 +2405,10 @@ export const costDimension = z.enum([
   'do_rows_written',
   'do_storage_write_units',
   'do_duration_gb_s',
+  'container_cpu_s',
+  'container_memory_gib_s',
+  'container_disk_gb_s',
+  'container_egress_bytes',
 ]);
 export type CostDimension = z.infer<typeof costDimension>;
 
@@ -2413,10 +2422,14 @@ export type CostDimension = z.infer<typeof costDimension>;
  * - `unmapped`: an object in a vertical's script whose id names no scope the directory recorded:
  *   a ConfigDO, IdentityDO or SweeperDO, a scope reaped before its id was recorded, or one not
  *   recorded yet. Reported apart, with no tenant: whose it is is not guessed.
- * - `platform`: the platform's own scripts (the router, the control plane, store and connector scripts).
- * - `unknown`: a script the directory has no vertical for (another environment's, or a deleted one).
+ * - `platform`: the platform's own scripts (the router, the control plane, store and connector
+ *   scripts), and a container started with no tenant label.
+ * - `unknown`: a script the directory has no vertical for (another environment's, or a deleted one),
+ *   or a container whose tenant label is not a tenant id.
+ * - `container`: a Cloudflare Container the platform labelled with the tenant it ran for
+ *   (`CONTAINER_TENANT_LABEL`), such as a builder sandbox: charged to that tenant.
  */
-export const costAttribution = z.enum(['scope', 'script', 'unmapped', 'platform', 'unknown']);
+export const costAttribution = z.enum(['scope', 'script', 'unmapped', 'platform', 'unknown', 'container']);
 export type CostAttribution = z.infer<typeof costAttribution>;
 
 /**
@@ -2501,6 +2514,30 @@ export const cloudflareUsageDay = z.object({
   ),
   /** Which script and class each namespace belongs to, from Cloudflare's namespace list. May be partial. */
   namespaces: z.array(z.object({ id: z.string().min(1), script: z.string().min(1).nullable(), class: z.string().min(1).nullable() })),
+  /**
+   * `containersUsageAdaptiveGroups`, per (application, instance) with the labels the platform set
+   * at start. Absent for a day read before Containers were, or older than Cloudflare keeps
+   * container usage (`CONTAINER_USAGE_RETENTION_DAYS`): a day without it says nothing of containers.
+   */
+  containers: z
+    .array(
+      z.object({
+        applicationId: z.string().min(1),
+        instanceId: z.string().min(1),
+        /** The `CONTAINER_TENANT_LABEL` value; null when the container was started without one. */
+        tenant: z.string().min(1).nullable(),
+        /** The `CONTAINER_APP_LABEL` value; null when there was none. */
+        app: z.string().min(1).nullable(),
+        /** vCPU-seconds of active CPU. */
+        cpuTimeSec: z.number().nonnegative(),
+        /** Provisioned memory, byte-seconds. */
+        allocatedMemory: z.number().nonnegative(),
+        /** Provisioned disk, byte-seconds. */
+        allocatedDisk: z.number().nonnegative(),
+        txBytes: z.number().nonnegative(),
+      }),
+    )
+    .optional(),
 });
 export type CloudflareUsageDay = z.infer<typeof cloudflareUsageDay>;
 

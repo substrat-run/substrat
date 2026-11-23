@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RUNTIME_BASELINE } from '@substrat-run/contracts';
 import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
+import { PLATFORM_SECRET_HEADER } from '@substrat-run/contracts/wire-headers';
 import {
   importWireSigningKey,
   signWireEnvelope,
@@ -344,7 +345,7 @@ describe('the wire-signing verifier in the platform entry, on workerd (RFC wire-
     const body = JSON.stringify({ note: 'é'.repeat(1000) });
     const call = await signWireRequest(
       platform,
-      new Request('https://vertical/internal/query', { method: 'POST', headers: { 'x-substrat-platform': CALL_VALUE }, body }),
+      new Request('https://vertical/internal/query', { method: 'POST', headers: { [PLATFORM_SECRET_HEADER]: CALL_VALUE }, body }),
       { iss: 'platform', kind: 'call', aud: AUD },
     );
     const callRes = await d.mf.dispatchFetch(call.url, { method: 'POST', headers: Object.fromEntries(call.headers), body: await call.text() });
@@ -520,5 +521,57 @@ describe('the platform entry records a vertical’s outbound calls, on workerd (
     const body = run.body as unknown as { statuses: number[]; outboundCalls: unknown };
     expect(body.statuses).toEqual([200, 403, 200]);
     expect(body.outboundCalls).toBeNull();
+  });
+});
+
+/**
+ * #3316: a vertical built before vertical-host answered `/internal/scope-object-id` (and every
+ * preview fork of one) gives the scope-object phase a 404, so its objects stayed `unmapped`. The
+ * entry names the object from the scope namespace instead; the id is a fact about workerd's
+ * `idFromName` in THIS script's namespace, which only a real namespace answers.
+ */
+describe('the platform entry names a scope’s object for a vertical that cannot, on workerd (#3316)', () => {
+  const CALL_VALUE = 'call-legacy-value-3316';
+  const SCOPE_ID = '01JZ0000000000000000SCP316';
+  const OWN = 'a'.repeat(64);
+  /** No route of its own, unless asked for one with `?own`; a scope store class bound as SCOPE. */
+  const LEGACY = `
+export class ScopeDO { async fetch() { return new Response('ok'); } }
+export default {
+  async fetch(request) {
+    if (new URL(request.url).searchParams.has('own')) return Response.json({ objectId: ${JSON.stringify(OWN)} });
+    return new Response('no such route', { status: 404 });
+  },
+};`;
+  let mf: Miniflare;
+  beforeAll(() => {
+    mf = deployed(LEGACY, {
+      bindings: { PLATFORM_SECRET: CALL_VALUE },
+      durableObjects: { SCOPE: { className: 'ScopeDO', useSQLite: true } },
+    }).mf;
+  });
+  const ask = (query: string, headers: Record<string, string> = { [PLATFORM_SECRET_HEADER]: CALL_VALUE }) =>
+    mf.dispatchFetch(`https://acme.example/internal/scope-object-id?${query}`, { headers });
+
+  it('answers the id the scope namespace derives, which the vertical could not', async () => {
+    const res = await ask(`scopeId=${SCOPE_ID}`);
+    expect(res.status).toBe(200);
+    const expected = (await mf.getDurableObjectNamespace('SCOPE')).idFromName(SCOPE_ID).toString();
+    expect(await res.json()).toEqual({ objectId: expected });
+  });
+
+  it.each([
+    ['no platform credential', `scopeId=${SCOPE_ID}`, {}],
+    ['a wrong platform credential', `scopeId=${SCOPE_ID}`, { [PLATFORM_SECRET_HEADER]: 'not-it' }],
+    ['a scope id that is no ULID', 'scopeId=nope', undefined],
+  ])('with %s the vertical’s own answer stands', async (_, query, headers) => {
+    const res = await ask(query, headers);
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('no such route');
+  });
+
+  it('a vertical that names its object keeps its own answer', async () => {
+    const res = await ask(`scopeId=${SCOPE_ID}&own`);
+    expect(await res.json()).toEqual({ objectId: OWN });
   });
 });

@@ -2,6 +2,7 @@ import {
   CONNECTOR_SCRIPT_PREFIX,
   PLATFORM_SCRIPT_NAMES,
   SCOPE_STORE_SCRIPT_PREFIX,
+  ULID_PATTERN,
   addDecimal,
   cloudflareUsageDay,
   costDay,
@@ -191,6 +192,12 @@ interface ScriptInfo {
 }
 
 const ULID_SUFFIX = /^(.+)-([0-9a-hjkmnp-tv-z]{26})$/;
+/** A container row's `script`: its Containers application, which is not a Worker script. */
+export const CONTAINER_SCRIPT_PREFIX = 'container:';
+/** A container row's `objectClass`; its `objectId` is the container instance. */
+export const CONTAINER_OBJECT_CLASS = 'Container';
+const GIB = 1024 ** 3;
+const GB = 1_000_000_000;
 
 /** Which vertical, version and owner a script is, by the directory alone. */
 function scriptInfoOf(script: string, dir: CostDirectory): ScriptInfo {
@@ -316,8 +323,32 @@ export function attributeCostDay(usage: CloudflareUsageDay, dir: CostDirectory):
     add(row, 'do_storage_write_units', o.storageWriteUnits);
     add(row, 'do_duration_gb_s', o.duration);
   }
+
+  // Containers (#3316): Cloudflare names an application and an instance, never a tenant, so the
+  // label the platform set at start is the only attribution there is. A container with no label is
+  // the platform's own; one whose label is not a tenant id is reported apart, never guessed at.
+  for (const c of usage.containers ?? []) {
+    const tenant = c.tenant !== null && ULID_PATTERN.test(c.tenant) ? (c.tenant as TenantId) : null;
+    const row = {
+      script: `${CONTAINER_SCRIPT_PREFIX}${c.applicationId}`,
+      scopeId: null,
+      objectClass: CONTAINER_OBJECT_CLASS,
+      objectId: c.instanceId,
+      attribution: tenant !== null ? ('container' as const) : c.tenant === null ? ('platform' as const) : ('unknown' as const),
+      tenantId: tenant,
+      vertical: tenant !== null ? c.app : null,
+      kind: 'live' as const,
+      versionId: null,
+      previewTag: null,
+    };
+    add(row, 'container_cpu_s', c.cpuTimeSec);
+    add(row, 'container_memory_gib_s', c.allocatedMemory / GIB);
+    add(row, 'container_disk_gb_s', c.allocatedDisk / GB);
+    add(row, 'container_egress_bytes', c.txBytes);
+  }
   return [...byKey.values()];
 }
+
 
 /**
  * The directory as attribution reads it for `day`: every recorded object, every vertical and

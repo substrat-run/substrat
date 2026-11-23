@@ -5,6 +5,9 @@ import { stableDeploymentRefFor } from './deploy.js';
 import { aggregateReads } from './aggregate-reads.js';
 import { serviceFamilyPattern } from './service-family.js';
 import {
+  CONTAINER_APP_LABEL,
+  CONTAINER_TENANT_LABEL,
+  CONTAINER_USAGE_RETENTION_DAYS,
   ENTITY_TYPES_SEPARATOR,
   FIELD_COVERAGE_ID_FIELD,
   PLATFORM_SECRET_HEADER,
@@ -2400,6 +2403,12 @@ type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
  * - `durableObjectsPeriodicGroups` per (namespace, object): rows read and written, storage write
  *   units, duration in GB-s (an aggregate, not a sample).
  *
+ * And, for a day Cloudflare still keeps container usage for (`CONTAINER_USAGE_RETENTION_DAYS`,
+ * far fewer than the other datasets' 90), `containersUsageAdaptiveGroups` per (application,
+ * instance): vCPU-seconds, provisioned memory and disk in byte-seconds, bytes sent, with the
+ * tenant and app labels the platform set when it started the container (`containerLabels`). An
+ * older day is read without them: asking would refuse the whole day.
+ *
  * Plus Cloudflare's namespace list, which is the only thing that says which class a namespace
  * holds, so a ScopeDO is told from a ConfigDO, IdentityDO or SweeperDO. It is read once per reader,
  * and the sweep builds one reader per pass, so a pass that reads several days lists it once.
@@ -2415,7 +2424,10 @@ export function createCloudflareUsageDayReader(opts: {
   fetch?: FetchFn;
   /** Rows per GraphQL page. Default `COST_USAGE_PAGE`, Cloudflare's ceiling; a test pages with fewer. */
   pageSize?: number;
+  /** The clock container usage's retention is judged against. `Date.now` otherwise. */
+  now?: () => number;
 }): (day: string) => Promise<CloudflareUsageDay> {
+  const now = opts.now ?? Date.now;
   const pageSize = opts.pageSize ?? COST_USAGE_PAGE;
   const send: FetchFn = opts.fetch ?? ((input, init) => fetch(input, init));
   const headers = { authorization: `Bearer ${opts.apiToken}`, 'content-type': 'application/json' };
@@ -2492,6 +2504,7 @@ export function createCloudflareUsageDayReader(opts: {
     if (!ci || ci.isValid !== true || typeof ci.lower !== 'number' || typeof ci.upper !== 'number') return {};
     return { lower: Math.max(0, ci.lower), upper: Math.max(0, ci.upper) };
   };
+  const label = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null);
   const at = (row: Record<string, unknown>, ...path: string[]): unknown =>
     path.reduce<unknown>((v, k) => (v && typeof v === 'object' ? (v as Record<string, unknown>)[k] : undefined), row);
 
@@ -2517,6 +2530,18 @@ export function createCloudflareUsageDayReader(opts: {
       'sum { rowsRead rowsWritten storageWriteUnits duration } dimensions { namespaceId objectId }',
       day,
     );
+    // Cloudflare refuses a container read reaching further back than it keeps them, so an older
+    // day is read without the dataset, never refused for it.
+    const oldestContainerDay = new Date(now() - CONTAINER_USAGE_RETENTION_DAYS * 86_400_000).toISOString().slice(0, 10);
+    const containers =
+      day >= oldestContainerDay
+        ? await pages(
+            'containersUsageAdaptiveGroups',
+            'instanceId',
+            `sum { cpuTimeSec allocatedMemory allocatedDisk txBytes } dimensions { instanceId applicationId tenant: label(name: "${CONTAINER_TENANT_LABEL}") app: label(name: "${CONTAINER_APP_LABEL}") }`,
+            day,
+          )
+        : null;
     namespaces ??= listNamespaces().catch((err: unknown) => {
       // A failed list is not kept: the next day's read asks again.
       namespaces = undefined;
@@ -2544,6 +2569,21 @@ export function createCloudflareUsageDayReader(opts: {
         duration: num(at(r, 'sum', 'duration')),
       })),
       namespaces: await namespaces,
+      ...(containers === null
+        ? {}
+        : {
+            containers: containers.map((r) => ({
+              applicationId: String(at(r, 'dimensions', 'applicationId') ?? ''),
+              instanceId: String(at(r, 'dimensions', 'instanceId') ?? ''),
+              // Cloudflare answers an absent label as an empty string.
+              tenant: label(at(r, 'dimensions', 'tenant')),
+              app: label(at(r, 'dimensions', 'app')),
+              cpuTimeSec: num(at(r, 'sum', 'cpuTimeSec')),
+              allocatedMemory: num(at(r, 'sum', 'allocatedMemory')),
+              allocatedDisk: num(at(r, 'sum', 'allocatedDisk')),
+              txBytes: num(at(r, 'sum', 'txBytes')),
+            })),
+          }),
     });
   };
 }
