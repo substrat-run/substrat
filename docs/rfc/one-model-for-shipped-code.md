@@ -390,8 +390,8 @@ Worker can carry. That was not tried here. What is not known is how an instance 
 platform changes the script under it. A push replaces the serving script in place (K-33), so an
 instance started on one version wakes on another version's code. A preview runs on an archive
 script against a copy that must stay inert
-([#2005](https://github.com/substrat-run/substrat/issues/2005)). Phase 1's spike answers both, and
-the candidate is dropped if it cannot. Also uncertain is who a step acts as after a long wait.
+([#2005](https://github.com/substrat-run/substrat/issues/2005)). Phase 1's spike tests both, and
+the candidate stays or is dropped on the rule §8 gives for that spike. Also uncertain is who a step acts as after a long wait.
 *Lean:* it runs as the app, and a step needing a person's right is an approval step a person takes.
 
 **7.7 The home scope as the one place for tenant data.** It takes one call at a time, so everything
@@ -458,8 +458,16 @@ when it has answered four questions:
   ([#1710](https://github.com/substrat-run/substrat/issues/1710))?
 - **Cost.** What does an instance that sleeps or waits for weeks cost?
 
-If an instance in flight cannot be made to behave predictably across a push, Workflows is no
-longer the default. The engine is then the step journal in the scope on both hosts.
+This is the one rule for whether Workflows stays the default. It stays only if the spike shows both
+of the following:
+
+- An instance in flight behaves predictably across a push. It either resumes on the new code with
+  defined results, or it is held on its version or drained first.
+- An instance started on a preview stays tied to the archive script and its copy, and its steps are
+  inert there.
+
+Otherwise, Workflows is no longer the default, and that includes a question the spike cannot
+answer. The engine is then the step journal in the scope on both hosts.
 
 **Phase 2: one edge.** The dependency enters the manifest and replaces the separate declarations.
 Push and install check against consumers. A peer call can name a scope, and calls as the person
