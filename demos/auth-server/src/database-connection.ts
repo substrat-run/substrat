@@ -26,7 +26,6 @@ const CONFIG_KEY = 'connection:password';
 
 const stored = z.object({
   requireEmailVerification: z.boolean().optional(),
-  updatedAt: z.number().optional(),
 });
 type StoredDatabaseConnection = z.infer<typeof stored>;
 
@@ -75,9 +74,8 @@ export function databaseConnectionSettings(
 export function putDatabaseConnection(
   sql: SqlExec,
   patch: { requireEmailVerification?: boolean },
-  now = Date.now(),
 ): void {
-  const next: StoredDatabaseConnection = { ...readStored(sql), updatedAt: now };
+  const next: StoredDatabaseConnection = { ...readStored(sql) };
   if (patch.requireEmailVerification !== undefined) next.requireEmailVerification = patch.requireEmailVerification;
   sql.exec('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', CONFIG_KEY, JSON.stringify(next));
 }
