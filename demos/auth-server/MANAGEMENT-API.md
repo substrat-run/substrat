@@ -14,7 +14,7 @@ find a difference that is not in it, that is a bug.
 
 Nothing is served until an operator opts in, in two steps:
 
-1. Add `read:users` to the issuer's `MACHINE_SCOPES` setting. That is the ceiling on what any
+1. Add `read:users` (and, for the page template, `read:branding`, `update:branding`, `delete:branding`) to the issuer's `MACHINE_SCOPES` setting. That is the ceiling on what any
    machine client may hold, and without it no token can read anyone.
 2. In the console, register a **machine** application and give it `read:users`.
 
@@ -50,6 +50,9 @@ With `node-auth0`, that is
 | `GET /api/v2/users-by-email` | `read:users` | `email` (required), `fields`, `include_fields`. Exact match, as Auth0's own database connections behave: addresses are stored lowercased. |
 | `GET /api/v2/users/{id}` | `read:users` | `fields`, `include_fields`. |
 | `GET /api/v2/users/{id}/x-client-activity` | `read:users` | **Extension, not Auth0.** See below. |
+| `GET /api/v2/branding/templates/universal-login` | `read:branding` | `{ "body": "…" }`, or 404 `Template does not exist.` See [`PAGE-TEMPLATES.md`](PAGE-TEMPLATES.md). |
+| `PUT /api/v2/branding/templates/universal-login` | `update:branding` | `{ "template": "…" }`, a bare JSON string, a form, or `text/html`. 201 when created, 204 when replaced. |
+| `DELETE /api/v2/branding/templates/universal-login` | `delete:branding` | 204. The screens go back to the built-in page. |
 
 Any other method or path under `/api/v2` answers `501` with `errorCode: "not_implemented"`,
 naming what was asked for.
@@ -90,7 +93,9 @@ tokens has no time until its next sign-in.
 | The token's `sub` is `{client_id}@clients`, and it carries `gty: "client-credentials"`. | `sub` is the client id, with `azp` and `client_id` beside it, and there is no `gty`. Typed `at+jwt` (RFC 9068). | The issuer's token format. A client that only sends the token never sees this. |
 | The token response carries `access_token`, `token_type`, `expires_in`, `scope`. | Also `expires_at`. | An extra field; Auth0 clients ignore it. |
 | User-scoped Management API tokens (`read:current_user`, …). | Not accepted. Only a `client_credentials` token is. | Not served. |
-| Any Management API scope. | `read:users` only. | The subset. |
+| Any Management API scope. | `read:users`, `read:branding`, `update:branding`, `delete:branding`. | The subset. |
+| `PUT /api/v2/branding/templates/universal-login` answers 402 on a plan without the feature, and 409 on a concurrent update. | Neither: every install has it, and the last write wins. | |
+| A page template is checked for its two tags and its syntax. | Also rendered for every screen in both languages; a template that fails on any of them is a 400 naming the screen. | Stricter, so a saved template cannot lock anyone out. See [`PAGE-TEMPLATES.md`](PAGE-TEMPLATES.md). |
 | `X-RateLimit-*` headers. | None. | Not served. |
 | A `private_key_jwt` assertion's `aud` is `https://<domain>/oauth/token`. | Its `aud` must be the issuer's own token endpoint, as discovery names it. | `/oauth/token` passes the assertion through unchanged. |
 | A client secret is accepted in the body or as HTTP Basic, whatever the application. | Also both: the console registers machine clients for HTTP Basic, and `/oauth/token` turns a secret posted in the body into that header. The issuer's own `/api/auth/oauth2/token` holds a client to its registered method. | Compatible at `/oauth/token`. |

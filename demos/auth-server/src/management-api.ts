@@ -5,6 +5,8 @@ import type { SqlExec } from './introspect.js';
 import { ensureMachineResource, machineCaller, machineTokenVerifier, type MachineCallerDeps } from './machine-caller.js';
 import { isPlaceholderAddress } from './placeholder-address.js';
 import { readActivity, readClientActivity } from './user-activity.js';
+import { readPageTemplate } from './page-template.js';
+import { removeTemplate, saveTemplate, templateFromBody } from './page-template-api.js';
 
 /**
  * A STRICT SUBSET of the Auth0 Management API v2 (#3107), so an operator's own app can ask this
@@ -33,7 +35,7 @@ import { readActivity, readClientActivity } from './user-activity.js';
  */
 
 /** The scopes this subset understands, in Auth0's names. A ceiling entry is what enables each. */
-export const MANAGEMENT_API_SCOPES = ['read:users'] as const;
+export const MANAGEMENT_API_SCOPES = ['read:users', 'read:branding', 'update:branding', 'delete:branding'] as const;
 type ManagementScope = (typeof MANAGEMENT_API_SCOPES)[number];
 
 /** Auth0's Management API audience for an issuer: `https://{domain}/api/v2/`, trailing slash and all. */
@@ -155,7 +157,7 @@ export function managementTokenVerifier(
 
 export type ManagementApiDeps = MachineCallerDeps;
 
-type Env = { Variables: { scopes: readonly string[] } };
+type Env = { Variables: { scopes: readonly string[]; clientId: string } };
 
 /** Auth0's error body. `errorCode` is present wherever Auth0 sends one. */
 function auth0Error(c: Context, status: ContentfulStatusCode, message: string, errorCode?: string): Response {
@@ -323,6 +325,7 @@ export function createManagementApi(deps: ManagementApiDeps): Hono<Env> {
     const caller = await machineCaller(deps, match[1]);
     if ('refused' in caller) return auth0Error(c, 401, caller.refused);
     c.set('scopes', caller.scopes);
+    c.set('clientId', caller.clientId);
     await next();
   });
 
@@ -371,6 +374,38 @@ export function createManagementApi(deps: ManagementApiDeps): Hono<Env> {
         last_token_at: iso(a.lastTokenAt),
       })),
     });
+  });
+
+  /*
+   * The page template (#3350, `page-template.ts`): Auth0's three verbs on
+   * /api/v2/branding/templates/universal-login, with its scopes, bodies, statuses and messages.
+   * Auth0 answers 402 on a plan without the feature; every install here has it.
+   */
+  const TEMPLATE_PATH = '/branding/templates/universal-login';
+
+  api.get(TEMPLATE_PATH, (c) => {
+    const refused = requireScope(c, 'read:branding') ?? refuseQuery(c, []);
+    if (refused) return refused;
+    const template = readPageTemplate(deps.sql);
+    if (template === null) return auth0Error(c, 404, 'Template does not exist.');
+    return c.json({ body: template });
+  });
+
+  api.put(TEMPLATE_PATH, async (c) => {
+    const refused = requireScope(c, 'update:branding') ?? refuseQuery(c, []);
+    if (refused) return refused;
+    const parsed = templateFromBody(c.req.header('content-type'), await c.req.text());
+    if ('error' in parsed) return auth0Error(c, 400, parsed.error, 'invalid_body');
+    const saved = await saveTemplate(deps.sql, parsed.template, { client: c.get('clientId') });
+    if ('problems' in saved) return auth0Error(c, 400, saved.problems.join(' '), 'invalid_body');
+    return c.body(null, saved.outcome === 'created' ? 201 : 204);
+  });
+
+  api.delete(TEMPLATE_PATH, (c) => {
+    const refused = requireScope(c, 'delete:branding') ?? refuseQuery(c, []);
+    if (refused) return refused;
+    removeTemplate(deps.sql, { client: c.get('clientId') });
+    return c.body(null, 204);
   });
 
   // Everything else Auth0 serves under /api/v2 is not served here, and says so by name.

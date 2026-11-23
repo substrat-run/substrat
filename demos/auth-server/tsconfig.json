@@ -21,6 +21,7 @@
     "src/assets.ts",
     "src/assets.generated.ts",
     "test/internal-surface.test.ts",
+    "test/page-template-routes.test.ts",
     // test/workerd runs inside workerd, not node — its own project (tsconfig.workerd-test.json).
     "test/workerd"
   ]

@@ -29,6 +29,7 @@ import { translate } from '../../src/messages.js';
 import { themeTitle } from '../../src/theme-wire.js';
 import type { Locale } from '../../src/locale-wire.js';
 import { applyClientTheme, paintHandOff } from './theme-apply';
+import { insideTemplate, previewScreen } from './auth/page-template-mode';
 
 // The console is its own chunk. Everyone a relying party sends to /login downloads this
 // bundle, and none of them will ever see the operator's screens — so the shell, the views
@@ -113,6 +114,27 @@ export default function App() {
       setTheme(issuer);
       settleLocale(defaultLocale, issuer.languages);
     };
+    // The console editor's preview of a page template: the screen it names, drawn with the
+    // issuer's theme and stand-in data, since a preview has no authorize request, reset token or
+    // invitation of its own. Nothing it draws is submitted anywhere that matters: the consent
+    // and reset forms answer for requests that do not exist.
+    const preview = previewScreen();
+    if (preview) {
+      const { signupEnabled, providers } = await setupState();
+      const { theme: issuer, defaultLocale, signIn } = await clientOptions(null, providers);
+      applyClientTheme(issuer);
+      setTheme(issuer);
+      settleLocale(defaultLocale, issuer.languages);
+      const signin: SignInPhase = { t: 'signin', signupEnabled, oauthQuery: null, signIn, socialError: null, loginHint: null, signUpClosed: false };
+      switch (preview) {
+        case 'signup': return setPhase({ t: 'signup', forOidc: false, oauthQuery: null, loginHint: null, signin });
+        case 'consent': return setPhase({ t: 'consent', request: { oauthQuery: '', clientId: 'example-client', scopes: ['openid', 'profile', 'email'] } });
+        case 'reset-password': return setPhase({ t: 'reset', token: 'preview' });
+        case 'accept-invitation': return setPhase({ t: 'invitation', recovery: { phase: 'accept', token: 'preview' } });
+        case 'github-email': return setPhase({ t: 'github-email' });
+        default: return setPhase(signin);
+      }
+    }
     if (url.pathname === '/github-email') {
       await paintWithoutClient();
       return setPhase({ t: 'github-email' });
@@ -202,6 +224,9 @@ export default function App() {
     if (url.pathname === '/signup' || url.pathname === '/login') return signInOrUp();
 
     if (!session) return signInOrUp();
+    // The console is never drawn inside a page template: a hosted path that falls through to it
+    // (a reset link with no token, opened while signed in) goes to the console's own page.
+    if (insideTemplate()) return window.location.replace('/');
     setPhase(session.role === 'admin' ? { t: 'dashboard', session } : { t: 'not-admin', session });
   }, []);
 
