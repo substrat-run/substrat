@@ -448,6 +448,19 @@ export function recordCostDayRows(sql: RedactionSql, input: CostDayReadInput): n
   if (usage.day !== day) throw new Error(`the usage is for ${usage.day}, not ${day}`);
   const rows = attributeCostDay(usage, readCostDirectory(sql, day)).map((r) => costDay.parse(r));
   sql('DELETE FROM _substrat_cost_days WHERE day = ?', [day]);
+  insertCostRows(sql, day, rows);
+  sql(
+    `INSERT INTO _substrat_cost_day_reads (day, attempted_at, read_at, row_count, error, failing_since, failing_count)
+     VALUES (?, ?, ?, ?, NULL, NULL, NULL)
+     ON CONFLICT (day) DO UPDATE SET
+       attempted_at = excluded.attempted_at, read_at = excluded.read_at, row_count = excluded.row_count,
+       error = NULL, failing_since = NULL, failing_count = NULL`,
+    [day, attemptedAt, attemptedAt, rows.length],
+  );
+  return rows.length;
+}
+
+function insertCostRows(sql: RedactionSql, day: string, rows: readonly CostDay[]): void {
   for (const r of rows) {
     sql(
       `INSERT INTO _substrat_cost_days
@@ -472,15 +485,39 @@ export function recordCostDayRows(sql: RedactionSql, input: CostDayReadInput): n
       ],
     );
   }
-  sql(
-    `INSERT INTO _substrat_cost_day_reads (day, attempted_at, read_at, row_count, error, failing_since, failing_count)
-     VALUES (?, ?, ?, ?, NULL, NULL, NULL)
-     ON CONFLICT (day) DO UPDATE SET
-       attempted_at = excluded.attempted_at, read_at = excluded.read_at, row_count = excluded.row_count,
-       error = NULL, failing_since = NULL, failing_count = NULL`,
-    [day, attemptedAt, attemptedAt, rows.length],
-  );
-  return rows.length;
+}
+
+/** One day's container usage for `recordCostContainerRows`: the rows `CloudflareUsageDay.containers` carries. */
+export interface CostContainersInput {
+  day: string;
+  containers: NonNullable<CloudflareUsageDay['containers']>;
+}
+
+/**
+ * What `recordCostContainerRows` did: the rows it added, or why it added none. `not-read`: the
+ * rollup has not read the day, and will read its containers itself. `already-recorded`: the day
+ * has container rows, from its own read or an earlier backfill.
+ */
+export type CostContainersResult = { recorded: number } | { refused: 'not-read' | 'already-recorded' };
+
+/**
+ * Add a day's container rows to a day the rollup read before it read Containers (#3316), from a
+ * snapshot taken while Cloudflare still kept them. Never touches the day's other rows, and never a
+ * day it would read itself. Attribution is `attributeCostDay`'s, so a loaded row and a read one
+ * cannot differ; the day's `row_count` grows by what was added.
+ */
+export function recordCostContainerRows(sql: RedactionSql, input: CostContainersInput): CostContainersResult {
+  const day = assertUtcDay('day', input.day);
+  const read = sql('SELECT read_at FROM _substrat_cost_day_reads WHERE day = ?', [day]) as { read_at: string | null }[];
+  if (read[0]?.read_at == null) return { refused: 'not-read' };
+  const held = sql('SELECT 1 FROM _substrat_cost_days WHERE day = ? AND object_class = ? LIMIT 1', [day, CONTAINER_OBJECT_CLASS]);
+  if (held.length > 0) return { refused: 'already-recorded' };
+  const usage = cloudflareUsageDay.parse({ day, workers: [], doInvocations: [], doObjects: [], namespaces: [], containers: input.containers });
+  const empty: CostDirectory = { objects: new Map(), slugByScript: new Map(), versionByScript: new Map(), versionById: new Map(), ownerBySlug: new Map(), liveScripts: new Set() };
+  const rows = attributeCostDay(usage, empty).map((r) => costDay.parse(r));
+  insertCostRows(sql, day, rows);
+  sql('UPDATE _substrat_cost_day_reads SET row_count = COALESCE(row_count, 0) + ? WHERE day = ?', [rows.length, day]);
+  return { recorded: rows.length };
 }
 
 interface CostDayRow {

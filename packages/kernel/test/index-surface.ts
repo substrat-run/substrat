@@ -716,6 +716,7 @@ export const INDEX_VALUE_EXPORTS = [
   'recordAttachmentText',
   'recordAuditOutcome',
   'recordConnectorCall',
+  'recordCostContainerRows',
   'recordCostDayRows',
   'recordMeterDayRows',
   'recordOrphanSweepLicence',

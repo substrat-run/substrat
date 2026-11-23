@@ -203,7 +203,9 @@ app.all('/internal/*', async (c) => {
 	if (buildRead && !isBuildId(buildRead[1]!)) return refuse(400, 'invalid build id');
 	// The open chat branches of one of this tenant's projects (`GET /verticals/:slug/changes`).
 	const changesRead = c.req.method === 'GET' && path === '/internal/changes';
-	if (path !== '/internal/build' && path !== '/internal/projects' && !changesRead && !buildRead) return refuse(404, 'not found');
+	// The team's Sandbox objects, for the cost rollup's container backfill (#3316).
+	const sandboxObjectsRead = c.req.method === 'GET' && path === '/internal/sandbox-objects';
+	if (path !== '/internal/build' && path !== '/internal/projects' && !changesRead && !buildRead && !sandboxObjectsRead) return refuse(404, 'not found');
 	const url = new URL(c.req.url);
 	if (path === '/internal/projects') url.pathname = '/api/projects';
 	const request = new Request(url, c.req.raw);

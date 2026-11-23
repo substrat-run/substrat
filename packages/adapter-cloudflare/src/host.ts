@@ -612,6 +612,8 @@ import {
   type CostDayTotals,
   type CostDayTotalsFilter,
   type CostDayReadInput,
+  type CostContainersInput,
+  type CostContainersResult,
   type CostRollupDayFilter,
   type ScopeObjectReadInput,
   type ScopeObjectTarget,
@@ -1156,6 +1158,7 @@ interface ControlPlaneStub {
   pruneRequestDays(limit: number, retentionMonths: number | null): Promise<number>;
   /** #3316: the daily Cloudflare cost rollup and the scope-object ledger — kernel `cost-rollup.ts`. */
   recordCostDay(input: CostDayReadInput): Promise<{ recorded: number }>;
+  recordCostContainers(input: CostContainersInput): Promise<CostContainersResult>;
   listCostDays(filter?: CostDayFilter): Promise<CostDay[]>;
   listCostRollupDays(filter?: CostRollupDayFilter): Promise<RequestRollupDay[]>;
   sumCostDays(filter: CostDayTotalsFilter): Promise<CostDayTotals>;
@@ -11466,6 +11469,7 @@ export class CloudflareScopeHost implements ScopeHost {
       pruneRequestDays: async (_actor, limit: number, retentionMonths: number | null) =>
         this.cp.pruneRequestDays(assertRowLimit('limit', limit), retentionMonths),
       recordCostDay: async (_actor, input: CostDayReadInput) => this.cp.recordCostDay(input),
+      recordCostContainers: async (_actor, input: CostContainersInput) => this.cp.recordCostContainers(input),
       listCostDays: async (actor, filter?: CostDayFilter) => {
         const rows = (await this.cp.listCostDays(filter)).map((r) => costDay.parse(r));
         await this.recordAccess(

@@ -1,5 +1,6 @@
 import { addDecimal, sourceBuildRequest, type SourceBuildRequest, type SourceBuildService, type BuiltSource, type VerticalChange, type VerticalChanges } from '@substrat-run/contracts';
 import type { BuilderTurnsService } from './builder-turns.js';
+import type { BuilderSandboxObjectsService } from './builder-sandbox-objects.js';
 import { SourceBuildInterrupted } from './source-builds.js';
 import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
 import { bindingChangeRefusal, bindingOptionsRefusal, connectionBindingOptions, refusesBindingChange } from './connection-binding-options.js';
@@ -124,6 +125,8 @@ import {
   tenantPlatformUsage,
   costAttribution,
   cloudflareUsageDay,
+  costContainersBackfill,
+  costContainersBackfillResult,
   meterDaysReading,
   verticalOwnersReading,
   utcDay,
@@ -673,6 +676,8 @@ export interface ControlPlaneApiOptions {
   sourceBuilds?: SourceBuildService;
   /** The builder studio's turn summaries, read for the console. Absent ⇒ its routes 501. */
   builderTurns?: BuilderTurnsService;
+  /** #3316: each team's builder Sandbox objects, for the container backfill. Absent ⇒ unlabelled usage stays the platform's. */
+  builderSandboxObjects?: BuilderSandboxObjectsService;
   githubRepositoryAccess?: (tenantId: string, owner: string, repo: string, installationId: string, scope: 'read' | 'write') => Promise<{ remote: string; token: string }>;
   /**
    * The open pull requests of one GitHub repository, newest first, each with its head's checks
@@ -3508,6 +3513,39 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (read?.readAt) return refuse(c, 'conflict', `${usage.day} was already read at ${read.readAt}; a snapshot does not replace it`);
     const { recorded } = await admin.recordCostDay(actor, { day: usage.day, attemptedAt: new Date().toISOString(), usage });
     return c.json({ day: usage.day, recorded }, 201);
+  });
+
+  // #3316: container usage for days the rollup read before it read Containers, from a snapshot
+  // taken while Cloudflare still kept it (32 days). Before sandboxes carried a tenant label, the
+  // only link from a container to a team is its instance, which is the builder Sandbox object of
+  // one of that team's projects or builds: each team's objects are read from the builder once, and
+  // an unlabelled instance found among them is charged to that team. Only container rows are
+  // added; a day not read yet, or one already holding container rows, is refused per day and left
+  // as it was. Staff-only like `/meters`.
+  app.post('/meters/cloudflare-costs/containers', async (c) => {
+    const admin = c.var.admin;
+    if (!admin.recordCostContainers) return refuseStatus(c, 501, 'this control plane keeps no Cloudflare cost rollup');
+    const body = costContainersBackfill.parse(await c.req.json());
+    const actor = c.get('actor');
+    const owners = new Map<string, { tenantId: string; app: string | null }>();
+    if (options.builderSandboxObjects) {
+      for (const tenant of await admin.listTenants(actor)) {
+        for (const o of await options.builderSandboxObjects(tenant.id)) owners.set(o.objectId, { tenantId: tenant.id, app: o.app });
+      }
+    }
+    let matched = 0;
+    const days = [];
+    for (const { day, containers } of body.days) {
+      const labelled = containers.map((row) => {
+        const owner = row.tenant === null ? owners.get(row.instanceId) : undefined;
+        if (!owner) return row;
+        matched += 1;
+        return { ...row, tenant: owner.tenantId, app: row.app ?? owner.app };
+      });
+      const result = await admin.recordCostContainers(actor, { day, containers: labelled });
+      days.push({ day, recorded: 'recorded' in result ? result.recorded : 0, refused: 'refused' in result ? result.refused : null });
+    }
+    return c.json(costContainersBackfillResult.parse({ matched, days }), 201);
   });
 
   // Platform usage, priced (#3316): the cost rollup, router requests and stored bytes over a window

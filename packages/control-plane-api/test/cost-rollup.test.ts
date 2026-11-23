@@ -158,4 +158,49 @@ describe('/meters/cloudflare-costs (#3316)', () => {
     expect(((await unmapped.json()) as { rows: unknown[] }).rows).toHaveLength(1);
     expect((await app.request('/meters/cloudflare-costs')).status).toBe(401);
   });
+
+  it('backfills container usage onto a read day, charging an unlabelled builder sandbox to its team (#3316)', async () => {
+    // Runs after the snapshot test above, which read 2026-08-24.
+    const team = ulid();
+    await host.admin.createTenant(staff, { id: team, slug: 'acme', name: 'Acme' });
+    const sandbox = 'd'.repeat(64);
+    const asked: string[] = [];
+    const backfill = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      builderSandboxObjects: async (tenantId) => {
+        asked.push(tenantId);
+        return tenantId === team ? [{ objectId: sandbox, app: 'acme/crm' }] : [];
+      },
+    });
+    const box = { applicationId: 'app-1', tenant: null, app: null, cpuTimeSec: 10, allocatedMemory: 0, allocatedDisk: 0, txBytes: 0 };
+    const post = () =>
+      backfill.request('/meters/cloudflare-costs/containers', {
+        method: 'POST',
+        headers: asStaff,
+        body: JSON.stringify({
+          days: [
+            { day: '2026-08-24', containers: [{ ...box, instanceId: sandbox }, { ...box, instanceId: 'e'.repeat(64) }] },
+            { day: '2026-08-25', containers: [{ ...box, instanceId: sandbox }] },
+          ],
+        }),
+      });
+    const first = await post();
+    expect(first.status).toBe(201);
+    // The day the rollup never read is left for the rollup to read itself.
+    expect(await first.json()).toEqual({
+      matched: 2,
+      days: [
+        { day: '2026-08-24', recorded: 2, refused: null },
+        { day: '2026-08-25', recorded: 0, refused: 'not-read' },
+      ],
+    });
+    expect(asked).toContain(team);
+    const res = await app.request('/meters/cloudflare-costs?since=2026-08-24&until=2026-08-24&attribution=container', { headers: asStaff });
+    expect(((await res.json()) as { rows: unknown[] }).rows).toEqual([
+      expect.objectContaining({ objectId: sandbox, dimension: 'container_cpu_s', tenantId: team, vertical: 'acme/crm', quantity: '10' }),
+    ]);
+    // A second load does not count the day's containers twice.
+    expect(((await (await post()).json()) as { days: unknown[] }).days[0]).toEqual({ day: '2026-08-24', recorded: 0, refused: 'already-recorded' });
+  });
 });

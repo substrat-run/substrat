@@ -885,6 +885,21 @@ export class BuilderAgent extends DurableObject<Env> {
 			}
 			return new Response(null, { status: 204 });
 		}
+		// #3316: the Sandbox objects this team's containers ran as, so the control plane can charge
+		// container usage Cloudflare recorded before sandboxes carried a tenant label (a container
+		// instance is its Sandbox object). Ids and project slugs only; a build older than the kept
+		// records (`RECORDS_KEPT`) is not named, and its usage stays the platform's.
+		if (url.pathname === '/internal/sandbox-objects' && req.method === 'GET') {
+			const reg = await this.#registry();
+			const builds = (await this.ctx.storage.get<string[]>(RECORD_INDEX)) ?? [];
+			const objectOf = (name: string) => this.env.Sandbox.idFromName(name).toString();
+			return json(200, {
+				objects: [
+					...reg.projects.map((p) => ({ objectId: objectOf(`source-project:${p.id}`), app: p.slug })),
+					...builds.map((b) => ({ objectId: objectOf(`build:${b}`), app: null })),
+				],
+			});
+		}
 		if (url.pathname === '/internal/changes' && req.method === 'GET') {
 			const slug = url.searchParams.get('slug');
 			if (!slug) return refuse(400, 'slug is required');

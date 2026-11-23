@@ -2486,6 +2486,28 @@ export const costRollupReading = z.object({
 export type CostRollupReading = z.infer<typeof costRollupReading>;
 
 /**
+ * One container instance's day as `containersUsageAdaptiveGroups` reports it (#3316), with the
+ * labels the platform set at start (`containerLabels`). A container instance is the Durable
+ * Object it is bound to, so `instanceId` is that object's id.
+ */
+export const cloudflareContainerUsage = z.object({
+  applicationId: z.string().min(1),
+  instanceId: z.string().min(1),
+  /** The `CONTAINER_TENANT_LABEL` value; null when the container was started without one. */
+  tenant: z.string().min(1).nullable(),
+  /** The `CONTAINER_APP_LABEL` value; null when there was none. */
+  app: z.string().min(1).nullable(),
+  /** vCPU-seconds of active CPU. */
+  cpuTimeSec: z.number().nonnegative(),
+  /** Provisioned memory, byte-seconds. */
+  allocatedMemory: z.number().nonnegative(),
+  /** Provisioned disk, byte-seconds. */
+  allocatedDisk: z.number().nonnegative(),
+  txBytes: z.number().nonnegative(),
+});
+export type CloudflareContainerUsage = z.infer<typeof cloudflareContainerUsage>;
+
+/**
  * One Cloudflare usage day as the analytics report it, before attribution (#3316). What the
  * scheduled pass reads and what the backfill loader replays: the directory attributes it in the
  * transaction that records it, so both take the same path. Numbers are the analytics' own; a
@@ -2519,27 +2541,43 @@ export const cloudflareUsageDay = z.object({
    * at start. Absent for a day read before Containers were, or older than Cloudflare keeps
    * container usage (`CONTAINER_USAGE_RETENTION_DAYS`): a day without it says nothing of containers.
    */
-  containers: z
-    .array(
-      z.object({
-        applicationId: z.string().min(1),
-        instanceId: z.string().min(1),
-        /** The `CONTAINER_TENANT_LABEL` value; null when the container was started without one. */
-        tenant: z.string().min(1).nullable(),
-        /** The `CONTAINER_APP_LABEL` value; null when there was none. */
-        app: z.string().min(1).nullable(),
-        /** vCPU-seconds of active CPU. */
-        cpuTimeSec: z.number().nonnegative(),
-        /** Provisioned memory, byte-seconds. */
-        allocatedMemory: z.number().nonnegative(),
-        /** Provisioned disk, byte-seconds. */
-        allocatedDisk: z.number().nonnegative(),
-        txBytes: z.number().nonnegative(),
-      }),
-    )
-    .optional(),
+  containers: z.array(cloudflareContainerUsage).optional(),
 });
 export type CloudflareUsageDay = z.infer<typeof cloudflareUsageDay>;
+
+/**
+ * `POST /meters/cloudflare-costs/containers` (#3316): container usage for days the cost rollup read
+ * before it read Containers, from a snapshot taken while Cloudflare still kept them (32 days). An
+ * instance with no tenant label is matched to the team whose builder sandbox it was
+ * (`builderSandboxObjects`) before it is recorded.
+ */
+export const costContainersBackfill = z.object({
+  days: z.array(z.object({ day: utcDay, containers: z.array(cloudflareContainerUsage) })).min(1).max(40),
+});
+export type CostContainersBackfill = z.infer<typeof costContainersBackfill>;
+
+/** What the backfill did per day: rows added, or why none were (`not-read`, `already-recorded`). */
+export const costContainersBackfillResult = z.object({
+  /** Instances matched to a team through the builder's sandbox objects. */
+  matched: z.number().int().nonnegative(),
+  days: z.array(
+    z.object({
+      day: utcDay,
+      recorded: z.number().int().nonnegative(),
+      refused: z.enum(['not-read', 'already-recorded']).nullable(),
+    }),
+  ),
+});
+export type CostContainersBackfillResult = z.infer<typeof costContainersBackfillResult>;
+
+/**
+ * The builder's `GET /internal/sandbox-objects` (#3316): the Sandbox Durable Objects one team's
+ * containers run as, each project's and each kept build's, with the project's slug.
+ */
+export const builderSandboxObjects = z.object({
+  objects: z.array(z.object({ objectId: z.string().regex(/^[0-9a-f]{64}$/), app: z.string().min(1).nullable() })),
+});
+export type BuilderSandboxObjects = z.infer<typeof builderSandboxObjects>;
 
 /** The most binding names a fleet walk's hold keeps; any more are counted (`walkHold.more`). */
 export const WALK_HOLD_BINDINGS_MAX = 64;
