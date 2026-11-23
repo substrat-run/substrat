@@ -432,12 +432,14 @@ import {
   sumCostDayRows,
   pruneCostDayRows,
   recordCostDayRows,
+  recordCostContainerRows,
   recordScopeObjectRow,
   scopeObjectsDueRows,
   type CostDayFilter,
   type CostDayTotals,
   type CostDayTotalsFilter,
   type CostDayReadInput,
+  type CostContainersInput,
   type CostRollupDayFilter,
   type ScopeObjectReadInput,
   METER_DAYS_DDL,
@@ -14371,6 +14373,8 @@ export class SqliteScopeHost implements ScopeHost {
       recordCostDay: async (_actor, input: CostDayReadInput) => ({
         recorded: this.directory.transaction(() => recordCostDayRows(redactionSqlOf(this.directory), input))(),
       }),
+      recordCostContainers: async (_actor, input: CostContainersInput) =>
+        this.directory.transaction(() => recordCostContainerRows(redactionSqlOf(this.directory), input))(),
       listCostDays: async (actor, filter?: CostDayFilter) => {
         const rows = listCostDayRows(redactionSqlOf(this.directory), filter);
         this.recordAccess(

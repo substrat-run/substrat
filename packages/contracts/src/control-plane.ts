@@ -2392,6 +2392,11 @@ export const costQuantity = z.string().regex(/^\d+(\.\d{1,6})?$/);
  * - `do_rows_read`, `do_rows_written`, `do_storage_write_units`, `do_duration_gb_s` (duration in
  *   GB-s, the billed figure; active time is not kept beside it): `durableObjectsPeriodicGroups`, an
  *   aggregate, not a sample.
+ * - `container_cpu_s` (vCPU-seconds of active CPU), `container_memory_gib_s` and
+ *   `container_disk_gb_s` (provisioned, while the container runs), `container_egress_bytes`:
+ *   `containersUsageAdaptiveGroups`, the figures Cloudflare bills Containers on, per instance.
+ *   Memory and disk are converted from the byte-seconds Cloudflare reports to the units it prices
+ *   them in (GiB-s and GB-s), so no stored figure outgrows a safe integer.
  */
 export const costDimension = z.enum([
   'worker_cpu_us',
@@ -2400,6 +2405,10 @@ export const costDimension = z.enum([
   'do_rows_written',
   'do_storage_write_units',
   'do_duration_gb_s',
+  'container_cpu_s',
+  'container_memory_gib_s',
+  'container_disk_gb_s',
+  'container_egress_bytes',
 ]);
 export type CostDimension = z.infer<typeof costDimension>;
 
@@ -2413,10 +2422,14 @@ export type CostDimension = z.infer<typeof costDimension>;
  * - `unmapped`: an object in a vertical's script whose id names no scope the directory recorded:
  *   a ConfigDO, IdentityDO or SweeperDO, a scope reaped before its id was recorded, or one not
  *   recorded yet. Reported apart, with no tenant: whose it is is not guessed.
- * - `platform`: the platform's own scripts (the router, the control plane, store and connector scripts).
- * - `unknown`: a script the directory has no vertical for (another environment's, or a deleted one).
+ * - `platform`: the platform's own scripts (the router, the control plane, store and connector
+ *   scripts), and a container started with no tenant label.
+ * - `unknown`: a script the directory has no vertical for (another environment's, or a deleted one),
+ *   or a container whose tenant label is not a tenant id.
+ * - `container`: a Cloudflare Container the platform labelled with the tenant it ran for
+ *   (`CONTAINER_TENANT_LABEL`), such as a builder sandbox: charged to that tenant.
  */
-export const costAttribution = z.enum(['scope', 'script', 'unmapped', 'platform', 'unknown']);
+export const costAttribution = z.enum(['scope', 'script', 'unmapped', 'platform', 'unknown', 'container']);
 export type CostAttribution = z.infer<typeof costAttribution>;
 
 /**
@@ -2473,6 +2486,28 @@ export const costRollupReading = z.object({
 export type CostRollupReading = z.infer<typeof costRollupReading>;
 
 /**
+ * One container instance's day as `containersUsageAdaptiveGroups` reports it (#3316), with the
+ * labels the platform set at start (`containerLabels`). A container instance is the Durable
+ * Object it is bound to, so `instanceId` is that object's id.
+ */
+export const cloudflareContainerUsage = z.object({
+  applicationId: z.string().min(1),
+  instanceId: z.string().min(1),
+  /** The `CONTAINER_TENANT_LABEL` value; null when the container was started without one. */
+  tenant: z.string().min(1).nullable(),
+  /** The `CONTAINER_APP_LABEL` value; null when there was none. */
+  app: z.string().min(1).nullable(),
+  /** vCPU-seconds of active CPU. */
+  cpuTimeSec: z.number().nonnegative(),
+  /** Provisioned memory, byte-seconds. */
+  allocatedMemory: z.number().nonnegative(),
+  /** Provisioned disk, byte-seconds. */
+  allocatedDisk: z.number().nonnegative(),
+  txBytes: z.number().nonnegative(),
+});
+export type CloudflareContainerUsage = z.infer<typeof cloudflareContainerUsage>;
+
+/**
  * One Cloudflare usage day as the analytics report it, before attribution (#3316). What the
  * scheduled pass reads and what the backfill loader replays: the directory attributes it in the
  * transaction that records it, so both take the same path. Numbers are the analytics' own; a
@@ -2501,8 +2536,48 @@ export const cloudflareUsageDay = z.object({
   ),
   /** Which script and class each namespace belongs to, from Cloudflare's namespace list. May be partial. */
   namespaces: z.array(z.object({ id: z.string().min(1), script: z.string().min(1).nullable(), class: z.string().min(1).nullable() })),
+  /**
+   * `containersUsageAdaptiveGroups`, per (application, instance) with the labels the platform set
+   * at start. Absent for a day read before Containers were, or older than Cloudflare keeps
+   * container usage (`CONTAINER_USAGE_RETENTION_DAYS`): a day without it says nothing of containers.
+   */
+  containers: z.array(cloudflareContainerUsage).optional(),
 });
 export type CloudflareUsageDay = z.infer<typeof cloudflareUsageDay>;
+
+/**
+ * `POST /meters/cloudflare-costs/containers` (#3316): container usage for days the cost rollup read
+ * before it read Containers, from a snapshot taken while Cloudflare still kept them (32 days). An
+ * instance with no tenant label is matched to the team whose builder sandbox it was
+ * (`builderSandboxObjects`) before it is recorded.
+ */
+export const costContainersBackfill = z.object({
+  days: z.array(z.object({ day: utcDay, containers: z.array(cloudflareContainerUsage) })).min(1).max(40),
+});
+export type CostContainersBackfill = z.infer<typeof costContainersBackfill>;
+
+/** What the backfill did per day: rows added, or why none were (`not-read`, `already-recorded`). */
+export const costContainersBackfillResult = z.object({
+  /** Instances matched to a team through the builder's sandbox objects. */
+  matched: z.number().int().nonnegative(),
+  days: z.array(
+    z.object({
+      day: utcDay,
+      recorded: z.number().int().nonnegative(),
+      refused: z.enum(['not-read', 'already-recorded']).nullable(),
+    }),
+  ),
+});
+export type CostContainersBackfillResult = z.infer<typeof costContainersBackfillResult>;
+
+/**
+ * The builder's `GET /internal/sandbox-objects` (#3316): the Sandbox Durable Objects one team's
+ * containers run as, each project's and each kept build's, with the project's slug.
+ */
+export const builderSandboxObjects = z.object({
+  objects: z.array(z.object({ objectId: z.string().regex(/^[0-9a-f]{64}$/), app: z.string().min(1).nullable() })),
+});
+export type BuilderSandboxObjects = z.infer<typeof builderSandboxObjects>;
 
 /** The most binding names a fleet walk's hold keeps; any more are counted (`walkHold.more`). */
 export const WALK_HOLD_BINDINGS_MAX = 64;

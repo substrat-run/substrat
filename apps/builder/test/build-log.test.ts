@@ -184,7 +184,9 @@ describe('the hosted build uses it', () => {
 		const caught = worker.slice(worker.indexOf('const interruption = interruptionOf(error);'));
 		expect(caught).toContain('c.env.BUILDER_AGENT.get(c.env.BUILDER_AGENT.idFromName(tenant))');
 		expect(caught).toContain("'https://builder/internal/build-interrupted'");
-		expect(worker).toContain("if (path !== '/internal/build' && path !== '/internal/projects' && !changesRead && !buildRead) return refuse(404, 'not found');");
+		expect(worker).toContain("if (path !== '/internal/build' && path !== '/internal/projects' && !changesRead && !buildRead && !sandboxObjectsRead) return refuse(404, 'not found');");
+		// The one other read the gate lets through names a GET of exactly that path, not the interrupted route.
+		expect(worker).toContain("const sandboxObjectsRead = c.req.method === 'GET' && path === '/internal/sandbox-objects';");
 		expect(worker).toContain("if (buildRead && !isBuildId(buildRead[1]!)) return refuse(400, 'invalid build id');");
 	});
 });

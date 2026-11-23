@@ -85,7 +85,7 @@ import { restoreWork, snapshotDue, workIn } from './progress.js';
 import { digestOf, readRecord, TurnRecord, type TurnOutcome } from './record.js';
 import { underProject, withinProject } from './project-path.js';
 import { projectStorageKeys, withoutProject } from './project-removal.js';
-import { sourceBuildRequest, projectRepository, type SourceBuildRequest, type ProjectRepository } from '@substrat-run/contracts';
+import { containerLabels, sourceBuildRequest, projectRepository, type SourceBuildRequest, type ProjectRepository } from '@substrat-run/contracts';
 import { collectRelease, RELEASE_DIR } from './release-files.js';
 import { assertPnpmLockfile, checkedExec, checkoutBranch, checkoutRepository, mergeIntoBase, remoteTip, repositoryAccess, saveRepository, shellQuote, writeSandboxFile } from './repositories.js';
 import { ensureRepository, saveBuildSnapshot, snapshotRepositoryName } from './build-snapshots.js';
@@ -260,15 +260,15 @@ export class BuilderAgent extends DurableObject<Env> {
 
 	/** One sandbox per project — its DO id is the project ULID (§7.1). The raw
 	 * stub is kept alongside the bridged slice for file transfer and container lifecycle. */
-	#sandboxPair(projectId: string): { sb: SandboxLike; raw: Sandbox } {
+	#sandboxPair(entry: Pick<ProjectEntry, 'id' | 'slug'>): { sb: SandboxLike; raw: Sandbox } {
 		// Past the 10-minute default: a model can think that long between two tool calls, and
 		// nothing but a request to the container counts as activity.
-		const raw = getSandbox(this.env.Sandbox, `source-project:${projectId}`, { sleepAfter: '30m' });
+		const raw = getSandbox(this.env.Sandbox, `source-project:${entry.id}`, { sleepAfter: '30m', labels: containerLabels(this.#tenant, entry.slug) });
 		return { sb: sandboxLike(raw), raw };
 	}
 
-	#sandbox(projectId: string): SandboxLike {
-		return this.#sandboxPair(projectId).sb;
+	#sandbox(entry: Pick<ProjectEntry, 'id' | 'slug'>): SandboxLike {
+		return this.#sandboxPair(entry).sb;
 	}
 
 	// ── D-66: one source repository per project ────────────────────────────
@@ -381,7 +381,7 @@ export class BuilderAgent extends DurableObject<Env> {
 		const submittedDirectory = request.snapshot?.directory;
 		// The build's whole life fits inside the container's rollout grace period (#3259).
 		const deadline = Date.now() + BUILD_LIFETIME_MS;
-		const raw = getSandbox(this.env.Sandbox, `build:${buildId}`);
+		const raw = getSandbox(this.env.Sandbox, `build:${buildId}`, { labels: containerLabels(this.#tenant, slug) });
 		const log = new BuildLog(buildId, slug, (record) => this.ctx.storage.put(`${RECORD_PREFIX}${buildId}`, record));
 		const sb = log.sandbox(sandboxLike(raw, deadline));
 		let entry: ProjectEntry | undefined;
@@ -583,7 +583,7 @@ export class BuilderAgent extends DurableObject<Env> {
 		const modelSpec =
 			((await this.ctx.storage.get('modelSpec')) as string | undefined) ?? 'anthropic:claude-opus-5';
 
-		const pair = this.#sandboxPair(entry.id);
+		const pair = this.#sandboxPair(entry);
 		const sb = pair.sb;
 		// Validate the provider config EARLY so a missing secret is a 422, not a
 		// mid-stream error. The generator itself is built inside run(), AFTER the
@@ -885,6 +885,21 @@ export class BuilderAgent extends DurableObject<Env> {
 			}
 			return new Response(null, { status: 204 });
 		}
+		// #3316: the Sandbox objects this team's containers ran as, so the control plane can charge
+		// container usage Cloudflare recorded before sandboxes carried a tenant label (a container
+		// instance is its Sandbox object). Ids and project slugs only; a build older than the kept
+		// records (`RECORDS_KEPT`) is not named, and its usage stays the platform's.
+		if (url.pathname === '/internal/sandbox-objects' && req.method === 'GET') {
+			const reg = await this.#registry();
+			const builds = (await this.ctx.storage.get<string[]>(RECORD_INDEX)) ?? [];
+			const objectOf = (name: string) => this.env.Sandbox.idFromName(name).toString();
+			return json(200, {
+				objects: [
+					...reg.projects.map((p) => ({ objectId: objectOf(`source-project:${p.id}`), app: p.slug })),
+					...builds.map((b) => ({ objectId: objectOf(`build:${b}`), app: null })),
+				],
+			});
+		}
 		if (url.pathname === '/internal/changes' && req.method === 'GET') {
 			const slug = url.searchParams.get('slug');
 			if (!slug) return refuse(400, 'slug is required');
@@ -910,7 +925,7 @@ export class BuilderAgent extends DurableObject<Env> {
 					// Resolve the remote before pinning a release, including a newly connected
 					// GitHub project that has not had a studio turn yet. A preview runs the chat's
 					// commit; a release builds the base's, which only a merge moves.
-					const pair = this.#sandboxPair(entry.id);
+					const pair = this.#sandboxPair(entry);
 					await this.#restoreProject(pair, entry, chat);
 					const baseRevision = await remoteTip(pair.sb, await this.#access(entry, 'read', this.#tenant), this.#repoRoot(entry), entry.repository.branch);
 					return json(200, { ...entry, revision: chat.revision, baseRevision });
@@ -972,7 +987,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				return json(200, { ok: true });
 			case 'POST /api/gates': {
 				const { entry, chat } = await this.#current();
-				const pair = this.#sandboxPair(entry.id);
+				const pair = this.#sandboxPair(entry);
 				await this.#restoreProject(pair, entry, chat);
 				// Source checkout already established the repository boundary.
 				return json(200, await runGates(this.#sourceWs(pair.sb, entry), entry.directory, standaloneGates(entry.directory)));
@@ -990,7 +1005,7 @@ export class BuilderAgent extends DurableObject<Env> {
 						headers: { 'content-type': 'application/json' },
 					});
 				}
-				const pair = this.#sandboxPair(entry.id);
+				const pair = this.#sandboxPair(entry);
 				await this.#restoreProject(pair, entry, chat);
 				const probe = await pair.sb.exec(`test -d ${JSON.stringify(`${this.#repoRoot(entry)}/.git`)}`);
 				if (probe.exitCode !== 0) return refuse(404, 'no snapshot yet');
@@ -1007,7 +1022,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				// any file in the checkout — the sandbox's own secrets included (#1225).
 				const rel = underProject(path, entry.dir);
 				if (rel === null) return refuse(403, `reads are limited to ${entry.dir}/`);
-				const pair = this.#sandboxPair(entry.id);
+				const pair = this.#sandboxPair(entry);
 				await this.#restoreProject(pair, entry, chat);
 				// Through the PROJECT-rooted workspace, so the read is confined twice. NOTE
 				// the asymmetry with the local server: `ContainerWorkspace.resolveWithin` is
@@ -1031,7 +1046,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				try {
 					return json(200, {
 						path,
-						content: await this.#projectWs(this.#sandbox(entry.id), entry.dir).readFile(rel),
+						content: await this.#projectWs(this.#sandbox(entry), entry.dir).readFile(rel),
 					});
 				} catch {
 					return refuse(404, `no such file: ${path}`);
@@ -1060,7 +1075,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				if (building) return building;
 				this.#occupy(`saving a file in project "${entry.name}"`);
 				try {
-					const pair = this.#sandboxPair(entry.id);
+					const pair = this.#sandboxPair(entry);
 					await this.#restoreProject(pair, entry, chat);
 					await this.#projectWs(pair.sb, entry.dir).writeFile(rel, content);
 					const sourcePath = entry.directory === '.' ? rel : `${entry.directory}/${rel}`;
@@ -1159,7 +1174,7 @@ export class BuilderAgent extends DurableObject<Env> {
 					// The submitted snapshots of its builds (#2952). Absent unless it is a GitHub
 					// project that took a CLI push; a missing repository deletes as false.
 					await this.env.ARTIFACTS.delete(snapshotRepositoryName(entry.id));
-					await this.#sandboxPair(entry.id).raw.destroy().catch(() => undefined);
+					await this.#sandboxPair(entry).raw.destroy().catch(() => undefined);
 					await this.ctx.storage.delete(projectStorageKeys(entry.id, entry.chats?.map((c) => c.id)));
 					// Read again: a build of another vertical may have written its entry meanwhile.
 					const next = withoutProject(await this.#registry(), entry.id);
@@ -1237,7 +1252,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				if (building) return building;
 				this.#occupy(`merging "${chat.title}" into ${entry.repository.branch} in project "${entry.name}"`);
 				try {
-					const pair = this.#sandboxPair(entry.id);
+					const pair = this.#sandboxPair(entry);
 					await this.#restoreProject(pair, entry, chat);
 					if (chatStatus(chat) === 'empty') return refuse(409, 'this chat has no commits to merge yet');
 					const result = await mergeIntoBase(

@@ -2,6 +2,7 @@ import {
   CONNECTOR_SCRIPT_PREFIX,
   PLATFORM_SCRIPT_NAMES,
   SCOPE_STORE_SCRIPT_PREFIX,
+  ULID_PATTERN,
   addDecimal,
   cloudflareUsageDay,
   costDay,
@@ -191,6 +192,12 @@ interface ScriptInfo {
 }
 
 const ULID_SUFFIX = /^(.+)-([0-9a-hjkmnp-tv-z]{26})$/;
+/** A container row's `script`: its Containers application, which is not a Worker script. */
+export const CONTAINER_SCRIPT_PREFIX = 'container:';
+/** A container row's `objectClass`; its `objectId` is the container instance. */
+export const CONTAINER_OBJECT_CLASS = 'Container';
+const GIB = 1024 ** 3;
+const GB = 1_000_000_000;
 
 /** Which vertical, version and owner a script is, by the directory alone. */
 function scriptInfoOf(script: string, dir: CostDirectory): ScriptInfo {
@@ -316,8 +323,32 @@ export function attributeCostDay(usage: CloudflareUsageDay, dir: CostDirectory):
     add(row, 'do_storage_write_units', o.storageWriteUnits);
     add(row, 'do_duration_gb_s', o.duration);
   }
+
+  // Containers (#3316): Cloudflare names an application and an instance, never a tenant, so the
+  // label the platform set at start is the only attribution there is. A container with no label is
+  // the platform's own; one whose label is not a tenant id is reported apart, never guessed at.
+  for (const c of usage.containers ?? []) {
+    const tenant = c.tenant !== null && ULID_PATTERN.test(c.tenant) ? (c.tenant as TenantId) : null;
+    const row = {
+      script: `${CONTAINER_SCRIPT_PREFIX}${c.applicationId}`,
+      scopeId: null,
+      objectClass: CONTAINER_OBJECT_CLASS,
+      objectId: c.instanceId,
+      attribution: tenant !== null ? ('container' as const) : c.tenant === null ? ('platform' as const) : ('unknown' as const),
+      tenantId: tenant,
+      vertical: tenant !== null ? c.app : null,
+      kind: 'live' as const,
+      versionId: null,
+      previewTag: null,
+    };
+    add(row, 'container_cpu_s', c.cpuTimeSec);
+    add(row, 'container_memory_gib_s', c.allocatedMemory / GIB);
+    add(row, 'container_disk_gb_s', c.allocatedDisk / GB);
+    add(row, 'container_egress_bytes', c.txBytes);
+  }
   return [...byKey.values()];
 }
+
 
 /**
  * The directory as attribution reads it for `day`: every recorded object, every vertical and
@@ -417,6 +448,19 @@ export function recordCostDayRows(sql: RedactionSql, input: CostDayReadInput): n
   if (usage.day !== day) throw new Error(`the usage is for ${usage.day}, not ${day}`);
   const rows = attributeCostDay(usage, readCostDirectory(sql, day)).map((r) => costDay.parse(r));
   sql('DELETE FROM _substrat_cost_days WHERE day = ?', [day]);
+  insertCostRows(sql, day, rows);
+  sql(
+    `INSERT INTO _substrat_cost_day_reads (day, attempted_at, read_at, row_count, error, failing_since, failing_count)
+     VALUES (?, ?, ?, ?, NULL, NULL, NULL)
+     ON CONFLICT (day) DO UPDATE SET
+       attempted_at = excluded.attempted_at, read_at = excluded.read_at, row_count = excluded.row_count,
+       error = NULL, failing_since = NULL, failing_count = NULL`,
+    [day, attemptedAt, attemptedAt, rows.length],
+  );
+  return rows.length;
+}
+
+function insertCostRows(sql: RedactionSql, day: string, rows: readonly CostDay[]): void {
   for (const r of rows) {
     sql(
       `INSERT INTO _substrat_cost_days
@@ -441,15 +485,39 @@ export function recordCostDayRows(sql: RedactionSql, input: CostDayReadInput): n
       ],
     );
   }
-  sql(
-    `INSERT INTO _substrat_cost_day_reads (day, attempted_at, read_at, row_count, error, failing_since, failing_count)
-     VALUES (?, ?, ?, ?, NULL, NULL, NULL)
-     ON CONFLICT (day) DO UPDATE SET
-       attempted_at = excluded.attempted_at, read_at = excluded.read_at, row_count = excluded.row_count,
-       error = NULL, failing_since = NULL, failing_count = NULL`,
-    [day, attemptedAt, attemptedAt, rows.length],
-  );
-  return rows.length;
+}
+
+/** One day's container usage for `recordCostContainerRows`: the rows `CloudflareUsageDay.containers` carries. */
+export interface CostContainersInput {
+  day: string;
+  containers: NonNullable<CloudflareUsageDay['containers']>;
+}
+
+/**
+ * What `recordCostContainerRows` did: the rows it added, or why it added none. `not-read`: the
+ * rollup has not read the day, and will read its containers itself. `already-recorded`: the day
+ * has container rows, from its own read or an earlier backfill.
+ */
+export type CostContainersResult = { recorded: number } | { refused: 'not-read' | 'already-recorded' };
+
+/**
+ * Add a day's container rows to a day the rollup read before it read Containers (#3316), from a
+ * snapshot taken while Cloudflare still kept them. Never touches the day's other rows, and never a
+ * day it would read itself. Attribution is `attributeCostDay`'s, so a loaded row and a read one
+ * cannot differ; the day's `row_count` grows by what was added.
+ */
+export function recordCostContainerRows(sql: RedactionSql, input: CostContainersInput): CostContainersResult {
+  const day = assertUtcDay('day', input.day);
+  const read = sql('SELECT read_at FROM _substrat_cost_day_reads WHERE day = ?', [day]) as { read_at: string | null }[];
+  if (read[0]?.read_at == null) return { refused: 'not-read' };
+  const held = sql('SELECT 1 FROM _substrat_cost_days WHERE day = ? AND object_class = ? LIMIT 1', [day, CONTAINER_OBJECT_CLASS]);
+  if (held.length > 0) return { refused: 'already-recorded' };
+  const usage = cloudflareUsageDay.parse({ day, workers: [], doInvocations: [], doObjects: [], namespaces: [], containers: input.containers });
+  const empty: CostDirectory = { objects: new Map(), slugByScript: new Map(), versionByScript: new Map(), versionById: new Map(), ownerBySlug: new Map(), liveScripts: new Set() };
+  const rows = attributeCostDay(usage, empty).map((r) => costDay.parse(r));
+  insertCostRows(sql, day, rows);
+  sql('UPDATE _substrat_cost_day_reads SET row_count = COALESCE(row_count, 0) + ? WHERE day = ?', [rows.length, day]);
+  return { recorded: rows.length };
 }
 
 interface CostDayRow {

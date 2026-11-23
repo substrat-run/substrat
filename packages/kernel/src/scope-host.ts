@@ -228,7 +228,7 @@ import type { ModelUsageFilter, ModelUsageInput, ModelUsagePricing, ModelUsageWi
 import type { FindingPruneReport } from './findings.js';
 import type { ScopeStorageAttempt, ScopeStorageFilter, ScopeStorageReadingInput } from './storage-gauge.js';
 import type { RequestDayFilter, RequestDayReadInput, RequestRollupDayFilter, TenantRequestMeterRow, RequestMeterDayRow } from './request-rollup.js';
-import type { CostDayFilter, CostDayReadInput, CostDayTotals, CostDayTotalsFilter, CostRollupDayFilter, ScopeObjectReadInput, ScopeObjectTarget } from './cost-rollup.js';
+import type { CostContainersInput, CostContainersResult, CostDayFilter, CostDayReadInput, CostDayTotals, CostDayTotalsFilter, CostRollupDayFilter, ScopeObjectReadInput, ScopeObjectTarget } from './cost-rollup.js';
 import type { MeterDayFilter, MeterDayTakeFilter, MeterDayTakeInput, MeterDayTakeResult } from './meter-days.js';
 import type { SealedSecret } from './secret-box.js';
 import type { OnSubjectErased } from './module-erasure.js';
@@ -4618,6 +4618,12 @@ export interface HostAdmin {
    * that lacks them, so an adapter built before #3316 still satisfies `HostAdmin`.
    */
   recordCostDay?(actor: PlatformActorId, input: CostDayReadInput): Promise<{ recorded: number }>;
+  /**
+   * Add container rows to a day the rollup read before it read Containers (#3316), from a staff
+   * snapshot (`recordCostContainerRows`): refused for a day not read yet or one that holds them.
+   * Not audited, as `recordCostDay` is not: cost inputs, written once per day.
+   */
+  recordCostContainers?(actor: PlatformActorId, input: CostContainersInput): Promise<CostContainersResult>;
   /** Stored daily cost inputs (#3316). See `CostDayFilter`. Access-logged (K-24). */
   listCostDays?(actor: PlatformActorId, filter?: CostDayFilter): Promise<CostDay[]>;
   /** The cost rollup's record of each day it tried (#3316). Access-logged. */

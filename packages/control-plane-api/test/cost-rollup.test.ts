@@ -39,7 +39,17 @@ const DATASETS: Record<string, { key: string; rows: Row[] }> = {
       sum: { rowsRead: 1, rowsWritten: 2, storageWriteUnits: 0, duration: 0.5 },
     })),
   },
+  containersUsageAdaptiveGroups: {
+    key: 'instanceId',
+    rows: [
+      // Cloudflare answers a label the container was started without as an empty string.
+      { dimensions: { instanceId: 'i-2', applicationId: 'app-1', tenant: '', app: '' }, sum: { cpuTimeSec: 1, allocatedMemory: 2, allocatedDisk: 3, txBytes: 4 } },
+      { dimensions: { instanceId: 'i-1', applicationId: 'app-1', tenant: '01JZ0000000000000000TEN001', app: 'acme/crm' }, sum: { cpuTimeSec: 5, allocatedMemory: 6, allocatedDisk: 7, txBytes: 8 } },
+    ],
+  },
 };
+/** The reader's clock: 2026-11-20 is inside container usage's retention, 2026-10-01 is not. */
+const NOW = () => Date.parse('2026-11-21T12:00:00Z');
 
 function cloudflare(opts: { refuse?: string } = {}) {
   const calls: string[] = [];
@@ -67,8 +77,12 @@ function cloudflare(opts: { refuse?: string } = {}) {
 describe('the cost rollup reader', () => {
   it('reads every page of each dataset, keeps a valid interval only, and lists the namespaces once per reader', async () => {
     const cf = cloudflare();
-    const read = createCloudflareUsageDayReader({ accountId: 'acct', apiToken: 't', fetch: cf.fetch, pageSize: 2 });
+    const read = createCloudflareUsageDayReader({ accountId: 'acct', apiToken: 't', fetch: cf.fetch, pageSize: 2, now: NOW });
     const day = await read('2026-11-20');
+    expect(day.containers).toEqual([
+      { applicationId: 'app-1', instanceId: 'i-1', tenant: '01JZ0000000000000000TEN001', app: 'acme/crm', cpuTimeSec: 5, allocatedMemory: 6, allocatedDisk: 7, txBytes: 8 },
+      { applicationId: 'app-1', instanceId: 'i-2', tenant: null, app: null, cpuTimeSec: 1, allocatedMemory: 2, allocatedDisk: 3, txBytes: 4 },
+    ]);
     expect(day.workers).toEqual([
       { script: 'substrat-router', cpuTimeUs: 99 },
       { script: 'tenant-a-crm', cpuTimeUs: 1500, lower: 1400.5, upper: 1599.5 },
@@ -84,6 +98,14 @@ describe('the cost rollup reader', () => {
       'durableObjectsPeriodicGroups>b',
     ]);
     expect(cf.calls.filter((c) => c === 'namespaces')).toHaveLength(1);
+  });
+
+  it('reads a day older than Cloudflare keeps container usage without it, rather than having the day refused (#3316)', async () => {
+    const cf = cloudflare();
+    const day = await createCloudflareUsageDayReader({ accountId: 'acct', apiToken: 't', fetch: cf.fetch, now: NOW })('2026-10-01');
+    expect(day.containers).toBeUndefined();
+    expect(day.workers).toHaveLength(2);
+    expect(cf.calls.some((c) => c.startsWith('containersUsageAdaptiveGroups'))).toBe(false);
   });
 
   it('fails the day on a GraphQL refusal, rather than reading it as a day without usage', async () => {
@@ -135,5 +157,50 @@ describe('/meters/cloudflare-costs (#3316)', () => {
     const unmapped = await app.request('/meters/cloudflare-costs?since=2026-08-24&until=2026-08-24&attribution=platform', { headers: asStaff });
     expect(((await unmapped.json()) as { rows: unknown[] }).rows).toHaveLength(1);
     expect((await app.request('/meters/cloudflare-costs')).status).toBe(401);
+  });
+
+  it('backfills container usage onto a read day, charging an unlabelled builder sandbox to its team (#3316)', async () => {
+    // Runs after the snapshot test above, which read 2026-08-24.
+    const team = ulid();
+    await host.admin.createTenant(staff, { id: team, slug: 'acme', name: 'Acme' });
+    const sandbox = 'd'.repeat(64);
+    const asked: string[] = [];
+    const backfill = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      builderSandboxObjects: async (tenantId) => {
+        asked.push(tenantId);
+        return tenantId === team ? [{ objectId: sandbox, app: 'acme/crm' }] : [];
+      },
+    });
+    const box = { applicationId: 'app-1', tenant: null, app: null, cpuTimeSec: 10, allocatedMemory: 0, allocatedDisk: 0, txBytes: 0 };
+    const post = () =>
+      backfill.request('/meters/cloudflare-costs/containers', {
+        method: 'POST',
+        headers: asStaff,
+        body: JSON.stringify({
+          days: [
+            { day: '2026-08-24', containers: [{ ...box, instanceId: sandbox }, { ...box, instanceId: 'e'.repeat(64) }] },
+            { day: '2026-08-25', containers: [{ ...box, instanceId: sandbox }] },
+          ],
+        }),
+      });
+    const first = await post();
+    expect(first.status).toBe(201);
+    // The day the rollup never read is left for the rollup to read itself.
+    expect(await first.json()).toEqual({
+      matched: 2,
+      days: [
+        { day: '2026-08-24', recorded: 2, refused: null },
+        { day: '2026-08-25', recorded: 0, refused: 'not-read' },
+      ],
+    });
+    expect(asked).toContain(team);
+    const res = await app.request('/meters/cloudflare-costs?since=2026-08-24&until=2026-08-24&attribution=container', { headers: asStaff });
+    expect(((await res.json()) as { rows: unknown[] }).rows).toEqual([
+      expect.objectContaining({ objectId: sandbox, dimension: 'container_cpu_s', tenantId: team, vertical: 'acme/crm', quantity: '10' }),
+    ]);
+    // A second load does not count the day's containers twice.
+    expect(((await (await post()).json()) as { days: unknown[] }).days[0]).toEqual({ day: '2026-08-24', recorded: 0, refused: 'already-recorded' });
   });
 });

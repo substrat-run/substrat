@@ -40,6 +40,8 @@ const ROUTED_NODE_SOURCE = 'packages/vertical-host/src/routed-node.ts';
 const SCOPE_WORK_SOURCE = 'packages/adapter-cloudflare/src/async-local-storage-global.ts';
 /** Where the verifier spends a nonce (RFC wire-signing §4): the host the vertical registered. */
 const NONCE_STORE_SOURCE = 'packages/control-plane-api/platform-entry/nonce-store.ts';
+/** #3316: the entry's own answer to `/internal/scope-object-id`, for a vertical that has none. */
+const SCOPE_OBJECT_SOURCE = 'packages/control-plane-api/platform-entry/scope-object-id.ts';
 const PLACEHOLDER = '__SUBSTRAT_VERTICAL_ENTRY__';
 const SWEEPER_SOURCE = 'packages/adapter-cloudflare/src/scope-sweeper-do.ts';
 const SWEEP_HOST_SOURCE = 'packages/vertical-host/src/scope-sweep-host.ts';
@@ -93,7 +95,8 @@ const js = await bundle(
     `import { AsyncLocalStorage } from 'node:async_hooks';`,
     `import { ASYNC_LOCAL_STORAGE_GLOBAL } from './${SCOPE_WORK_SOURCE}';`,
     `import { withInvocationLog } from './${SOURCE}';`,
-    `import { readRoutedNode } from './${ROUTED_NODE_SOURCE}';`,
+    `import { readRoutedNode, ROUTED_ID } from './${ROUTED_NODE_SOURCE}';`,
+    `import { withScopeObjectId } from './${SCOPE_OBJECT_SOURCE}';`,
     `import { withWireGate } from './${GATE_SOURCE}';`,
     `import { nonceStoreOf } from './${NONCE_STORE_SOURCE}';`,
     `import { registeredScopeSweepHost } from './${SWEEP_HOST_SOURCE}';`,
@@ -103,6 +106,7 @@ const js = await bundle(
     // the platform puts on every pushed script, and the local dev opt-out.
     `const routerSecret = (env) => env.ROUTER_SECRET;`,
     `const allowUnsigned = (env) => env.ALLOW_DEV_NODE === 'true';`,
+    `const platformSecret = (env) => env.PLATFORM_SECRET;`,
     // #3316: the class, published for the scope objects in this script, which count their rows by
     // the RPC entry whose async context ran them and cannot import \`node:async_hooks\` themselves.
     // Undefined where the uploader swapped the import out, and then nothing is published.
@@ -110,11 +114,15 @@ const js = await bundle(
     // RFC wire-signing: the verifier judges a request before the stamp and the vertical see it,
     // with the legacy checks answered as the vertical answers its own. Inert without key lists.
     `export default withWireGate(`,
-    `  withInvocationLog(vertical.default, { routerSecret, allowUnsigned, asyncLocalStorage: AsyncLocalStorage }),`,
+    // #3316: the scope's object id, from the scope namespace, when the vertical cannot name it.
+    `  withInvocationLog(`,
+    `    withScopeObjectId(vertical.default, { platformSecret, namespace: (env) => env.SCOPE, isScopeId: (s) => ROUTED_ID.test(s) }),`,
+    `    { routerSecret, allowUnsigned, asyncLocalStorage: AsyncLocalStorage },`,
+    `  ),`,
     `  {`,
     `    routedNode: (headers, env) => readRoutedNode(headers, { expectedSecret: routerSecret(env), allowUnsigned: allowUnsigned(env) }),`,
     `    routerSecret,`,
-    `    platformSecret: (env) => env.PLATFORM_SECRET,`,
+    `    platformSecret,`,
     // RFC wire-signing §4: a call that changes state spends its nonce in its scope's own object,
     // through the host the vertical registered for the sweeper. None registered, or a host from
     // before the store, is this version's static no-nonce-store fault.

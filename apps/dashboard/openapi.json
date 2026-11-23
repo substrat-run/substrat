@@ -25631,6 +25631,22 @@
                         },
                         "duration": {
                           "type": "string"
+                        },
+                        "containerMemory": {
+                          "default": "0",
+                          "type": "string"
+                        },
+                        "containerCpu": {
+                          "default": "0",
+                          "type": "string"
+                        },
+                        "containerDisk": {
+                          "default": "0",
+                          "type": "string"
+                        },
+                        "containerEgress": {
+                          "default": "0",
+                          "type": "string"
                         }
                       },
                       "required": [
@@ -25640,7 +25656,11 @@
                         "requests",
                         "cpu",
                         "doRequests",
-                        "duration"
+                        "duration",
+                        "containerMemory",
+                        "containerCpu",
+                        "containerDisk",
+                        "containerEgress"
                       ],
                       "additionalProperties": false
                     },
@@ -25688,6 +25708,22 @@
                               },
                               "duration": {
                                 "type": "string"
+                              },
+                              "containerMemory": {
+                                "default": "0",
+                                "type": "string"
+                              },
+                              "containerCpu": {
+                                "default": "0",
+                                "type": "string"
+                              },
+                              "containerDisk": {
+                                "default": "0",
+                                "type": "string"
+                              },
+                              "containerEgress": {
+                                "default": "0",
+                                "type": "string"
                               }
                             },
                             "required": [
@@ -25697,7 +25733,11 @@
                               "requests",
                               "cpu",
                               "doRequests",
-                              "duration"
+                              "duration",
+                              "containerMemory",
+                              "containerCpu",
+                              "containerDisk",
+                              "containerEgress"
                             ],
                             "additionalProperties": false
                           }
@@ -25777,6 +25817,22 @@
                                   },
                                   "duration": {
                                     "type": "string"
+                                  },
+                                  "containerMemory": {
+                                    "default": "0",
+                                    "type": "string"
+                                  },
+                                  "containerCpu": {
+                                    "default": "0",
+                                    "type": "string"
+                                  },
+                                  "containerDisk": {
+                                    "default": "0",
+                                    "type": "string"
+                                  },
+                                  "containerEgress": {
+                                    "default": "0",
+                                    "type": "string"
                                   }
                                 },
                                 "required": [
@@ -25786,7 +25842,11 @@
                                   "requests",
                                   "cpu",
                                   "doRequests",
-                                  "duration"
+                                  "duration",
+                                  "containerMemory",
+                                  "containerCpu",
+                                  "containerDisk",
+                                  "containerEgress"
                                 ],
                                 "additionalProperties": false
                               },

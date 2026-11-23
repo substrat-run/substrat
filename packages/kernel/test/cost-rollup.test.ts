@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { platformActorId, type CloudflareUsageDay } from '@substrat-run/contracts';
 import { runPlatformSweep, type PlatformSweepOptions } from '../src/platform-sweep.js';
 import {
+  attributeCostDay,
   COST_ROLLUP_DDL,
   listCostDayRows,
   listCostRollupDayRows,
@@ -131,6 +132,36 @@ describe('the Cloudflare cost rollup', () => {
       `${PER_VERSION} ${PREVIEW} - do_rows_written scope ${OWNER} preview ${VERSION} pr-7 1700000 - -`,
     ]);
     expect(listCostRollupDayRows(sql)).toMatchObject([{ day: DAY, rows: 14, error: null, saturated: false }]);
+  });
+
+  it('charges a labelled container to its tenant, and an unlabelled one to the platform (#3316)', () => {
+    const empty = { objects: new Map(), slugByScript: new Map(), versionByScript: new Map(), versionById: new Map(), ownerBySlug: new Map(), liveScripts: new Set<string>() };
+    const box = { applicationId: 'app-1', cpuTimeSec: 2, allocatedMemory: 3 * 1024 ** 3, allocatedDisk: 4e9, txBytes: 0 };
+    const rows = attributeCostDay(
+      {
+        day: DAY, workers: [], doInvocations: [], doObjects: [], namespaces: [],
+        containers: [
+          { ...box, instanceId: 'i-1', tenant: OWNER, app: 'tenant-a/crm' },
+          { ...box, instanceId: 'i-2', tenant: null, app: null },
+          // A label that is not a tenant id names no one.
+          { ...box, instanceId: 'i-3', tenant: 'not-a-tenant', app: 'tenant-a/crm' },
+        ],
+      },
+      empty,
+    );
+    expect(rows.map((r) => [r.objectId, r.dimension, r.attribution, r.tenantId ?? '-', r.vertical ?? '-', r.quantity].join(' '))).toEqual([
+      // Memory and disk in the units Cloudflare prices them in; a zero writes no row.
+      `i-1 container_cpu_s container ${OWNER} tenant-a/crm 2`,
+      `i-1 container_memory_gib_s container ${OWNER} tenant-a/crm 3`,
+      `i-1 container_disk_gb_s container ${OWNER} tenant-a/crm 4`,
+      'i-2 container_cpu_s platform - - 2',
+      'i-2 container_memory_gib_s platform - - 3',
+      'i-2 container_disk_gb_s platform - - 4',
+      'i-3 container_cpu_s unknown - - 2',
+      'i-3 container_memory_gib_s unknown - - 3',
+      'i-3 container_disk_gb_s unknown - - 4',
+    ]);
+    expect(new Set(rows.map((r) => `${r.script} ${r.objectClass}`))).toEqual(new Set(['container:app-1 Container']));
   });
 
   it('attributes a day read before its scopes were known once their object ids are recorded', async () => {

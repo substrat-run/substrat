@@ -466,3 +466,4 @@ export type { VerticalConnectorDeps, VerticalConnectorReads, VerticalConnectorTa
 export { gh, appJwt, installationToken, githubConfig, installUrl, type GithubConfig } from './github-app.js';
 export { SourceBuildInterrupted, sourceBuildService } from './source-builds.js';
 export { builderTurnsService, type BuilderTurnsService } from './builder-turns.js';
+export { builderSandboxObjectsService, type BuilderSandboxObjectsService } from './builder-sandbox-objects.js';

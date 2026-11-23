@@ -966,6 +966,9 @@ export type MeteredUsageOut = z.infer<typeof meteredUsageOut>;
 const platformQuantitiesOut = z.object({
   rowsWritten: z.string(), rowsRead: z.string(), storage: z.string(), requests: z.string(),
   cpu: z.string(), doRequests: z.string(), duration: z.string(),
+  // Containers (#3316): a plane from before them answers none, which is none used.
+  containerMemory: z.string().default('0'), containerCpu: z.string().default('0'),
+  containerDisk: z.string().default('0'), containerEgress: z.string().default('0'),
 });
 const platformAppOut = { vertical: z.string().nullable(), kind: z.string(), wouldCostUsd: z.string() };
 export const platformUsageOut = z.object({

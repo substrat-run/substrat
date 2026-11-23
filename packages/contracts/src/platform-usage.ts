@@ -26,6 +26,10 @@ export const PLATFORM_USAGE_DIMENSIONS = [
   'cpu',
   'do-requests',
   'duration',
+  'container-memory',
+  'container-cpu',
+  'container-disk',
+  'container-egress',
 ] as const satisfies readonly BilledDimension[];
 export type PlatformUsageDimension = (typeof PLATFORM_USAGE_DIMENSIONS)[number];
 
@@ -33,7 +37,8 @@ export type PlatformUsageDimension = (typeof PLATFORM_USAGE_DIMENSIONS)[number];
  * One list rate: `usd` per `per` units of the dimension's quantity. Quantities are in the unit
  * `platformQuantityOf` reports: requests, CPU milliseconds, Durable Object requests, GB-seconds,
  * rows, and bytes stored on the day (storage is quoted per GB-month and charged per day, so a
- * day's storage costs `bytes × usd / (per × days in that month)`).
+ * day's storage costs `bytes × usd / (per × days in that month)`); for Containers, vCPU-seconds,
+ * GiB-seconds, GB-seconds and bytes sent.
  */
 export interface ListRate {
   dimension: PlatformUsageDimension;
@@ -59,6 +64,12 @@ export const CLOUDFLARE_LIST_RATES: readonly { effectiveFrom: string; rates: rea
       { dimension: 'rows-read', usd: '0.001', per: 1_000_000, unit: 'rows read' },
       { dimension: 'rows-written', usd: '1.00', per: 1_000_000, unit: 'rows written' },
       { dimension: 'storage', usd: '0.20', per: 1_000_000_000, unit: 'bytes per month' },
+      // Containers (#3316): $0.000020 per vCPU-s, $0.0000025 per GiB-s, $0.00000007 per GB-s, and
+      // egress at the North America and Europe rate, $0.025 per GB, where the platform runs them.
+      { dimension: 'container-cpu', usd: '20.00', per: 1_000_000, unit: 'container vCPU-s' },
+      { dimension: 'container-memory', usd: '2.50', per: 1_000_000, unit: 'container GiB-s' },
+      { dimension: 'container-disk', usd: '0.07', per: 1_000_000, unit: 'container disk GB-s' },
+      { dimension: 'container-egress', usd: '0.025', per: 1_000_000_000, unit: 'container egress bytes' },
     ],
   },
 ];
@@ -88,6 +99,10 @@ export const COST_DIMENSION_BILLED: Readonly<Record<CostDimension, PlatformUsage
   do_rows_written: 'rows-written',
   do_storage_write_units: null,
   do_duration_gb_s: 'duration',
+  container_cpu_s: 'container-cpu',
+  container_memory_gib_s: 'container-memory',
+  container_disk_gb_s: 'container-disk',
+  container_egress_bytes: 'container-egress',
 };
 
 /** A rollup quantity in its billed unit: CPU µs become ms; every other unit is kept. */
@@ -120,6 +135,10 @@ function perDimension<T extends z.ZodTypeAny>(value: T) {
     cpu: value,
     doRequests: value,
     duration: value,
+    containerMemory: value,
+    containerCpu: value,
+    containerDisk: value,
+    containerEgress: value,
   });
 }
 
@@ -132,6 +151,10 @@ export const QUANTITY_KEY = {
   cpu: 'cpu',
   'do-requests': 'doRequests',
   duration: 'duration',
+  'container-memory': 'containerMemory',
+  'container-cpu': 'containerCpu',
+  'container-disk': 'containerDisk',
+  'container-egress': 'containerEgress',
 } as const satisfies Record<PlatformUsageDimension, string>;
 
 /**

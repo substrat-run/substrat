@@ -52,12 +52,15 @@ import {
   sumCostDayRows,
   pruneCostDayRows,
   recordCostDayRows,
+  recordCostContainerRows,
   recordScopeObjectRow,
   scopeObjectsDueRows,
   type CostDayFilter,
   type CostDayTotals,
   type CostDayTotalsFilter,
   type CostDayReadInput,
+  type CostContainersInput,
+  type CostContainersResult,
   type CostRollupDayFilter,
   type ScopeObjectReadInput,
   type ScopeObjectTarget,
@@ -5279,6 +5282,10 @@ export class ControlPlaneDO extends DurableObject {
   // Attributed through the directory inside the transaction that records the day.
   recordCostDay(input: CostDayReadInput): { recorded: number } {
     return { recorded: this.ctx.storage.transactionSync(() => recordCostDayRows(doRedactionSql(this.sql), input)) };
+  }
+
+  recordCostContainers(input: CostContainersInput): CostContainersResult {
+    return this.ctx.storage.transactionSync(() => recordCostContainerRows(doRedactionSql(this.sql), input));
   }
 
   listCostDays(filter?: CostDayFilter): CostDay[] {
