@@ -78,7 +78,6 @@ import {
   importCursorMoved,
   versionOrigin,
   verticalSlug,
-  tenantPlatformUsage,
   z,
 } from '@substrat-run/contracts';
 import { LOGS_INCOMPLETE_HEADER } from '@substrat-run/control-plane-api/browser';
@@ -961,6 +960,28 @@ export const meteredUsageOut = z.object({
   })),
 });
 export type MeteredUsageOut = z.infer<typeof meteredUsageOut>;
+// #3316: contracts' `tenantPlatformUsage`, with every vocabulary the plane owns (`state`, `kind`,
+// `chargedUsd`) open, as #2401 asks of a declared output. Price only: nothing here names a cost or a
+// markup, and the handler's parse drops whatever else a newer plane answers with.
+const platformQuantitiesOut = z.object({
+  rowsWritten: z.string(), rowsRead: z.string(), storage: z.string(), requests: z.string(),
+  cpu: z.string(), doRequests: z.string(), duration: z.string(),
+});
+const platformAppOut = { vertical: z.string().nullable(), kind: z.string(), wouldCostUsd: z.string() };
+export const platformUsageOut = z.object({
+  since: z.string(), until: z.string(), readAt: z.string(),
+  state: z.string(), readDays: z.number().int(), totalDays: z.number().int(), lastReadAt: z.string().nullable(),
+  wouldCostUsd: z.string(), liveWouldCostUsd: z.string(), previewWouldCostUsd: z.string(), chargedUsd: z.string(),
+  quantities: platformQuantitiesOut,
+  apps: z.array(z.object({ ...platformAppOut, quantities: platformQuantitiesOut })),
+  days: z.array(z.object({
+    day: z.string(), read: z.boolean(),
+    wouldCostUsd: z.string().nullable(), liveWouldCostUsd: z.string().nullable(), previewWouldCostUsd: z.string().nullable(),
+    quantities: platformQuantitiesOut.nullable(),
+    byApp: z.array(z.object(platformAppOut)),
+  })),
+  truncated: z.boolean(),
+});
 interface EventEffectsOut {
   event: z.infer<typeof historyEntryOut>;
   deliveries: z.infer<typeof eventDeliveryOut>[];
@@ -989,7 +1010,7 @@ export const dashboardRoutes = defineRoutes({
   'dashboard/read-platform-usage': {
     summary: "What this team's apps used of the platform per day, and what it would cost at the platform's price (owner or admin). Price only, never charged yet",
     input: z.object({ days: z.number().int().min(1).max(92).optional() }),
-    output: tenantPlatformUsage,
+    output: platformUsageOut,
     http: { method: 'GET', path: '/platform-usage' },
   },
   // -- apps: the read side (#2170) --------------------------------------------

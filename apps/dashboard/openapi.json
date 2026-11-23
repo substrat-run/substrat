@@ -25565,43 +25565,31 @@
                   "type": "object",
                   "properties": {
                     "since": {
-                      "type": "string",
-                      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                      "type": "string"
                     },
                     "until": {
-                      "type": "string",
-                      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                      "type": "string"
                     },
                     "readAt": {
-                      "type": "string",
-                      "format": "date-time",
-                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                      "type": "string"
                     },
                     "state": {
-                      "type": "string",
-                      "enum": [
-                        "not-read",
-                        "empty",
-                        "partial",
-                        "complete"
-                      ]
+                      "type": "string"
                     },
                     "readDays": {
                       "type": "integer",
-                      "minimum": 0,
+                      "minimum": -9007199254740991,
                       "maximum": 9007199254740991
                     },
                     "totalDays": {
                       "type": "integer",
-                      "exclusiveMinimum": 0,
+                      "minimum": -9007199254740991,
                       "maximum": 9007199254740991
                     },
                     "lastReadAt": {
                       "anyOf": [
                         {
-                          "type": "string",
-                          "format": "date-time",
-                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                          "type": "string"
                         },
                         {
                           "type": "null"
@@ -25609,51 +25597,40 @@
                       ]
                     },
                     "wouldCostUsd": {
-                      "type": "string",
-                      "pattern": "^\\d+(\\.\\d{1,6})?$"
+                      "type": "string"
                     },
                     "liveWouldCostUsd": {
-                      "type": "string",
-                      "pattern": "^\\d+(\\.\\d{1,6})?$"
+                      "type": "string"
                     },
                     "previewWouldCostUsd": {
-                      "type": "string",
-                      "pattern": "^\\d+(\\.\\d{1,6})?$"
+                      "type": "string"
                     },
                     "chargedUsd": {
-                      "type": "string",
-                      "const": "0"
+                      "type": "string"
                     },
                     "quantities": {
                       "type": "object",
                       "properties": {
                         "rowsWritten": {
-                          "type": "string",
-                          "pattern": "^\\d+(\\.\\d{1,6})?$"
+                          "type": "string"
                         },
                         "rowsRead": {
-                          "type": "string",
-                          "pattern": "^\\d+(\\.\\d{1,6})?$"
+                          "type": "string"
                         },
                         "storage": {
-                          "type": "string",
-                          "pattern": "^\\d+(\\.\\d{1,6})?$"
+                          "type": "string"
                         },
                         "requests": {
-                          "type": "string",
-                          "pattern": "^\\d+(\\.\\d{1,6})?$"
+                          "type": "string"
                         },
                         "cpu": {
-                          "type": "string",
-                          "pattern": "^\\d+(\\.\\d{1,6})?$"
+                          "type": "string"
                         },
                         "doRequests": {
-                          "type": "string",
-                          "pattern": "^\\d+(\\.\\d{1,6})?$"
+                          "type": "string"
                         },
                         "duration": {
-                          "type": "string",
-                          "pattern": "^\\d+(\\.\\d{1,6})?$"
+                          "type": "string"
                         }
                       },
                       "required": [
@@ -25675,8 +25652,7 @@
                           "vertical": {
                             "anyOf": [
                               {
-                                "type": "string",
-                                "minLength": 1
+                                "type": "string"
                               },
                               {
                                 "type": "null"
@@ -25684,46 +25660,34 @@
                             ]
                           },
                           "kind": {
-                            "type": "string",
-                            "enum": [
-                              "live",
-                              "preview"
-                            ]
+                            "type": "string"
                           },
                           "wouldCostUsd": {
-                            "type": "string",
-                            "pattern": "^\\d+(\\.\\d{1,6})?$"
+                            "type": "string"
                           },
                           "quantities": {
                             "type": "object",
                             "properties": {
                               "rowsWritten": {
-                                "type": "string",
-                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                "type": "string"
                               },
                               "rowsRead": {
-                                "type": "string",
-                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                "type": "string"
                               },
                               "storage": {
-                                "type": "string",
-                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                "type": "string"
                               },
                               "requests": {
-                                "type": "string",
-                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                "type": "string"
                               },
                               "cpu": {
-                                "type": "string",
-                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                "type": "string"
                               },
                               "doRequests": {
-                                "type": "string",
-                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                "type": "string"
                               },
                               "duration": {
-                                "type": "string",
-                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                "type": "string"
                               }
                             },
                             "required": [
@@ -25753,8 +25717,7 @@
                         "type": "object",
                         "properties": {
                           "day": {
-                            "type": "string",
-                            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                            "type": "string"
                           },
                           "read": {
                             "type": "boolean"
@@ -25762,8 +25725,7 @@
                           "wouldCostUsd": {
                             "anyOf": [
                               {
-                                "type": "string",
-                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                "type": "string"
                               },
                               {
                                 "type": "null"
@@ -25773,8 +25735,7 @@
                           "liveWouldCostUsd": {
                             "anyOf": [
                               {
-                                "type": "string",
-                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                "type": "string"
                               },
                               {
                                 "type": "null"
@@ -25784,8 +25745,7 @@
                           "previewWouldCostUsd": {
                             "anyOf": [
                               {
-                                "type": "string",
-                                "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                "type": "string"
                               },
                               {
                                 "type": "null"
@@ -25798,32 +25758,25 @@
                                 "type": "object",
                                 "properties": {
                                   "rowsWritten": {
-                                    "type": "string",
-                                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                    "type": "string"
                                   },
                                   "rowsRead": {
-                                    "type": "string",
-                                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                    "type": "string"
                                   },
                                   "storage": {
-                                    "type": "string",
-                                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                    "type": "string"
                                   },
                                   "requests": {
-                                    "type": "string",
-                                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                    "type": "string"
                                   },
                                   "cpu": {
-                                    "type": "string",
-                                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                    "type": "string"
                                   },
                                   "doRequests": {
-                                    "type": "string",
-                                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                    "type": "string"
                                   },
                                   "duration": {
-                                    "type": "string",
-                                    "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                    "type": "string"
                                   }
                                 },
                                 "required": [
@@ -25850,8 +25803,7 @@
                                 "vertical": {
                                   "anyOf": [
                                     {
-                                      "type": "string",
-                                      "minLength": 1
+                                      "type": "string"
                                     },
                                     {
                                       "type": "null"
@@ -25859,15 +25811,10 @@
                                   ]
                                 },
                                 "kind": {
-                                  "type": "string",
-                                  "enum": [
-                                    "live",
-                                    "preview"
-                                  ]
+                                  "type": "string"
                                 },
                                 "wouldCostUsd": {
-                                  "type": "string",
-                                  "pattern": "^\\d+(\\.\\d{1,6})?$"
+                                  "type": "string"
                                 }
                               },
                               "required": [

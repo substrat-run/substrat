@@ -39,7 +39,8 @@ const COLUMNS: { key: keyof Quantities; label: string; format: (v: string) => st
   { key: 'cpu', label: 'CPU', format: (v) => `${qty(v)} ms` },
   { key: 'doRequests', label: 'DO requests', format: qty },
 ];
-const kindLabel = (kind: string) => kind === 'preview' ? 'Preview' : 'Live';
+/** A kind this dashboard does not know yet is shown as the plane named it, never as live. */
+const kindLabel = (kind: string) => kind === 'preview' ? 'Preview' : kind === 'live' ? 'Live' : kind;
 const appLabel = (names: VerticalNames, vertical: string | null) => vertical === null ? 'No app' : verticalLabel(names, vertical);
 
 /** One bar per closed day, stacked by app or by kind. A day the rollup has not read is hatched, never zero. */
