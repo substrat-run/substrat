@@ -63,7 +63,8 @@ import {
 import { SIGN_IN_LOG_RETENTION, countSignInsByWindow, readSignInLog, signInLogCutAt, readSignInLogEntry, signInLogQuery, signInWindowQuery } from './sign-in-log.js';
 import { importBody, importUsers, wallClock } from './user-import.js';
 import { platformOwnerOf } from './resources.js';
-import { servedVersion } from './log.js';
+import { log, servedVersion } from './log.js';
+import { adminEraseUser } from './user-erasure.js';
 
 /**
  * The issuer's own admin surface — what neither Better Auth nor `oauthProvider` has an
@@ -1187,6 +1188,22 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     const outcome = deps.transaction(() => adminMergeAccounts(deps.sql, c.req.param('userId'), parsed.data.from, wallClock()));
     if ('refused' in outcome) throw new HTTPException(outcome.refused === 'unknown user' ? 404 : 409, { message: outcome.refused });
     return c.json({ merged: parsed.data.from, into: outcome.survivor });
+  });
+
+  /**
+   * Delete a person (#3346) — the console's Remove, in place of Better Auth's
+   * `admin/remove-user`, which half-deletes anybody holding an OAuth token or consent and is
+   * refused in `auth.ts` for that reason. `user-erasure.ts` says what goes and what stays. One
+   * transaction, and one `user deleted` line naming who did it — the issuer keeps no admin table,
+   * so its log is the record.
+   */
+  app.delete('/users/:userId', async (c) => {
+    const actor = (await deps.session(c.req.raw.headers))!;
+    const userId = c.req.param('userId');
+    const outcome = deps.transaction(() => adminEraseUser(deps.sql, userId, actor.sub));
+    if ('refused' in outcome) throw new HTTPException(outcome.status, { message: outcome.refused });
+    log.info('user deleted', { userId, by: actor.sub });
+    return c.json({ deleted: userId });
   });
 
   /**

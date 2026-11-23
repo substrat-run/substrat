@@ -264,10 +264,18 @@ export async function unbanUser(userId: string): Promise<void> {
   if (error) throw new Error(error.message ?? 'could not unban user');
 }
 
+/**
+ * Delete a person (#3346), through the issuer's own route rather than Better Auth's
+ * `admin/remove-user` — which half-deleted anybody who had signed in to an app, and is refused
+ * now. The server refuses your own account and the last administrator.
+ */
 export async function removeUser(userId: string): Promise<void> {
-  const { error } = await authClient.admin.removeUser({ userId });
-  if (error) throw new Error(error.message ?? 'could not remove user');
+  await admin<{ deleted: string }>(`/users/${encodeURIComponent(userId)}`, { method: 'DELETE' });
 }
+
+/** What both Remove buttons ask before they call `removeUser` — one sentence, so they cannot drift. */
+export const removeUserWarning = (email: string): string =>
+  `Delete ${email}? Their sessions here end at once, and the tokens and consent every app holds from this issuer are revoked; an API that checks its tokens itself may accept one until it expires. Their sign-in methods are deleted. An app keeps its own session and whatever it stored under their user id. This cannot be undone.`;
 
 /* ---- one person: what the user-detail screen at /users/:id reads and does ---- */
 

@@ -6,6 +6,7 @@ import {
   createUser,
   listUsers,
   removeUser,
+  removeUserWarning,
   setRole,
   unbanUser,
   type AdminUser,
@@ -67,7 +68,7 @@ export function UsersView({ me }: { me: string }) {
       {importing && <ImportUsers onImported={reload} onClose={() => setImporting(false)} />}
       <section className="panel">
         {err && <p className="error">{err}</p>}
-        <UserTable users={users} me={me} onChanged={reload} />
+        <UserTable users={users} me={me} onChanged={reload} onError={setErr} />
       </section>
     </>
   );
@@ -94,7 +95,18 @@ function InviteUser({ onInvited, onClose }: { onInvited: () => void; onClose: ()
   </div>;
 }
 
-function UserTable({ users, me, onChanged }: { users: AdminUser[] | null; me: string; onChanged: () => void }) {
+function UserTable({
+  users,
+  me,
+  onChanged,
+  onError,
+}: {
+  users: AdminUser[] | null;
+  me: string;
+  onChanged: () => void;
+  /** A refused lever (the last administrator, say) is said above the table, not swallowed. */
+  onError: (message: string) => void;
+}) {
   const [busy, setBusy] = useState<string | null>(null);
   if (!users) return <p className="muted">Loading users…</p>;
   const act = async (id: string, fn: () => Promise<void>) => {
@@ -102,6 +114,8 @@ function UserTable({ users, me, onChanged }: { users: AdminUser[] | null; me: st
     try {
       await fn();
       await onChanged();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(null);
     }
@@ -140,7 +154,16 @@ function UserTable({ users, me, onChanged }: { users: AdminUser[] | null; me: st
               {u.banned
                 ? <button className="btn tiny" onClick={() => act(u.id, () => unbanUser(u.id))}>Unban</button>
                 : <button className="btn tiny" disabled={u.id === me} onClick={() => act(u.id, () => banUser(u.id))}>Ban</button>}
-              <button className="btn tiny danger" disabled={u.id === me} onClick={() => act(u.id, () => removeUser(u.id))}>Remove</button>
+              <button
+                className="btn tiny danger"
+                disabled={u.id === me}
+                onClick={() => {
+                  if (!window.confirm(removeUserWarning(u.email))) return;
+                  void act(u.id, () => removeUser(u.id));
+                }}
+              >
+                Remove
+              </button>
             </td>
           </tr>
         ))}

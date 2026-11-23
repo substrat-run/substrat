@@ -10,6 +10,7 @@ import {
   listUserSessions,
   markEmailVerified,
   removeUser,
+  removeUserWarning,
   revokeUserSession,
   revokeUserSessions,
   setRole,
@@ -209,7 +210,7 @@ function UserHeader({ user, me, onChanged, onBan }: { user: AdminUser; me: strin
               variant="danger"
               disabled={busy || isMe}
               onClick={() => {
-                if (!window.confirm(`Remove ${user.email}? Their account, sessions and sign-in methods go with them, and every relying party holding their user id keeps a reference to nobody. This cannot be undone.`)) return;
+                if (!window.confirm(removeUserWarning(user.email))) return;
                 void act(async () => {
                   await removeUser(user.id);
                   navigate(USERS_PATH);
