@@ -412,7 +412,7 @@ export function signInMethodOfPath(
   if (path === '/invitation/password') return PASSWORD_METHOD;
   if (path === '/phone/verify') return PASSWORD_SMS_METHOD;
   if (path === '/sign-in/email' || path === '/sign-up/email') return PASSWORD_METHOD;
-  // The verification link, which signs in only while `REQUIRE_EMAIL_VERIFICATION` is on: the
+  // The verification link, which signs in only while the password connection requires verification: the
   // session sign-up withheld, for a password account. Stamped as that password, so a client
   // that refuses passwords refuses it and one that wants an SMS second factor still asks for it.
   // Holding the mailbox is not a weaker proof than the password here — a reset link already

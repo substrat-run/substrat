@@ -55,9 +55,9 @@ export const AUTH_SERVER_ENV: EnvVarSpec[] = [
   },
   {
     key: 'REQUIRE_EMAIL_VERIFICATION',
-    label: 'Require email verification',
+    label: 'Require email verification (deprecated)',
     description:
-      'Refuse a password sign-in until the account’s email address is verified (`true`/`false`). Off by default, which is what this issuer did before the key existed. On, a new account gets no session at sign-up: the verification mail’s link signs the person in and, when an application sent them, carries them back to it. An unverified person who tries to sign in is refused and sent a fresh link. Only password sign-in is gated — an upstream, BankID or an invitation proves the person another way. Togglable from the dashboard, which writes this same value.',
+      'Deprecated: set this on the Username-Password connection instead (Connections → Username-Password → Settings), where it now lives. Read only as the fallback for an issuer whose connection has no value of its own yet; once the connection has one, this key is ignored. `true`/`false`, off by default. On, a password sign-in is refused until the account’s email address is verified, a new account is signed in by the link in its verification mail, and an unverified person who tries to sign in is sent a fresh link.',
     placeholder: 'false',
     required: false,
     secret: false,

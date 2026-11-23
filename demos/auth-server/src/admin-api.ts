@@ -12,7 +12,6 @@ import { ISSUER_LOCALE, LOCALES, issuerLocale } from './locale-wire.js';
 import {
   ACCOUNT_LINKING,
   ALLOW_SIGNUP,
-  REQUIRE_EMAIL_VERIFICATION,
   MACHINE_SCOPES,
   accountLinkingMode,
   boolValue,
@@ -21,7 +20,8 @@ import {
   machineScopesValue,
   putDeliveredConfig,
 } from './settings.js';
-import { assertSignInPolicy, isReservedMethodId, sanitizeSignInPolicy } from './sign-in-policy.js';
+import { PASSWORD_METHOD, assertSignInPolicy, isReservedMethodId, sanitizeSignInPolicy } from './sign-in-policy.js';
+import { databaseConnectionSettings, putDatabaseConnection } from './database-connection.js';
 import {
   CONSOLE_CLIENT_ID,
   CONSOLE_CLIENT_NAME,
@@ -545,8 +545,6 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     const machine = machineScopesOf(cfg[MACHINE_SCOPES]);
     return {
       allowSignup: isTruthy(cfg[ALLOW_SIGNUP]),
-      /** `REQUIRE_EMAIL_VERIFICATION` — whether a password sign-in needs a verified address. */
-      requireEmailVerification: isTruthy(cfg[REQUIRE_EMAIL_VERIFICATION]),
       accountLinking: accountLinkingMode(cfg[ACCOUNT_LINKING]),
       /**
        * What a machine client may be granted — `MACHINE_SCOPES`, however it was set (a var, the
@@ -583,7 +581,6 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     const parsed = z
       .object({
         allowSignup: z.boolean().optional(),
-        requireEmailVerification: z.boolean().optional(),
         accountLinking: z.enum(['link', 'block']).optional(),
         machineScopes: z.array(z.string()).optional(),
         issuerTheme: z.unknown().optional(),
@@ -612,14 +609,39 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
       ...(parsed.data.allowSignup !== undefined
         ? [{ key: ALLOW_SIGNUP, value: boolValue(parsed.data.allowSignup) }]
         : []),
-      ...(parsed.data.requireEmailVerification !== undefined
-        ? [{ key: REQUIRE_EMAIL_VERIFICATION, value: boolValue(parsed.data.requireEmailVerification) }]
-        : []),
       ...(parsed.data.accountLinking !== undefined
         ? [{ key: ACCOUNT_LINKING, value: parsed.data.accountLinking }]
         : []),
     ]);
     return c.json(settingsView());
+  });
+
+  /* ---- the Username-Password connection ---- */
+
+  /**
+   * The password connection's own settings (`src/database-connection.ts`, #3344) — what this
+   * connection does, kept on the connection rather than among the issuer-wide keys `/settings`
+   * carries. `requireEmailVerificationSource` says where the effective value came from: the
+   * connection itself, the deprecated `REQUIRE_EMAIL_VERIFICATION` key it still falls back to,
+   * or the default (off).
+   */
+  app.get(`/connections/${PASSWORD_METHOD}`, (c) => c.json(databaseConnectionSettings(deps.sql, deps.effectiveCfg())));
+
+  /**
+   * A partial PATCH, like `/settings`: only what arrives is written. The first write gives the
+   * connection a value of its own, and from then on the env key is not read for it. Better Auth
+   * is rebuilt per request, so the change decides the very next sign-up or sign-in.
+   */
+  app.patch(`/connections/${PASSWORD_METHOD}`, async (c) => {
+    const input = parsedBody(
+      z
+        .object({ requireEmailVerification: z.boolean().optional() })
+        .strict()
+        .refine((v) => v.requireEmailVerification !== undefined, { message: 'name at least one setting to change' }),
+      await c.req.json().catch(() => null),
+    );
+    putDatabaseConnection(deps.sql, input);
+    return c.json(databaseConnectionSettings(deps.sql, deps.effectiveCfg()));
   });
 
   /* ---- the upstream identity providers ---- */

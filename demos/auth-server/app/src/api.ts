@@ -195,7 +195,7 @@ export async function signIn(
 }
 
 /**
- * The issuer requires a verified address (`REQUIRE_EMAIL_VERIFICATION`) and this one is not.
+ * The password connection requires a verified address and this one is not.
  * Not a failure to report as one: the password was right, and the refusal already sent a fresh
  * link — so the screen says where to look rather than what went wrong.
  */
@@ -210,7 +210,7 @@ export class EmailNotVerified extends Error {}
  * just sign-in. So someone sent here by a relying party can create an account and land back at
  * that app's callback, instead of stranded on a dashboard they cannot use.
  *
- * With `REQUIRE_EMAIL_VERIFICATION` on there is no session to resume: the issuer answers
+ * With email verification required there is no session to resume: the issuer answers
  * `token: null` and the verification mail's link does the signing in — and the resuming, since
  * the issuer points it at the pending authorize request. `verificationSent` is that answer.
  */
@@ -1081,11 +1081,6 @@ export type AccountLinkingMode = 'link' | 'block';
 
 export interface IssuerSettings {
   allowSignup: boolean;
-  /**
-   * `REQUIRE_EMAIL_VERIFICATION` — a password sign-in is refused until the address is verified,
-   * and sign-up sets no session: the verification link does.
-   */
-  requireEmailVerification: boolean;
   accountLinking: AccountLinkingMode;
   /**
    * `MACHINE_SCOPES` — what a machine client may be granted. The same key the platform's Env
@@ -1115,9 +1110,39 @@ export async function issuerVersion(): Promise<{ versionId: string | null }> {
 
 /** A partial patch: only the settings named are written, so one control cannot revert another. */
 export async function setIssuerSettings(
-  patch: Partial<Pick<IssuerSettings, 'allowSignup' | 'requireEmailVerification' | 'accountLinking' | 'machineScopes' | 'issuerTheme' | 'defaultLocale'>>,
+  patch: Partial<Pick<IssuerSettings, 'allowSignup' | 'accountLinking' | 'machineScopes' | 'issuerTheme' | 'defaultLocale'>>,
 ): Promise<IssuerSettings> {
   return admin('/settings', { method: 'PATCH', body: JSON.stringify(patch) });
+}
+
+/* ---- the Username-Password connection (`/api/admin/connections/password`) ---- */
+
+/** Where a connection setting's effective value came from. `env` is the deprecated fallback key. */
+export type SettingSource = 'connection' | 'env' | 'default';
+
+/**
+ * The password connection's own settings (#3344), kept on the connection rather than among the
+ * issuer-wide keys `IssuerSettings` carries.
+ */
+export interface DatabaseConnectionSettings {
+  /** A password sign-in is refused until the address is verified; sign-up sets no session, the link does. */
+  requireEmailVerification: boolean;
+  /**
+   * `connection` once the connection has a value of its own. `env` while it is still read from
+   * the deprecated `REQUIRE_EMAIL_VERIFICATION` key; `default` when neither is set (off).
+   */
+  requireEmailVerificationSource: SettingSource;
+}
+
+export async function databaseConnectionSettings(): Promise<DatabaseConnectionSettings> {
+  return admin('/connections/password');
+}
+
+/** A partial patch, like `setIssuerSettings`: only what is named is written. */
+export async function setDatabaseConnectionSettings(
+  patch: Partial<Pick<DatabaseConnectionSettings, 'requireEmailVerification'>>,
+): Promise<DatabaseConnectionSettings> {
+  return admin('/connections/password', { method: 'PATCH', body: JSON.stringify(patch) });
 }
 
 /* ---- the upstream identity providers (`/api/admin`) ---- */

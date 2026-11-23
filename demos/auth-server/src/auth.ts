@@ -107,8 +107,9 @@ export interface AuthDeps {
   allowSignup?: boolean;
   /**
    * Must a password account's address be verified before it may sign in with the password?
-   * Off unless an operator turns it on (`REQUIRE_EMAIL_VERIFICATION`, settable from the
-   * dashboard). On, sign-up sets no session — the verification link does, and carries someone
+   * Off unless an operator turns it on — the Username-Password connection's own setting
+   * (`src/database-connection.ts`, #3344), with the deprecated `REQUIRE_EMAIL_VERIFICATION` key as
+   * its fallback. On, sign-up sets no session — the verification link does, and carries someone
    * a relying party sent back to it (`verificationReturnsToClient`) — and an unverified sign-in
    * is refused with a fresh link sent. Only `/sign-in/email` is gated: every other way in
    * proves the person by something other than a password this issuer cannot vouch for.
@@ -758,7 +759,7 @@ function betterAuthFor(deps: AuthDeps) {
       // that app's callback never sees this dashboard (the #898 failure, on the sign-up path).
       disableSignUp: !deps.allowSignup,
       autoSignIn: true,
-      // The operator's `REQUIRE_EMAIL_VERIFICATION`. On, Better Auth skips `autoSignIn` on
+      // The password connection's "require email verification". On, Better Auth skips `autoSignIn` on
       // sign-up (no session until the link is clicked) and refuses an unverified
       // `/sign-in/email` with `EMAIL_NOT_VERIFIED` — AFTER checking the password, so a fresh
       // link is only ever sent to someone who knew it.
@@ -776,7 +777,7 @@ function betterAuthFor(deps: AuthDeps) {
     emailVerification: {
       sendOnSignUp: true,
       // Verification is always offered (mail goes out through the same adapter); whether it is
-      // REQUIRED is the operator's `REQUIRE_EMAIL_VERIFICATION`. The two options below only
+      // REQUIRED is the password connection's own setting. The two options below only
       // apply while it is on, so an issuer that leaves it off behaves exactly as before:
       //  - `sendOnSignIn`: a refused sign-in sends a fresh link, so someone whose first mail
       //    expired or got lost is never stuck without one.

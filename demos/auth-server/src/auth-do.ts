@@ -24,7 +24,8 @@ import { clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, clientSignInRoute, clientStraightThrough, readSignInPolicy } from './sign-in-policy.js';
 import { readSignInLog, signInLoggerFor, type SignInLogQuery } from './sign-in-log.js';
 import { optionalTwilioFrom } from './twilio.js';
-import { ACCOUNT_LINKING, ALLOW_SIGNUP, MACHINE_SCOPES, REQUIRE_EMAIL_VERIFICATION, accountLinkingMode, deliveredConfig, isTruthy, machineScopesOf, putDeliveredConfig, supabaseBridgeFrom } from './settings.js';
+import { ACCOUNT_LINKING, ALLOW_SIGNUP, MACHINE_SCOPES, accountLinkingMode, deliveredConfig, isTruthy, machineScopesOf, putDeliveredConfig, supabaseBridgeFrom } from './settings.js';
+import { databaseConnectionSettings } from './database-connection.js';
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import {
   bankIdApiUrl,
@@ -240,7 +241,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // Re-read per request (this whole method is), so the dashboard's sign-up toggle takes
       // effect on the next request rather than the next deploy.
       allowSignup: overrides?.allowSignup ?? isTruthy(cfg[ALLOW_SIGNUP]),
-      requireEmailVerification: isTruthy(cfg[REQUIRE_EMAIL_VERIFICATION]),
+      // The Username-Password connection's own setting (#3344), read per request like the rest;
+      // the deprecated `REQUIRE_EMAIL_VERIFICATION` key only until the connection has a value.
+      requireEmailVerification: databaseConnectionSettings(this.ctx.storage.sql, cfg).requireEmailVerification,
       // The machine-client ceiling, on the same per-request read: narrowing it takes the dropped
       // scopes out of the next token minted. A refused value reads as none (`machineScopesOf`).
       machineScopes: machineScopesOf(cfg[MACHINE_SCOPES]).scopes,

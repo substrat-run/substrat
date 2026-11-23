@@ -2,12 +2,14 @@ import { useCallback, useEffect, useState } from 'react';
 import { Badge, DetailHeader, EmptyState, LinkTabs } from '@substrat-run/ui';
 import {
   bankidSettings,
+  databaseConnectionSettings,
   identityProviders,
   issuerSettings,
   listOAuthClients,
   setupState,
   type BankIdSettings,
   type ConfiguredProvider,
+  type DatabaseConnectionSettings,
   type IssuerSettings,
   type ProviderCatalogueEntry,
   type PublicProvider,
@@ -34,7 +36,7 @@ const TAB_LABEL: Record<ConnectionTab, string> = { settings: 'Settings', applica
 
 /** What this id turned out to be, once read. BankID's `null` is "not configured yet". */
 type ConnectionRead =
-  | { kind: 'database'; settings: IssuerSettings }
+  | { kind: 'database'; settings: IssuerSettings; connection: DatabaseConnectionSettings }
   | { kind: 'bankid'; settings: BankIdSettings | null }
   | { kind: 'provider'; entry: ProviderCatalogueEntry | null; provider: ConfiguredProvider | null }
   | { kind: 'missing' };
@@ -76,7 +78,8 @@ export function ConnectionDetailView({ id, tab, issuer }: { id: string; tab: Con
   const reload = useCallback(async () => {
     try {
       if (id === DATABASE_ID) {
-        setRead({ kind: 'database', settings: await issuerSettings() });
+        const [settings, connection] = await Promise.all([issuerSettings(), databaseConnectionSettings()]);
+        setRead({ kind: 'database', settings, connection });
       } else if (id === BANKID_ID) {
         setRead({ kind: 'bankid', settings: await bankidSettings() });
       } else {
@@ -170,7 +173,12 @@ export function ConnectionDetailView({ id, tab, issuer }: { id: string; tab: Con
 
       {tab === 'settings' &&
         (read.kind === 'database' ? (
-          <DatabaseSettings settings={read.settings} onChanged={(settings) => setRead({ kind: 'database', settings })} />
+          <DatabaseSettings
+            settings={read.settings}
+            connection={read.connection}
+            onChanged={(settings) => setRead({ ...read, settings })}
+            onConnectionChanged={(connection) => setRead({ ...read, connection })}
+          />
         ) : read.kind === 'bankid' ? (
           <BankIdSettingsTab
             settings={read.settings}
@@ -217,8 +225,8 @@ export function ConnectionDetailView({ id, tab, issuer }: { id: string; tab: Con
             // What the read behind this screen returned, as it returned it.
             options:
               read.kind === 'database'
-                ? // The settings document's one key about this connection; the rest are not its.
-                  { allowSignup: read.settings.allowSignup }
+                ? // The connection's own record, plus the settings document's one key about it.
+                  { allowSignup: read.settings.allowSignup, ...read.connection }
                 : read.kind === 'bankid'
                   ? read.settings
                   : { catalogue: read.entry, configured: read.provider },
