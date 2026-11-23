@@ -23,6 +23,7 @@ import { recoverInvitation, saveInvitation, type InvitationRecovery } from './au
 import { returnTarget } from './console/routes';
 import { Card, Centered } from './primitives';
 import { drawsForRelyingParty } from './auth/hand-off';
+import { entryScreen, signInHintsOf } from './auth/sign-in-hints';
 import { LocaleContext, detectLocale, storeLocale } from './auth/locale';
 import { translate } from '../../src/messages.js';
 import { themeTitle } from '../../src/theme-wire.js';
@@ -34,6 +35,19 @@ import { applyClientTheme, paintHandOff } from './theme-apply';
 // and their API client load only once a session says there is a console to draw.
 const Console = lazy(() => import('./console/Console').then((m) => ({ default: m.Console })));
 import { IssuerUnreachable } from './wire';
+
+type SignInPhase = {
+  t: 'signin';
+  signupEnabled: boolean;
+  oauthQuery: string | null;
+  /** The methods THIS client accepts — the issuer's own list when no client sent them. */
+  signIn: ClientSignIn;
+  socialError: string | null;
+  /** The relying party's `login_hint`, when it is an address (`auth/sign-in-hints.ts`). */
+  loginHint: string | null;
+  /** The relying party asked for sign-up, and it is not open to it here: say so. */
+  signUpClosed: boolean;
+};
 
 type Phase =
   | { t: 'github-email' }
@@ -50,15 +64,9 @@ type Phase =
   | { t: 'failed'; message: string }
   | { t: 'reset'; token: string }
   | { t: 'setup' }
-  | {
-      t: 'signin';
-      signupEnabled: boolean;
-      oauthQuery: string | null;
-      /** The methods THIS client accepts — the issuer's own list when no client sent them. */
-      signIn: ClientSignIn;
-      socialError: string | null;
-    }
-  | { t: 'signup'; forOidc: boolean; oauthQuery: string | null }
+  | SignInPhase
+  /** `signin` is the screen its "I already have an account" goes back to. */
+  | { t: 'signup'; forOidc: boolean; oauthQuery: string | null; loginHint: string | null; signin: SignInPhase }
   | { t: 'consent'; request: ConsentRequest }
   | { t: 'not-admin'; session: Session }
   | { t: 'dashboard'; session: Session };
@@ -162,27 +170,38 @@ export default function App() {
     setTheme(options.theme);
     settleLocale(options.defaultLocale, options.theme.languages);
     const signIn = options.signIn;
+    const hints = signInHintsOf(oauthQuery);
+    const signin: SignInPhase = { t: 'signin', signupEnabled, oauthQuery, signIn, socialError, loginHint: hints.loginHint, signUpClosed: false };
+    /**
+     * Sign-in, or sign-up when the relying party asked for it (`/signup`, which is where the
+     * plugin's own `prompt=create` route lands, or `screen_hint=signup`) and it is open to this
+     * client. Asked for and not open, it is sign-in with a line saying so, rather than a form the
+     * endpoint would refuse. Either way the pending request rides along: creating an account
+     * resumes it the same way signing in does.
+     */
+    const signInOrUp = () => {
+      const screen = entryScreen({
+        askedSignUp: url.pathname === '/signup' || hints.signUp,
+        signUpOpen: signupEnabled && signIn.password,
+        socialError: socialError !== null,
+      });
+      if (screen === 'signup') return setPhase({ t: 'signup', forOidc, oauthQuery, loginHint: hints.loginHint, signin });
+      return setPhase({ ...signin, signUpClosed: screen === 'closed' });
+    };
 
     // An authorize request is waiting on an answer. Without a session the consent code cannot
     // be honoured, so fall back to sign-in — Better Auth resumes from its own prompt cookie.
     if (url.pathname === '/consent') {
       const request = pendingConsent(url);
       if (session && request) return setPhase({ t: 'consent', request });
-      return setPhase({ t: 'signin', signupEnabled, oauthQuery, signIn, socialError });
+      return setPhase(signin);
     }
-    // Sign-up is a pre-auth screen like the other two, and reachable mid-authorize: the
-    // pending request lives in a cookie, so creating an account resumes it the same way
-    // signing in does. A closed issuer sends this path back to sign-in rather than showing
-    // a form the endpoint would refuse.
-    if (url.pathname === '/signup') {
-      return setPhase(signupEnabled ? { t: 'signup', forOidc, oauthQuery } : { t: 'signin', signupEnabled, oauthQuery, signIn, socialError });
-    }
-    // `/login` means an RP asked for a sign-in, and that stays true when a session already
-    // exists: `prompt=login` (and an expired `max_age`) is a re-authentication request, and
-    // answering it with the dashboard strands the flow exactly as `/consent` did.
-    if (url.pathname === '/login') return setPhase({ t: 'signin', signupEnabled, oauthQuery, signIn, socialError });
+    // `/signup` and `/login` are the plugin's pre-auth pages, and both stay screens when a
+    // session already exists: `prompt=login` (and an expired `max_age`) is a re-authentication
+    // request, and answering it with the dashboard strands the flow exactly as `/consent` did.
+    if (url.pathname === '/signup' || url.pathname === '/login') return signInOrUp();
 
-    if (!session) return setPhase({ t: 'signin', signupEnabled, oauthQuery, signIn, socialError });
+    if (!session) return signInOrUp();
     setPhase(session.role === 'admin' ? { t: 'dashboard', session } : { t: 'not-admin', session });
   }, []);
 
@@ -282,8 +301,10 @@ export default function App() {
           oauthQuery={phase.oauthQuery}
           signIn={phase.signIn}
           socialError={phase.socialError}
+          loginHint={phase.loginHint}
+          signUpClosed={phase.signUpClosed}
           theme={theme}
-          onSignUp={() => setPhase({ t: 'signup', forOidc: phase.oauthQuery !== null, oauthQuery: phase.oauthQuery })}
+          onSignUp={() => setPhase({ t: 'signup', forOidc: phase.oauthQuery !== null, oauthQuery: phase.oauthQuery, loginHint: phase.loginHint, signin: phase })}
         />
       );
     case 'signup':
@@ -293,9 +314,12 @@ export default function App() {
         <SignUp
           forOidc={phase.forOidc}
           oauthQuery={phase.oauthQuery}
+          loginHint={phase.loginHint}
           theme={theme}
           onDone={doneSigningIn}
-          onSignIn={run}
+          // Straight to sign-in, not `run`: the URL still asks for sign-up, and re-reading it
+          // would put the person right back on this form.
+          onSignIn={() => setPhase({ ...phase.signin, signUpClosed: false })}
         />
       );
     case 'consent':

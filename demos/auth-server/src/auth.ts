@@ -694,6 +694,32 @@ const SIGNED_QUERY_PARAMS = ['sig', 'exp', 'ba_iat', 'ba_pl', 'ba_param'] as con
  * (`signInMethodOfPath`), which such a client's policy refuses, so authorize asks again
  * (`max_age=0`) and the person signs in with password and code before any code is issued.
  */
+/**
+ * `prompt=create` (OpenID Connect Prompt Create 1.0), answered as `prompt=login` plus
+ * `screen_hint=signup` — the same request, in a form `oauthProvider` can finish (#3345).
+ *
+ * The plugin routes `create` to its sign-up page, but the after-hook that resumes the pending
+ * request once someone signs in or up strips only `login` from it. The resumed request still
+ * says `create`, so authorize sends the person who has just made an account (or signed in to the
+ * one they had) back to the sign-up screen, and never on to the application. `login` asks for the
+ * same thing that matters here, a screen even when a session exists, and is answered on every
+ * resume; `screen_hint=signup` is what tells the screen to open on "Create account" (the SPA
+ * reads both from the signed query, and a relying party may send `screen_hint` by itself).
+ *
+ * `create` stays in discovery's `prompt_values_supported`: it is honoured, just not passed on.
+ * A `prompt` the plugin would refuse (`none` beside anything, an unknown value) is left alone, so
+ * it is refused in the plugin's words rather than ours. Returns `undefined` when there is nothing
+ * to rewrite.
+ */
+export function createAsSignUpScreen(
+  query: Record<string, string | undefined> | undefined,
+): Record<string, string | undefined> | undefined {
+  const prompts = (query?.prompt ?? '').split(' ').filter(Boolean);
+  if (!query || !prompts.includes('create') || prompts.includes('none')) return undefined;
+  const rest = prompts.filter((p) => p !== 'create' && p !== 'login');
+  return { ...query, prompt: ['login', ...rest].join(' '), screen_hint: 'signup' };
+}
+
 async function verificationReturnsToClient(ctx: {
   path: string;
   body?: Record<string, unknown>;
@@ -811,10 +837,11 @@ function betterAuthFor(deps: AuthDeps) {
       oauthProvider({
         loginPage: '/login',
         consentPage: '/consent',
-        // `prompt=create` — a relying party asking for a sign-up screen rather than a
-        // sign-in. Without this the plugin sends those people to `loginPage`, and the
-        // vertical's own sign-up screen would only ever be reached by someone who clicked
-        // through to it.
+        // The plugin's own `prompt=create` route. The before-hook rewrites `create` into
+        // `prompt=login` + `screen_hint=signup` first (`createAsSignUpScreen`: the plugin's
+        // resume would otherwise send a new account straight back here), so a request lands on
+        // `/login` and the SPA opens sign-up from the hint. Kept so a `create` that ever got past
+        // the rewrite still shows the sign-up screen rather than the sign-in one.
         signup: { page: '/signup' },
         // Let any OIDC-compatible app register itself as a relying party (the "standalone
         // auth server for whatever app" goal), with no session — RFC 7591. Turn BOTH off to
@@ -1102,12 +1129,15 @@ function betterAuthFor(deps: AuthDeps) {
           return verificationReturnsToClient(ctx);
         }
         if (ctx.path !== '/oauth2/authorize') return;
-        const query = ctx.query as Record<string, string | undefined> | undefined;
-        const clientId = query?.client_id;
+        const asked = ctx.query as Record<string, string | undefined> | undefined;
+        const clientId = asked?.client_id;
         if (!clientId) return;
+        // First, so everything below (and the plugin) judges the request as rewritten.
+        const created = createAsSignUpScreen(asked);
+        const query = created ?? asked;
         // Before the policy, so a refusal below re-asks with the narrowed scope too.
         const scope = await withoutMachineScopes(ctx, clientId, query?.scope, machineScopes);
-        const narrowed = scope === undefined ? undefined : { context: { query: { ...query, scope } } };
+        const narrowed = scope === undefined ? (created ? { context: { query } } : undefined) : { context: { query: { ...query, scope } } };
         const policy = deps.signInPolicyFor?.(clientId);
         // No session is not this hook's business: the plugin already sends that person to the
         // login screen, which applies the same policy to what it draws (`straightToUpstream`

@@ -20,11 +20,20 @@ import { useT } from './locale';
  * to the application, when one sent them).
  */
 export function SignUp({
-  forOidc, oauthQuery, theme, onDone, onSignIn,
-}: { forOidc: boolean; oauthQuery: string | null; theme: ClientTheme; onDone: () => void; onSignIn: () => void }) {
+  forOidc, oauthQuery, loginHint = null, theme, onDone, onSignIn,
+}: {
+  forOidc: boolean;
+  oauthQuery: string | null;
+  /** The relying party's `login_hint` (an invite's address): pre-filled and still editable. It
+   *  proves nothing, so the address is verified exactly as a typed one is. */
+  loginHint?: string | null;
+  theme: ClientTheme;
+  onDone: () => void;
+  onSignIn: () => void;
+}) {
   const t = useT();
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(loginHint ?? '');
   const [password, setPassword] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);

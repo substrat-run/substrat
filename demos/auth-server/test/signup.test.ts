@@ -6,7 +6,7 @@ import { MockEmailTransport } from '@substrat-run/adapter-email';
 import { resolveScopedEnvSpec } from '@substrat-run/contracts';
 import { schema } from '../src/auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
-import { buildAuth, type Auth } from '../src/auth.js';
+import { buildAuth, createAsSignUpScreen, type Auth } from '../src/auth.js';
 import { AUTH_SERVER_ENV } from '../src/manifest.js';
 import { createAdminApi } from '../src/admin-api.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, REQUIRE_EMAIL_VERIFICATION, deliveredConfig, isTruthy, putDeliveredConfig } from '../src/settings.js';
@@ -359,6 +359,51 @@ describe('signing up mid-authorize returns to the relying party', () => {
   });
 });
 
+describe('prompt=create opens sign-up and still resumes to the relying party (#3345)', () => {
+  /** What the sign-in screen is handed: the signed query of the `/login` the plugin answered. */
+  const resumeOf = async (path: string, body: Record<string, unknown>) => {
+    const res = await call(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'sec-fetch-mode': 'cors' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { url?: string }).url ?? '';
+  };
+
+  it('signs the hints into the query, and a new account goes on to consent, not back to sign-up', async () => {
+    await patchSettings({ allowSignup: true });
+    const { clientId, oauthQuery } = await arriveFromRelyingParty('st-c', { prompt: 'create', login_hint: NEWCOMER.email });
+    const signed = new URLSearchParams(oauthQuery);
+    expect(signed.get('prompt')).toBe('login');
+    expect(signed.get('screen_hint')).toBe('signup');
+    expect(signed.get('login_hint')).toBe(NEWCOMER.email);
+
+    const next = await resumeOf('/api/auth/sign-up/email', { ...NEWCOMER, oauth_query: oauthQuery });
+    expect(next.startsWith('/consent?')).toBe(true);
+    expect(new URL(`http://x${next}`).searchParams.get('client_id')).toBe(clientId);
+  });
+
+  it('resumes someone who already had an account and signed in instead', async () => {
+    const { oauthQuery } = await arriveFromRelyingParty('st-c-in', { prompt: 'create' });
+    const next = await resumeOf('/api/auth/sign-in/email', { email: ADMIN.email, password: ADMIN.password, oauth_query: oauthQuery });
+    expect(next.startsWith('/consent?')).toBe(true);
+  });
+
+  it('rewrites only what the plugin would accept, and leaves `none` for it to refuse', () => {
+    expect(createAsSignUpScreen({ client_id: 'c', prompt: 'create' })).toEqual({ client_id: 'c', prompt: 'login', screen_hint: 'signup' });
+    expect(createAsSignUpScreen({ client_id: 'c', prompt: 'consent create login', screen_hint: 'login' }))
+      .toEqual({ client_id: 'c', prompt: 'login consent', screen_hint: 'signup' });
+    expect(createAsSignUpScreen({ client_id: 'c', prompt: 'none create' })).toBeUndefined();
+    expect(createAsSignUpScreen({ client_id: 'c', prompt: 'login' })).toBeUndefined();
+  });
+
+  it('still advertises create in discovery', async () => {
+    const res = await call('/.well-known/openid-configuration');
+    expect(((await res.json()) as { prompt_values_supported: string[] }).prompt_values_supported).toContain('create');
+  });
+});
+
 describe('with email verification required, the verification link returns to the relying party', () => {
   const SESSION_COOKIE = /session_token=[^;]/;
   /** The link in the last verification mail, as the path this issuer serves it at. */
@@ -422,10 +467,10 @@ describe('with email verification required, the verification link returns to the
   it('answers what asked for a fresh sign-in, so a relying party that asked for sign-up gets its code', async () => {
     // `prompt=create` is how a relying party asks for the sign-up screen — this PR's case.
     // `login` and `max_age=0` ask for a fresh sign-in too; `consent` is not about signing in.
+    // `create` arrives on `/login` as `prompt=login` + `screen_hint=signup` (#3345).
     const { clientId, oauthQuery } = await arriveFromRelyingParty(
       'st-create',
-      { prompt: 'login create consent', max_age: '0' },
-      '/signup',
+      { prompt: 'login create consent', max_age: '0', login_hint: NEWCOMER.email },
     );
     const signedUp = await call('/api/auth/sign-up/email', {
       method: 'POST',
@@ -437,8 +482,11 @@ describe('with email verification required, the verification link returns to the
     const callback = new URL(link.searchParams.get('callbackURL')!, ORIGIN);
     expect(callback.searchParams.get('prompt')).toBe('consent');
     expect(callback.searchParams.has('max_age')).toBe(false);
+    // The hints ride along: a link opened in another browser draws the same pre-filled screen.
+    expect(callback.searchParams.get('login_hint')).toBe(NEWCOMER.email);
+    expect(callback.searchParams.get('screen_hint')).toBe('signup');
 
-    // Re-issued verbatim, the click would land on `/signup` again, signed in and verified.
+    // Re-issued verbatim, the click would land on sign-up again, signed in and verified.
     const cookie = cookiesFrom(await call(`${link.pathname}${link.search}`, { headers: { 'sec-fetch-mode': 'navigate' } }));
     const authorize = await call(`${callback.pathname}${callback.search}`, { headers: { 'sec-fetch-mode': 'navigate', cookie } });
     const next = authorize.headers.get('location') ?? '';
