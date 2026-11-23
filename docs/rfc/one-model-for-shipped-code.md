@@ -387,8 +387,9 @@ with an alarm for the pure host.
 
 Cloudflare's documentation for Workers for Platforms lists Workflows among the bindings a user
 Worker can carry. That was not tried here. What is not known is how an instance behaves when the
-platform changes the script under it. A push replaces the serving script in place (K-33), so an
-instance started on one version wakes on another version's code. A preview runs on an archive
+platform changes the script under it. A push only uploads an archive script; it is a production
+promote that replaces the serving script in place (K-33), so an instance started on one version
+wakes on another version's code. A preview runs on an archive
 script against a copy that must stay inert
 ([#2005](https://github.com/substrat-run/substrat/issues/2005)). Phase 1's spike tests both, and
 the candidate stays or is dropped on the rule §8 gives for that spike. Also uncertain is who a
@@ -438,9 +439,9 @@ process, with a sweep role per connection first, so a rate-limited provider is n
 scope. The entry is generated. K-58's envelope rolls out. A trace id follows calls. `substrat dev`
 runs network parts locally with recorded answers. Three spikes run meanwhile: Cloudflare Workflows
 in Workers for Platforms (below), a call from inside a scope to its store, and no network in scope
-code as a mechanism. *Removes* `HostAdmin` from provider code, one of three connector implementations, the
-vertical's hand-written entry (not the platform entry of §5.3, which stays) and the shared secret
-between router and vertical
+code as a mechanism. *Removes* `HostAdmin` from provider code, one of three connector
+implementations, the vertical's hand-written entry (not the platform entry of §5.3, which stays)
+and the shared secret between router and vertical
 ([K-27](../decisions/K-027-the-router-presents-a-shared-secret-and-the-vertical-verifie.md)). *Done
 when* no provider code reaches `HostAdmin` and every vertical runs a generated entry.
 
@@ -455,10 +456,11 @@ when it has answered five questions:
   Who delivers it: a consumer in the scope, or the dispatcher calling the instance's event API? Is
   that delivery at least once, and is a repeat harmless? What happens to an event that arrives
   before the instance reaches its wait?
-- **A push with instances in flight.** A push replaces the serving script in place (K-33). Does a
-  sleeping or waiting instance resume on the new code? What does a completed step's recorded result
-  mean to code that renamed, removed or reordered steps? Can an instance stay on the version that
-  started it, or must it be drained before a push that changes its steps?
+- **A promote with instances in flight.** A push only uploads an archive script; a production
+  promote replaces the serving script in place (K-33), so the spike promotes, not only pushes. Does
+  a sleeping or waiting instance resume on the promoted code? What does a completed step's recorded
+  result mean to code that renamed, removed or reordered steps? Can an instance stay on the version
+  that started it, or must it be drained before a promote that changes its steps?
 - **A preview.** Does an instance started on a preview's archive script stay tied to that script and
   its copy? Are its steps inert like every other door on a copy (#2005)? What happens to its
   instances when the preview is deleted, or when its data is carried onto a new version
@@ -471,8 +473,8 @@ three of the following:
 - An event committed in a scope reaches the instance waiting for it, through a deliverer the spike
   names. Delivery is at least once, a repeat is harmless, and an event that arrives before the wait
   is not lost.
-- An instance in flight behaves predictably across a push. It either resumes on the new code with
-  defined results, or it is held on its version or drained first.
+- An instance in flight behaves predictably across a production promote. It either resumes on the
+  promoted code with defined results, or it is held on its version or drained first.
 - An instance started on a preview stays tied to the archive script and its copy, and its steps are
   inert there.
 
@@ -530,7 +532,7 @@ dependency in phase 2.
 - Nothing was run. "Built" means the repository's documents and code say so.
 - Not measured: the hop a connector script adds, the response time of a call between two apps
   through the router and egress, and the home scope as a bottleneck.
-- Not known: how a Workflow instance in flight behaves when a push replaces its script in place, and
-  in a preview, and how an event committed in a scope reaches an instance waiting for it.
+- Not known: how a Workflow instance in flight behaves when a promote replaces its script in place,
+  and in a preview, and how an event committed in a scope reaches an instance waiting for it.
   Cloudflare documents the binding for a user Worker, and it was not tried. Also not known: whether
   no network in scope code can be a mechanism on the platform today.
