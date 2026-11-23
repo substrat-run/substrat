@@ -445,10 +445,16 @@ between router and vertical
 when* no provider code reaches `HostAdmin` and every vertical runs a generated entry.
 
 *The Workflows spike* runs on a script uploaded the way the uploader uploads a vertical. It is done
-when it has answered four questions:
+when it has answered five questions:
 
 - **Binding.** Can the uploader bind a Workflow class to a script in the dispatch namespace? Does an
   instance started from it reach the scope's operations through the same door as any other call?
+- **Waking.** The case that motivates the engine runs the other way. An event committed in a scope's
+  outbox has to wake the instance waiting for it. That event may be another vertical's, arriving
+  through cross-vertical delivery ([cross-vertical-events.md](../architecture/cross-vertical-events.md)).
+  Who delivers it: a consumer in the scope, or the dispatcher calling the instance's event API? Is
+  that delivery at least once, and is a repeat harmless? What happens to an event that arrives
+  before the instance reaches its wait?
 - **A push with instances in flight.** A push replaces the serving script in place (K-33). Does a
   sleeping or waiting instance resume on the new code? What does a completed step's recorded result
   mean to code that renamed, removed or reordered steps? Can an instance stay on the version that
@@ -459,9 +465,12 @@ when it has answered four questions:
   ([#1710](https://github.com/substrat-run/substrat/issues/1710))?
 - **Cost.** What does an instance that sleeps or waits for weeks cost?
 
-This is the one rule for whether Workflows stays the default. It stays only if the spike shows both
-of the following:
+This is the one rule for whether Workflows stays the default. It stays only if the spike shows all
+three of the following:
 
+- An event committed in a scope reaches the instance waiting for it, through a deliverer the spike
+  names. Delivery is at least once, a repeat is harmless, and an event that arrives before the wait
+  is not lost.
 - An instance in flight behaves predictably across a push. It either resumes on the new code with
   defined results, or it is held on its version or drained first.
 - An instance started on a preview stays tied to the archive script and its copy, and its steps are
@@ -522,5 +531,5 @@ dependency in phase 2.
 - Not measured: the hop a connector script adds, the response time of a call between two apps
   through the router and egress, and the home scope as a bottleneck.
 - Not known: how a Workflow instance in flight behaves when a push replaces its script in place, and
-  in a preview. Cloudflare documents the binding for a user Worker, and it was not tried. Also not
-  known: whether no network in scope code can be a mechanism on the platform today.
+  in a preview, and how an event committed in a scope reaches an instance waiting for it.
+  Cloudflare documents the binding for a user Worker, and it was not tried. Also not known: whether no network in scope code can be a mechanism on the platform today.
