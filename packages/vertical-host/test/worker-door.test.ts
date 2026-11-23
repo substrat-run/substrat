@@ -338,7 +338,8 @@ describe('an invited person (K-61 phase 3)', () => {
       expect(JSON.stringify(body)).not.toContain('sbcap_');
       expect(calls).toEqual(['openInviteFor cleo@acme.example', 'grant', 'mint', 'send', 'record']);
       expect(host.assignScopeRoleBounded).toHaveBeenCalledWith(node.tenantId, node.scopeId, ann, body.principal, 'rep');
-      expect(named.send).toHaveBeenCalledWith(stub, body);
+      // The mail's link (#3345): the vertical's own login, asking for sign-up with the address.
+      expect(named.send).toHaveBeenCalledWith(stub, { ...body, signInUrl: expect.stringMatching(/\/api\/auth\/login\?login_hint=cleo%40acme\.example&prompt=create&screen_hint=signup$/) });
     });
 
     it('invite: the vertical\'s refusal is the answer, no row is ever written, and the link and role go', async () => {

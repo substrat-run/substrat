@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
@@ -16,6 +16,9 @@ import type { SessionSubject } from '../src/do-contract.js';
 import { publicProvidersFrom, readProviders } from '../src/providers.js';
 import type { SignInPolicy } from '../src/sign-in-policy.js';
 import { OAUTH_QUERY_AFTER_VERIFICATION } from '../src/email-verification-wire.js';
+import { oidcRpAuthProvider } from '@substrat-run/vertical-auth/oidc-rp-provider';
+import { inviteSignInUrl } from '@substrat-run/vertical-auth/invite-routes';
+import { entryScreen, signInHintsOf } from '../app/src/auth/sign-in-hints.js';
 
 /**
  * Self-service sign-up: the setting, the endpoint it controls, and the OIDC flow it has to
@@ -396,6 +399,35 @@ describe('prompt=create opens sign-up and still resumes to the relying party (#3
       .toEqual({ client_id: 'c', prompt: 'login consent', screen_hint: 'signup' });
     expect(createAsSignUpScreen({ client_id: 'c', prompt: 'none create' })).toBeUndefined();
     expect(createAsSignUpScreen({ client_id: 'c', prompt: 'login' })).toBeUndefined();
+  });
+
+  it('an invite link, followed through the vertical\'s login, lands on sign-up with the address filled in', async () => {
+    await patchSettings({ allowSignup: true });
+    const app = 'http://localhost:9998';
+    const registered = await call('/api/auth/oauth2/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ redirect_uris: [`${app}/api/auth/callback`], client_name: 'Vertical', application_type: 'native' }),
+    });
+    const { client_id: clientId } = (await registered.json()) as { client_id: string };
+    // The vertical's relying party reads this issuer's discovery in-process.
+    vi.stubGlobal('fetch', (input: string | URL, init?: RequestInit) => authFor().handler(new Request(String(input), init) as never));
+    try {
+      const rp = oidcRpAuthProvider({ issuer: ORIGIN, clientId, clientSecret: 'unused-by-authorize', sessionSecret: 'session-secret-000000000000000000000001' });
+      const login = await rp.handle(new Request(inviteSignInUrl(app, NEWCOMER.email)) as never);
+      const authorize = new URL(login.headers.get('location')!);
+      // This issuer advertises `create`, so the relying party sends it.
+      expect(authorize.searchParams.get('prompt')).toBe('create');
+
+      const landed = await call(`${authorize.pathname}${authorize.search}`, { headers: { 'sec-fetch-mode': 'navigate' } });
+      const location = landed.headers.get('location') ?? '';
+      expect(location.startsWith('/login?')).toBe(true);
+      const hints = signInHintsOf(new URL(`http://x${location}`).search.slice(1));
+      expect(hints).toEqual({ loginHint: NEWCOMER.email, signUp: true });
+      expect(entryScreen({ askedSignUp: hints.signUp, signUpOpen: true, socialError: false })).toBe('signup');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('still advertises create in discovery', async () => {

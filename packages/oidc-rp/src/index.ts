@@ -183,6 +183,19 @@ const signingKey = (env: OidcEnv): Uint8Array => enc.encode(env.SESSION_SECRET);
 const redirectUri = (env: OidcEnv, origin: string): string =>
   `${(env.BASE_URL ?? origin).replace(/\/$/, '')}/api/auth/callback`;
 
+/** Does the issuer's discovery document list `value` in `prompt_values_supported`? */
+function promptSupported(d: Discovery, value: string): boolean {
+  return Array.isArray(d.prompt_values_supported) && d.prompt_values_supported.includes(value);
+}
+
+/**
+ * The `prompt` a `/api/auth/login` link may forward: the values `beginLogin` knows, and nothing
+ * else. `create` is still held to the issuer's discovery there.
+ */
+export function forwardedPrompt(value: string | null | undefined): 'login' | 'select_account' | 'create' | undefined {
+  return value === 'login' || value === 'select_account' || value === 'create' ? value : undefined;
+}
+
 /**
  * Begin login: the authorize-endpoint URL to redirect to, and the signed flow
  * cookie value that carries PKCE verifier + state + nonce across the round-trip.
@@ -194,7 +207,14 @@ export async function beginLogin(
     returnTo?: string;
     loginHint?: string;
     screenHint?: string;
-    prompt?: 'login' | 'select_account';
+    /**
+     * `create` (OpenID Connect Prompt Create 1.0) asks for the sign-up screen, as an invite link
+     * does (#3345). It is sent only to an issuer whose discovery lists it in
+     * `prompt_values_supported`: OIDC Core lets an issuer refuse a value it does not support, and
+     * an invitee answered `invalid_request` never gets in. `screen_hint=signup` goes with it either
+     * way, which asks the same of an issuer that reads that instead and is ignored by the rest.
+     */
+    prompt?: 'login' | 'select_account' | 'create';
     idp?: Idp;
     /**
      * Also ask for a refresh token (`offline_access`), for a caller that keeps one server-side
@@ -239,11 +259,12 @@ export async function beginLogin(
   // support them): `login_hint` prefills the email field (e.g. from an invite), and
   // `screen_hint=signup` opens the sign-up view for a first-time invitee.
   if (opts.loginHint) u.searchParams.set('login_hint', opts.loginHint);
-  if (opts.screenHint) u.searchParams.set('screen_hint', opts.screenHint);
+  const screenHint = opts.screenHint ?? (opts.prompt === 'create' ? 'signup' : undefined);
+  if (screenHint) u.searchParams.set('screen_hint', screenHint);
   // `prompt=login` forces re-authentication even when the IdP holds a live SSO
   // session — the "sign in as a different account" escape hatch (the IdP session
   // otherwise silently re-authenticates the old user, and no typed email can win).
-  if (opts.prompt) u.searchParams.set('prompt', opts.prompt);
+  if (opts.prompt && (opts.prompt !== 'create' || promptSupported(d, 'create'))) u.searchParams.set('prompt', opts.prompt);
   return { location: u.toString(), flow };
 }
 
@@ -687,7 +708,7 @@ export function mountOidcRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>, o
       returnTo: safePath(c.req.query('returnTo')),
       loginHint: c.req.query('login_hint') || undefined,
       screenHint: screen === 'signup' || screen === 'login' ? screen : undefined,
-      prompt: prompt === 'login' || prompt === 'select_account' ? prompt : undefined,
+      prompt: forwardedPrompt(prompt),
       idp,
     });
     setCookie(c, FLOW_COOKIE, flow, cookieOpts(origin, FLOW_MAXAGE));

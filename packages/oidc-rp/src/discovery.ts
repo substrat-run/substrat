@@ -11,6 +11,8 @@ export interface Discovery {
   jwks_uri: string;
   userinfo_endpoint?: string;
   end_session_endpoint?: string;
+  /** OIDC Discovery 1.0 §3 / Prompt Create 1.0 §3: the `prompt` values the issuer accepts. */
+  prompt_values_supported?: string[];
 }
 
 /**
