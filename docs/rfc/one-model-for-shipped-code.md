@@ -190,7 +190,8 @@ Each states what it is, what it gives and what it costs.
 becomes an app with a dependency on its host. A rule then attaches to a property, not to a noun.
 *Costs:* the lints and directories keyed on `engines/` and `connectors/` are reviewed, and a module
 with five flags is not simpler than three concepts. Renaming vertical to app in code is expensive
-and buys little: change the word outward and leave the code.
+and buys little: change the word outward and leave the code. *Decided in [D-75](../decisions/D-075-five-concepts-and-one-glossary-scope-module-app-store-dependency.md):*
+the five concepts, their definitions and the retired names, with the rename outward only.
 
 **5.2 One door with one envelope.** Every call into a scope carries K-58's signed envelope with the
 app and the actor, and a deployed vertical holds public keys only. One check, one stamp in the
@@ -444,8 +445,8 @@ contract, with placement in a script of its own left to its pilot. What remains 
 dependent-people.md becomes a decision: done on 2026-11-24, as K-63. K-53 and the scope-types tracking issue
 ([#2992](https://github.com/substrat-run/substrat/issues/2992)) are settled together, being one
 question: done on 2026-11-24, as K-64, which supersedes K-53. The version rule is written once,
-with the answer to §7.5: done on 2026-11-24, as K-65. The words are fixed. *Done when* no coming
-build rests on a proposed record.
+with the answer to §7.5: done on 2026-11-24, as K-65. The words are fixed: done on 2026-11-24, as
+D-75. *Done when* no coming build rests on a proposed record.
 
 **Phase 1: one door.** The platform's connectors move onto the shared contract and stay in
 process, with a sweep role per connection first, so a rate-limited provider is not polled once per
