@@ -46,6 +46,9 @@ import {
   PLATFORM_SECRET_HEADER,
   PARENT_REQUEST_ID_HEADER,
   parentRequestIdOf,
+  nextTraceparent,
+  TRACEPARENT_HEADER,
+  TRACESTATE_HEADER,
   evaluateRateLimits,
   parseRateLimits,
   PROBLEM_CONTENT_TYPE,
@@ -265,7 +268,7 @@ function verticalFor(env: Env, target: RouteTarget, hostname: string): { fetcher
 function assertNode(
   request: Request,
   target: RouteTarget,
-  { secret, fieldCoverageId }: { secret?: string; fieldCoverageId?: string | null },
+  { secret, fieldCoverageId, trace }: { secret?: string; fieldCoverageId?: string | null; trace?: RequestTrace },
 ): Request {
   const headers = new Headers();
   for (const [k, v] of request.headers) {
@@ -279,7 +282,26 @@ function assertNode(
   // #1923: this request is in the field-coverage sample, and the value is its dispatch id. Under
   // the stripped prefix like the rest, so the only copy a vertical ever sees is this one.
   if (fieldCoverageId) headers.set(FIELD_COVERAGE_HEADER, fieldCoverageId);
+  // #3368: the trace this router continued or started, under its own span. A caller's
+  // `tracestate` goes along only beside the trace it belongs to: a new trace drops it.
+  if (trace) {
+    headers.set(TRACEPARENT_HEADER, trace.traceparent);
+    if (!trace.continued) headers.delete(TRACESTATE_HEADER);
+  }
   return new Request(request, { headers });
+}
+
+/** #3368: the trace one routed request is dispatched under — {@link nextTraceparent}'s answer. */
+type RequestTrace = ReturnType<typeof nextTraceparent>;
+
+/**
+ * #3368: the `traceparent` a platform call goes out with — the trace the caller handed over in
+ * `context` continued under this router's span, or a new one when it handed none that parses.
+ * A correlation id only: nothing here decides anything by it.
+ */
+export function traceparentFor(context: unknown): string {
+  const incoming = context !== null && typeof context === 'object' ? (context as { traceparent?: unknown }).traceparent : undefined;
+  return nextTraceparent(incoming).traceparent;
 }
 
 /** What the router's signer did for one request (RFC wire-signing §8). Absent when it did not try. */
@@ -394,6 +416,8 @@ function record(
     fieldCoverageRate: number;
     /** RFC wire-signing §8: whether the dispatch went out signed, when the signer tried. */
     wire?: WireSignOutcome;
+    /** #3368: the trace the request was dispatched under, shared with the vertical's line. */
+    traceId?: string;
   },
 ): void {
   const statusClass = `${Math.floor(m.status / 100)}xx`;
@@ -437,6 +461,7 @@ function record(
       ...(m.fieldCoverageId ? { fieldCoverageRate: m.fieldCoverageRate } : {}),
       // The signer's count (RFC wire-signing §8), per deployment and tenant, only while it signs.
       ...(m.wire ? { wire: m.wire } : {}),
+      ...(m.traceId ? { traceId: m.traceId } : {}),
     }),
   );
 }
@@ -572,6 +597,8 @@ async function dispatch(
   fieldCoverageId: string | null,
   /** What the signer did for this request, for the request line: set only when it tried. */
   signing: { outcome?: WireSignOutcome },
+  /** #3368: the trace the request is dispatched under; the same on a retry. */
+  trace?: RequestTrace,
 ): Promise<Response> {
   const reached = verticalFor(env, target, hostname);
   if (!reached) {
@@ -589,7 +616,7 @@ async function dispatch(
   // jurisdiction pins storage and execution (K-7). Both halves are configuration.
   // Re-checking it in code would be a third enforcement point that can disagree.
   const { fetcher: vertical, aud } = reached;
-  const assertion = { secret: env.ROUTER_SECRET, fieldCoverageId };
+  const assertion = { secret: env.ROUTER_SECRET, fieldCoverageId, ...(trace ? { trace } : {}) };
   const make = () => assertNode(request, target, assertion);
   // RFC wire-signing step 2: a route envelope beside the legacy headers, for the deployment the
   // request is dispatched to (`aud`), minted again for the retry. Only a dispatch into the namespace
@@ -672,6 +699,9 @@ export default {
       ? mintDispatchId()
       : null;
     const signing: { outcome?: WireSignOutcome } = {};
+    // #3368: honour the caller's trace if it is one, or start one here. Its id is a correlation
+    // id on this router's line and the vertical's, never anything a decision reads.
+    const trace = nextTraceparent(request.headers.get(TRACEPARENT_HEADER));
     try {
       // #130: counted before the dispatch. A refusal is still recorded below, under the
       // tenant and with its problem code, so a tenant's own view shows why it was refused.
@@ -682,7 +712,7 @@ export default {
         invocation = { ...invocation, problemCode: 'rate_limited' };
         return limit.refused;
       }
-      let response = await dispatch(env, request, target, hostname, fieldCoverageId, signing);
+      let response = await dispatch(env, request, target, hostname, fieldCoverageId, signing, trace);
       status = response.status;
       threw = false;
       // #1904: the vertical's record of what ran, for the datapoint — and never for the caller.
@@ -730,6 +760,7 @@ export default {
         fieldCoverageId,
         fieldCoverageRate,
         wire: signing.outcome,
+        traceId: trace.traceId,
       });
     }
   },
@@ -756,7 +787,7 @@ export async function handlePeerCall(
   /**
    * #2192: what egress passes beside the caller — the calling request's id, the caller's own
    * claim. Read only as one ULID and only ever written onto the target's line as its parent;
-   * it decides nothing here.
+   * it decides nothing here. #3368: and the calling request's `traceparent`, continued below.
    */
   rawContext?: unknown,
 ): Promise<PeerCallOutcome> {
@@ -800,6 +831,7 @@ export async function handlePeerCall(
   const parent = parentRequestIdOf(
     rawContext !== null && typeof rawContext === 'object' ? (rawContext as { parentInvocationId?: unknown }).parentInvocationId : undefined,
   );
+  const traceparent = traceparentFor(rawContext);
   // A fresh Request per attempt: a POST body is a stream and is consumed by the first one.
   const unsigned = (): Request =>
     new Request('https://vertical/internal/vertical-invoke', {
@@ -814,6 +846,7 @@ export async function handlePeerCall(
         // fields, so a target built before them ignores them where its strict body would refuse.
         'x-substrat-vertical': decision.vertical,
         ...(parent ? { [PARENT_REQUEST_ID_HEADER]: parent } : {}),
+        [TRACEPARENT_HEADER]: traceparent,
       },
       body: JSON.stringify({
         // `tenantSlug` from the directory read, never from the caller's dispatch parameters.
@@ -929,6 +962,8 @@ export async function handleConnectorCall(
   env: Env,
   rawTarget: unknown,
   rawRequest: unknown,
+  /** #3368: `{ traceparent }`, the trace the control plane makes the call under. Optional. */
+  rawContext?: unknown,
 ): Promise<ConnectorCallTransportResult> {
   const secret = env.PLATFORM_SECRET;
   if (!secret) {
@@ -973,6 +1008,7 @@ export async function handleConnectorCall(
   // A probe is connection-level and changes nothing in the vertical, so it has its own path, which
   // the wire gate holds to no nonce; every scoped role takes the call path and keeps them.
   const path = isProbe(request) ? CONNECTOR_PROBE_PATH : CONNECTOR_CALL_PATH;
+  const traceparent = traceparentFor(rawContext);
   // A fresh Request per attempt: a POST body is a stream and is consumed by the first one.
   const unsigned = (): Request =>
     new Request(`https://vertical${path}`, {
@@ -981,6 +1017,7 @@ export async function handleConnectorCall(
         'content-type': 'application/json',
         [PLATFORM_SECRET_HEADER]: secret,
         'x-substrat-vertical': target.slug,
+        [TRACEPARENT_HEADER]: traceparent,
       },
       body,
     });
@@ -1041,7 +1078,13 @@ export async function handleConnectorCall(
  * arrives in the request, which only the control plane makes. Connection-level roles only: a
  * scoped role would hand a script a scope's binding, which phase 1 does not do.
  */
-export async function handleConnectorScriptCall(env: Env, rawTarget: unknown, rawRequest: unknown): Promise<ConnectorCallTransportResult> {
+export async function handleConnectorScriptCall(
+  env: Env,
+  rawTarget: unknown,
+  rawRequest: unknown,
+  /** #3368: as {@link handleConnectorCall}'s. */
+  rawContext?: unknown,
+): Promise<ConnectorCallTransportResult> {
   if (!env.DISPATCH) {
     console.error('router: DISPATCH is not bound — refusing every connector script call');
     return { status: 503, body: { error: 'this router cannot dispatch connector calls' } };
@@ -1078,8 +1121,8 @@ export async function handleConnectorScriptCall(env: Env, rawTarget: unknown, ra
   };
   const script = env.DISPATCH.get(target.script, {}, { outbound: { OUTBOUND_POLICY: policy } });
   const body = JSON.stringify(request);
-  const call = () =>
-    script.fetch(new Request(`https://connector${CONNECTOR_PROBE_PATH}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body }));
+  const headers = { 'content-type': 'application/json', [TRACEPARENT_HEADER]: traceparentFor(rawContext) };
+  const call = () => script.fetch(new Request(`https://connector${CONNECTOR_PROBE_PATH}`, { method: 'POST', headers, body }));
   // The one retry the vertical path takes, for the same reason: a script not found ran nothing.
   let response: Response;
   try {

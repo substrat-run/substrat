@@ -156,3 +156,34 @@ describe('peerClient hands on the request it is made from (#2192)', () => {
     expect(headersOf(fetchImpl).has(PARENT_REQUEST_ID_HEADER)).toBe(false);
   });
 });
+
+describe('peerClient hands on the request’s trace (#3368)', () => {
+  const TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
+  const sentTrace = async (headers: Record<string, string>) => {
+    const fetchImpl = ok(null);
+    const worker = withInvocationLog({
+      async fetch() {
+        await peerClient('acme/crm', { fetch: fetchImpl as unknown as typeof fetch }).invoke('customer/list');
+        return new Response('ok');
+      },
+    });
+    await worker.fetch!(new Request('https://app.example/x', { headers }), {}, {});
+    return new Headers((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].headers).get('traceparent');
+  };
+
+  it('sends the trace the request arrived on, under the request’s own span', async () => {
+    expect(await sentTrace({ traceparent: `00-${TRACE}-00f067aa0ba902b7-01` })).toMatch(
+      new RegExp(`^00-${TRACE}-(?!00f067aa0ba902b7)[0-9a-f]{16}-01$`),
+    );
+  });
+
+  it('sends a trace the request started when it arrived with none', async () => {
+    expect(await sentTrace({})).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+  });
+
+  it('sends none outside a stamped request', async () => {
+    const fetchImpl = ok(null);
+    await peerClient('acme/crm', { fetch: fetchImpl as unknown as typeof fetch }).invoke('customer/list');
+    expect(new Headers((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].headers).has('traceparent')).toBe(false);
+  });
+});

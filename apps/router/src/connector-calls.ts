@@ -8,12 +8,13 @@ import { handleConnectorCall, handleConnectorScriptCall, type Env } from './work
  * decides is `handleConnectorCall`, which the router's node tests reach without the workers runtime.
  */
 export class ConnectorCalls extends WorkerEntrypoint<Env> {
-  call(target: unknown, request: unknown): Promise<ConnectorCallTransportResult> {
-    return handleConnectorCall(this.env, target, request);
+  /** #3368: `context` carries the call's `traceparent`; a control plane that predates it sends none. */
+  call(target: unknown, request: unknown, context?: unknown): Promise<ConnectorCallTransportResult> {
+    return handleConnectorCall(this.env, target, request, context);
   }
 
   /** A first-party connector deployed as its own script (docs/rfc/connector-scripts.md). */
-  callScript(target: unknown, request: unknown): Promise<ConnectorCallTransportResult> {
-    return handleConnectorScriptCall(this.env, target, request);
+  callScript(target: unknown, request: unknown, context?: unknown): Promise<ConnectorCallTransportResult> {
+    return handleConnectorScriptCall(this.env, target, request, context);
   }
 }

@@ -781,6 +781,43 @@ describe('router', () => {
  * drain that scope now. It is out of band (ctx.waitUntil) and best-effort: the user's
  * response is returned untouched, and a missing/failed kick just falls back to the sweep.
  */
+describe('the trace a routed request carries (#3368)', () => {
+  const TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
+  const route = async (headers: Record<string, string>) => {
+    const logs: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((line: string) => void logs.push(line));
+    const fsm = spyVertical();
+    const env = { ROUTER_SECRET: SECRET, CONTROL_PLANE: directory({ 'acme.example.com': row() }), VERTICAL_FSM: fsm.binding } as unknown as Env;
+    try {
+      await worker.fetch(get('https://acme.example.com/api/repairs', headers), env);
+    } finally {
+      logSpy.mockRestore();
+    }
+    const line = JSON.parse(logs.find((l) => l.includes('"router":"request"'))!) as { traceId?: string };
+    return { sent: fsm.seen().headers, line };
+  };
+
+  it('keeps an incoming trace under a span of its own, with the caller’s tracestate, and names it on its line', async () => {
+    const { sent, line } = await route({ traceparent: `00-${TRACE}-00f067aa0ba902b7-01`, tracestate: 'acme=1' });
+    expect(sent.get('traceparent')).toMatch(new RegExp(`^00-${TRACE}-(?!00f067aa0ba902b7)[0-9a-f]{16}-01$`));
+    expect(sent.get('tracestate')).toBe('acme=1');
+    expect(line.traceId).toBe(TRACE);
+  });
+
+  it.each([
+    ['none', {}],
+    ['a malformed one', { traceparent: `00-${TRACE.toUpperCase()}-00f067aa0ba902b7-01`, tracestate: 'acme=1' }],
+    ['a repeated one', { traceparent: `00-${TRACE}-00f067aa0ba902b7-01, 00-${TRACE}-00f067aa0ba902b7-01` }],
+  ])('starts a trace for a request carrying %s, and drops its tracestate', async (_, headers) => {
+    const { sent, line } = await route(headers);
+    const trace = sent.get('traceparent')!;
+    expect(trace).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+    expect(trace.toLowerCase()).not.toContain(TRACE);
+    expect(sent.has('tracestate')).toBe(false);
+    expect(line.traceId).toBe(trace.slice(3, 35));
+  });
+});
+
 describe('router kick (platform-intents)', () => {
   /** A vertical that flags a freshly-enqueued platform intent on its response. */
   const verticalFlaggingIntent = (): Fetcher =>

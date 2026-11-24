@@ -173,6 +173,31 @@ describe('the calling request’s id reaches the target as a header (#2192)', ()
   });
 });
 
+describe('the calling request’s trace reaches the target, continued (#3368)', () => {
+  const TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
+
+  it('keeps the trace id under a new span of the router’s own', async () => {
+    const d = dispatch();
+    await entrypoint({ CONTROL_PLANE: directory(), DISPATCH: d as never }).invoke(caller(), request(), {
+      traceparent: `00-${TRACE}-00f067aa0ba902b7-01`,
+    });
+    const sent = d.seen()[0]!.request!.headers.get('traceparent')!;
+    expect(sent).toMatch(new RegExp(`^00-${TRACE}-[0-9a-f]{16}-01$`));
+    expect(sent).not.toContain('00f067aa0ba902b7');
+  });
+
+  it.each([
+    ['no context', undefined],
+    ['a malformed trace', { traceparent: `ff-${TRACE}-00f067aa0ba902b7-01` }],
+  ])('%s starts a new trace for the call', async (_name, context) => {
+    const d = dispatch();
+    await entrypoint({ CONTROL_PLANE: directory(), DISPATCH: d as never }).invoke(caller(), request(), context);
+    const sent = d.seen()[0]!.request!.headers.get('traceparent')!;
+    expect(sent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+    expect(sent).not.toContain(TRACE);
+  });
+});
+
 describe('the router’s peer entrypoint (#1706)', () => {
   it('keeps the unbound singleton on one directory round trip', async () => {
     const cp = directory(); // The default directory has one eligible target and no binding.

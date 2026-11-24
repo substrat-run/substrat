@@ -1,10 +1,12 @@
 import { globalFetch } from '@substrat-run/kernel';
-import { currentInvocationId } from '@substrat-run/kernel/invocation-line';
+import { currentInvocationId, currentTraceparent } from '@substrat-run/kernel/invocation-line';
 import {
   PARENT_REQUEST_ID_HEADER,
   parentRequestIdOf,
   PEER_CALL_URL,
+  parseTraceparent,
   peerCallResponse,
+  TRACEPARENT_HEADER,
   substratError,
   type ErrorCode,
 } from '@substrat-run/contracts';
@@ -72,9 +74,15 @@ export function peerClient(vertical: string, options: PeerClientOptions = {}): P
       // #2192: the request this call is made from, so the target's line can name it as its
       // parent. Absent outside a stamped request, and on a platform entry that predates it.
       const parent = parentRequestIdOf(currentInvocationId());
+      // #3368: and its trace, so the target's line joins the same one.
+      const trace = currentTraceparent();
       const response = await call(PEER_CALL_URL, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', ...(parent ? { [PARENT_REQUEST_ID_HEADER]: parent } : {}) },
+        headers: {
+          'content-type': 'application/json',
+          ...(parent ? { [PARENT_REQUEST_ID_HEADER]: parent } : {}),
+          ...(parseTraceparent(trace) ? { [TRACEPARENT_HEADER]: trace! } : {}),
+        },
         body: JSON.stringify({
           vertical,
           operation,

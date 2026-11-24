@@ -27,7 +27,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { classifyError, messageOf, problemOf, refuse, refuseStatus, withRequestIdMember, type ErrorClassification } from './errors.js';
 import { externalInput, externalJson } from './wire.js';
-import { requestIdOf, writePlatformCallLine } from './invocation-log.js';
+import { invocationStampOf, requestIdOf, writePlatformCallLine } from './invocation-log.js';
 import {
   type CarriedAway,
   type RoleState,
@@ -146,6 +146,7 @@ import {
   scopeDumpObject,
   errorCodeOf,
   PARENT_REQUEST_ID_HEADER,
+  TRACEPARENT_HEADER,
   type ScopeId,
   type TenantId,
   type PrincipalId,
@@ -2691,6 +2692,9 @@ export function mountPlatformSurface<Env extends object>(
           parentInvocationId: c.req.header(PARENT_REQUEST_ID_HEADER),
           // Where the parent's line is: the caller's scope, which the router named in the body.
           parentScopeId: body.caller.scope,
+          // #3368: the trace this call runs under: the caller's, as the router continued it, or
+          // the one the stamp started when it carried none that parses.
+          traceparent: invocationStampOf(c.req.raw)?.traceparent ?? c.req.header(TRACEPARENT_HEADER),
           status,
           problemCode,
           principalKind,

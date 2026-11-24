@@ -6,7 +6,9 @@ import {
   invocationLevelOf,
   joinEntityTypes,
   joinProcessStates,
+  nextTraceparent,
   parentRequestIdOf,
+  parseTraceparent,
   splitEntityTypes,
 } from '../src/invocation-record.js';
 
@@ -99,5 +101,50 @@ describe('parent request id (#2192)', () => {
     expect(parentRequestIdOf('')).toBeUndefined();
     expect(parentRequestIdOf(null)).toBeUndefined();
     expect(parentRequestIdOf(42)).toBeUndefined();
+  });
+});
+
+describe('W3C traceparent (#3368)', () => {
+  const traceId = '4bf92f3577b34da6a3ce929d0e0e4736';
+  const valid = `00-${traceId}-00f067aa0ba902b7-01`;
+
+  it('reads a version-00 value, and a later version by its first four fields', () => {
+    expect(parseTraceparent(valid)).toEqual({ traceId, parentId: '00f067aa0ba902b7', flags: '01' });
+    expect(parseTraceparent(`01-${traceId}-00f067aa0ba902b7-00-what-comes-next`)?.traceId).toBe(traceId);
+  });
+
+  it.each([
+    ['version ff', `ff-${traceId}-00f067aa0ba902b7-01`],
+    ['an all-zero trace id', `00-${'0'.repeat(32)}-00f067aa0ba902b7-01`],
+    ['an all-zero parent id', `00-${traceId}-${'0'.repeat(16)}-01`],
+    ['uppercase hex', valid.toUpperCase()],
+    ['a version-00 value with a tail', `${valid}-extra`],
+    ['a repeated header', `${valid}, ${valid}`],
+    ['a short trace id', `00-${traceId.slice(1)}-00f067aa0ba902b7-01`],
+    ['padding', ` ${valid}`],
+    ['an oversized value', `01-${traceId}-00f067aa0ba902b7-01-${'a'.repeat(600)}`],
+    ['a non-string', 42],
+  ])('refuses %s', (_, value) => {
+    expect(parseTraceparent(value)).toBeUndefined();
+  });
+
+  it('continues a valid trace under a new span, keeping only the sampled flag', () => {
+    const next = nextTraceparent(`00-${traceId}-00f067aa0ba902b7-03`);
+    expect(next.continued).toBe(true);
+    expect(next.traceId).toBe(traceId);
+    const read = parseTraceparent(next.traceparent)!;
+    expect(read).toMatchObject({ traceId, flags: '01' });
+    expect(read.parentId).not.toBe('00f067aa0ba902b7');
+    expect(parseTraceparent(nextTraceparent(`00-${traceId}-00f067aa0ba902b7-00`).traceparent)?.flags).toBe('00');
+  });
+
+  it('starts a new sampled trace when there is none, or it is malformed', () => {
+    for (const incoming of [undefined, null, `ff-${traceId}-00f067aa0ba902b7-01`]) {
+      const next = nextTraceparent(incoming);
+      expect(next.continued).toBe(false);
+      expect(next.traceId).not.toBe(traceId);
+      expect(parseTraceparent(next.traceparent)).toMatchObject({ traceId: next.traceId, flags: '01' });
+    }
+    expect(nextTraceparent(undefined).traceId).not.toBe(nextTraceparent(undefined).traceId);
   });
 });
