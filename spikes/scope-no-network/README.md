@@ -120,6 +120,40 @@ The costs that are not runtime figures are larger:
    scope sweeper's drain call (`scope-sweeper-do.ts`), and that is platform code that stays
    supervisor-side.
 
+## Where the boundary is
+
+The kernel and the vertical's modules have to share the facet: synchronous SQL in `transactionSync`
+needs them in one Durable Object, so in one isolate. That decides what the mechanism protects.
+
+- **The boundary is the isolate's edge, not the kernel.** Code in the same isolate can change what the
+  kernel runs on, for example by overwriting a prototype on `Array` or `JSON` that a check relies on.
+  The kernel's in-isolate checks guard against mistakes. What holds against an uncooperative bundle is
+  outside: no network, a database holding only the scope's own rows, and the stubs the supervisor
+  passes in.
+- **Every stub passed in must be safe for the vertical's code to call directly.** The modules can reach
+  anything the kernel can. A stub is narrowed to one scope by its props and checks authority on its own
+  side, never trusting that the kernel checked first.
+- **No secret enters the scope's isolate.** Whatever the kernel can read, the modules can read. A key
+  the kernel needs, such as one that signs an envelope, stays with the supervisor or a platform
+  service, and the scope asks for a signature through a stub.
+- **The platform composes the kernel into the scope bundle at build time.** It uses its own pinned
+  kernel, or at least checks its hash. That stops a vertical from shipping a modified kernel. It does
+  not stop the modules from changing the kernel's behaviour while it runs. Whether they can reach a
+  built-in prototype such as `SqlStorage.prototype`, and whether freezing the intrinsics before the
+  modules load (in the style of SES `lockdown`) works in workerd, is untested.
+
+## How a module reaches HTTP
+
+Not from inside the scope, and not through another scope. The scope writes a platform intent
+(`ctx.requestPlatform`): a row in its own `_substrat_platform_requests`, committed with the operation.
+The router sees the response flag and kicks the control plane, or the sweep finds the row later. The
+control plane reads the row through the vertical's deployment and runs the handler for its `kind`. For
+a third-party call, the handler is a connector running outside any Durable Object (D-64), and the
+answer comes back as a second operation that records it. That is two steps, never a read mid-logic,
+which is what K-62 already asks. One gap: no general "fetch this URL" intent exists today. The
+handlers are privileged platform jobs, so a vertical that needs outside data waits on connector
+delivery (#3365).
+
 ## How it meets the decisions around it
 
 - **D-46 (egress allowlist).** Worker-context egress keeps the outbound worker. The scope DO's gap closes:
@@ -175,3 +209,11 @@ The costs that are not runtime figures are larger:
 - The storage copy for an existing scope. Not attempted here.
 - A real vertical's scope bundle. The cold-start figure uses a 2 MB padding module.
 - Python scope code. D-70 showed `null` holds for Python too, and the platform has no Python scope class.
+- Runtime tampering with the kernel from the modules, and whether freezing the intrinsics prevents it
+  (see **Where the boundary is**).
+- The vertical's **worker** code. The route closes the scope's Durable Object and leaves the rest of the
+  script alone. Worker-context egress is policed by the outbound worker when the router dispatches.
+  When the control plane reaches the vertical through its own dispatch binding, for example to drain
+  intents, the call passes no egress worker, so worker code running under it has unrestricted network
+  (D-64's "policy-free egress" follow-up). Read the spike as "no network in scope code", never as "no
+  network in the vertical".
