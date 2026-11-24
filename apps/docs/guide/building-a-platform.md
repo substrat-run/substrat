@@ -165,8 +165,9 @@ extension has to be its own deployed unit:
   invoices", "call the webshop's API". It runs in its own worker and keeps its own data in
   the customer's tenant, and it can compose engines and use connectors like any vertical.
 - **Installing is consent.** The customer's admin sees the capability list and approves it.
-  An upgrade that asks for more is approved again, and an install stays on the version it
-  was installed at until the customer moves it.
+  An upgrade that asks for more is approved again. Within a major, an install follows the
+  extension's releases. A breaking change is a new major, and the customer moves to it when they
+  choose.
 - **Third-party screens run sandboxed,** in an isolated frame that never sees the customer's
   session and can reach only the hosts that were approved.
 - **Connections are shared.** An extension uses the customer's existing connection through

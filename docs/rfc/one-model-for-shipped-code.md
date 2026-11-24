@@ -142,7 +142,8 @@ deployed and isolated; the second is where state lives. A vertical is one script
 an installed instance pins its version and a publisher cannot force an upgrade. K-33 serves a
 vertical from one script, and the code agrees with K-33: `runningVersionOf`
 (`packages/control-plane-api/src/platform-scope-stores.ts`) answers the serving script's version
-for a scope on it. A promote reaches every install.
+for a scope on it. A promote reaches every install. *Resolved by
+[K-65](../decisions/K-065-one-version-rule-an-install-follows-its-app-within-a-major-and-a-breaking-change-is-a-new-major-served-beside-the-old.md):* §5.1 now says an install follows within a major.
 
 ### 4.3 What runs locally
 
@@ -318,8 +319,9 @@ host that stops knowing its plugins by name, which the reference pair does not d
 **A tenant that installed a listed app is the open case.** Today the publisher's promote changes
 the code serving that tenant's scopes with no push of the tenant's own, which
 marketplace-publish.md §5.1 promised would not happen. The proposed answer is §7.5: an install
-follows the publisher within a major. It is a proposal. §5.1 and K-33 are reconciled by the
-decision, not by this RFC.
+follows the publisher within a major. *Decided in K-65*, which rewrote §5.1 and amended K-33: one
+serving script per major, a schema-change update that applies on its own, an old major kept at least
+90 days after the next, and a breaking promote of a listed app refused within its major.
 
 *Costs:* old majors are kept alive, tested and retired on a date somebody answers for. Additive is
 a promise that can be broken by mistake.
@@ -376,7 +378,7 @@ publisher can change code that runs on a tenant's data unasked. *Lean:* an insta
 major, with notice and the code-only or schema-change badge K-33 already has. A breaking change is
 a new major in its own script, and the installer moves there with the adopt-serving hop K-33
 already has. Less certain: how often a new major is needed. If often, that hop is an everyday
-routine, and it is not proven as one.
+routine, and it is not proven as one. *Decided in K-65*, as leaned.
 
 **7.6 The process engine: when, and on what.** For building now: the contract's shape reaches every
 client. For waiting: nothing uses one, the one written need
@@ -441,8 +443,9 @@ as a general rule it contradicted the platform entry that is shipped (§5.3). D-
 contract, with placement in a script of its own left to its pilot. What remains of phase 0 follows.
 dependent-people.md becomes a decision: done on 2026-11-24, as K-63. K-53 and the scope-types tracking issue
 ([#2992](https://github.com/substrat-run/substrat/issues/2992)) are settled together, being one
-question: done on 2026-11-24, as K-64, which supersedes K-53. The version rule is written once, with the answer to §7.5. The words are fixed. *Done
-when* no coming build rests on a proposed record.
+question: done on 2026-11-24, as K-64, which supersedes K-53. The version rule is written once,
+with the answer to §7.5: done on 2026-11-24, as K-65. The words are fixed. *Done when* no coming
+build rests on a proposed record.
 
 **Phase 1: one door.** The platform's connectors move onto the shared contract and stay in
 process, with a sweep role per connection first, so a rate-limited provider is not polled once per

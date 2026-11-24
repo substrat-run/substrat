@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-138 decisions · 74 plan · 64 kernel
+139 decisions · 74 plan · 65 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -82,7 +82,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-36](decisions/D-036-the-staff-admission-gate-moves-to-the-audience-boundary-a-pr.md) | 2026-07-26 | plan | The staff admission gate moves to the audience boundary: a private vertical is self-serve… |  |
 | [D-38](decisions/D-038-builders-keep-the-substrate-vocabulary-the-cloudflare-mappin.md) | 2026-07-26 | plan | Builders keep the substrate vocabulary; the Cloudflare mapping lives behind the platform | #190 |
 | [D-37](decisions/D-037-version-updates-carry-data-forward-verticals-serve-in-place-.md) | 2026-07-27 | plan | Version updates carry data forward: verticals serve in place from ONE stable script per… <br>*restated as K-33* | #286 |
-| [K-33](decisions/K-033-verticals-serve-in-place-from-one-stable-script-per-version-.md) | 2026-07-27 | kernel | Verticals serve IN PLACE from one stable script; per-version scripts become the push archive <br>*restated as D-37* | #286, #278 |
+| [K-33](decisions/K-033-verticals-serve-in-place-from-one-stable-script-per-version-.md) | 2026-07-27 | kernel | Verticals serve IN PLACE from one stable script; per-version scripts become the push archive <br>*restated as D-37* <br>*amended by K-65* | #286, #278 |
 | [D-39](decisions/D-039-the-permission-registry-ships-in-the-deploy-manifest-the-dec.md) | 2026-07-28 | plan | The permission registry ships in the deploy manifest; the declared surface is a per-version… |  |
 | [D-40](decisions/D-040-the-hosted-vertical-sandbox-is-a-positive-binding-allowlist-.md) | 2026-07-28 | plan | The hosted-vertical sandbox is a positive binding allowlist, not a denylist | #302, #301 |
 | [D-41](decisions/D-041-a-hosted-vertical-reads-its-entitlements-at-request-time-fro.md) | 2026-07-28 | plan | A hosted vertical reads its entitlements at request time from a scope-local projection —… | #304, #302, #33 |
@@ -150,3 +150,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-74](decisions/D-074-a-subject-access-export-reads-what-erasure-reaches-from-the-dashboard-data-tab-audited-and-outside-the-residency-gate.md) | 2026-11-20 | plan | A subject access export (Art. 15) reads what erasure reaches, through one shared plan; a team's owner or admin runs it from the dashboard's Data tab, recorded under their name, outside the residency gate, and without recipients until the disclosure register exists <br>*awaiting ratification* |  |
 | [K-63](decisions/K-063-a-tenant-s-people-are-owned-by-one-app-and-its-plugins-keep-the-master-s-answer-for-a-bounded-time.md) | 2026-11-24 | kernel | A tenant's people are owned by one app, and its plugins keep the master's answer for a bounded time | #3161 |
 | [K-64](decisions/K-064-a-scope-has-a-declared-type-and-may-have-a-parent-and-nothing-crosses-a-scope-s-boundary-inside-its-transaction.md) | 2026-11-24 | kernel | A scope has a declared type and may have a parent, and nothing crosses a scope's boundary inside its transaction <br>*supersedes K-53* <br>*amends K-49* | #2992, #2993, #2994, #2995, #2996 |
+| [K-65](decisions/K-065-one-version-rule-an-install-follows-its-app-within-a-major-and-a-breaking-change-is-a-new-major-served-beside-the-old.md) | 2026-11-24 | kernel | One version rule: an install follows its app within a major, and a breaking change is a new major served beside the old <br>*amends K-33* |  |
