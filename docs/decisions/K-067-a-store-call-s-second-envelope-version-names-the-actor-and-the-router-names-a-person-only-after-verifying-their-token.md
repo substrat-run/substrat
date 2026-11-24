@@ -31,7 +31,7 @@ caller|platform
 <store script name>
 <object name>
 <operation>
-<actor>                        app | platform | person:<sha256 hex>
+<actor>                        app | platform | person:<kid>:<hmac hex>
 <sha256 hex of the exact request body>
 <iat, unix seconds>
 <nonce, base64url of 16 bytes>
@@ -39,7 +39,7 @@ caller|platform
 
 | audience | actor |
 |---|---|
-| `caller` | `app` or `person:<sha256 hex>` |
+| `caller` | `app` or `person:<kid>:<hmac hex>` |
 | `platform` | `platform` |
 
 Which operations each audience may send stays K-52's closed table, carried to version 2 unchanged.
@@ -55,10 +55,17 @@ pseudonymous id instead:
   against the issuer the directory records for that app and tenant, checks that it was issued to
   the app's own client and that it has not expired, and **strips it** before the store is called. A
   store never sees a token.
-- **The actor is `person:` followed by the SHA-256 hex of the issuer and the `sub`, joined by
-  `\n`.** It is the same person across every call and every store of that app, it holds no address
-  even where an issuer uses one as a `sub`, and the platform can recompute it from the issuer and
-  the `sub` when a person is erased.
+- **The actor is `person:<kid>:<hmac hex>`.** The hex is HMAC-SHA-256 over the issuer and the
+  `sub`, joined by `\n`, keyed with the platform's actor key, and `<kid>` names that key, in K-52's
+  key id form. It is the same person across every call and every store of that app while the key is
+  the same, and it holds no address even where an issuer uses one as a `sub`.
+- **The actor key is a secret that the router and the control plane hold, the same value in
+  both, and nothing else holds it.** The router needs it to sign the actor, and the control plane
+  needs it to compute a person's actor when the person is erased. A store and a driver never see it.
+- **A new key has a new `<kid>`, and the router signs with the newest.** The control plane keeps
+  every older key until no session bound under it remains, so an erasure still finds actors made
+  with it. A session bound under an older key no longer matches the person's new actor, so a key is
+  rotated only when it has to be, and a rotation ends the sessions bound under the old one.
 - **A store call with no token is made as `app`.** A schedule, or work with no person behind it, is
   the app acting as itself.
 - **An invalid or expired token is refused at the router.** The call is not made as `app` instead.
@@ -89,10 +96,10 @@ A store cannot, so the router, which has the network and the directory, checks i
 the result. That puts issuer trust in one platform component rather than in every driver.
 
 **The stored actor is pseudonymous personal data, not anonymous data.** A `sub` may be an
-address. The digest is unkeyed and the issuer is known, so whoever holds an actor can test a
-candidate address against it. The digest is still stable enough to tie a session, it keeps the
-address itself out of the store, and it stays erasable, because the platform can recompute it from
-the person's record.
+address. Because the digest is keyed, whoever holds an actor without the key cannot test a
+candidate address against it, and an actor that leaves the platform in an export, a preview copy or
+a subject-access reply reveals nothing on its own. The platform can still link it to the person,
+which is what keeps it erasable, and that is why it remains personal data.
 
 **What it proves is bounded the way #3161's exchange is.** A live token proves that the person
 signed in to the app, and that the session is not yet over. It does not prove that the person is
@@ -114,10 +121,10 @@ strips.
 3. **Which token: the app's own access token for the person, or one exchanged for the store hop.**
    Proposed: the app's own token, which the router strips. An exchanged token would add an issuer
    round trip to every store call that has no cached token.
-4. **A keyed digest.** Raised after ratification, and not yet answered. An unkeyed digest lets
-   whoever holds an actor test a candidate address against it. A digest keyed with a platform secret
-   would stop that, at the cost of a key the router holds and that erasure needs. Until this is
-   answered, the digest is unkeyed and the actor is treated as personal data.
+4. **A keyed digest.** Raised after ratification, and answered on 2026-11-24: keyed, with the key
+   id in the actor and the same secret in the router and the control plane. An unkeyed digest let
+   whoever holds an actor test a candidate address against it. The cost is a secret held in two
+   places, and a rotation that ends the sessions bound under the old key.
 
 ## Revisit
 
