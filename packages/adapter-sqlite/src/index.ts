@@ -7077,7 +7077,12 @@ export class SqliteScopeHost implements ScopeHost {
         ? {
             heldPermissions: async () => {
               if (!this.checker.holdings) throw substratError('unavailable', 'this permission checker cannot list a principal\'s holdings');
-              return heldKeysOf(await this.checker.holdings(authority, { tenantId, scopeId }), ceiling);
+              // In the scope's actor, as an invoke is: an invoke holds its transaction open across
+              // awaits, and a read beside it could see a revoke that then rolls back. Called from a
+              // door (`mountMcp`), never from inside an invoke, which would wait on itself.
+              return rt.actor.enqueue(async () =>
+                heldKeysOf(await this.checker.holdings!(authority, { tenantId, scopeId }), ceiling),
+              );
             },
           }
         : {}),
