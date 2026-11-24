@@ -50,8 +50,13 @@ code that the RFC counted (§1) reduce to these five.
 
 - **Tenant.** The customer business. It holds apps and their scopes, and it is the isolation
   boundary between customers.
-- **Door.** The one way into an app or a scope. A call through it carries a signed envelope, and the
-  receiver checks it for itself.
+- **Door.** The one way into an app or a scope. A call through it is to carry a signed envelope that
+  the receiver checks for itself
+  ([K-58](./K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md)).
+  That is phase 1's target. Until an environment's down-channel is `signed-only`, the router's
+  shared secret
+  ([K-27](./K-027-the-router-presents-a-shared-secret-and-the-vertical-verifie.md)) still admits a
+  call.
 - **Contract.** What an app offers across a dependency: operations, events or an entity's lifecycle.
   It is versioned per major (K-65).
 - **Master.** The app or module that owns a fact: the people of a tenant (K-63), or an entity, which
