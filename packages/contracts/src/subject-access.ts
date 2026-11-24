@@ -35,6 +35,13 @@ export const subjectRecords = z.object({
   /** The entity's erasable fields: the data categories this entity holds about a person. */
   erasable: z.array(z.string().min(1)),
   rows: z.array(z.record(z.string(), z.unknown())),
+  /**
+   * How the entity's rows are paged (#3303). `key`: by primary key, so a row written or deleted
+   * between two pages repeats or skips no other row. `offset`: the manifest carries no key, and a
+   * write between pages can shift the page boundary. Absent from a page an older kernel produced,
+   * which paged every entity by offset.
+   */
+  paging: z.enum(['key', 'offset']).optional(),
 });
 export type SubjectRecords = z.infer<typeof subjectRecords>;
 

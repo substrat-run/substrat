@@ -17,9 +17,12 @@
  *
  * Paging: each source is walked in turn, events first and then each declared entity in
  * registration order, until the page's budget of events plus rows is spent. The cursor names the
- * source and where in it to resume. An entity's rows are paged by offset in the table's own scan
- * order, which is stable while the scope does not change between pages; the caller reads the pages
- * of one request back to back.
+ * source and where in it to resume. The pages of one request are separate reads (a separate RPC on
+ * a Durable Object), so the scope can change between them, and both sources resume by key: events
+ * after the last outbox id, an entity's rows after the last primary key in key order (#3303). A row
+ * written or deleted between two pages then repeats or skips no other row. A manifest derived
+ * before the erasure declaration carried the key has none to seek on; its rows are paged by offset
+ * in scan order, and each listing says which (`paging`), so the package can state it.
  */
 import {
   SUBJECT_READ_PAGE_DEFAULT,
@@ -31,26 +34,75 @@ import {
   type SubjectRecords,
   type UnreachedEntity,
 } from '@substrat-run/contracts';
-import { erasureTableOf, subjectMatchOf, type ModuleErasurePlan } from './module-erasure.js';
+import { base64UrlToBytes, bytesToBase64Url } from '@substrat-run/contracts/scope-store-envelope';
+import { erasureColumnOf, erasureTableOf, subjectMatchOf, type ModuleErasurePlan } from './module-erasure.js';
 import type { ScopedSql } from './scope-host.js';
 import { readSubjectEvents } from './timeline.js';
 
-/** Where a page resumes: in the events after an id, or in the `entity`th declared entity after `offset` rows. */
-type SubjectCursor = { source: 'events'; after?: string } | { source: 'records'; entity: number; offset: number };
+/** Where an entity's rows resume: after a primary key, or after `offset` rows in scan order. */
+type RowPosition = { key: readonly KeyValue[] } | { offset: number };
+type KeyValue = string | number;
+
+/** Where a page resumes: in the events after an id, or in the `entity`th declared entity at `at` (its start when absent). */
+type SubjectCursor = { source: 'events'; after?: string } | { source: 'records'; entity: number; at?: RowPosition };
+
+// Web-standard globals the kernel's lib does not declare (as in `sweep-budget.ts`).
+declare const TextDecoder: new () => { decode(input: Uint8Array): string };
+declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 
 const EVENTS_CURSOR = /^e:(.+)$/;
-const RECORDS_CURSOR = /^r:(\d{1,6}):(\d{1,9})$/;
+const OFFSET_CURSOR = /^r:(\d{1,6}):(\d{1,9})$/;
+const KEY_CURSOR = /^r:(\d{1,6}):k:([A-Za-z0-9_-]{1,4096})$/;
+
+const notACursor = () =>
+  substratError('validation_failed', 'readSubject: not a cursor this read issued', { reason: 'subject_cursor' });
+
+function parseKey(encoded: string): KeyValue[] {
+  const bytes = base64UrlToBytes(encoded);
+  let key: unknown;
+  try {
+    key = bytes && JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw notACursor();
+  }
+  if (!Array.isArray(key) || key.length === 0 || !key.every((v) => typeof v === 'string' || Number.isFinite(v))) {
+    throw notACursor();
+  }
+  return key as KeyValue[];
+}
 
 function parseCursor(cursor: string | undefined): SubjectCursor {
   if (cursor === undefined) return { source: 'events' };
   const events = EVENTS_CURSOR.exec(cursor);
   if (events) return { source: 'events', after: events[1]! };
-  const records = RECORDS_CURSOR.exec(cursor);
-  if (records) return { source: 'records', entity: Number(records[1]), offset: Number(records[2]) };
-  throw substratError('validation_failed', 'readSubject: not a cursor this read issued', { reason: 'subject_cursor' });
+  const offset = OFFSET_CURSOR.exec(cursor);
+  if (offset) {
+    // Offset 0 is the entity's start, whichever way the entity is then paged.
+    const n = Number(offset[2]);
+    return { source: 'records', entity: Number(offset[1]), ...(n > 0 ? { at: { offset: n } } : {}) };
+  }
+  const keyed = KEY_CURSOR.exec(cursor);
+  if (keyed) return { source: 'records', entity: Number(keyed[1]), at: { key: parseKey(keyed[2]!) } };
+  throw notACursor();
 }
 
-const recordsCursor = (entity: number, offset: number): string => `r:${entity}:${offset}`;
+const recordsCursor = (entity: number, at: RowPosition): string =>
+  'offset' in at
+    ? `r:${entity}:${at.offset}`
+    : `r:${entity}:k:${bytesToBase64Url(new TextEncoder().encode(JSON.stringify(at.key)))}`;
+
+/**
+ * The key a cursor carries: the last row's primary key values. Only text and finite numbers round
+ * trip through the cursor's JSON exactly; any other key value (a blob, a NULL) is refused here rather
+ * than resumed from a different place.
+ */
+function keyOf(entityType: string, row: Record<string, unknown>, primaryKey: readonly string[]): KeyValue[] {
+  return primaryKey.map((column) => {
+    const v = row[column];
+    if (typeof v === 'string' || (typeof v === 'number' && Number.isFinite(v))) return v;
+    throw substratError('internal', `readSubject: ${entityType}.${column} holds a primary key value a cursor cannot carry`);
+  });
+}
 
 /** The declared entities access reads, in the order a cursor numbers them. */
 function readableEntities(plans: readonly ModuleErasurePlan[]) {
@@ -102,28 +154,53 @@ export function readSubjectPage(input: {
       budget = 0;
     } else {
       budget -= read.length;
-      cursor = { source: 'records', entity: 0, offset: 0 };
+      cursor = { source: 'records', entity: 0 };
     }
   }
 
   if (cursor.source === 'records' && nextCursor === null) {
-    let { entity: index, offset } = cursor;
+    let index = cursor.entity;
+    let at = cursor.at;
     while (index < entities.length) {
       if (budget === 0) {
-        nextCursor = recordsCursor(index, offset);
+        nextCursor = recordsCursor(index, at ?? { offset: 0 });
         break;
       }
       const { moduleId, entity } = entities[index]!;
+      const primaryKey = entity.primaryKey;
+      // An offset cursor stays an offset walk to the entity's end, even where the key is now
+      // declared: it counts rows in scan order, which a key seek cannot resume.
+      const byKey = primaryKey !== undefined && !(at && 'offset' in at);
       const { where, params } = subjectMatchOf(entity, subjectId);
-      const rows = sql.query<Record<string, unknown>>(
-        // `main.`: a TEMP object named like the declared table would otherwise answer in its place.
-        `SELECT * FROM main.${erasureTableOf(entity)} WHERE ${where} LIMIT ? OFFSET ?`,
-        [...params, budget + 1, offset],
-      );
+      // `main.`: a TEMP object named like the declared table would otherwise answer in its place.
+      const from = `SELECT * FROM main.${erasureTableOf(entity)} WHERE ${where}`;
+      let rows: Record<string, unknown>[];
+      if (byKey) {
+        const columns = primaryKey.map(erasureColumnOf);
+        const after = at && 'key' in at ? at.key : undefined;
+        if (after && after.length !== columns.length) throw notACursor();
+        // A row value compares column by column in key order, each under its column's collation,
+        // which is the order ORDER BY walks: SQLite 3.15+, which both adapters run.
+        const seek = !after
+          ? ''
+          : columns.length === 1
+            ? ` AND ${columns[0]} > ?`
+            : ` AND (${columns.join(', ')}) > (${columns.map(() => '?').join(', ')})`;
+        rows = sql.query<Record<string, unknown>>(`${from}${seek} ORDER BY ${columns.join(', ')} LIMIT ?`, [
+          ...params,
+          ...(after ?? []),
+          budget + 1,
+        ]);
+      } else {
+        // A key cursor for an entity with no key to seek on resumes nowhere it means.
+        if (at && 'key' in at) throw notACursor();
+        const offset = at && 'offset' in at ? at.offset : 0;
+        rows = sql.query<Record<string, unknown>>(`${from} LIMIT ? OFFSET ?`, [...params, budget + 1, offset]);
+      }
       const taken = rows.slice(0, budget);
       // An entity is listed on the page that reads its first rows, a zero included, so a reader
       // can tell "looked at and held nothing" from "not looked at". Later pages add only rows.
-      if (offset === 0 || taken.length > 0) {
+      if (at === undefined || taken.length > 0) {
         records.push({
           module: moduleId,
           entityType: entity.entityType,
@@ -131,15 +208,21 @@ export function readSubjectPage(input: {
           subjects: [...(entity.subjects ?? [])],
           erasable: entity.fields.map((f) => f.name),
           rows: taken,
+          paging: byKey ? 'key' : 'offset',
         });
       }
       budget -= taken.length;
       if (rows.length > taken.length) {
-        nextCursor = recordsCursor(index, offset + taken.length);
+        nextCursor = recordsCursor(
+          index,
+          byKey
+            ? { key: keyOf(entity.entityType, taken[taken.length - 1]!, primaryKey) }
+            : { offset: (at && 'offset' in at ? at.offset : 0) + taken.length },
+        );
         break;
       }
       index += 1;
-      offset = 0;
+      at = undefined;
     }
   }
 

@@ -175,6 +175,33 @@ export function subjectAccessContractSuite(adapterName: string, makeFixture: () 
       expect(errorCodeOf(refused)).toBe('validation_failed');
     });
 
+    it('pages rows by key, so a row written or deleted between pages repeats or skips no other (#3303)', async () => {
+      // Its own subject, so the writes here change nothing another test reads.
+      const mover = dataSubjectId.parse(ulid());
+      const base = ulid();
+      const note = (suffix: string) =>
+        put('INSERT INTO er_notes (id, author, editor, title, body) VALUES (?, ?, NULL, ?, ?)', [`${base}-${suffix}`, mover, suffix, 'x']);
+      for (const suffix of ['b', 'c', 'd']) await note(suffix);
+
+      const first = await host.admin.readSubject(staff, t1, s1, mover, { limit: 1 });
+      const read = first.records.flatMap((r) => r.rows.map((row: Row) => row.title));
+      expect(read).toEqual(['b']);
+      expect(first.records.find((r) => r.entityType === 'ernote')?.paging).toBe('key');
+      // Between pages: the row already read goes, and one lands on each side of the cursor. Offset
+      // paging would now skip 'c' and read 'a', which is written behind where it resumes.
+      await put('DELETE FROM er_notes WHERE id = ?', [`${base}-b`]);
+      await note('a');
+      await note('e');
+
+      let cursor = first.nextCursor;
+      while (cursor) {
+        const page = await host.admin.readSubject(staff, t1, s1, mover, { cursor, limit: 1 });
+        read.push(...page.records.filter((r) => r.entityType === 'ernote').flatMap((r) => r.rows.map((row: Row) => row.title)));
+        cursor = page.nextCursor;
+      }
+      expect(read).toEqual(['b', 'c', 'd', 'e']);
+    });
+
     it('refuses a reaped scope rather than reading back nothing held', async () => {
       const gone = scopeId.parse(ulid());
       await host.provisionScope(staff, { tenantId: t1, scopeId: gone, vertical: 'erasure-vertical' });

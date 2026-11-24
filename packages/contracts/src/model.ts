@@ -1094,7 +1094,13 @@ export function subjectErasureOf(entities: Record<string, EntityDef>): SubjectEr
         }
       }
     }
-    out.push({ entityType: name, table: entity.table, mode, ...(subjects ? { subjects: [...subjects] } : {}), fields });
+    out.push({
+      entityType: name,
+      table: entity.table,
+      mode,
+      ...(subjects ? { subjects: [...subjects], primaryKey: [...primaryKeyOf(name, entity)] } : {}),
+      fields,
+    });
   }
   if (out.length === 0) return undefined;
   const tables = [...new Set(Object.values(entities).map((e) => e.table))].sort();

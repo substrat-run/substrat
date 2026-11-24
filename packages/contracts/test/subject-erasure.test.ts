@@ -31,6 +31,8 @@ describe('subjectErasureOf (#2068)', () => {
           table: 'people',
           mode: 'blank',
           subjects: ['id', 'owner'],
+          // The model's key, which subject access pages the rows by (#3303).
+          primaryKey: ['id'],
           fields: [
             { name: 'email', blank: null },
             { name: 'name', blank: '' },
