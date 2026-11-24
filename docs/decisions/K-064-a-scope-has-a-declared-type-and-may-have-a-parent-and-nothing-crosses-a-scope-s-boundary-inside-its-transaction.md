@@ -55,9 +55,10 @@ fifteen fields in a closed table, and its `issuer` names only `router` or `platf
 are owed, each a record of its own, before any receiver relies on either claim:
 
 - **K-58**, for a new version of its envelope that adds the calling app and the actor as signed
-  fields, with the (issuer, kind) pairs that carry them.
+  fields, with the (issuer, kind) pairs that carry them. Proposed as [K-66](./K-066-the-wire-envelope-s-second-version-names-the-calling-app-its-scope-and-the-actor-and-the-router-signs-only-what-it-verified.md).
 - **[K-52](./K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md)**,
-  so that a store call carries the actor too, and a store can tie a session to a person.
+  so that a store call carries the actor too, and a store can tie a session to a person. Proposed as
+  [K-67](./K-067-a-store-call-s-second-envelope-version-names-the-actor-and-the-router-names-a-person-only-after-verifying-their-token.md).
 
 Until then, nothing in this record that reads the calling app or the actor is built.
 
