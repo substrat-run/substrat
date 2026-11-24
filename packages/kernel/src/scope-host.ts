@@ -1079,6 +1079,18 @@ export interface ScopeStub {
     input?: I,
     options?: InvokeOptions,
   ): Promise<O>;
+  /**
+   * The permission keys this stub's person could pass a check for in this scope (#3360): held at
+   * the node (roles and orgs expanded) or on at least one entity, capped by the stub's delegation.
+   * Sorted, each once. What `mountMcp` filters `tools/list` by, so a person who may do ten things
+   * is shown ten tools.
+   *
+   * A read for presentation, never authorization: every invoke still checks. Present only on a
+   * stub `getScope` minted for a person; absent on every other door's stub, and on a stub a
+   * vertical implements or wraps itself, which a reader treats as "unknown" and does not filter.
+   * Not counted as a check (#2387).
+   */
+  heldPermissions?(): Promise<PermissionKey[]>;
 }
 
 /**

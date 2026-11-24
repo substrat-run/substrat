@@ -575,6 +575,9 @@ import {
   asyncLinePass,
   assertNoCallerPurge,
   parseScopeDelegation,
+  delegationCeilingOf,
+  heldKeysOf,
+  type Holdings,
   type ScopeDelegation,
   purgeReportOf,
   purgeStillDue,
@@ -1826,6 +1829,8 @@ interface ScopeStubRpc {
   /** Where every peer this scope holds or has held grants for stands (#1706) — the kernel's
    *  `peerGrantsStatus`, run in the scope's own storage. */
   peerGrantsStatus(): Promise<PeerGrantsRow[]>;
+  /** #3360: the checker's `holdings` for a principal, inside the scope's queue; null when it cannot answer. */
+  principalHoldings(principal: PrincipalId, tenantId: TenantId, scopeId: ScopeId): Promise<Holdings | null>;
   /** `grantToSystem`'s scope-level write (#1666): `false`, and nothing written, while the
    *  module's schedule kill switch is off on this scope. */
   writeSystemGrant(moduleId: string, relation: string, object: string, expiresAt: string | null): Promise<boolean>;
@@ -7400,6 +7405,16 @@ export class CloudflareScopeHost implements ScopeHost {
                 : verticalCaller !== undefined
                   ? 'vertical'
                   : undefined,
+      // #3360: a person's stub only. An impersonation session is another door.
+      ...(principal !== undefined && sessionId === undefined
+        ? {
+            heldPermissions: async () => {
+              const holdings = await stub.principalHoldings(principal, tenantId, scopeId);
+              if (!holdings) throw substratError('unavailable', 'this permission checker cannot list a principal\'s holdings');
+              return heldKeysOf(holdings, delegationCeilingOf(delegation));
+            },
+          }
+        : {}),
       invoke: async <O, I>(
         operation: string,
         input?: I,

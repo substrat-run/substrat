@@ -7,7 +7,7 @@
  * authentication/authorization split, the page trio an MCP call has no query string
  * for, and a pinned field a caller must not be able to edit.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z, LIST_PAGE_DEFAULT, LIST_PAGE_MAX, FIELD_COVERAGE_HEADER } from '@substrat-run/contracts';
@@ -15,7 +15,7 @@ import { PermissionDenied } from '@substrat-run/kernel';
 import { INVOCATION_RECORD_KEY, type InvocationRecord } from '../src/invocation-log.js';
 import { ARMED, ENV, quietly, routed, stampInto } from './routed.js';
 import { mountOperations } from '../src/operations-routes.js';
-import { mcpToolsOf, mcpToolName, MCP_PROTOCOL_VERSIONS } from '../src/mcp.js';
+import { mcpToolsOf, mcpToolName, MCP_PROTOCOL_VERSIONS, setMcpDelegation, type McpDelegation } from '../src/mcp.js';
 
 const operations = {
   'todo/my-lists': { summary: 'Every list you can see', http: { method: 'GET', path: '/lists' } },
@@ -343,6 +343,53 @@ describe('authentication is transport-level, authorization is in-band', () => {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
     });
     expect(res.status).toBe(401);
+  });
+});
+
+describe('tools/list shows what the caller could do (#3360)', () => {
+  const keyed = {
+    'desk/read': { summary: 'Read', permission: 'desk:read', http: { method: 'GET', path: '/read' } },
+    'desk/admin': { summary: 'Administer', permission: 'desk:admin', http: { method: 'POST', path: '/admin' } },
+    'desk/open': { summary: 'Declares no key', http: { method: 'GET', path: '/open' } },
+  } as const;
+  /** A mount whose stub answers `held` as `heldPermissions` (absent when undefined), optionally delegated. */
+  function shown(held: (() => Promise<string[]>) | undefined, delegation?: McpDelegation) {
+    const app = new Hono();
+    const invoked: string[] = [];
+    mountOperations(app, keyed, async (c) => {
+      if (delegation) setMcpDelegation(c, delegation);
+      return {
+        invoke: async (name: string) => {
+          invoked.push(name);
+          return { ok: true };
+        },
+        ...(held ? { heldPermissions: held } : {}),
+      } as never;
+    });
+    const names = async () => ((await rpc(app, 'tools/list', {})).body.result.tools as { name: string }[]).map((t) => t.name).sort();
+    return { app, invoked, names };
+  }
+
+  it.each([
+    ['holds one key: its tool and the keyless one', async () => ['desk:read'], undefined, ['desk_open', 'desk_read']],
+    ['a stub that cannot say: everything', undefined, undefined, ['desk_admin', 'desk_open', 'desk_read']],
+    ['a read that fails: everything', async () => { throw new Error('down'); }, undefined, ['desk_admin', 'desk_open', 'desk_read']],
+    ['delegated: only what the scope reaches, never a keyless tool', async () => ['desk:read', 'desk:admin'], { actor: 'helpdesk', scope: ['desk:admin'] }, ['desk_admin']],
+  ] as const)('%s', async (_case, held, delegation, expected) => {
+    // The failing read logs one line; kept out of the test output.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await shown(held as never, delegation as McpDelegation | undefined).names()).toEqual(expected);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it('is presentation only: a hidden tool is still dispatched to its own check', async () => {
+    const { app, invoked, names } = shown(async () => []);
+    expect(await names()).toEqual(['desk_open']);
+    await rpc(app, 'tools/call', { name: 'desk_admin', arguments: {} });
+    expect(invoked).toEqual(['desk/admin']);
   });
 });
 

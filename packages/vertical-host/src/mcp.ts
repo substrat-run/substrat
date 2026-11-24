@@ -41,11 +41,10 @@
  * consumer, not about the operation or the caller.
  *
  * A permission filter is still worth having as a least-privilege floor — dramatic for
- * a narrow principal, marginal for an admin — but it needs a way to read a principal's
- * keys that `ScopeStub` does not have. The shape it would take already exists for
- * connectors (`grants(): Promise<PermissionKey[]>`, scope-host.ts). Left out here
- * deliberately: `tools/list` filtering is invisible to the protocol, so adding it
- * later breaks no client.
+ * a narrow principal, marginal for an admin — and `tools/list` applies one (#3360): a tool
+ * is shown when the caller could pass its leading key (`ScopeStub.heldPermissions`, which
+ * counts a key held on a single entity) and the delegation, if any, reaches it. It is
+ * presentation, not authorization, so a stub that cannot say is shown everything.
  *
  * ## Delegated calls (#1824)
  *
@@ -628,6 +627,28 @@ function ceilingRefusal(ceiling: McpCeiling, tool: McpTool): string | null {
   return null;
 }
 
+/**
+ * The tools one caller is shown (#3360): those the delegation can reach, and of those, the ones
+ * whose single leading key the person could pass a check for (`ScopeStub.heldPermissions`). A tool
+ * with no single key stays listed for a person acting directly, since no key says what it reaches.
+ *
+ * Presentation, never authorization: a call to a hidden tool is still answered by its own checks,
+ * exactly as before. So a stub that cannot answer (a vertical's own, or a read that fails) is shown
+ * the whole list rather than an empty one, and the failure is logged.
+ */
+async function visibleTools(tools: readonly McpTool[], stub: ScopeStub, ceiling: McpCeiling): Promise<readonly McpTool[]> {
+  const reachable = ceiling === undefined ? tools : tools.filter((t) => ceilingRefusal(ceiling, t) === null);
+  if (!stub.heldPermissions) return reachable;
+  let held: ReadonlySet<string>;
+  try {
+    held = new Set(await stub.heldPermissions());
+  } catch (err) {
+    console.error(JSON.stringify({ host: 'mcp-tools-unfiltered', code: errorCodeOf(err) ?? (err instanceof Error ? err.name : typeof err) }));
+    return reachable;
+  }
+  return reachable.filter((t) => t.permission === undefined || held.has(t.permission));
+}
+
 /** A refusal the AGENT should read and adapt to, rather than a transport failure. */
 function toolError(message: string) {
   return { content: [{ type: 'text', text: message }], isError: true };
@@ -853,8 +874,9 @@ export function mountMcp(
             : MCP_PROTOCOL_VERSIONS[0];
         return rpcResult(id, {
           protocolVersion: version,
-          // `listChanged: false` is the truth: the tool list is derived from
-          // declarations fixed at deploy, so it cannot change under a live session.
+          // `listChanged: false`: the tools are declarations fixed at deploy. Which of them a
+          // caller is SHOWN follows what they hold (#3360), and the endpoint is stateless, so a
+          // changed role shows on the client's next `tools/list`; there is no session to notify.
           capabilities: { tools: { listChanged: false } },
           serverInfo,
         });
@@ -865,8 +887,9 @@ export function mountMcp(
       case 'ping':
         return isNotification ? null : rpcResult(id, {});
       case 'tools/list': {
+        const visible = await visibleTools(tools, stub, ceiling);
         return rpcResult(id, {
-          tools: tools.map((t) => ({
+          tools: visible.map((t) => ({
             name: t.name,
             description: t.description,
             inputSchema: t.inputSchema,

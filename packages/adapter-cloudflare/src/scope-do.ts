@@ -185,6 +185,7 @@ import {
   type OperationContext,
   type OperationHandler,
   type PermissionChecker,
+  type Holdings,
   type SqlMigration,
   createAtomic,
   type RunSub,
@@ -6130,6 +6131,18 @@ export function defineScopeDO(
           );
         }
       });
+    }
+
+    /**
+     * What a principal holds in this scope (#3360): the checker's own `holdings`, so it reads the
+     * tuples a check walks, tenant-level ones included. `null` when the checker cannot answer.
+     * Queued like a check, so it never sees a half-applied operation. A read for presentation
+     * (which tools `mountMcp` lists); every invoke still checks.
+     */
+    async principalHoldings(principal: PrincipalId, tenantId: TenantId, scopeId: ScopeId): Promise<Holdings | null> {
+      if (!this.checker.holdings) return null;
+      await this.ensureMigrations();
+      return this.queue.enqueue(() => this.checker.holdings!({ kind: 'principal', id: principal }, { tenantId, scopeId }));
     }
 
     /**

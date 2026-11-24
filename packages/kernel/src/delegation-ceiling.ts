@@ -20,6 +20,7 @@ import {
   type PermissionKey,
   type VerticalCaller,
 } from '@substrat-run/contracts';
+import type { Holdings } from './permission-checker.js';
 
 /** `getScope`'s `delegation` (#3161): who is acting for the person, and the keys they may use. */
 export interface ScopeDelegation {
@@ -93,4 +94,18 @@ export function capCoverage(
   return missing.size === 0
     ? coverage
     : { covered: false, missing: [...missing] as [PermissionKey, ...PermissionKey[]] };
+}
+
+/**
+ * Every key a person could pass a check for in a scope (#3360): what they hold at the node, roles
+ * and orgs expanded, and each key they hold on at least one entity, since an entity-narrowed grant
+ * passes `ctx.check(key, thatEntity)`. Capped by a delegation's ceiling, as every check the call
+ * makes is. Sorted and deduplicated.
+ *
+ * A READ for presentation (which tools to list), never a decision: a check can still refuse a key
+ * listed here (on an entity the grant does not reach, or for a guard it never consults).
+ */
+export function heldKeysOf(holdings: Holdings, ceiling: ReadonlySet<string> | undefined): PermissionKey[] {
+  const keys = new Set<PermissionKey>([...holdings.permissions, ...holdings.narrowed.map((n) => n.permission)]);
+  return [...keys].filter((k) => !outsideCeiling(ceiling, k)).sort();
 }

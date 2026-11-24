@@ -1,7 +1,8 @@
 /**
  * Contract suite for the delegated call's ceiling (#3161): a person acting through another app,
  * with `getScope(…, { delegation: { actor, scope } })`, may do what they hold AND what was
- * delegated. Alice holds A and B; every case below is about which of them the call may use.
+ * delegated. Alice holds A and B; every case below is about which of them the call may use, and
+ * `heldPermissions` (#3360) reads the same answer back without a call.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { errorCodeOf, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
@@ -11,6 +12,7 @@ import {
   CEILING_A,
   CEILING_B,
   CEILING_ECHOED,
+  CEILING_ENTITY,
   CEILING_NOTED,
   CEILING_NOTE_ENTITY,
   CEILING_PEER,
@@ -151,6 +153,24 @@ export function delegationCeilingContractSuite(adapterName: string, makeFixture:
         expect(await codeOf(stranger.invoke('ceiling/b', undefined, { invocationId }))).toBe('permission_denied');
         expect((await deniedIn(invocationId)).map((d) => d.delegation)).toEqual([null]);
       });
+    });
+
+    it('heldPermissions lists what the person could pass a check for, under the same ceiling (#3360)', async () => {
+      const held = (stub: ScopeStub) => stub.heldPermissions!();
+      expect(await held(direct)).toEqual([CEILING_A, CEILING_B]);
+      expect(await held(delegatedA)).toEqual([CEILING_A]);
+      expect(await held(await as([]))).toEqual([]);
+      // A key held on one entity only counts: a check on that entity passes.
+      const narrow = principalId.parse(ulid());
+      await host.admin.grant(staff, {
+        principalId: narrow,
+        permission: CEILING_B,
+        node: { tenantId: t, scopeId: s },
+        entity: { entityType: CEILING_ENTITY, entityId: ulid() },
+        grantedBy: alice,
+      });
+      expect(await held(await host.getScope(narrow, t, s))).toEqual([CEILING_B]);
+      expect(await held(await host.getScope(principalId.parse(ulid()), t, s))).toEqual([]);
     });
 
     it('an empty scope admits nothing', async () => {

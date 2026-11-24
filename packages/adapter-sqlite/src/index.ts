@@ -348,6 +348,7 @@ import {
   delegationCeilingOf,
   delegationStampOf,
   outsideCeiling,
+  heldKeysOf,
   parseScopeDelegation,
   type ScopeDelegation,
   statefulTablesOf,
@@ -7071,6 +7072,20 @@ export class SqliteScopeHost implements ScopeHost {
           : authority.kind === 'vertical-peer'
             ? 'vertical'
             : authority.kind,
+      // #3360: a person's stub only. An impersonation session and a purge stub are other doors.
+      ...(authority.kind === 'principal' && sessionId === undefined && !purge
+        ? {
+            heldPermissions: async () => {
+              if (!this.checker.holdings) throw substratError('unavailable', 'this permission checker cannot list a principal\'s holdings');
+              // In the scope's actor, as an invoke is: an invoke holds its transaction open across
+              // awaits, and a read beside it could see a revoke that then rolls back. Called from a
+              // door (`mountMcp`), never from inside an invoke, which would wait on itself.
+              return rt.actor.enqueue(async () =>
+                heldKeysOf(await this.checker.holdings!(authority, { tenantId, scopeId }), ceiling),
+              );
+            },
+          }
+        : {}),
       invoke: async <O, I>(
         operation: string,
         input?: I,

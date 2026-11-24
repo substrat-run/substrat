@@ -206,14 +206,15 @@ describe('a delegated call is held to the delegated scope before the operation r
     expect(record).toMatchObject({ operation: 'desk/close-ticket', problemCode: 'permission_denied' });
   });
 
-  it('leaves the handshake and the tool list alone', async () => {
+  it('lists only the tools the delegated scope reaches (#3360), none without a single key', async () => {
     const { app } = desk({ resolve: handOver(delegation) });
     const res = await app.request(`${A}/api/mcp`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: bearer },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
-    expect(((await res.json()) as any).result.tools).toHaveLength(5);
+    const names = (((await res.json()) as any).result.tools as { name: string }[]).map((t) => t.name).sort();
+    expect(names).toEqual(['desk_get-ticket', 'desk_list-tickets']);
   });
 });
 
