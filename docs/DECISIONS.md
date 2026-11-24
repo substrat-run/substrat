@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-142 decisions · 75 plan · 67 kernel
+143 decisions · 76 plan · 67 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -149,6 +149,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-62](decisions/K-062-an-operation-does-not-await-an-outside-call-inside-its-transaction.md) | 2026-11-18 | kernel | An operation does not await an outside call inside its transaction; an exchange that decides a commit is an attempt committed before the request leaves | #3289 |
 | [D-74](decisions/D-074-a-subject-access-export-reads-what-erasure-reaches-from-the-dashboard-data-tab-audited-and-outside-the-residency-gate.md) | 2026-11-20 | plan | A subject access export (Art. 15) reads what erasure reaches, through one shared plan; a team's owner or admin runs it from the dashboard's Data tab, recorded under their name, outside the residency gate, and without recipients until the disclosure register exists <br>*awaiting ratification* |  |
 | [D-75](decisions/D-075-five-concepts-and-one-glossary-scope-module-app-store-dependency.md) | 2026-11-24 | plan | Five concepts and one glossary: scope, module, app, store and dependency |  |
+| [D-76](decisions/D-076-a-generator-writes-typed-typescript-and-the-platform-refuses-a-release-whose-re-emitted-surface-differs-by-a-byte.md) | 2026-11-24 | plan | A generator writes typed TypeScript, and the platform refuses a release whose re-emitted surface differs by a byte | #3378, #3381 |
 | [K-63](decisions/K-063-a-tenant-s-people-are-owned-by-one-app-and-its-plugins-keep-the-master-s-answer-for-a-bounded-time.md) | 2026-11-24 | kernel | A tenant's people are owned by one app, and its plugins keep the master's answer for a bounded time | #3161 |
 | [K-64](decisions/K-064-a-scope-has-a-declared-type-and-may-have-a-parent-and-nothing-crosses-a-scope-s-boundary-inside-its-transaction.md) | 2026-11-24 | kernel | A scope has a declared type and may have a parent, and nothing crosses a scope's boundary inside its transaction <br>*supersedes K-53* <br>*amends K-49* | #2992, #2993, #2994, #2995, #2996 |
 | [K-65](decisions/K-065-one-version-rule-an-install-follows-its-app-within-a-major-and-a-breaking-change-is-a-new-major-served-beside-the-old.md) | 2026-11-24 | kernel | One version rule: an install follows its app within a major, and a breaking change is a new major served beside the old <br>*amends K-33* |  |
