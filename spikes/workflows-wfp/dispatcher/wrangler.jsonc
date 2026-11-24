@@ -1,0 +1,11 @@
+// The spike's front door: an ordinary worker that hands a request to the named script in the
+// spike's dispatch namespace, with the outbound worker in front of that script's fetch calls.
+{
+  "name": "substrat-spike-wf-dispatcher",
+  "main": "index.mjs",
+  "compatibility_date": "2026-06-01",
+  "workers_dev": true,
+  "dispatch_namespaces": [
+    { "binding": "DISPATCH", "namespace": "substrat-spike-wf", "outbound": { "service": "substrat-spike-wf-outbound" } }
+  ]
+}

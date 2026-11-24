@@ -1,0 +1,12 @@
+// The spike's "stable script": the one a production promote re-uploads in place (K-33). Deployed
+// into the spike's own dispatch namespace on a TEST account (RUNBOOK.md). Never the platform's.
+{
+  "name": "substrat-spike-wf-acme",
+  "main": "src/entry.mjs",
+  "compatibility_date": "2026-06-01",
+  "durable_objects": { "bindings": [{ "name": "SCOPE", "class_name": "ScopeDO" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ScopeDO"] }],
+  // Workflow names are unique per ACCOUNT, so the name carries the script's.
+  "workflows": [{ "name": "substrat-spike-wf-acme-flow", "binding": "FLOW", "class_name": "OrderFlow" }],
+  "vars": { "CODE_VERSION": "v1", "STEP_PLAN": "v1", "PRIMARY": "1" }
+}

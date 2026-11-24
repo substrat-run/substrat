@@ -1,0 +1,15 @@
+{
+  "name": "workflows-wfp-spike",
+  "private": true,
+  "type": "module",
+  "description": "Evidence for #3369: Cloudflare Workflows held to the one-model RFC's phase 1 rule. Not a workspace member.",
+  "scripts": {
+    "local": "node run-local.mjs"
+  },
+  "dependencies": {
+    "miniflare": "4.20260730.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["workerd", "esbuild"]
+  }
+}

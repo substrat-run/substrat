@@ -1,0 +1,8 @@
+// The namespace's outbound worker (the role vertical-egress plays, D-46). It answers every request
+// itself, so a step can tell from the body whether its fetch passed through it.
+{
+  "name": "substrat-spike-wf-outbound",
+  "main": "index.mjs",
+  "compatibility_date": "2026-06-01",
+  "workers_dev": false
+}

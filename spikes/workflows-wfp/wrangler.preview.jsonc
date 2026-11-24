@@ -1,0 +1,11 @@
+// The spike's "archive script" for a preview: its own script, its own Durable Object namespace (the
+// copy), and its own workflow name. PRIMARY is "0", so the scope's own gate holds outbound effects.
+{
+  "name": "substrat-spike-wf-acme-v2",
+  "main": "src/entry.mjs",
+  "compatibility_date": "2026-06-01",
+  "durable_objects": { "bindings": [{ "name": "SCOPE", "class_name": "ScopeDO" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ScopeDO"] }],
+  "workflows": [{ "name": "substrat-spike-wf-acme-v2-flow", "binding": "FLOW", "class_name": "OrderFlow" }],
+  "vars": { "CODE_VERSION": "v2", "STEP_PLAN": "v1", "PRIMARY": "0" }
+}

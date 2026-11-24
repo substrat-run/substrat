@@ -1,0 +1,11 @@
+// A second script declaring the STABLE script's workflow name: what an archive script uploaded with
+// the stable script's bindings as they are would do. RUNBOOK.md step 8 deploys it last, on purpose.
+{
+  "name": "substrat-spike-wf-acme-clash",
+  "main": "src/entry.mjs",
+  "compatibility_date": "2026-06-01",
+  "durable_objects": { "bindings": [{ "name": "SCOPE", "class_name": "ScopeDO" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ScopeDO"] }],
+  "workflows": [{ "name": "substrat-spike-wf-acme-flow", "binding": "FLOW", "class_name": "OrderFlow" }],
+  "vars": { "CODE_VERSION": "clash", "STEP_PLAN": "v1", "PRIMARY": "0" }
+}
