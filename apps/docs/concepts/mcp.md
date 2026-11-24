@@ -326,20 +326,22 @@ A new vertical writes neither of these.
 ## What this does not solve
 
 **Tool count.** ticket0 routes 59 operations; marking its machine-facing ones leaves 46
-tools, which is still a lot to put in front of a model. Two things will help, and it is
-worth being clear that neither is here yet:
+tools, which is still a lot to put in front of a model.
 
-- **A permission filter** on `tools/list`, so a caller is not offered what they cannot
-  call. This is a least-privilege floor rather than a curation mechanism — dramatic for a
-  narrow principal, marginal for an admin. ticket0's `desk-admin` holds 16 of its 19
-  permission keys, so filtering would barely shorten *its* list.
-- **Per-consumer app scoping**, which is where a *coherent* toolset actually belongs. A
-  triage agent and a reporting agent want different subsets of the same vertical while
-  holding the same principal — and that is a fact about the consumer, which neither the
-  model file nor the permission spine can express.
+`tools/list` shows a caller only the tools they could call: a tool is listed when the
+caller holds its permission key, at the scope or on at least one record, and, for a
+delegated call, when the delegated scope reaches it. A tool with no single key (one that
+`narrows`, or declares no permission) stays listed for a person acting directly. The list
+is presentation, not authorization: a call to a tool that is not listed is still answered
+by that operation's own check. It is a least-privilege floor rather than a curation
+mechanism: dramatic for a narrow principal, marginal for an admin. ticket0's `desk-admin`
+holds 16 of its 19 permission keys, so the filter barely shortens *its* list.
 
-Filtering `tools/list` is invisible to the protocol, so both drop in later without
-breaking a client.
+What is not here yet is **per-consumer app scoping**, which is where a *coherent* toolset
+actually belongs. A triage agent and a reporting agent want different subsets of the same
+vertical while holding the same principal, and that is a fact about the consumer, which
+neither the model file nor the permission spine can express. Filtering `tools/list` is
+invisible to the protocol, so it drops in later without breaking a client.
 
 ## Turning it off
 

@@ -91,7 +91,7 @@ export const SCOPE_WORK_ORIGINS = {
     'changeScopeRoleBoundedFor', 'revokeScopeRolesBoundedFor', 'reservedRoleRefusalFor', 'reservedRoleRefusalHere',
     'reservedGrantRefusalFor', 'reservedShapeRefusalFor', 'roleStateHere', 'reservationHere', 'reservedAmong',
     'hasSystemGrant', 'writeSystemGrant', 'writeSystemGrantAndAuditIntent', 'systemGrantsStatus', 'systemDoorState',
-    'switchPeer', 'peerDoorState', 'peerCovers', 'peerGrantsStatus', 'listConnectionGrants', 'exchangeCapability',
+    'switchPeer', 'peerDoorState', 'peerCovers', 'peerGrantsStatus', 'principalHoldings', 'listConnectionGrants', 'exchangeCapability',
     'exchangeBecomeLinkById', 'mintBecomeCapabilityBoundedFor', 'mintBindLinkBoundedFor', 'unbindEntityHolderBoundedFor',
     'becomeLinkStatesFor', 'revokeBecomeCapabilityFor', 'mintBecomeCapability', 'mintBecomeCapabilityAndAuditIntent',
     'revokeCapabilityAsPlatform', 'listCapabilities',

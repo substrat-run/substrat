@@ -348,6 +348,7 @@ import {
   delegationCeilingOf,
   delegationStampOf,
   outsideCeiling,
+  heldKeysOf,
   parseScopeDelegation,
   type ScopeDelegation,
   statefulTablesOf,
@@ -7071,6 +7072,15 @@ export class SqliteScopeHost implements ScopeHost {
           : authority.kind === 'vertical-peer'
             ? 'vertical'
             : authority.kind,
+      // #3360: a person's stub only. An impersonation session and a purge stub are other doors.
+      ...(authority.kind === 'principal' && sessionId === undefined && !purge
+        ? {
+            heldPermissions: async (): Promise<PermissionKey[]> => {
+              if (!this.checker.holdings) throw substratError('unavailable', 'this permission checker cannot list a principal\'s holdings');
+              return heldKeysOf(await this.checker.holdings(authority, { tenantId, scopeId }), ceiling);
+            },
+          }
+        : {}),
       invoke: async <O, I>(
         operation: string,
         input?: I,
