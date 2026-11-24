@@ -7,10 +7,24 @@ import { DurableObject } from 'cloudflare:workers';
  * (a cold start, a graph walk); it is the experiment's input, not a platform constant.
  */
 export class StoreObject extends DurableObject {
+  inFlight = 0;
+
+  /** How many reads are waiting on their delay now. The gate probe waits for one. */
+  pending() {
+    return this.inFlight;
+  }
+
   async read(input) {
     const bytes = Math.max(0, Math.min(Number(input?.bytes ?? 0), 8 * 1024 * 1024));
     const delayMs = Math.max(0, Number(input?.delayMs ?? 0));
-    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    if (delayMs > 0) {
+      this.inFlight += 1;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      } finally {
+        this.inFlight -= 1;
+      }
+    }
     return { payload: 'x'.repeat(bytes) };
   }
 }

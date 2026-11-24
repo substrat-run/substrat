@@ -74,6 +74,11 @@ has no dispatch parameters. In local workerd the vertical's `outboundService` co
 Object too, so `inside-fetch` passes egress here. On Workers for Platforms it does not
 ([below](#1-a-policed-path-from-inside-the-object)). Everything runs in one process on one machine.
 
+**The gate probe** (`/gate` in `src/router.mjs`) sends the second call only once the store object
+reports the first call's read in flight. Both calls then report in-object times, so the probe
+compares when the second call ran in the object with when the read ended. A delayed delivery
+cannot pass for a stall.
+
 **Timing.** The measurements are timed inside the router with `Date.now()`, which in workerd
 moves across I/O, and only I/O is timed. That leaves out the miniflare proxy between Node and
 workerd, which added 100–300 ms per call in a first run timed from Node. The store's delay stands
@@ -98,8 +103,8 @@ All 12 pass. Each is a line in `run.mjs`.
 | `StoreCalls` refuses a scope other than the dispatch's | Yes |
 | Locally, a `ctx.exports` door kept past its request still answers in a later request | **Yes** |
 | Locally, the same kept door answers in an alarm | **Yes** |
-| Inside `storage.transaction`, **with no queue**, a second call waits until the first has ended | **Yes**: it waited 212–339 ms behind a 200 ms read. Its write landed after the first call's rollback, not inside it |
-| With no transaction, the input gate lets a second call in while the first awaits the store | Yes: it waited 3–80 ms, and its write fell between the first call's two |
+| Inside `storage.transaction`, **with no queue**, a second call sent while the first awaits a 200 ms read runs only once the read has ended | **Yes**: sent 200–201 ms before the read ended, it ran 0 ms after it, by in-object clocks. Its write landed after the first call's rollback, not inside it |
+| With no transaction, the input gate lets that second call run while the first awaits the store | Yes: it ran 200–201 ms before the read ended, and its write fell between the first call's two |
 
 ### One call at a time
 
@@ -183,8 +188,8 @@ On the edge it holds it for the transfer as well.
 
 ### 2. The stall is workerd's, not our queue's
 
-The gate probe takes `OperationQueue` away and keeps the transaction. A second call still waits
-until the first transaction has ended. Without the transaction, the input gate lets it in while
+The gate probe takes `OperationQueue` away and keeps the transaction. A second call, sent while
+the first call's read is in flight, still runs only once that read has ended. Without the transaction, the input gate lets it in while
 the first call awaits. So with any path, a store read awaited inside the operation's transaction
 holds the scope for the store's whole answer time. Removing or loosening our queue would not
 change that. Holding it is also the safe behaviour: had the second call run inside the open

@@ -90,21 +90,29 @@ export class ScopeDO extends DurableObject {
    * whether the platform's input gate held that call out.
    */
   gateHold(args, door) {
+    // In-object times, so the probe judges when the second call RAN against when the read
+    // ended, not a round trip measured outside.
+    const times = {};
     const body = async () => {
       this.write(args.tag, 'hold-before');
+      times.readStartedAt = Date.now();
       await door.read(args.binding, { bytes: args.bytes, delayMs: args.delayMs });
+      times.readEndedAt = Date.now();
       this.write(args.tag, 'hold-after');
       if (args.failAfter) throw new Error('the holding operation threw after its read');
-      return { held: true };
     };
     // `txn=0`: the same await with no transaction around it, to tell the gate from the transaction.
-    return args.txn ? this.ctx.storage.transaction(body) : body();
+    const run = args.txn ? this.ctx.storage.transaction(body) : body();
+    return run.then(
+      () => ({ ...times, threw: false }),
+      () => ({ ...times, threw: true }),
+    );
   }
 
   /** A second call that writes, with no queue and no transaction of its own. */
   gateWrite(args) {
     this.write(args.tag, 'interloper');
-    return { wrote: 1 };
+    return { ranAt: Date.now() };
   }
 
   rows(tag) {

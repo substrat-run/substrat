@@ -136,31 +136,34 @@ for (const mode of ['inside-door', 'inside-raw', 'inside-fetch', 'host', 'host-d
 
 // The gate probe: the production transaction WITHOUT the queue, and the same await with no
 // transaction. Does anything but the queue hold a second call out while the first awaits
-// the store? `failAfter` makes the first call throw after its read, so a write the second
-// call made inside the first one's transaction would be rolled back with it.
+// the store? The second call is sent only once the store reports the first call's read in
+// flight (`/gate`, timed in workerd). `failAfter` makes the first call throw after its read,
+// so a write the second call made inside the first one's transaction would roll back with it.
 async function gateProbe(txn) {
-  const t = tag(`gate-txn${txn}`);
   const scope = `scope-gate-${txn}`;
   await call({ mode: 'local', scope, tag: 'warm' });
-  const hold = call({ mode: 'gate-hold', scope, bytes: 1, delayMs: 200, failAfter: 1, txn, tag: t });
-  await sleep(40);
-  const write = await call({ mode: 'gate-write', scope, tag: t });
-  const held = await hold;
-  const rows = (await call({ mode: 'rows', scope, tag: t })).body.result;
-  return { writeMs: Math.round(write.ms), holdMs: Math.round(held.ms), rows };
+  const url = new URL('http://router/gate');
+  const params = { scope, tag: tag(`gate-txn${txn}`), bytes: 1, delayMs: 200, failAfter: 1, txn };
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
+  const g = await (await router.fetch(url)).json();
+  return {
+    sentBeforeReadEnded: g.readEndedAt - g.sentAt,
+    ranAfterReadEnded: g.ranAt - g.readEndedAt,
+    rows: g.rows.result ?? g.rows,
+  };
 }
 const gateTxn = await gateProbe(1);
 const gateBare = await gateProbe(0);
 console.log(`      in a transaction:    ${JSON.stringify(gateTxn)}`);
 console.log(`      with no transaction: ${JSON.stringify(gateBare)}`);
 check(
-  gateTxn.writeMs >= 150 && gateTxn.rows.join() === 'interloper',
-  'inside storage.transaction, with no queue, a second call waits until the first ends (its write lands after the rollback)',
+  gateTxn.sentBeforeReadEnded >= 100 && gateTxn.ranAfterReadEnded >= 0 && gateTxn.rows.join() === 'interloper',
+  'inside storage.transaction, with no queue, a second call sent mid-read runs only after the read (its write lands after the rollback)',
   gateTxn,
 );
 check(
-  gateBare.writeMs < 150 && gateBare.rows.join() === 'hold-before,interloper,hold-after',
-  'with no transaction, the input gate lets a second call in while the first awaits the store',
+  gateBare.sentBeforeReadEnded >= 100 && gateBare.ranAfterReadEnded < 0 && gateBare.rows.join() === 'hold-before,interloper,hold-after',
+  'with no transaction, the input gate lets a second call sent mid-read run before the read ends',
   gateBare,
 );
 

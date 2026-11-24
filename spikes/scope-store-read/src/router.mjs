@@ -73,6 +73,7 @@ export default {
       txn: url.searchParams.get('txn') !== '0',
     };
     if (url.pathname === '/bench') return bench(env, door, args, url.searchParams);
+    if (url.pathname === '/gate') return gate(env, door, args, caller);
     try {
       const result = await env.VERTICAL.run(args, door);
       return Response.json({ ok: true, result });
@@ -114,4 +115,25 @@ async function bench(env, door, args, params) {
   const localMs = await Promise.all(localCalls);
   await Promise.all(readCalls);
   return Response.json({ localMs, allReadsMs: Date.now() - started });
+}
+
+/**
+ * The gate probe, run inside workerd. The held operation starts its store read; the router
+ * waits until the store object reports that read in flight, and only then sends the second
+ * call. Both calls report in-object times, so "the second call waited" is judged by when it
+ * RAN in the object against when the first call's read ended.
+ */
+async function gate(env, door, args, caller) {
+  const store = env.STORE.get(env.STORE.idFromName(`${caller.tenant}/${caller.vertical}/${caller.scope}/${args.binding}`));
+  const hold = env.VERTICAL.run({ ...args, mode: 'gate-hold' }, door);
+  const waitStarted = Date.now();
+  while ((await store.pending()) === 0) {
+    if (Date.now() - waitStarted > 2000) return Response.json({ error: 'the read never started' }, { status: 500 });
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  const sentAt = Date.now();
+  const write = await env.VERTICAL.run({ ...args, mode: 'gate-write' }, door);
+  const held = await hold;
+  const rows = await env.VERTICAL.run({ ...args, mode: 'rows' }, door);
+  return Response.json({ sentAt, ranAt: write.ranAt, ...held, rows });
 }
