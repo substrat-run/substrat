@@ -220,10 +220,10 @@ drain. What changes is where the provider code runs. A call is dispatched **into
 own worker**, bounded by its declared outbound hosts, and handed a context for one connection,
 with no `HostAdmin` and no tenant argument. State is applied only when the call succeeds, so a
 cursor never moves past work that did not land. The trade-off is stated in its decision record,
-D-64, which is still proposed: that deployment holds the plaintext credential, including one a
-tenant typed into the dashboard. A follow-on proposal, D-73, would make every connector its own
-deployable unit behind one call contract. One first-party connector is piloted that way, behind
-a flag.
+D-64, ratified in November 2026: that deployment holds the plaintext credential, including one
+a tenant typed into the dashboard. A follow-on decision, D-73, makes every connector its own
+deployable unit behind one call contract; whether a platform connector runs as its own script waits
+on a pilot. One first-party connector is piloted that way, behind a flag.
 
 **Mail can be an inbound connection.** A scope can be given an address on the platform's
 receiving domain, and each message to it lands through an operation the vertical declares,

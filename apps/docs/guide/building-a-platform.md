@@ -19,7 +19,7 @@ suite, sold to small companies one add-on at a time.
 | Layer | What it is | Who writes it | Status |
 |---|---|---|---|
 | **[Engines](/engines/)** | Domain logic with guarantees: invoices that cannot change after export, states that cannot be skipped, every change recorded | Substrat | **shipped** |
-| **[Connectors](/connectors/)** | Access to an outside system: the stored credential, the calls, the polling | Substrat, or your app ([your own connector](/connectors/your-own)) | platform connectors **shipped**; your own **proposed** |
+| **[Connectors](/connectors/)** | Access to an outside system: the stored credential, the calls, the polling | Substrat, or your app ([your own connector](/connectors/your-own)) | platform connectors and your own **shipped**; listing yours for other apps **planned, unbuilt** |
 | **Your vertical** | The product your customers use: the portal's contacts, companies, inbox, screens and roles | You | **shipped** |
 | **Extensions** | Separately installed additions to your vertical, written by you or by your customers | You, then your customers | **planned, unbuilt** (see [below](#extensions-planned)) |
 
@@ -194,7 +194,8 @@ your add-ons is an ordinary extension.
 | Entitlement keys with plan, quota and expiry, read at request time | **shipped**; quota and plan are yours to enforce |
 | Engines composed inside your vertical | **shipped** |
 | Platform connectors, one connection per tenant and vertical | **shipped** |
-| Your own connector, shipped with your vertical | **building** (D-64) |
+| Your own connector, shipped with your vertical | **shipped** (D-64) |
+| Listing your connector for other apps | planned, unbuilt (D-64) |
 | Peer calls and exported events between verticals in one tenant | **building** |
 | Declared add-on gates (operations, screens, schedules and connections by key) | planned, unbuilt |
 | Extensions: extension surface, consent, sandboxed screens, shared connections | planned, unbuilt |
