@@ -1777,6 +1777,38 @@ export class VerticalClient {
   }
 
   /**
+   * #3365: ask the scope to route the deliveries a full room left due, into the room the drain's
+   * settles just made. `null` from a deployment that predates the route (a 404 from its catch-all,
+   * a 501 from a host without the method): the drain carries on, and the next pass routes them.
+   */
+  async routeDueDeliveries(tenantId: TenantId, scopeId: ScopeId): Promise<{ routed: number; awaitingRoom: number } | null> {
+    try {
+      return await this.postInternal<{ routed: number; awaitingRoom: number }>(
+        '/internal/platform-requests/route-due',
+        { tenantId, scopeId },
+        'route-due-deliveries',
+      );
+    } catch (err) {
+      if (err instanceof ControlPlaneError && (err.status === 404 || err.status === 501)) return null;
+      throw err;
+    }
+  }
+
+  /** #3365: re-drive a `failed` connector intent. `moved` is false when it was not (or no longer) failed. */
+  async retryPlatformRequest(tenantId: TenantId, scopeId: ScopeId, id: PlatformRequestId): Promise<{ moved: boolean }> {
+    return this.postInternal<{ moved: boolean }>('/internal/platform-requests/retry', { tenantId, scopeId, id }, 'retry-platform-request');
+  }
+
+  /** #3365: re-drive a dead-lettered executor delivery. `moved` is false when it was not (or no longer) dead. */
+  async retryExecutorDelivery(tenantId: TenantId, scopeId: ScopeId, eventId: string, executorId: string): Promise<{ moved: boolean }> {
+    return this.postInternal<{ moved: boolean }>(
+      '/internal/executor-deliveries/retry',
+      { tenantId, scopeId, eventId, executorId },
+      'retry-executor-delivery',
+    );
+  }
+
+  /**
    * Copy one scope's data into a fresh sibling scope DO, inside the vertical's own
    * deployment (§9's data half). The platform names source and destination; the bytes
    * never cross the boundary — the response is a table count, not a dump. The

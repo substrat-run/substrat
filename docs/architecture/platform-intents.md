@@ -247,6 +247,22 @@ never learns "site creation" — it only knows "drain scope S," and the control-
 interprets the `kind`. Wiring the router → drain path (a binding to the sweeper/control plane) is
 an implementation detail below.
 
+**Where a kicked drain runs, and how a backlog drains (#3365).** The control plane hands a kicked
+scope to that scope's own drain object (`PlatformDrainKickDO`), which runs the drain from its alarm,
+never inside the router's `waitUntil`, whose ~30 s cut a drain off with a connector call in flight.
+A drain re-lists the scope's intents until it finds nothing new, its rounds or its two-minute budget
+run out, trying each intent at most once. After each round that settled something, the scope routes
+the connector deliveries a full room left due (`/internal/platform-requests/route-due`). A drain that
+stops with more to do runs again at the end of the object's two-second window. Kicks within one
+window cost one drain and a trailing one.
+
+Routed connector deliveries have a room of their own, `MAX_PENDING_CONNECTOR_DISPATCHES` (32). It is
+kept apart from module intents and `sweep-runs` reports, and neither counts against the other. A
+delivery that finds the room full is not an attempt. It stays due, and the call, the scope's sweeper
+pass and a connection being connected or rotated each ask for a drain. Staff re-drive a `failed`
+connector intent or a dead-lettered executor delivery with `POST /tenants/:t/scopes/:s/redrive`,
+which is audited as `redriveDelivery`.
+
 ## Authorization & isolation
 
 - **Authorization is the vertical's.** It calls `ctx.requestPlatform` only after checking its own

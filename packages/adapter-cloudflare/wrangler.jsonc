@@ -70,6 +70,8 @@
       { "name": "KICK_REAL", "class_name": "KickRealDO" },
       { "name": "KICK_LOG", "class_name": "KickLogDO" },
       { "name": "KICK_SLOW", "class_name": "KickSlowDO" },
+      // #3365: the coalescer that runs every pass from its alarm, and again while one says `more`.
+      { "name": "KICK_ALARM", "class_name": "KickAlarmDO" },
       // #2450 step 2: the background copy's job object, over a step the test controls.
       { "name": "COPY_JOB_TEST", "class_name": "CopyJobTestDO" },
       { "name": "COPY_JOB_SHORT", "class_name": "CopyJobShortDO" },
@@ -189,6 +191,10 @@
     {
       "tag": "v22",
       "new_sqlite_classes": ["MeteredScopeDO", "UnmeteredScopeDO"]
+    },
+    {
+      "tag": "v23",
+      "new_sqlite_classes": ["KickAlarmDO"]
     }
   ]
 }

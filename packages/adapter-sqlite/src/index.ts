@@ -254,6 +254,7 @@ import {
   connectionBindingAudit,
   copyMarkAudit,
   orphanSweepAudit,
+  deliveryRedriveAudit,
   redrainEventsInput,
   REDRAIN_BATCH,
   type OperationTarget,
@@ -13816,6 +13817,11 @@ export class SqliteScopeHost implements ScopeHost {
       recordCopyMark: async (actor, entry) => {
         const { tenantId, scopeId, action, ...after } = copyMarkAudit.parse(entry);
         this.recordAdmin(actor, action === 'mark' ? 'markScopeCopy' : 'clearScopeCopyMark', { tenantId, scopeId }, null, after);
+      },
+      /** #3365: one staff re-drive, written after the scope's own move. */
+      recordDeliveryRedrive: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = deliveryRedriveAudit.parse(entry);
+        this.recordAdmin(actor, 'redriveDelivery', { tenantId, scopeId }, null, after);
       },
       /** #2314: one orphan-attachment pass over a scope, written after the vertical's own pass. */
       recordOrphanSweep: async (actor, entry) => {

@@ -161,7 +161,10 @@
 			// #2365 phase 1: the review runner's reader half, one per review id, stepped by alarm.
 			{ "name": "REVIEW_JOBS", "class_name": "ReviewJobDO" },
 			// #3108: the persona issuer a seeded preview signs in through — one object, its key inside.
-			{ "name": "PERSONA_ISSUER", "class_name": "PersonaIssuerDO" }
+			{ "name": "PERSONA_ISSUER", "class_name": "PersonaIssuerDO" },
+			// #3365: one per scope — a kicked platform-intent drain runs from its alarm, and runs
+			// again while a backlog remains. A start time and a dirty bit, nothing else.
+			{ "name": "PLATFORM_DRAIN_KICK", "class_name": "PlatformDrainKickDO" }
 		]
 	},
 	"migrations": [
@@ -193,6 +196,11 @@
 			// #3108: the persona issuer.
 			"tag": "v6",
 			"new_sqlite_classes": ["PersonaIssuerDO"]
+		},
+		{
+			// #3365: the per-scope platform-intent drain.
+			"tag": "v7",
+			"new_sqlite_classes": ["PlatformDrainKickDO"]
 		}
 	],
 	// Pushed verticals are reached through the WfP dispatch namespace, not static
@@ -378,7 +386,8 @@
 					{ "name": "OBS_CACHE", "class_name": "ObservabilityCacheDO" },
 					{ "name": "COPY_JOBS", "class_name": "ScopeCopyJobDO" },
 					{ "name": "REVIEW_JOBS", "class_name": "ReviewJobDO" },
-					{ "name": "PERSONA_ISSUER", "class_name": "PersonaIssuerDO" }
+					{ "name": "PERSONA_ISSUER", "class_name": "PersonaIssuerDO" },
+					{ "name": "PLATFORM_DRAIN_KICK", "class_name": "PlatformDrainKickDO" }
 				]
 			},
 			"migrations": [
@@ -387,7 +396,8 @@
 				{ "tag": "v3", "new_sqlite_classes": ["ObservabilityCacheDO"] },
 				{ "tag": "v4", "new_sqlite_classes": ["ScopeCopyJobDO"] },
 				{ "tag": "v5", "new_sqlite_classes": ["ReviewJobDO"] },
-				{ "tag": "v6", "new_sqlite_classes": ["PersonaIssuerDO"] }
+				{ "tag": "v6", "new_sqlite_classes": ["PersonaIssuerDO"] },
+				{ "tag": "v7", "new_sqlite_classes": ["PlatformDrainKickDO"] }
 			],
 			// Own dispatch namespace — a test control plane must never push verticals
 			// into prod's `substrat-verticals`. Create: wrangler dispatch-namespace create substrat-verticals-test

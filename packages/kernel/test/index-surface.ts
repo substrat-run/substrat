@@ -43,6 +43,7 @@ export const INDEX_VALUE_EXPORTS = [
   'CLEAN_ROOM_COPY_SQL',
   // #2732: the live-connection key, owner included, as both adapters build it.
   'CONNECTIONS_LIVE_INDEX',
+  'CONNECTOR_DISPATCH_REQUESTED_BY',
   'CONNECT_LINKS_DDL',
   'CONTAINER_OBJECT_CLASS',
   'CONTAINER_SCRIPT_PREFIX',
@@ -124,6 +125,8 @@ export const INDEX_VALUE_EXPORTS = [
   'MARKUP_INSERT_SQL',
   'MARKUP_SELECT_FOR_TENANT_SQL',
   'MARKUP_SELECT_SQL',
+  // #3365: a routed connector delivery's room of its own, and the mark that tells its rows apart.
+  'MAX_PENDING_CONNECTOR_DISPATCHES',
   'MAX_SEARCH_LIMIT',
   'MEMBERSHIP_EXECUTOR_ID',
   'MEMBERSHIP_FENCES_DDL',

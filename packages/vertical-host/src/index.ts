@@ -576,6 +576,15 @@ export interface VerticalScopeHost {
       event?: PlatformOutcomeEvent | null;
     },
   ): Promise<void>;
+  /**
+   * #3365: route the scope's due deliveries into the room a drain has just made. Optional, so a
+   * host built before it still mounts; the route answers 501 and the drain carries on without it.
+   */
+  routeDueDeliveries?(tenantId: TenantId, scopeId: ScopeId): Promise<{ routed: number; awaitingRoom: number }>;
+  /** #3365: re-drive a `failed` connector intent. Optional, as above. */
+  retryPlatformRequestLocal?(tenantId: TenantId, scopeId: ScopeId, id: PlatformRequestId): Promise<boolean>;
+  /** #3365: re-drive a dead-lettered executor delivery. Optional, as above. */
+  retryExecutorDeliveryLocal?(tenantId: TenantId, scopeId: ScopeId, eventId: string, executorId: string): Promise<boolean>;
   // The connector write-back's far end (#574): the shared control plane runs the
   // connector pass for this CP-less deployment and reaches back through these. The
   // permission check happens HERE, in the scope's own DO, against the delivered
@@ -1105,6 +1114,16 @@ const ownerTransferRefusal: Record<Extract<OwnerTransferRecord, { outcome: 'refu
   wedged:
     'has this hand-over open, and it can no longer finish: `to` has since lost its login or its role here — abandon it, then hand over again',
 };
+
+/** #3365: a scope, and nothing else — the refill's body. */
+const scopeBody = z.object({ tenantId: tenantIdOf, scopeId: scopeIdOf });
+const retryIntentBody = z.object({ tenantId: tenantIdOf, scopeId: scopeIdOf, id: platformRequestId });
+const retryDeliveryBody = z.object({
+  tenantId: tenantIdOf,
+  scopeId: scopeIdOf,
+  eventId: z.string().min(1).max(64),
+  executorId: z.string().min(1).max(200),
+});
 
 const settleBody = z.object({
   tenantId: tenantIdOf,
@@ -2757,6 +2776,39 @@ export function mountPlatformSurface<Env extends object>(
       return refuseStatus(c, 501, 'this deployment cannot move an import watermark (#1705) — redeploy it. Nothing was moved.');
     }
     return c.json(await host.importCursorLocal(body.tenantId, body.scopeId, body.at));
+  });
+
+  // #3365: the drain's refill. Between rounds the control plane asks the scope to route the
+  // deliveries a full room left due, into the room the round's settles made — so a backlog larger
+  // than the room drains in one drain, not one 15-minute pass per room's worth.
+  app.post('/internal/platform-requests/route-due', async (c) => {
+    const body = scopeBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.routeDueDeliveries) {
+      return refuseStatus(c, 501, 'this deployment cannot route due deliveries on request (#3365) — redeploy it. Nothing was routed.');
+    }
+    return c.json(await host.routeDueDeliveries(body.tenantId, body.scopeId));
+  });
+
+  // #3365: re-drive what gave up. A `failed` connector intent goes back to pending with a fresh
+  // attempt ceiling; a dead-lettered executor delivery is due again with fresh attempts. Each
+  // answers whether a row moved: one that is not (or no longer) dead moves nothing.
+  app.post('/internal/platform-requests/retry', async (c) => {
+    const body = retryIntentBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.retryPlatformRequestLocal) {
+      return refuseStatus(c, 501, 'this deployment cannot re-drive an intent (#3365) — redeploy it. Nothing was moved.');
+    }
+    return c.json({ moved: await host.retryPlatformRequestLocal(body.tenantId, body.scopeId, body.id) });
+  });
+
+  app.post('/internal/executor-deliveries/retry', async (c) => {
+    const body = retryDeliveryBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.retryExecutorDeliveryLocal) {
+      return refuseStatus(c, 501, 'this deployment cannot re-drive a delivery (#3365) — redeploy it. Nothing was moved.');
+    }
+    return c.json({ moved: await host.retryExecutorDeliveryLocal(body.tenantId, body.scopeId, body.eventId, body.executorId) });
   });
 
   app.post('/internal/platform-requests/settle', async (c) => {
