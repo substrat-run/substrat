@@ -372,10 +372,28 @@ routine, and it is not proven as one.
 client. For waiting: nothing uses one, the one written need
 ([#3289](https://github.com/substrat-run/substrat/issues/3289)) is met by K-62's committed attempt,
 and it would be the largest new surface while the aim is to remove things. *Lean:* the three
-outcomes now, the engine at the first flow that waits on a person or a time across two apps. Two
-things are uncertain at any time: whether a workflow engine runs in a script served through Workers
-for Platforms, which a cheap spike answers, and who a step acts as after a long wait. *Lean:* it
-runs as the app, and a step needing a person's right is an approval step a person takes.
+outcomes now, the engine at the first flow that waits on a person or a time across two apps.
+
+*What it runs on.* Cloudflare Workflows is the default candidate, not an engine of our own. It is a
+layer above the scopes, not in place of them. An instance holds how far a flow has got. Every
+domain fact stays in a scope, where a row, its event and its check commit in one transaction. A step
+is one scope operation, called with an idempotency key made from the instance and the step. A wait
+on a person is a wait for an event, and a wait on a time is a sleep. Two wider uses are not
+proposed: Workflows as the store of current state, and Workflows as the way every command runs. A
+step does not commit with the outbox, most commands answer directly, and the pure SQLite host (dev,
+CI, self-host, escrow) has no Workflows. So the engine is a kernel contract with two
+implementations, as the scope host is today: Workflows when hosted, and a step journal on SQLite
+with an alarm for the pure host.
+
+Cloudflare's documentation for Workers for Platforms lists Workflows among the bindings a user
+Worker can carry. That was not tried here. What is not known is how an instance behaves when the
+platform changes the script under it. A push only uploads an archive script; it is a production
+promote that replaces the serving script in place (K-33), so an instance started on one version
+wakes on another version's code. A preview runs on an archive script against a copy that must
+stay inert ([#2005](https://github.com/substrat-run/substrat/issues/2005)). Phase 1's spike tests
+both, and the candidate stays or is dropped on the rule §8 gives for that spike. Also uncertain is
+who a step acts as after a long wait. *Lean:* it runs as the app, and a step needing a person's
+right is an approval step a person takes.
 
 **7.7 The home scope as the one place for tenant data.** It takes one call at a time, so everything
 tenant-wide queues. Nobody knows the limit until it is measured. *Lean:* shrink what has to live
@@ -418,13 +436,51 @@ when* no coming build rests on a proposed record.
 **Phase 1: one door.** The platform's connectors move onto the shared contract and stay in
 process, with a sweep role per connection first, so a rate-limited provider is not polled once per
 scope. The entry is generated. K-58's envelope rolls out. A trace id follows calls. `substrat dev`
-runs network parts locally with recorded answers. Three spikes run meanwhile: a workflow engine in
-Workers for Platforms, a call from inside a scope to its store, and no network in scope code as a
-mechanism. *Removes* `HostAdmin` from provider code, one of three connector implementations, the
-vertical's hand-written entry (not the platform entry of §5.3, which stays) and the shared secret
-between router and vertical
+runs network parts locally with recorded answers. Three spikes run meanwhile: Cloudflare Workflows
+in Workers for Platforms (below), a call from inside a scope to its store, and no network in scope
+code as a mechanism. *Removes* `HostAdmin` from provider code, one of three connector
+implementations, the vertical's hand-written entry (not the platform entry of §5.3, which stays)
+and the shared secret between router and vertical
 ([K-27](../decisions/K-027-the-router-presents-a-shared-secret-and-the-vertical-verifie.md)). *Done
 when* no provider code reaches `HostAdmin` and every vertical runs a generated entry.
+
+*The Workflows spike* runs on a script uploaded the way the uploader uploads a vertical. It is done
+when it has answered five questions:
+
+- **Binding.** Can the uploader bind a Workflow class to a script in the dispatch namespace? Does an
+  instance started from it reach the scope's operations through the same door as any other call?
+- **Waking.** The case that motivates the engine runs the other way. An event committed in a scope's
+  outbox has to wake the instance waiting for it. That event may be another vertical's, arriving
+  through cross-vertical delivery ([cross-vertical-events.md](../architecture/cross-vertical-events.md)).
+  Who delivers it: a consumer in the scope, or the dispatcher calling the instance's event API? Is
+  that delivery at least once, and is a repeat harmless? What happens to an event that arrives
+  before the instance reaches its wait?
+- **A promote with instances in flight.** A push only uploads an archive script; a production
+  promote replaces the serving script in place (K-33), so the spike promotes, not only pushes. Does
+  a sleeping or waiting instance resume on the promoted code? What does a completed step's recorded
+  result mean to code that renamed, removed or reordered steps? Can an instance stay on the version
+  that started it, or must it be drained before a promote that changes its steps?
+- **A preview.** Does an instance started on a preview's archive script stay tied to that script and
+  its copy? Are its steps inert like every other door on a copy (#2005)? What happens to its
+  instances when the preview is deleted, or when its data is carried onto a new version
+  ([#1710](https://github.com/substrat-run/substrat/issues/1710))?
+- **Cost.** What does an instance that sleeps or waits for weeks cost?
+
+This is the one rule for whether Workflows stays the default. It stays only if the spike shows all
+four of the following:
+
+- The uploader binds a Workflow class to a script in the dispatch namespace, and an instance
+  started from it runs scope operations through the same door as any other call.
+- An event committed in a scope reaches the instance waiting for it, through a deliverer the spike
+  names. Delivery is at least once, a repeat is harmless, and an event that arrives before the wait
+  is not lost.
+- An instance in flight behaves predictably across a production promote. It either resumes on the
+  promoted code with defined results, or it is held on its version or drained first.
+- An instance started on a preview stays tied to the archive script and its copy, and its steps are
+  inert there.
+
+Otherwise, Workflows is no longer the default, and that includes a question the spike cannot
+answer. The engine is then the step journal in the scope on both hosts.
 
 **Phase 2: one edge.** The dependency enters the manifest and replaces the separate declarations.
 Push and install check against consumers. A peer call can name a scope, and calls as the person
@@ -477,5 +533,7 @@ dependency in phase 2.
 - Nothing was run. "Built" means the repository's documents and code say so.
 - Not measured: the hop a connector script adds, the response time of a call between two apps
   through the router and egress, and the home scope as a bottleneck.
-- Not known: whether a workflow engine runs in a script served through Workers for Platforms, and
-  whether no network in scope code can be a mechanism on the platform today.
+- Not known: how a Workflow instance in flight behaves when a promote replaces its script in place,
+  and in a preview, and how an event committed in a scope reaches an instance waiting for it.
+  Cloudflare documents the binding for a user Worker, and it was not tried. Also not known: whether
+  no network in scope code can be a mechanism on the platform today.
