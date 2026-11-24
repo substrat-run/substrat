@@ -194,7 +194,7 @@ your add-ons is an ordinary extension.
 | Entitlement keys with plan, quota and expiry, read at request time | **shipped**; quota and plan are yours to enforce |
 | Engines composed inside your vertical | **shipped** |
 | Platform connectors, one connection per tenant and vertical | **shipped** |
-| Your own connector, shipped with your vertical | **proposed** (D-64) |
+| Your own connector, shipped with your vertical | **building** (D-64) |
 | Peer calls and exported events between verticals in one tenant | **building** |
 | Declared add-on gates (operations, screens, schedules and connections by key) | planned, unbuilt |
 | Extensions: extension surface, consent, sandboxed screens, shared connections | planned, unbuilt |

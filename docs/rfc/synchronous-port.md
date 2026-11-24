@@ -1,13 +1,13 @@
 ---
-status: proposed
+status: accepted
 layer: kernel
-description: "Can an operation wait on an outside service whose answer decides whether it commits? A regulated cash register needs a control code before a sale is registered (#3289). Reads the regulation's text, weighs an OperationContext port against reserve-then-record and against a connector, and recommends reserve-then-record with no new kernel verb. K-62 records it as proposed."
+description: "Can an operation wait on an outside service whose answer decides whether it commits? A regulated cash register needs a control code before a sale is registered (#3289). Reads the regulation's text, weighs an OperationContext port against reserve-then-record and against a connector, and recommends reserve-then-record with no new kernel verb. K-62 records it, ratified 2026-11-23."
 ---
 
 # RFC: an outside answer that decides a commit — the synchronous port of #3289
 
-**Status: proposed.** [K-62](../decisions/K-062-an-operation-does-not-await-an-outside-call-inside-its-transaction.md)
-records the recommendation as proposed. Nothing is built, and nothing in this document changes code.
+**Status: accepted.** [K-62](../decisions/K-062-an-operation-does-not-await-an-outside-call-inside-its-transaction.md)
+records the recommendation, ratified 2026-11-23. Nothing is built, and nothing in this document changes code.
 **Answers:** [#3289](https://github.com/substrat-run/substrat/issues/3289). **Reads against:**
 [platform-intents.md](../architecture/platform-intents.md) (which turns down a synchronous outbound
 call from a vertical to the platform), [sub-transactions.md](../architecture/sub-transactions.md)
@@ -421,7 +421,7 @@ noticing, since the engine only sees `request` and `answer`.
 
 ## 5. What K-62 decides, and what it leaves for later
 
-K-62 (proposed) decides two things. An operation does not await an outside call inside its
+K-62 (ratified 2026-11-23) decides two things. An operation does not await an outside call inside its
 transaction, and `OperationContext` gets no request/response verb for one. An exchange whose answer
 decides a commit is an attempt the engine commits before the request leaves, plus a second operation
 that records or abandons it, with the call made by host code between them.

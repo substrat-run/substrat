@@ -1,14 +1,14 @@
 ---
-status: proposed
+status: building
 layer: kernel
 description: One-way trust between the platform and a deployed vertical. The router and the control plane sign what they send a vertical with Ed25519, a vertical holds public keys only, and a vertical's calls up to the control plane give way to its outbox. Envelope, verifier states, key management, the readiness gate and a rollout that breaks no live app. Primitives, the verifier in the platform's entry, inert until key lists are given, the signers, off until their flag is set, and the uploader, which gives a deployment key lists only where the rollout setting names it.
 ---
 
 # RFC: wire signing
 
-**Status:** proposed; its ten design questions are decided (§12) · **Decision:**
+**Status:** building; its ten design questions are decided (§12) · **Decision:**
 [K-58](../decisions/K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md),
-proposed · **Primitives:**
+ratified 2026-11-23 · **Primitives:**
 `packages/contracts/src/wire-signing.ts`, with shared vectors in
 `packages/contracts/test/vectors/wire-envelope.json` · **Verifier:**
 `packages/control-plane-api/platform-entry/wire-gate.ts`, in the platform's entry, inert until a

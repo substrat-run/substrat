@@ -3,7 +3,7 @@ id: D-71
 date: 2026-11-07
 layer: plan
 title: "A store object a deletion has fenced refuses what that deletion left in flight"
-status: proposed
+status: accepted
 aliases: []
 amends: ["D-63", "D-69", "K-50", "K-52"]
 tracking: ["#2285"]
@@ -11,9 +11,10 @@ tracking: ["#2285"]
 
 # D-71 — A store object a deletion has fenced refuses what that deletion left in flight
 
-> **Proposed 2026-11-07, not ratified.** This closes the item the scope-stores page lists before the
-> first approval of a driver release in production. It is written so that the choice can be made, and the
-> code in this change follows it. Three choices are the maintainer's, and they are named at the end.
+> **Proposed 2026-11-07, ratified 2026-11-23 with the answers its last section proposes.** This
+> closes the item the scope-stores page lists before the first approval of a driver release in
+> production. The code in this change follows it. The maintainer's three choices, and the answers
+> given at ratification, are at the end.
 
 **Every path that deletes a scope's stores now sends `substrat.fence`, not `substrat.wipe`. The store
 entry answers it: it writes a tombstone in the object, waits out the calls inside the driver, hands the
@@ -261,6 +262,10 @@ from the first approval in production on: avoid reaping across a deploy that cha
   object nothing ever wrote, and creates it to hold the mark.
 
 ## For the maintainer
+
+Answered at ratification, 2026-11-23, as proposed below: a fence is one way, and no
+`substrat.unfence` is built; the fence refuses a platform write too; and no check is added at signing.
+The fourth, smaller question was not taken up, so that rule stays a review item with no field.
 
 1. **Is a fence one way?** Yes, as built: nothing clears the mark or the tombstone, and a scope a reap has
    marked is finished or replaced. If an undo is wanted, `substrat.unfence` is one more operation in the

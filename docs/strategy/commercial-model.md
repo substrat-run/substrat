@@ -258,7 +258,7 @@ tightly-admitted **much longer** than verticals; "installing" one provisions a p
 connection with OAuth/token entry, not a toggle; and first-party premium connectors carry
 *your* SLA when they break.
 
-> **Narrowed by [D-64](../decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md) (proposed).**
+> **Narrowed by [D-64](../decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md) (ratified 2026-11-23).**
 > The surface above is code running in the control plane with `HostAdmin`. A connector a vertical
 > defines for itself runs in that vertical's own worker and is handed one connection — one the tenant
 > connected for that vertical — so it can reach no other vertical's or tenant's credential, and its

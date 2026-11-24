@@ -54,9 +54,9 @@ The linked issues and design documents retain the detailed questions and accepta
 ### [#1579 — Enforcement for deployed bundles](https://github.com/substrat-run/substrat/issues/1579)
 
 - Idea: decide what guarantees the platform can enforce when source-level layer rules are not available at admission.
-- State: push lint and its receipt exist, while the runtime constrains only capabilities it owns; [D-61](../decisions/D-061-do-originated-egress-is-observed-and-never-refused-d-46-s-limit.md) proposes the egress posture and is not ratified.
+- State: push lint and its receipt exist, while the runtime constrains only capabilities it owns; [D-61](../decisions/D-061-do-originated-egress-is-observed-and-never-refused-d-46-s-limit.md) settles the egress posture (ratified 2026-11-23), and production still samples no spans.
 - Parked because the remaining enforcement or admission policy has no selected approach or owner.
-- Reopen with a concrete admission requirement or a change in the underlying egress capability, then settle D-61 and choose the smallest enforceable mechanism.
+- Reopen with a concrete admission requirement or a change in the underlying egress capability, then choose the smallest enforceable mechanism.
 
 ### [#1578 — Provider-neutral file-source facet](https://github.com/substrat-run/substrat/issues/1578)
 

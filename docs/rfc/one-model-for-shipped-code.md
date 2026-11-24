@@ -9,7 +9,9 @@ description: "One target model for apps, the code they ship and how they depend 
 **Status: proposed.** This combines two proposals. One is about which code exists, where it runs
 and how its version is fixed. The other is about how apps hang together: dependencies, people,
 master data, stores and processes. It decides nothing, adds no decision record and amends none.
-Seven records it rests on are themselves proposed
+Seven records it rests on were proposed when it was written. They were ratified on 2026-11-23,
+D-61 with its clause on platform code narrowed and D-73 as a contract with placement left to its
+pilot
 ([K-58](../decisions/K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md),
 [K-62](../decisions/K-062-an-operation-does-not-await-an-outside-call-inside-its-transaction.md),
 [D-61](../decisions/D-061-do-originated-egress-is-observed-and-never-refused-d-46-s-limit.md),
@@ -17,7 +19,7 @@ Seven records it rests on are themselves proposed
 [D-70](../decisions/D-070-a-store-driver-s-code-runs-in-its-own-loaded-isolate-outside-the-verifier-with-no-network.md),
 [D-71](../decisions/D-071-a-store-object-a-deletion-has-fenced-refuses-what-it-left-in-flight.md),
 [D-73](../decisions/D-073-a-connector-is-its-own-deployable-unit-with-one-call-contract.md)),
-and phase 0 of §8 settles them before anything is built.
+in phase 0 of §8.
 
 ## 1. Problem
 
@@ -218,8 +220,8 @@ not a consequence of D-61:
 The proposal is that the generated entry replaces the vertical's hand-written one and does not
 absorb the platform entry, which stays in front. D-61's clause that no platform-authored code is
 injected into a customer's bundle is written about Durable-Object egress. Read as a general rule
-it contradicts the platform entry, which is shipped, so phase 0 has to narrow its wording or
-withdraw the clause before ratifying it.
+it contradicts the platform entry, which is shipped, so phase 0 narrowed its wording to a wrapper
+over `fetch` when it ratified the record.
 
 **5.4 One dependency in place of the separate declarations.** `substrat push` reads it and checks
 it against installed consumers, and an install binds the two apps. Properties are set per contract
@@ -407,9 +409,10 @@ Four phases in sequence, a storage track beside them, and a list that waits on n
 removes something, and none rests on a record that is not decided. The phases are not dated.
 
 **Phase 0: decisions.** Nothing is built. The seven proposed records are ratified or withdrawn, D-71
-among them because the storage track needs it. D-61
-is not ratified as titled, since its clause on platform-authored code contradicts the platform
-entry that is shipped (§5.3).
+among them because the storage track needs it. *Done for the seven on 2026-11-23:* all were
+ratified. D-61's clause on platform-authored code was narrowed to a wrapper over `fetch`, since read
+as a general rule it contradicted the platform entry that is shipped (§5.3). D-73 was ratified as a
+contract, with placement in a script of its own left to its pilot. What remains of phase 0 follows.
 dependent-people.md becomes a decision. K-53 and the scope-types tracking issue
 ([#2992](https://github.com/substrat-run/substrat/issues/2992)) are settled together, being one
 question. The version rule is written once, with the answer to §7.5. The words are fixed. *Done
