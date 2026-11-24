@@ -3,13 +3,18 @@ id: K-53
 date: 2026-10-15
 layer: kernel
 title: "A tenant-level store is a named instance that a tenant's verticals connect to explicitly"
-status: accepted
+status: superseded
+superseded-by: K-64
 aliases: []
 amends: ["K-49"]
 tracking: ["#2207", "#2303"]
 ---
 
 # K-53 — A tenant-level store is a named instance that a tenant's verticals connect to explicitly
+
+> **Superseded by [K-64](./K-064-a-scope-has-a-declared-type-and-may-have-a-parent-and-nothing-crosses-a-scope-s-boundary-inside-its-transaction.md) on 2026-11-24.** There is no store that several apps of a
+> tenant write to: data has one owner, and every store driver is scope-grain. The word *driver*
+> (#2324) stands. Nothing of the tenant-grain design below was built.
 
 > Accepted 2026-10-15, from the maintainer's answers to the 22 questions of [the store-instances RFC](../rfc/store-instances.md) §12 (recorded in its §12.1). It amends [K-49](./K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md): K-49 covers scope-grain stores, and this record covers tenant-grain ones.
 

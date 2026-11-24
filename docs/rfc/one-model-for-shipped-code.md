@@ -179,7 +179,7 @@ Of the 136 decision records, 16 are proposed. Four accepted records point anothe
 target and are taken up where they bite: K-33 (one serving version per vertical), K-39 (a changed
 event replaces the old one), K-49 (the store's door is in the host) and
 [K-53](../decisions/K-053-a-tenant-level-store-is-a-named-instance-that-a-tenant-s-verticals-connect-to-explicitly.md)
-(stores at tenant level).
+(stores at tenant level). K-64 superseded K-53 and amended K-49 on 2026-11-24.
 
 ## 5. The changes, one at a time
 
@@ -250,7 +250,9 @@ cannot be emitted side by side today (K-39).
 permission. What concerns the whole tenant moves to a home scope. *Costs:* how an operation reaches
 its store is not settled (§7.2), the home scope may be a bottleneck (§7.7), and K-53 is accepted, so
 a record that replaces it has to say how its requirement is met: several apps writing to one store
-while a user waits.
+while a user waits. *Decided in [K-64](../decisions/K-064-a-scope-has-a-declared-type-and-may-have-a-parent-and-nothing-crosses-a-scope-s-boundary-inside-its-transaction.md):* K-53 is
+superseded. A tenant-wide data layer is either an app that owns it or a projection derived from the
+apps' events, and the form is chosen when the first one is built.
 
 **5.9 One connector contract, and placement as a registration fact.** A network part speaks one
 contract, D-73's. Where it runs is recorded in its registration.
@@ -334,7 +336,9 @@ a versioned contract, two deploys and two router hops between parts that always 
 target's home scope is already a second sort of scope. *Lean:* two built-in sorts, a home scope and
 an instance scope, and no child scopes. Split an app in two when a second consumer of the inner
 part exists, since a contract cut from one case is seldom right. *Against:* a seam nothing enforces
-tends to leak, and splitting later costs more.
+tends to leak, and splitting later costs more. *Decided in K-64:* declared scope types, of which
+the home scope is one, and a parent link. A call into another scope goes through the door from host
+code, never inside a transaction.
 
 **7.2 How an operation reaches its store.** `ctx.store` inside the operation is the simplest code.
 Against it: a call from a Durable Object does not pass egress, the scope's queue stands still
@@ -344,7 +348,8 @@ short-lived capability, and the host makes the call, with the router requiring t
 signs. That keeps the kernel's check and a line in the history with no network in the scope, at the
 price of two steps and no read from the store mid-logic. Neither gives one transaction across the
 database and the store. *Lean:* the proof, with moderate confidence. A spike showing a call from
-inside the scope works and does not stall the queue would change it.
+inside the scope works and does not stall the queue would change it. *Decided in K-64:* the proof,
+with the phase 1 spike allowed to reopen it for reads only.
 
 **7.3 What guarantees a revocation.** A push from the master is fast but can be dropped. An answer
 that expires needs no delivery guarantee but is never faster than the expiry. *Lean:* the expiry is
@@ -436,7 +441,7 @@ as a general rule it contradicted the platform entry that is shipped (§5.3). D-
 contract, with placement in a script of its own left to its pilot. What remains of phase 0 follows.
 dependent-people.md becomes a decision: done on 2026-11-24, as K-63. K-53 and the scope-types tracking issue
 ([#2992](https://github.com/substrat-run/substrat/issues/2992)) are settled together, being one
-question. The version rule is written once, with the answer to §7.5. The words are fixed. *Done
+question: done on 2026-11-24, as K-64, which supersedes K-53. The version rule is written once, with the answer to §7.5. The words are fixed. *Done
 when* no coming build rests on a proposed record.
 
 **Phase 1: one door.** The platform's connectors move onto the shared contract and stay in
