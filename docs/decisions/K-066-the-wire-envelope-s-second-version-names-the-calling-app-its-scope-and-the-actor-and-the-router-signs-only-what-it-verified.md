@@ -1,0 +1,137 @@
+---
+id: K-66
+date: 2026-11-24
+layer: kernel
+title: "The wire envelope's second version names the calling app, its scope and the actor, and the router signs only what it verified"
+status: accepted
+aliases: []
+amends: ["K-58"]
+tracking: ["#2994"]
+---
+
+# K-66 — The wire envelope's second version names the calling app, its scope and the actor, and the router signs only what it verified
+
+> **Proposed and ratified 2026-11-24, with the answers it proposed.** It is the amendment to
+> [K-58](./K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md)
+> that [K-64](./K-064-a-scope-has-a-declared-type-and-may-have-a-parent-and-nothing-crosses-a-scope-s-boundary-inside-its-transaction.md)
+> owes before any receiver relies on the calling app or the actor (#2994). The maintainer's choices
+> and the answers given are at the end. Nothing in it is built.
+
+**`substrat-wire/2` adds three lines to K-58's fifteen: the calling app, the calling scope and the
+actor.** They follow the `<vertical>` line, which keeps naming the target. The other fourteen lines
+keep their meaning, order and rules, and so do the signature, the key lists, the lifetime and the
+refusals. The tag changes, so no version 1 envelope parses as version 2, and the reverse is also
+true.
+
+```
+substrat-wire/2
+router|platform
+route|call
+<kid>
+<aud>
+<tenant id>
+<scope id>
+<surface>
+<vertical>                     the target's slug, as in version 1
+<caller app>                   the calling app's slug, or empty
+<caller scope>                 the calling scope's id (a ULID), or empty
+<actor>                        app | platform | person:<sha256 hex>, or empty
+<METHOD>
+<sha256 hex of the target>
+<sha256 hex of the body>
+<iat>
+<exp>
+<nonce>
+```
+
+**The router writes the caller from the dispatch, never from what the caller says.** On a peer
+invocation the router already knows which deployment called it and from which scope, because the
+call arrives through that deployment's own binding (#1706). Those facts become `<caller app>` and
+`<caller scope>`. Until now they rode only in the signed body (`caller`). A field in the caller's
+request that names an app or a scope is never copied into these lines.
+
+**The actor says who the call acts for, and the router vouches only for what it can see.**
+
+- `app`: the calling app acts as itself. This is a peer call with no person behind it.
+- `person:<sha256 hex>`: the call carries a person's token that the issuer minted for this target
+  (the exchange of #3161, sent as `onBehalf`). The line binds the SHA-256 of that exact token. The
+  router does not verify the person. The receiver verifies the token itself, as it does today, and
+  refuses one whose digest differs from the signed line. The digest stops a different token from
+  being put under a signed line. It does not stop the same token from being used again on a new
+  call. What limits that is the token itself: it is minted for this target only, and it lives 300
+  seconds ([dependent-people.md](../rfc/dependent-people.md) §6). Within that time the master that
+  holds it can use it again, which is the bound #3161 already states.
+- `platform`: the platform acts, on a call the control plane signs or a call the router makes for
+  it, such as a connector sweep.
+- empty: an end user's routed request. The app's own door authenticates the person, and the router
+  claims nothing about them.
+
+**Which agent inside an app acted is the app's claim, and it is recorded in the history, not in the
+envelope.** An app may run several agents (modelling, planning, building, verifying) that act while
+no person is present. The router cannot tell them apart: they are code in the same app, so naming
+one in a signed line would sign the app's word. Until each agent has a client identity of its own
+that the platform registers (as #3134 does for an app's machine client), the app names the agent,
+and the history records it beside the actor, marked as asserted by the app, the way
+[K-42](./K-042-an-impersonated-operation-carries-two-actors-and-the-permis.md) records a second actor
+beside the first. The kernel stores what the app gives and vouches for none of it. Once an agent
+has its own client identity, the envelope can name it as a verified actor, and that is a change to
+this record.
+
+**The closed table, version 2:**
+
+| (issuer, kind) | caller app | caller scope | actor |
+|---|---|---|---|
+| (router, route) | absent | absent | absent |
+| (router, call), a peer invocation | required | required | `app` or `person:…` |
+| (router, call), a call for the platform | absent | absent | `platform` |
+| (platform, call) | absent | absent | `platform` |
+
+A peer invocation and a call made for the platform are told apart by the target endpoint, which is
+already a closed list in `wire-signing.ts`: `/internal/vertical-invoke` is a peer invocation, and
+`/internal/connector-call` and `/internal/connector-probe` are calls made for the platform.
+
+**A receiver reads the caller and the actor only from a version 2 envelope it has verified.** A call
+admitted by a version 1 envelope, or by the shared credential while an environment is `legacy-only`
+or `dual`, carries no caller and no actor. A check that needs either one refuses that call. It
+never falls back to a header or a body field. That refusal is what makes the two claims safe to
+build on before every environment is `signed-only`.
+
+**Receivers learn version 2 before any signer sends it.** This is the order K-58's rollout already
+uses. First, every verifier, the platform entry included, accepts both tags. Then the signers switch
+to version 2. Version 1 is refused once every signer has sent only version 2 for a week, the
+cutover window the [wire-signing RFC](../rfc/wire-signing.md) proposes for `signed-only`.
+
+## Why
+
+**The caller is a fact the router has, so it should be signed and not re-derived.** Today a target
+learns who called it by parsing a body that the envelope binds by digest. A typed line lets every
+receiver, and K-64's child scope, check the caller without knowing each endpoint's body. It also
+lets a check that is not about a body, such as a parent link, read it.
+
+**The router must not sign a person it has not verified.** A person named by the calling app's code
+is that app's word, even when a library in the same isolate wrote it. That is the line
+[D-61](./D-061-do-originated-egress-is-observed-and-never-refused-d-46-s-limit.md) draws for code
+laid over a capability the bundle already holds. The only person the platform can prove is one the
+issuer signed for. Binding the token's digest keeps the router out of issuer trust and still makes
+the token useless on any other call.
+
+## For the maintainer
+
+Answered at ratification, 2026-11-24, as proposed: the caller scope is its own line, the person on
+a peer call is bound by the token's digest, and version 1 is refused after a week with only
+version 2.
+After ratification, the same day: an agent inside an app is recorded in the history as the app's
+claim, and enters the envelope only once it has a client identity of its own.
+
+1. **The caller scope as its own line**, rather than folded into the caller app. Proposed: its own
+   line, because K-64's parent link is judged per scope.
+2. **The person on a peer call: bind the token's digest, or have the router verify the token and
+   sign a stable id.** Proposed: the digest. The receiver already verifies the token (#3161), and the
+   router would otherwise need each tenant's issuer keys. K-67 takes the other choice for stores,
+   because a driver cannot verify a token.
+3. **Version 1's retirement**: a week of only version 2, as proposed, or a fixed date.
+
+## Revisit
+
+This record is revisited if a receiver needs the person's stable identity on a peer call, which
+would move the verification into the router as K-67 does for stores.
