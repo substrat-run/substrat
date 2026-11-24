@@ -36,8 +36,11 @@ code that the RFC counted (§1) reduce to these five.
   is the only part that calls anything else) and stores. A **plugin** is an app with a dependency on
   its host. The code calls an app a *vertical*.
 - **Store.** Data that belongs to a scope and lives in an object the platform runs, such as a graph,
-  files or a search index. A store is backed by a **driver**, the platform-registered, pinned code
-  that the older records call a *kind*. No store is shared between apps (K-64).
+  files or a search index. A store is backed by a **driver**, the code the older records call a
+  *kind*. A driver is registered in this repository, and a release of it runs only once a person on
+  the platform's staff has approved its uploaded bytes
+  ([D-65](./D-065-a-store-driver-release-runs-after-a-person-approves-its-uploaded-bytes.md)). No
+  store is shared between apps (K-64).
 - **Dependency.** The one edge between two apps. Both apps declare it. It names the contracts one app
   uses of the other, and how: as the app or as the signed-in person, and with or without personal
   data. Everything that crosses it passes the door. Taking people from a master is a dependency
