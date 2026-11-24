@@ -490,7 +490,11 @@ registration, delivery, and reaping when a real external-issuer vertical needs p
 ### Seeded previews and persona sign-in (#3108)
 
 A clean-room preview created with `seed: true` holds the version's own sample world and is
-signed into by picking a persona. The builder studio's Run asks for one. Three parts:
+signed into by picking a persona. The builder studio's Run asks for one, for the version it
+builds from the project's saved revision, or for the one already built from that commit when a
+recent version of the vertical was (`GET /verticals/:slug/builds/:revision`, read off the
+`manifest.build` stamp a source build writes), so a Run with nothing changed builds nothing.
+Three parts:
 
 - **The world** is the vertical's `src/world.ts` (`SeedWorld`: personas with their roles, and a
   `build` that makes the records through operations), named in the worker with

@@ -2,6 +2,7 @@ import { addDecimal, sourceBuildRequest, type SourceBuildRequest, type SourceBui
 import type { BuilderTurnsService } from './builder-turns.js';
 import type { BuilderSandboxObjectsService } from './builder-sandbox-objects.js';
 import { SourceBuildInterrupted } from './source-builds.js';
+import { buildRevision, versionBuiltFrom } from './built-version.js';
 import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
 import { bindingChangeRefusal, bindingOptionsRefusal, connectionBindingOptions, refusesBindingChange } from './connection-binding-options.js';
 import type { ConnectionScopeBinding, ConnectionScopeBindingInput } from '@substrat-run/control-plane-client';
@@ -9992,6 +9993,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const page = pageParams(c);
     const entries = await c.var.admin.listVersions(c.get('actor'), slug, page);
     return c.json(pageOf(entries, page.limit, (v) => v.id));
+  });
+
+  // The version already built from one source revision (`built-version.ts`), so the studio's Run
+  // binds it to its preview slot instead of building the same commit again. The studio asks with
+  // its service credential, so the route is in neither BUILDER_ROUTES nor the tenant allowlist,
+  // and `?tenant=` is the pin a deploy carries: the studio binds what this answers without a
+  // deploy, so the answer itself must prove the vertical is the team's. `notOwned` holds a
+  // confined caller to the same, should one ever be let in. 404 when none is in the searched
+  // window, which the caller reads as "build it".
+  app.get('/verticals/:slug/builds/:revision', async (c) => {
+    const p = c.get('principal');
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
+    if (await notOwned(p, slug)) return refuse(c, 'not_found', 'not found');
+    const pin = c.req.query('tenant');
+    if (pin !== undefined && (await ownerOf(c.var.admin, c.get('actor'), slug)) !== pin) return refuse(c, 'not_found', 'not found');
+    const revision = buildRevision.safeParse(c.req.param('revision'));
+    if (!revision.success) return refuse(c, 'validation_failed', 'revision: a 40-character git commit');
+    const version = await versionBuiltFrom(c.var.admin, c.get('actor'), slug, revision.data);
+    return version ? c.json(version) : refuse(c, 'not_found', 'no recent version of this vertical was built from that revision');
   });
 
   app.post('/verticals/:slug/versions', async (c) => {

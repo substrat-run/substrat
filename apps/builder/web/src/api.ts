@@ -48,7 +48,7 @@ export interface ChatsInfo {
 /** GET/POST /api/preview — the worker's answer (src/studio-preview.ts). */
 export type StudioPreview =
 	| { state: 'none' }
-	| { state: 'ready'; url: string; versionId: string; reused: boolean; authNote?: string };
+	| { state: 'ready'; url: string; versionId: string; reused: boolean; built?: boolean; authNote?: string };
 
 /** GET /api/preview/data — the production-data slot, and whether Run may make one (#3108). */
 export type StudioDataPreview = StudioPreview & { fork: { ok: true } | { ok: false; reason: string } };

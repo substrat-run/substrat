@@ -36,18 +36,33 @@ function plane(answers: Record<string, { status?: number; body: unknown }>): { c
 const project = { slug: 'acme/todo', revision: 'a'.repeat(40) };
 const deploy = '/verticals/acme%2Ftodo/deploy';
 const previews = '/verticals/acme%2Ftodo/previews';
+/** The plane's answer to "what is already built from this revision", pinned to the team. */
+const built = `/verticals/acme%2Ftodo/builds/${'a'.repeat(40)}?tenant=ten_a`;
+const lookup = { path: built, method: 'GET', body: undefined };
 const ready = { url: 'https://todo--studio.acme.substrat.run', scopeId: 'scp_1', versionId: 'ver_1', reused: false, auth: { status: 'unregistered', note: 'no login yet' } };
 
 describe('runStudioPreview', () => {
-	it('releases the revision pinned to the team, then binds it to the studio tag as a seeded clean-room slot', async () => {
+	it('releases a revision nothing was built from, pinned to the team, then binds it to the studio tag as a seeded clean-room slot', async () => {
+		// The lookup is unanswered (599): any answer but a version builds, as Run always did.
 		const { cp, calls } = plane({ [deploy]: { status: 201, body: { id: 'ver_1' } }, [previews]: { status: 201, body: ready } });
 		const res = await runStudioPreview(cp, project, 'ten_a', '0.0.0-studio.x');
 		expect(calls).toEqual([
+			lookup,
 			{ path: deploy, method: 'POST', body: { version: '0.0.0-studio.x', revision: project.revision, tenant: 'ten_a' } },
 			{ path: previews, method: 'POST', body: { tag: STUDIO_PREVIEW_TAG, versionId: 'ver_1', empty: true, seed: true } },
 		]);
 		expect(res.status).toBe(200);
-		expect(await res.json()).toEqual({ state: 'ready', url: ready.url, versionId: 'ver_1', reused: false, authNote: 'no login yet' });
+		expect(await res.json()).toEqual({ state: 'ready', url: ready.url, versionId: 'ver_1', reused: false, built: true, authNote: 'no login yet' });
+	});
+
+	it('binds the version already built from the revision, and builds nothing', async () => {
+		const { cp, calls } = plane({ [built]: { body: { id: 'ver_0' } }, [previews]: { status: 200, body: { ...ready, versionId: 'ver_0', reused: true } } });
+		const res = await runStudioPreview(cp, project, 'ten_a', '0.0.0-studio.x');
+		expect(calls).toEqual([
+			lookup,
+			{ path: previews, method: 'POST', body: { tag: STUDIO_PREVIEW_TAG, versionId: 'ver_0', empty: true, seed: true } },
+		]);
+		expect(await res.json()).toMatchObject({ state: 'ready', versionId: 'ver_0', built: false });
 	});
 
 	it('relays a refused release as it came and never asks for a slot', async () => {
@@ -56,7 +71,7 @@ describe('runStudioPreview', () => {
 		const res = await runStudioPreview(cp, project, 'ten_a', 'v');
 		expect(res.status).toBe(409);
 		expect(await res.json()).toEqual(refusal);
-		expect(calls.map((c) => c.path)).toEqual([deploy]);
+		expect(calls.map((c) => c.path)).toEqual([built, deploy]);
 	});
 
 	it('refuses a project with no saved revision before calling the plane', async () => {
@@ -118,7 +133,7 @@ describe('production data (#3108): the fork is made as the signed-in person', ()
 		const builder = plane({ [deploy]: { status: 201, body: { id: 'ver_1' } } });
 		const person = plane({ [check]: admitted, [previews]: { status: 201, body: ready } });
 		const res = await runStudioDataPreview(builder.cp, person.cp, project, 'ten_a', 'v');
-		expect(builder.calls.map((c) => c.path)).toEqual([deploy]);
+		expect(builder.calls.map((c) => c.path)).toEqual([built, deploy]);
 		expect(person.calls).toEqual([
 			{ path: check, method: 'GET', body: undefined },
 			{ path: previews, method: 'POST', body: { tag: STUDIO_DATA_PREVIEW_TAG, versionId: 'ver_1' } },
