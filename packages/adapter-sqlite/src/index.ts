@@ -7075,7 +7075,7 @@ export class SqliteScopeHost implements ScopeHost {
       // #3360: a person's stub only. An impersonation session and a purge stub are other doors.
       ...(authority.kind === 'principal' && sessionId === undefined && !purge
         ? {
-            heldPermissions: async (): Promise<PermissionKey[]> => {
+            heldPermissions: async () => {
               if (!this.checker.holdings) throw substratError('unavailable', 'this permission checker cannot list a principal\'s holdings');
               return heldKeysOf(await this.checker.holdings(authority, { tenantId, scopeId }), ceiling);
             },

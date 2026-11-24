@@ -7408,7 +7408,7 @@ export class CloudflareScopeHost implements ScopeHost {
       // #3360: a person's stub only. An impersonation session is another door.
       ...(principal !== undefined && sessionId === undefined
         ? {
-            heldPermissions: async (): Promise<PermissionKey[]> => {
+            heldPermissions: async () => {
               const holdings = await stub.principalHoldings(principal, tenantId, scopeId);
               if (!holdings) throw substratError('unavailable', 'this permission checker cannot list a principal\'s holdings');
               return heldKeysOf(holdings, delegationCeilingOf(delegation));
