@@ -28,7 +28,7 @@ import {
   type TenantId,
 } from '@substrat-run/contracts';
 import { DOWNLOAD_LINK_GONE, type ScopeHost } from '@substrat-run/kernel';
-import { hardenFileResponse, serveAttachment } from './attachment-serve.js';
+import { answerAttachment, hardenFileResponse } from './attachment-serve.js';
 import { problemFor, withRequestIdMember } from './errors.js';
 
 type Awaitable<T> = T | Promise<T>;
@@ -60,7 +60,7 @@ export function mountDownloadLinkRedeem<E extends Env>(app: Hono<E>, options: Do
       const [host, node] = await Promise.all([options.host(c), options.node(c)]);
       if (!host.openDownloadLink) throw substratError('unavailable', 'this scope host serves no download links');
       const open = host.openDownloadLink.bind(host);
-      return await serveAttachment(
+      return await answerAttachment(
         c,
         { openStream: (id, opts) => open(node.tenantId, node.scopeId, secret, id, opts) },
         attachmentId,

@@ -17,7 +17,7 @@
  * rendering it as this origin.
  */
 import type { Context } from 'hono';
-import { PROBLEM_CONTENT_TYPE, problemForStatus, substratError } from '@substrat-run/contracts';
+import { errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, substratError } from '@substrat-run/contracts';
 import { knownLengthStream, type ByteRangeSpec, type ScopeAttachments } from '@substrat-run/kernel';
 import { withRequestIdMember } from './errors.js';
 
@@ -87,10 +87,39 @@ const STRONG_SHA256_TAG = /^"[0-9a-f]{64}"$/;
  * an id `files` does not open, whether unknown or not the caller's to read. A HEAD gets the headers
  * and no body. Call {@link hardenFileResponse} first, and render a throw with `problemResponse`.
  *
+ * A refused read (`permission_denied` out of `files`) is thrown as the same `not_found` an unknown
+ * id gets, so the answer does not say the file exists (#3295). The host has recorded the denial by
+ * then, so it is still in the denial log. Nothing more is asked of `files` or the blob store for
+ * either; the time the host takes to check and record a refusal is not evened out.
+ *
  * `options.instance` is what the 416 names as its `instance`, the request path by default: a route
  * whose path carries a secret passes it without one.
  */
 export async function serveAttachment(
+  c: Context,
+  files: Pick<ScopeAttachments, 'openStream'>,
+  attachmentId: string,
+  options?: { instance?: string },
+): Promise<Response> {
+  const unrefused: Pick<ScopeAttachments, 'openStream'> = {
+    openStream: async (id, opts) => {
+      try {
+        return await files.openStream(id, opts);
+      } catch (err) {
+        // By code, not class: a refusal from a ScopeDO has crossed the RPC boundary.
+        if (errorCodeOf(err) === 'permission_denied') return null;
+        throw err;
+      }
+    },
+  };
+  return answerAttachment(c, unrefused, attachmentId, options);
+}
+
+/**
+ * {@link serveAttachment} with a refused read left as the 403 it is. Not exported from the package:
+ * for the two link routes, whose caller holds a link and is told that it no longer reads the file.
+ */
+export async function answerAttachment(
   c: Context,
   files: Pick<ScopeAttachments, 'openStream'>,
   attachmentId: string,

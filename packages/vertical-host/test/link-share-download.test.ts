@@ -34,6 +34,7 @@ import {
   mountCapabilityExchange,
   mountLinkShareDownload,
   problemResponse,
+  serveAttachment,
 } from '../src/index.js';
 
 const CAP_READ = permissionKey.parse('cap:read');
@@ -253,6 +254,32 @@ describe('mountLinkShareDownload — files through a link share, over HTTP', () 
     it('with no cookie, a signed-in principal is used as themselves — the owner reads, carol is refused', async () => {
       expect((await download(files.d1.id, null, alice)).status).toBe(200);
       expect((await download(files.d1.id, null, carol)).status).toBe(403);
+    });
+
+    it.each([
+      ['a GET', 'GET', {}],
+      ['a ranged GET', 'GET', { range: 'bytes=0-1' }],
+      ['a HEAD', 'HEAD', {}],
+    ])('`serveAttachment` answers %s of a file carol may not read exactly as an unknown id, and records the refusal (#3295)', async (_label, method, extra) => {
+      const route = new Hono();
+      route.get('/api/attachments/:attachmentId', async (c) => {
+        try {
+          return await serveAttachment(c, await host.attachments(carol, t1, s1), c.req.param('attachmentId'));
+        } catch (err) {
+          return problemResponse(c, err);
+        }
+      });
+      const answer = async (id: string) => {
+        const res = await route.request(`/api/attachments/${id}`, { method, headers: extra });
+        // The problem's `instance` is the request path, the one place the id asked for is echoed.
+        return { status: res.status, headers: [...res.headers], body: (await res.text()).replaceAll(id, ':id') };
+      };
+      const before = (await denials()).length;
+      const unknown = await answer(ulid());
+      expect((await denials()).length).toBe(before);
+      expect(unknown.status).toBe(404);
+      expect(await answer(files.d3.id)).toEqual(unknown);
+      expect((await denials()).length).toBe(before + 1);
     });
 
     it('the capability wins over a signed-in principal: carol, holding nothing, downloads through the link', async () => {

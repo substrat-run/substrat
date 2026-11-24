@@ -43,8 +43,9 @@ const door = workerDoor<Env>({ directory, nodeFor, hostFor, envSpec, attachments
 | `DELETE /api/attachments/:attachmentId` | 204 |
 
 Each runs as the signed-in person, so a read is gated by the target's `readPermission` and a
-removal by its `writePermission`, on the entity the file hangs on. An id the person cannot read is
-the same 404 as an id that does not exist.
+removal by its `writePermission`, on the entity the file hangs on. On the `GET`, an id the person
+cannot read is the same 404 as an id that does not exist, and the refusal is still recorded in the
+denial log. A `DELETE` of a file they may not remove is a 403.
 
 The file is streamed from the blob store as the response is written, never held whole. A `Range`
 header naming one byte range is answered with a 206 and only those bytes are read from the store,
