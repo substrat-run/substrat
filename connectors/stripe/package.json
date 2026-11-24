@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/connector-stripe",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "private": true,
   "description": "Substrat connector: takes payments for a vertical through the tenant's own Stripe account — a hosted Checkout Session opened on request, and its outcome read back from Stripe and landed in a scope in the provider-neutral payment shape. Host code, never module code.",
   "license": "AGPL-3.0-only",

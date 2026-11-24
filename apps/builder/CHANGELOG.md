@@ -1,5 +1,24 @@
 # @substrat-run/builder
 
+## 0.14.14
+
+### Patch Changes
+
+- 512c5a8: `GET /verticals/:slug/builds/:revision` answers the recent version already built from a source revision; the studio's Run binds it instead of building the same commit again.
+- Updated dependencies [5c87d2a]
+- Updated dependencies [9287e1d]
+- Updated dependencies [512c5a8]
+  - @substrat-run/contracts@0.210.0
+  - @substrat-run/kernel@0.210.0
+  - @substrat-run/adapter-cloudflare@0.210.0
+  - @substrat-run/control-plane-api@0.210.0
+  - @substrat-run/engine-assistant@0.1.62
+  - @substrat-run/engine-metering@0.6.94
+  - @substrat-run/builder-workspace@0.13.26
+  - @substrat-run/cli@0.62.3
+  - @substrat-run/model-providers@0.5.100
+  - @substrat-run/builder-generator@0.12.27
+
 ## 0.14.13
 
 ### Patch Changes

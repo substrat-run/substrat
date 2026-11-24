@@ -1,5 +1,21 @@
 # @substrat-run/kernel
 
+## 0.210.0
+
+### Minor Changes
+
+- 5c87d2a: A preview's Cloudflare cost now reaches the team whose preview it is, back to the first day the cost rollup holds (#3353). A preview script copies data only through the directory's copy ledger, which records each copy before its data is written and outlives the script, so an object in a reaped preview script is charged to the one team the ledger names for it, as the new `copy` attribution. Rows the rollup stored without a team are attributed the same way with the next day it records. A script whose copies belong to more than one team, and a live script, stay unattributed, and a recorded object id still takes over.
+- 9287e1d: kernel: `ScopeStub.heldPermissions()` reads the keys a person could pass a check for in a scope (held at the scope or on one record), capped by the stub's delegation; `heldKeysOf` builds it from a checker's holdings.
+  adapter-sqlite: a person's stub answers `heldPermissions()`.
+  adapter-cloudflare: a person's stub answers `heldPermissions()`, read inside the scope's Durable Object.
+  contract-tests: the delegation-ceiling suite holds `heldPermissions()` to the same ceiling as a check.
+  vertical-host: the MCP endpoint's `tools/list` shows only the tools the caller could call; a call to an unlisted tool is still answered by its own check.
+
+### Patch Changes
+
+- Updated dependencies [5c87d2a]
+  - @substrat-run/contracts@0.210.0
+
 ## 0.209.0
 
 ### Minor Changes

@@ -1,5 +1,14 @@
 # @substrat-run/connector-planima
 
+## 0.2.107
+
+### Patch Changes
+
+- Updated dependencies [5c87d2a]
+- Updated dependencies [9287e1d]
+  - @substrat-run/contracts@0.210.0
+  - @substrat-run/kernel@0.210.0
+
 ## 0.2.106
 
 ### Patch Changes

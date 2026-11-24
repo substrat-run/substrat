@@ -1,5 +1,19 @@
 # @substrat-run/control-plane-api
 
+## 0.210.0
+
+### Minor Changes
+
+- 512c5a8: `GET /verticals/:slug/builds/:revision` answers the recent version already built from a source revision; the studio's Run binds it instead of building the same commit again.
+
+### Patch Changes
+
+- Updated dependencies [5c87d2a]
+- Updated dependencies [9287e1d]
+  - @substrat-run/contracts@0.210.0
+  - @substrat-run/kernel@0.210.0
+  - @substrat-run/control-plane-client@0.9.10
+
 ## 0.209.0
 
 ### Minor Changes
