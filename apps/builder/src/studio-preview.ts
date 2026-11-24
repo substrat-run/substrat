@@ -67,7 +67,11 @@ const previewRow = z.object({
 	expiresAt: z.string().nullable(),
 });
 
-export type StudioPreview = { state: 'ready'; url: string; versionId: string; reused: boolean; authNote?: string };
+/**
+ * `reused` is the slot's (an existing tag rebound); `built` is the version's: false when Run bound a
+ * version already built from the same revision (`versionToRun`) and built nothing.
+ */
+export type StudioPreview = { state: 'ready'; url: string; versionId: string; reused: boolean; built?: boolean; authNote?: string };
 
 /** Whether a production-data preview would be admitted, and the studio's sentence when not. */
 export type ForkAvailability = { ok: true } | { ok: false; reason: string };
@@ -106,9 +110,39 @@ export async function releaseRevision(
 }
 
 /**
- * Release the project's revision and bind it to the studio's slot. A refusal from either call
- * is relayed as it came — its sentence is the plane's (a busy build queue, a failed build, a
- * bad manifest), and the studio shows it rather than a red badge with nothing under it.
+ * The version a Run binds: one already built from the project's revision when the plane has it,
+ * else a release of the revision built now. A commit is its tree, so a version built from the same
+ * commit is the same code, and the build Run would make is minutes spent producing it again — the
+ * common case is a Run before any edit, at the commit prod was released from, or a second Run with
+ * nothing changed.
+ *
+ * The lookup carries the tenant pin the deploy does, so a reused version is proven this team's as a
+ * released one is. Any answer but a version (none in the plane's window, a plane without the route,
+ * a refusal) falls through to the build, which is what Run always did.
+ */
+export async function versionToRun(
+	cp: ControlPlaneCall,
+	project: StudioProject & { revision: string },
+	tenantId: string,
+	versionLabel: string,
+): Promise<{ versionId: string; built: boolean } | Response> {
+	const lookup = await cp(
+		`/verticals/${encodeURIComponent(project.slug)}/builds/${encodeURIComponent(project.revision)}?tenant=${encodeURIComponent(tenantId)}`,
+	).catch(() => null);
+	if (lookup?.ok) {
+		const found = releasedVersion.safeParse(await lookup.json().catch(() => null));
+		if (found.success) return { versionId: found.data.id, built: false };
+	}
+	const released = await releaseRevision(cp, project, tenantId, versionLabel);
+	if (!released.ok) return released;
+	return { versionId: releasedVersion.parse(await released.json()).id, built: true };
+}
+
+/**
+ * Release the project's revision (or reuse its build, `versionToRun`) and bind it to the studio's
+ * slot. A refusal from either call is relayed as it came — its sentence is the plane's (a busy
+ * build queue, a failed build, a bad manifest), and the studio shows it rather than a red badge
+ * with nothing under it.
  *
  * A clean-room create copies nothing, so it never answers the 202 a data copy can (#2450):
  * that one is only for a caller that asks with `async: true`, which this one does not.
@@ -120,14 +154,13 @@ export async function runStudioPreview(
 	versionLabel: string,
 ): Promise<Response> {
 	if (!project.revision) return refuse(409, 'save source before running a preview');
-	const released = await releaseRevision(cp, { ...project, revision: project.revision }, tenantId, versionLabel);
-	if (!released.ok) return released;
-	const versionId = releasedVersion.parse(await released.json()).id;
-	// Only after the pinned deploy succeeded, so the slug is proven this team's.
+	const run = await versionToRun(cp, { ...project, revision: project.revision }, tenantId, versionLabel);
+	if (run instanceof Response) return run;
+	// Only after the pinned lookup or deploy succeeded, so the slug is proven this team's.
 	const created = await cp(`/verticals/${encodeURIComponent(project.slug)}/previews`, {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ tag: STUDIO_PREVIEW_TAG, versionId, empty: true, seed: true }),
+		body: JSON.stringify({ tag: STUDIO_PREVIEW_TAG, versionId: run.versionId, empty: true, seed: true }),
 	});
 	if (!created.ok) return created;
 	const ready = createdPreview.parse(await created.json());
@@ -136,6 +169,7 @@ export async function runStudioPreview(
 		url: ready.url,
 		versionId: ready.versionId,
 		reused: ready.reused,
+		built: run.built,
 		...(ready.auth ? { authNote: ready.auth.note } : {}),
 	} satisfies StudioPreview);
 }
@@ -371,9 +405,10 @@ async function forkAvailability(asPerson: ControlPlaneCall, project: StudioProje
 }
 
 /**
- * Release the project's revision and fork the installed app's data into the studio's
- * production-data slot, as the signed-in person. The release is the builder's own act, as in
- * `runStudioPreview`; the fork is the person's, so the plane judges them and relays its refusal.
+ * Release the project's revision (or reuse its build, `versionToRun`) and fork the installed app's
+ * data into the studio's production-data slot, as the signed-in person. The release is the
+ * builder's own act, as in `runStudioPreview`; the fork is the person's, so the plane judges them
+ * and relays its refusal.
  */
 export async function runStudioDataPreview(
 	cp: ControlPlaneCall,
@@ -387,13 +422,12 @@ export async function runStudioDataPreview(
 	// and leaves no released version behind. The create below still judges them.
 	const fork = await forkAvailability(asPerson, project);
 	if (!fork.ok) return refuse(403, `production data: ${fork.reason}`);
-	const released = await releaseRevision(cp, { ...project, revision: project.revision }, tenantId, versionLabel);
-	if (!released.ok) return released;
-	const versionId = releasedVersion.parse(await released.json()).id;
+	const run = await versionToRun(cp, { ...project, revision: project.revision }, tenantId, versionLabel);
+	if (run instanceof Response) return run;
 	const created = await asPerson(`/verticals/${encodeURIComponent(project.slug)}/previews`, {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ tag: STUDIO_DATA_PREVIEW_TAG, versionId }),
+		body: JSON.stringify({ tag: STUDIO_DATA_PREVIEW_TAG, versionId: run.versionId }),
 	});
 	if (!created.ok) return created;
 	const ready = createdPreview.parse(await created.json());
@@ -402,6 +436,7 @@ export async function runStudioDataPreview(
 		url: ready.url,
 		versionId: ready.versionId,
 		reused: ready.reused,
+		built: run.built,
 		...(ready.auth ? { authNote: ready.auth.note } : {}),
 	} satisfies StudioPreview);
 }
