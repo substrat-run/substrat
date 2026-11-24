@@ -13,5 +13,6 @@
     ]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Supervisor", "Other"] }],
-  "worker_loaders": [{ "binding": "LOADER" }]
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "analytics_engine_datasets": [{ "binding": "SCOPE_WORK", "dataset": "substrat_spike_scope_net" }]
 }

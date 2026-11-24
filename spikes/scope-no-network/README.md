@@ -98,9 +98,12 @@ version, and that is exactly D-46's granularity: *the policy follows the bundle*
 
 | Figure | Local result | What it is not |
 | --- | --- | --- |
-| The hop the facet adds, timed inside the runtime | supervisor → facet **0.05–1.0 ms**, against supervisor → a sibling DO **0.7–1.4 ms** (n = 500, four runs on a loaded laptop) | An edge figure. The facet runs on the supervisor's machine, so the hop costs about what a DO call does, or less |
-| Cold load of a 2 MB scope bundle | first call **150–320 ms**, warm **3–27 ms** (timed from outside, so Miniflare's own hop is in it), a second object on the same loader id **27–180 ms** | A real vertical's bundle on the edge. D-70's 7.6 MB Python graph release took 2.1–3.2 s deployed. A JavaScript bundle should be well under that, but is unmeasured |
+| The hop the facet adds, timed inside the runtime | supervisor → facet **0.04–0.05 ms**, against supervisor → a sibling DO **0.04 ms** (n = 500, three runs on a quiet machine) | An edge figure. The facet runs on the supervisor's machine, so the hop costs about what a DO call does |
+| Load of a 2 MB scope bundle, timed from outside (Miniflare's own hop included) | cold, on a loader id never loaded before: **14–18 ms**; warm **0.7–0.9 ms**; a fresh object on an id already loaded: **8–9 ms** (three runs, quiet machine) | A real vertical's bundle on the edge. D-70's 7.6 MB Python graph release took 2.1–3.2 s deployed. A JavaScript bundle should be well under that, but is unmeasured |
 | Billing | not observable locally | D-70: $0.002 per Dynamic Worker per day past 1 000 a month. With one id per version the count is about the live versions. D-70 also saw two objects on one id reach two isolates deployed, so whether the bill counts ids or isolates is open |
+
+Earlier runs on a heavily loaded laptop gave figures up to twenty times higher (cold 150–320 ms, hop up
+to 1 ms). They measured the machine, not the facet, and are not used.
 
 The costs that are not runtime figures are larger:
 

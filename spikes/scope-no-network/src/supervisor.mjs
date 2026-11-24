@@ -13,7 +13,7 @@
 // entrypoints of this script, narrowed by props) and, to answer "can a namespace be handed over", the
 // OTHER Durable Object namespace when `other=1`.
 //
-// POST /<facet path>?object=&net=closed|policy|open[&other=1][&pad=1]   forwards to the facet
+// POST /<facet path>?object=&net=closed|policy|open[&other=1][&pad=1][&version=]   forwards to the facet
 // POST /env-check                                                     which binding kinds a facet's env takes
 // POST /supervised-alarm-set?object=&net=                             an alarm the supervisor holds for the facet
 // POST /whoami-env, /whoami-arg?object=                               a per-scope stub through the env, or per call
@@ -47,7 +47,8 @@ export class ControlPlane extends WorkerEntrypoint {
 /** The scope-work dataset, as a stub: the facet never holds the dataset binding itself. */
 export class ScopeWork extends WorkerEntrypoint {
   async write(point) {
-    this.env.SCOPE_WORK?.writeDataPoint({ ...point, indexes: [this.ctx.props.scope] });
+    if (!this.env.SCOPE_WORK) throw new Error('SCOPE_WORK is not bound: nothing was written');
+    this.env.SCOPE_WORK.writeDataPoint({ ...point, indexes: [this.ctx.props.scope] });
     return { written: true, scope: this.ctx.props.scope };
   }
 }
@@ -64,7 +65,7 @@ export class Supervisor extends DurableObject {
     return this.ctx.id.name ?? this.ctx.id.toString();
   }
 
-  facet(net, { other = false, pad = false } = {}) {
+  facet(net, { other = false, pad = false, version = 'v1' } = {}) {
     const scope = this.scopeName();
     const env = {
       CONTROL_PLANE: this.ctx.exports.ControlPlane({ props: { tenant: 'tenant-a', scope } }),
@@ -88,7 +89,8 @@ export class Supervisor extends DurableObject {
     };
     // One loader id per (code version, network mode): the scope's code is the vertical's, the same for
     // every scope of that version, so the id need not be per object the way D-70's driver id is.
-    const id = `scope:v1:${net}:${other ? 'other' : '-'}:${pad ? 'pad' : '-'}`;
+    // `version` stands in for the code version: a new one is a new id, so a truly cold load.
+    const id = `scope:${version}:${net}:${other ? 'other' : '-'}:${pad ? 'pad' : '-'}`;
     const worker = this.env.LOADER.get(id, () => code);
     return this.ctx.facets.get(`scope:${id}`, () => ({ class: worker.getDurableObjectClass('Scope') }));
   }
@@ -128,7 +130,7 @@ export class Supervisor extends DurableObject {
       await this.ctx.storage.setAlarm(Date.now() + 50);
       return json({ set: true });
     }
-    const facet = this.facet(q.get('net') ?? 'closed', { other: q.get('other') === '1', pad: q.get('pad') === '1' });
+    const facet = this.facet(q.get('net') ?? 'closed', { other: q.get('other') === '1', pad: q.get('pad') === '1', version: q.get('version') ?? 'v1' });
     return facet.fetch(request);
   }
 

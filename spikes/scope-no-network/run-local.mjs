@@ -38,7 +38,17 @@ http.on('upgrade', (req, socket) => {
   setTimeout(() => socket.destroy(), 200);
 });
 const tcp = createTcpServer((socket) => {
-  socket.on('data', (chunk) => hits.push({ via: 'tcp', what: chunk.toString().trim() }));
+  // TCP delivers chunks, not records: buffer per socket and record each complete newline-ended label,
+  // plus whatever is left when the socket ends.
+  let buffered = '';
+  const record = (line) => line.trim() && hits.push({ via: 'tcp', what: line.trim() });
+  socket.on('data', (chunk) => {
+    buffered += chunk.toString();
+    const lines = buffered.split('\n');
+    buffered = lines.pop();
+    lines.forEach(record);
+  });
+  socket.on('end', () => record(buffered));
   socket.on('error', () => {});
 });
 await new Promise((resolve) => http.listen(0, '127.0.0.1', resolve));
@@ -184,7 +194,12 @@ try {
   const envB = await call('supervisor', '/whoami-env', { object: 'scope-b' });
   findings.envShared = { envA, envB };
   console.log(`INFO  per-scope stub in a shared loader env: scope-a sees ${envA.viaEnv?.scope}, scope-b sees ${envB.viaEnv?.scope}`);
-  check('a per-scope stub in the loader env is NOT per scope (the env is cached with the code)', envB.viaEnv?.scope !== 'scope-b', envB);
+  const sharedScope = envA.viaEnv?.scope;
+  check(
+    'a per-scope stub in the loader env is NOT per scope (the env is cached with the code)',
+    typeof sharedScope === 'string' && sharedScope !== '' && envB.viaEnv?.scope === sharedScope && sharedScope !== 'scope-b',
+    { envA, envB },
+  );
   const argA = await call('supervisor', '/whoami-arg', { object: 'scope-a' });
   const argB = await call('supervisor', '/whoami-arg', { object: 'scope-b' });
   check('a per-scope stub handed as a call argument is per scope', argA.viaArgument?.scope === 'scope-a' && argB.viaArgument?.scope === 'scope-b', { argA, argB });
@@ -207,13 +222,14 @@ try {
     await (await workers.supervisor.fetch(`https://spike/ping?${new URLSearchParams(params)}`, { method: 'POST' })).text();
     return performance.now() - t;
   };
-  const coldPad = await once({ object: 'timing-pad', net: 'closed', pad: '1' });
+  const coldPad = await once({ object: 'timing-pad', net: 'closed', pad: '1', version: 'cold-a' });
+  const coldPadFreshId = await once({ object: 'timing-pad-fresh', net: 'closed', pad: '1', version: 'cold-b' });
   const warm = [];
-  for (let i = 0; i < 50; i += 1) warm.push(await once({ object: 'timing-pad', net: 'closed', pad: '1' }));
-  const secondObject = await once({ object: 'timing-pad-2', net: 'closed', pad: '1' });
+  for (let i = 0; i < 50; i += 1) warm.push(await once({ object: 'timing-pad', net: 'closed', pad: '1', version: 'cold-a' }));
+  const secondObject = await once({ object: 'timing-pad-2', net: 'closed', pad: '1', version: 'cold-a' });
   const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
-  findings.timing = { coldPadMs: coldPad, warmPadMs: median(warm), secondObjectSameIdMs: secondObject, padBytes: PAD_BYTES };
-  console.log(`INFO  2 MB scope bundle, from outside: first call ${coldPad.toFixed(1)} ms, warm ${median(warm).toFixed(2)} ms, a second object on the same loader id ${secondObject.toFixed(1)} ms`);
+  findings.timing = { coldPadMs: coldPad, coldPadFreshIdMs: coldPadFreshId, warmPadMs: median(warm), freshObjectSameIdMs: secondObject, padBytes: PAD_BYTES };
+  console.log(`INFO  2 MB scope bundle, from outside: cold (new loader id) ${coldPad.toFixed(1)} and ${coldPadFreshId.toFixed(1)} ms, warm ${median(warm).toFixed(2)} ms, a fresh object on an already loaded id ${secondObject.toFixed(1)} ms`);
 
   console.log('\n---- findings (local workerd) ----');
   console.log(JSON.stringify(findings, null, 2));

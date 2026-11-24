@@ -85,6 +85,13 @@ back `connect` and `node-net` whatever they say.** They answer question 2.
 `fetch-prototype`, `fetch-upgrade`, `websocket`, `connect`, `node-net` to be `ok: false`, `node-http`
 to fail, and `envKeys` to be `["CONTROL_PLANE","SCOPE_WORK"]`.
 
+`example.com` does not complete a WebSocket upgrade, so `ok: false` alone cannot tell a refused
+handshake from one that left and was turned away. Read `fetch-upgrade` and `websocket` as refused only
+when their error is workerd's own refusal, *"This worker is not permitted to access the internet via
+global functions like fetch()…"*, and when step 4b's plain-DO control failed the same exits with a
+**different** error: the target's answer, which shows the request got out. Read `fetch` and `connect`
+the same way.
+
 **d. The facet, policy egress.**
 `p "/exits?script=supervisor&net=policy&object=d1&label=d&$S"`, then the same with
 `host=example.org&http=80&tcp=80` and `object=d2`. Expect `fetch` → `200` for `example.com` and `403`
@@ -107,19 +114,25 @@ Expect `echo:hello`.
 
 **g. The loader env, cached with the code.**
 `p "/whoami-env?script=supervisor&object=g1"` and `p "/whoami-env?script=supervisor&object=g2"`, then
-`p "/whoami-arg?script=supervisor&object=g1"` and the same for `g2`. Expect `viaEnv.scope` to name
-something other than the object asking, at least for one of the two, and `viaArgument.scope` to name
-the object asking, every time. **Paste back all four.**
+`p "/whoami-arg?script=supervisor&object=g1"` and the same for `g2`. A `viaEnv.scope` naming
+another object is evidence that the env is cached with the code. Its absence is inconclusive, not a
+refutation: the loader may give `g1` and `g2` separate isolates, and each then reports itself.
+`viaArgument.scope` must name the object asking, every time, whatever `viaEnv` shows. **Paste back all
+four.**
 
 **h. Timing.**
-`p "/bench?script=supervisor&object=h1&n=200"`. Then, for the cold start, time three fresh objects:
+`p "/bench?script=supervisor&object=h1&n=200"`. Then three kinds of call. A cold load gives each sample
+a loader id never loaded before (`version`), the way a new code version would be. A fresh object
+reuses one id, so the loaded worker may be reused and the sample is **not** a cold load. A warm call
+repeats the last object:
 
 ```
-for o in h2 h3 h4; do curl -s -o /dev/null -w "$o %{time_total}\n" -X POST -H "x-spike-token: $T" "$U/ping?script=supervisor&net=closed&pad=1&object=$o"; done
-for i in 1 2 3; do curl -s -o /dev/null -w "warm %{time_total}\n" -X POST -H "x-spike-token: $T" "$U/ping?script=supervisor&net=closed&pad=1&object=h4"; done
+for o in h2 h3 h4; do curl -s -o /dev/null -w "cold $o %{time_total}\n" -X POST -H "x-spike-token: $T" "$U/ping?script=supervisor&net=closed&pad=1&version=$o&object=$o"; done
+for o in h5 h6 h7; do curl -s -o /dev/null -w "fresh-object $o %{time_total}\n" -X POST -H "x-spike-token: $T" "$U/ping?script=supervisor&net=closed&pad=1&object=$o"; done
+for i in 1 2 3; do curl -s -o /dev/null -w "warm %{time_total}\n" -X POST -H "x-spike-token: $T" "$U/ping?script=supervisor&net=closed&pad=1&object=h7"; done
 ```
 
-Run step 4 twice more, about five minutes apart, with fresh object names (`c2`, `d3`, … `h5`…).
+Run step 4 twice more, about five minutes apart, with fresh object and version names (`c2`, `d3`, … `h8`…).
 
 **Paste back** every answer from all three runs.
 
@@ -131,15 +144,23 @@ In the dashboard, open Workers for Platforms → `substrat-spike-scope-net` → 
 ## 6. Cost
 
 The day after, open Billing → Usage, or read `GET /client/v4/accounts/<account>/paygo-usage`, and paste
-back the number of Dynamic Workers billed and the amount. To compare: the probes use three loader ids
-(`closed`, `policy`, and the padded `closed`) across about twenty objects. A count near three says the
-bill counts ids. A count near the number of objects says it counts isolates.
+back the number of Dynamic Workers billed and the amount. To compare: each run of step 4 uses six
+loader ids (`closed`, `policy`, the padded `closed`, and three cold `version`s) across about twenty
+objects, so eighteen over three runs. A count near eighteen says the bill counts ids. A count near the
+number of objects says it counts isolates.
 
 ## 7. Remove everything
 
+The forced deletions go through the API, so they need a token and the test account's id. With an API
+token in the environment, that token is used. After `wrangler login`, `wrangler auth token` prints the
+login's token. Set `CLOUDFLARE_ACCOUNT_ID` to the **test** account either way (`npx wrangler whoami`
+lists the accounts):
+
 ```
+: "${CLOUDFLARE_ACCOUNT_ID:?set it to the test account id}"
+TOKEN="${CLOUDFLARE_API_TOKEN:-$(npx wrangler auth token)}"
 npx wrangler delete --name substrat-spike-scope-net-dispatcher
-for s in plain supervisor; do curl -X DELETE -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+for s in plain supervisor; do curl -X DELETE -H "Authorization: Bearer $TOKEN" \
   "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/dispatch/namespaces/substrat-spike-scope-net/scripts/substrat-spike-scope-net-$s?force=true"; done
 npx wrangler dispatch-namespace delete substrat-spike-scope-net
 npx wrangler delete --name substrat-spike-scope-net-outbound
