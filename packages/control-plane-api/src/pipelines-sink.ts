@@ -82,6 +82,9 @@ function toRow(e: DrainedEvent): Record<string, unknown> {
     payload: e.payload ?? null,
     authorization: e.authorization ?? null,
     impersonation: e.impersonation ?? null,
+    // #3176 — the app a delegated call was made by (`{ actor }`), so a lake query can tell
+    // it from the person's own action. Null when nobody acted for anyone.
+    delegation: e.delegation ?? null,
     operation: e.operation,
     version: e.version,
     // #1237 — the column the drain dropped until it was made part of `DrainedEvent`.

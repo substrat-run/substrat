@@ -1,5 +1,11 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createPipelinesEventSink } from '../src/pipelines-sink.js';
+
+/** The schema the live stream is created from (`pnpm lint:lake-schema` holds it to the outbox). */
+const declared = JSON.parse(
+  readFileSync(new URL('../../../scripts/lake/outbox-stream-schema.generated.json', import.meta.url), 'utf8'),
+) as { fields: { name: string }[] };
 
 /** Captures what a `[[pipelines]]` binding would have received. */
 function fakeStream(onSend?: (n: number) => void) {
@@ -44,14 +50,7 @@ describe('createPipelinesEventSink', () => {
 
     // The stream declares snake_case columns; the envelope is camelCase. A key the
     // schema does not declare is a rejected row, not an ignored field.
-    expect(Object.keys(row).sort()).toEqual(
-      [
-        'actor', 'caused_by', 'entity_id', 'entity_type', 'id', 'impersonation',
-        'occurred_at', 'operation', 'payload', 'pii_class', 'authorization',
-        'schema_version', 'scope_id', 'subject_id', 'tenant_id', 'type', 'version',
-        'invocation_id', 'bytes',
-      ].sort(),
-    );
+    expect(Object.keys(row).sort()).toEqual(declared.fields.map((f) => f.name).sort());
     // `entity` is ONE ref on the envelope and TWO columns in the outbox; the schema
     // follows the outbox, so the flattening happens here or not at all.
     expect(row.entity_type).toBe('thing');
@@ -68,13 +67,23 @@ describe('createPipelinesEventSink', () => {
     // declares. The envelope spells absence by omission; the lake cannot.
     const { requests, stream } = fakeStream();
     await createPipelinesEventSink(stream).ship(scope, [
-      event({ subjectId: undefined, authorization: undefined, impersonation: undefined, payload: undefined }),
+      event({
+        subjectId: undefined, authorization: undefined, impersonation: undefined,
+        delegation: undefined, payload: undefined,
+      }),
     ]);
     const row = requests[0]![0]!;
-    for (const column of ['subject_id', 'authorization', 'impersonation', 'payload']) {
+    for (const column of ['subject_id', 'authorization', 'impersonation', 'delegation', 'payload']) {
       expect(row).toHaveProperty(column);
       expect(row[column]).toBeNull();
     }
+  });
+
+  it('carries a delegated call’s app through, so it is not read as the person’s own (#3188)', async () => {
+    // The undelegated twin is the absent-optional-fields case above: null, never omitted.
+    const { requests, stream } = fakeStream();
+    await createPipelinesEventSink(stream).ship(scope, [event({ delegation: { actor: 'client-a' } })]);
+    expect(requests[0]![0]!.delegation).toEqual({ actor: 'client-a' });
   });
 
   it('carries causedBy through, which is the whole reason the shape was widened (#1237)', async () => {
