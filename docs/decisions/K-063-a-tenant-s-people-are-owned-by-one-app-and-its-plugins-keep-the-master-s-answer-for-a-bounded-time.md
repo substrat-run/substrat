@@ -42,8 +42,9 @@ refused", never "at once". [K-22](./K-022-the-membership-seam-is-a-connector-and
 is unchanged. Membership stays in the directory, and this record covers a different fact: who a
 person is, answered by an app.
 
-**Only the authorisation half crosses the contract.** No name and no address. A person's name and
-address reach a dependent through a **platform-held profile copy**. Module code reads it and cannot
+**The answer carries only the authorisation half.** It holds no name and no address. The question
+carries the login: the issuer, the `sub` and the address the issuer verified, so that the master can
+match it. A person's name and address reach a dependent through a **platform-held profile copy**. Module code reads it and cannot
 write it, and the platform erases it when the master erases the person. A dependent does not keep
 names or addresses in its own tables, because that copy is one no erasure reaches. This is decided
 now and built before a second plugin shows names.

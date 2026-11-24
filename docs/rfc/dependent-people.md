@@ -78,9 +78,11 @@ derived projection whose consumers accept eventual consistency, and says such a 
 supply a tenant-wide … revocation guarantee".
 
 What is built here is that projection, with the weakness stated as a number. The master stays the
-only authority; a dependent's copy is a cache with an expiry, and the guarantee is "within 300
+only authority; a dependent's copy is a cache with an expiry, and the bound is "within 300
 seconds, or refused", never "at once". K-63 records that projection and its bound as the decision,
-and the people do not move to the tenant directory as K-22 moved membership (§5.1).
+and the people do not move to the tenant directory as K-22 moved membership (§5.1). The bound is
+decided but not yet enforced: the door accepts whatever `ttlSeconds` its host wiring passes, so a
+host that sets 3600 keeps an answer for an hour until the cap is built.
 
 ## 4. What is built, and what is not
 
