@@ -2,8 +2,9 @@
 
 Evidence for [#3371](https://github.com/substrat-run/substrat/issues/3371), phase 1 of
 [one-model-for-shipped-code.md](../../docs/rfc/one-model-for-shipped-code.md) (§10: *"whether no network in
-scope code can be a mechanism on the platform today"*). This is not a workspace member. Nothing here is
-imported by a package, and the lockfile in this directory is its own.
+scope code can be a mechanism on the platform today"*). Only the findings are kept here. The experiment
+code is not: it ran from commit `bfd109821` of [PR #3384](https://github.com/substrat-run/substrat/pull/3384),
+whose commits hold it, and **What was run** below says what it did.
 
 ## The answer
 
@@ -25,26 +26,28 @@ The two cheaper routes fail. A namespace outbound worker never sees a Durable Ob
 | Removing `fetch`/`connect`/`WebSocket` from globals (a preamble, #861's Option B) | No. `connect()` and `node:net` still reached the sink | No | Refused, now on evidence as well as D-61's principle |
 | Bindings only (the uploader decides what `env` holds) | Not alone. It removes no ambient global | Yes | A necessary half, and the whole surface once the facet route closes the globals |
 | **Scope class as a loaded facet, `globalOutbound: null`** | **Yes.** All eight network exits refused, nothing arrived | **Yes.** D-70's deployed run showed `fetch()` and `connect()` throwing in a loaded facet on a real namespace | **The mechanism** |
-| Same, `globalOutbound` = a platform policy entrypoint | Yes. A declared host passes, an undeclared one is refused by platform code, sockets fail | Not yet run deployed (RUNBOOK.md) | The way to give scope code a declared, policed exit, if one is ever wanted |
+| Same, `globalOutbound` = a platform policy entrypoint | Yes. A declared host passes, an undeclared one is refused by platform code, sockets fail | Not yet run deployed | The way to give scope code a declared, policed exit, if one is ever wanted |
 
 ## What was run
 
-`node run-local.mjs`: local workerd through Miniflare `4.20260730.0`, the pin store-facets uses. The
-"network" is a sink on `127.0.0.1` (HTTP, WebSocket, raw TCP) that records every hit by the label in
-its path or first line. A result is judged by what **arrived**, not by whether the call threw. One
-module, [`src/exits.js`](src/exits.js), tries every way out. It is shared byte for byte by every
-script, so a difference in the answers is a difference in where the code runs. 29 checks, all
-passing, plus the INFO lines below. The run takes about 20 s.
+Local workerd through Miniflare `4.20260730.0`, the pin store-facets uses, on 2026-11-24 and
+2026-11-25. The "network" was a sink on `127.0.0.1` (HTTP, WebSocket, raw TCP) that recorded every hit
+by the label in its path or first line, so a result was judged by what **arrived**, not by whether the
+call threw. One probe module tried every way out, and every script ran it byte for byte, so a
+difference in the answers was a difference in where the code ran. 29 checks, all passing, in seven
+runs. Four scripts in one runtime:
 
-| File | What it is |
+| Script | What it was |
 | --- | --- |
-| `src/exits.js` | Every way out: `fetch`, a `fetch` found on the global's prototype chain, `fetch` with `Upgrade`, `new WebSocket`, `connect()`, `node:net`, `node:http`, `import()` of a URL, the Cache API, the ambient `cloudflare:workers` env |
-| `src/plain.mjs` | Today's shape: the scope class is part of the uploaded script |
-| `src/lockdown.mjs`, `src/locked.mjs` | The preamble at its strongest: imported first, it clears `fetch` and `WebSocket` off the global and every prototype on its chain |
-| `src/supervisor.mjs` | The supervisor: loads `scope.js` inert as a facet and picks its `globalOutbound`. Also holds the policy, control-plane and scope-work entrypoints it hands over |
-| `src/scope.js` | The scope class as loaded. It does what `adapter-cloudflare/src/scope-do.ts` needs of its runtime: synchronous SQL, an alarm, hibernatable WebSockets, the scope-work write, a control-plane RPC |
-| `run-local.mjs` | The run |
-| `wrangler.*.jsonc`, `dispatcher/`, `outbound/`, `RUNBOOK.md` | The deployed half, for a person holding a test-account credential |
+| plain | Today's shape: the scope class is part of the uploaded script |
+| plain behind a local `globalOutbound` | The same, to show that a local outbound covers a Durable Object, which production's does not |
+| locked | The same, behind a preamble imported first that clears `fetch` and `WebSocket` off the global and every prototype on its chain |
+| supervisor | A platform Durable Object that loads the scope's code inert through the Worker Loader, runs it as a facet, and picks its `globalOutbound`: `null`, a policy entrypoint, or inherited. It also holds the control-plane and scope-work entrypoints it hands over, and a stand-in for the scope class that does what `adapter-cloudflare/src/scope-do.ts` needs of its runtime |
+
+The probes were: `fetch`, a `fetch` found on the global's prototype chain, `fetch` with `Upgrade`,
+`new WebSocket`, `connect()`, `node:net`, `node:http`, `import()` of a URL, the Cache API and the
+ambient `cloudflare:workers` env. The same commit carries a runbook for the deployed half, for a
+person holding a test-account credential. It was not run.
 
 ### Every way out, by where the code runs
 
@@ -202,7 +205,8 @@ delivery (#3365).
 2. **Build it behind the generated entry (#3378), for new scopes first.** It needs the scope bundle to
    be emitted separately, and the storage move is the costly part. A new scope has nothing to move.
    Existing scopes follow by a copy at first wake, once that copy is proven on the spine.
-3. **Before building, run RUNBOOK.md on a test account.** Four facts only a deployment gives:
+3. **Before building, run the deployed half on a test account** (the runbook in PR #3384's commits).
+   Four facts only a deployment gives:
    - whether a facet may hold its own alarm on the edge (the supervisor workaround is proven either way);
    - whether `ctx.exports` and a policy `globalOutbound` work in a namespace script;
    - the cold start of a 2 MB JavaScript scope bundle on the edge (a real vertical's waits for the split bundle);
