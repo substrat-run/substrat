@@ -351,6 +351,8 @@ that expires needs no delivery guarantee but is never faster than the expiry. *L
 the guarantee and the push is the fast path, with the auth server's sessions revoked at the block
 so a session never outlives its token. The number is less certain: 300 seconds may be too long for
 some apps and should be settable per dependency, at the cost of more questions to the master.
+*Decided in [K-63](../decisions/K-063-a-tenant-s-people-are-owned-by-one-app-and-its-plugins-keep-the-master-s-answer-for-a-bounded-time.md):* the expiry is the guarantee, 300 seconds is the
+default, and a dependency may set a shorter time, never a longer one.
 
 **7.4 Where people and their details live.** An app owns them, or the tenant directory does (one
 copy, a stronger guarantee, and no reason left for a product to be the master). *Lean:* an app,
@@ -359,7 +361,8 @@ as the code does. The answer is kept once per vertical and tenant, not once per 
 copies per scope down for membership). For names and addresses, the built contract carries
 neither, so each plugin will cache them where no erasure reaches. *Lean:* the platform-held profile
 copy of dependent-people.md §5.2, the only alternative where erasure can be shown. Decide it before
-a second plugin exists.
+a second plugin exists. *Decided in K-63:* an app owns the people, and names and addresses come from
+the platform-held profile copy, which the platform erases when the master erases the person.
 
 **7.5 Who decides when an install changes version.** Every install stays on its version: safest
 for the installer, but it needs a serving script per version, which K-33 gave up because a Durable
@@ -413,7 +416,7 @@ among them because the storage track needs it. *Done for the seven on 2026-11-23
 ratified. D-61's clause on platform-authored code was narrowed to a wrapper over `fetch`, since read
 as a general rule it contradicted the platform entry that is shipped (§5.3). D-73 was ratified as a
 contract, with placement in a script of its own left to its pilot. What remains of phase 0 follows.
-dependent-people.md becomes a decision. K-53 and the scope-types tracking issue
+dependent-people.md becomes a decision: done on 2026-11-24, as K-63. K-53 and the scope-types tracking issue
 ([#2992](https://github.com/substrat-run/substrat/issues/2992)) are settled together, being one
 question. The version rule is written once, with the answer to §7.5. The words are fixed. *Done
 when* no coming build rests on a proposed record.

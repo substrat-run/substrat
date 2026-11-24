@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-136 decisions · 74 plan · 62 kernel
+137 decisions · 74 plan · 63 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -148,3 +148,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-73](decisions/D-073-a-connector-is-its-own-deployable-unit-with-one-call-contract.md) | 2026-11-18 | plan | A connector is its own deployable unit with one call contract, and where it runs is a choice <br>*amends D-64* | #2855 |
 | [K-62](decisions/K-062-an-operation-does-not-await-an-outside-call-inside-its-transaction.md) | 2026-11-18 | kernel | An operation does not await an outside call inside its transaction; an exchange that decides a commit is an attempt committed before the request leaves | #3289 |
 | [D-74](decisions/D-074-a-subject-access-export-reads-what-erasure-reaches-from-the-dashboard-data-tab-audited-and-outside-the-residency-gate.md) | 2026-11-20 | plan | A subject access export (Art. 15) reads what erasure reaches, through one shared plan; a team's owner or admin runs it from the dashboard's Data tab, recorded under their name, outside the residency gate, and without recipients until the disclosure register exists <br>*awaiting ratification* |  |
+| [K-63](decisions/K-063-a-tenant-s-people-are-owned-by-one-app-and-its-plugins-keep-the-master-s-answer-for-a-bounded-time.md) | 2026-11-24 | kernel | A tenant's people are owned by one app, and its plugins keep the master's answer for a bounded time | #3161 |
