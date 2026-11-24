@@ -1,12 +1,13 @@
 ---
-status: proposed
+status: building
 layer: plan
 description: A vertical takes its people from another app of the same tenant. It signs them in at the shared issuer, asks the other app who each login is by a peer call, and keeps the answer for a bounded time. The other app may also call it as the person signed in, with a token the issuer exchanged for them. Built on both hosts, with a demo pair.
 ---
 
 # RFC: a vertical that takes its people from another app
 
-**Status:** proposed; the door and the call made as a person are built on both hosts (#3161), with
+**Status:** building; decided as [K-63](../decisions/K-063-a-tenant-s-people-are-owned-by-one-app-and-its-plugins-keep-the-master-s-answer-for-a-bounded-time.md) on 2026-11-24. The door and the
+call made as a person are built on both hosts (#3161), with
 `demos/notes` beside `demos/todo` as the reference ·
 **Touches:** `@substrat-run/contracts` (`people.ts`, `delegations.ts`), `@substrat-run/vertical-auth`
 (`people.ts`, `delegate.ts`), `@substrat-run/kernel` (`delegation-ceiling.ts`),
@@ -78,8 +79,8 @@ supply a tenant-wide … revocation guarantee".
 
 What is built here is that projection, with the weakness stated as a number. The master stays the
 only authority; a dependent's copy is a cache with an expiry, and the guarantee is "within 300
-seconds, or refused", never "at once". Whether that is recorded as an amendment, or the people move
-to the tenant directory as K-22 moved membership, is the decision this RFC asks for (§5.1).
+seconds, or refused", never "at once". K-63 records that projection and its bound as the decision,
+and the people do not move to the tenant directory as K-22 moved membership (§5.1).
 
 ## 4. What is built, and what is not
 
@@ -145,7 +146,8 @@ Not built:
 The alternative to §3 is that the tenant directory holds the people and a privileged executor seats
 them in each scope through `HostAdmin`, as it does for membership. That keeps one copy. It also
 makes the people the platform's rather than an app's, which removes the reason a product would be
-the master at all. Not decided.
+the master at all. **Decided by K-63:** an app is the master, and the people stay out of the
+directory. A dependency may set a shorter time than 300 seconds, never a longer one.
 
 ### 5.2 The profile half, and erasure
 
@@ -157,8 +159,9 @@ That is unbuilt.
 
 Names and addresses are deferred, and a plugin that wants them will cache them in its own tables,
 which is the copy an erasure cannot reach. The proposed answer is a platform-held profile copy that
-module code reads and cannot write, erased by the platform when the master erases. It should be
-decided before a second plugin exists, even if it is built later.
+module code reads and cannot write, erased by the platform when the master erases. **Decided by
+K-63**, together with the erasure of a person's login and seat rows in every dependent. Both are
+unbuilt.
 
 ### 5.3 Calls on a person's behalf
 
