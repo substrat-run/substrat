@@ -42,6 +42,12 @@ refused. A missing file, where the app's source declares what it would describe,
 too. So the check is a refusal by the platform, not only a check in CI. An app's CI keeps its
 `--check` re-emits, which catch the same thing before a push.
 
+**The re-emit reads the source as the revision has it, before the build changes anything.** The
+platform builds from source because it also changes the code in the build: the platform entry in
+front of the bundle, and the wiring it generates. Those additions are the platform's, not the app's
+surface. So the comparison runs on the revision's own files, before the platform's build steps
+touch them, and nothing the platform adds is compared or recorded as the app's.
+
 **An emitter's output is part of its contract.** The same input gives the same bytes: a stable
 order, one line ending, and no time, path or machine in the output. A change in what an emitter
 writes for the same input is a change of its major under K-65, because it would refuse releases
