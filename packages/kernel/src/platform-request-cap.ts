@@ -37,6 +37,26 @@ export function assertPlatformRequestRoom(pending: number, retry = 'retry once s
   throw refusal;
 }
 
+/**
+ * The `requested_by` a CP-less host's executor writes on the `connector:<provider>` intent it routes
+ * a connector delivery into (#574 phase 3), stored as this exact JSON text. What marks a row as the
+ * platform's routing rather than module code's own `ctx.requestPlatform` — module code may enqueue a
+ * `connector:` kind itself, so the kind cannot tell them apart, and only the routing writes this.
+ */
+export const CONNECTOR_DISPATCH_REQUESTED_BY = JSON.stringify({ system: 'connector-dispatch' });
+
+/**
+ * How many routed connector deliveries a scope holds `pending` before routing waits (#3365). A room
+ * of its own, apart from {@link MAX_PENDING_PLATFORM_REQUESTS}: a connector backlog used to fill the
+ * one shared cap, so a module's `ctx.requestPlatform` was refused behind it, and `sweep-runs`
+ * reports and module intents took slots a delivery needed. Module intents no longer count routed
+ * deliveries, and routed deliveries count nothing else.
+ *
+ * A delivery that finds no room is not an attempt: it stays due, and is routed once a drain has
+ * made room (`routeExecutorEventToPlatform` answers null rather than refusing).
+ */
+export const MAX_PENDING_CONNECTOR_DISPATCHES = 32;
+
 /** Whether `err` is a refusal `assertPlatformRequestRoom` threw, as opposed to any error that merely reads like one. */
 export function isPlatformRequestRefusal(err: unknown): boolean {
   return typeof err === 'object' && err !== null && refusals.has(err);

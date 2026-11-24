@@ -271,6 +271,9 @@ export const adminAction = z.enum([
   // condemned and deleted them (or, in a dry run, reported the ones it would). Names the scope, the
   // pass's counts and every key it deleted or would delete.
   'sweepOrphanAttachments',
+  // #3365 — staff re-drove a delivery that gave up: a `failed` connector intent or a dead-lettered
+  // executor delivery. Names the scope, the intent or the (event, executor), and whether a row moved.
+  'redriveDelivery',
   // RFC wire-signing §7 (Q8) — the capability record of one upload: what the uploader gave the
   // script it went to (the state, the audience, the key ids of each list, or why it gave none).
   // Names the vertical, the script and the version; never a key.
@@ -324,6 +327,29 @@ export type CopyMarkAudit = z.infer<typeof copyMarkAudit>;
  * with nothing to collect leaves no row. `keys` are the objects deleted, or in a dry run the ones a
  * pass would delete; the pass bounds them by its own limit.
  */
+/**
+ * #3365: what a staff re-drive names — a `failed` connector intent by its id, or a dead-lettered
+ * executor delivery by its event and executor. The body of `POST /tenants/:t/scopes/:s/redrive`.
+ */
+export const deliveryRedriveInput = z.union([
+  z.object({ intentId: z.string().min(1).max(64) }).strict(),
+  z.object({ eventId: z.string().min(1).max(64), executorId: z.string().min(1).max(200) }).strict(),
+]);
+export type DeliveryRedriveInput = z.infer<typeof deliveryRedriveInput>;
+
+/** #3365: one staff re-drive, as the admin log keeps it — what was named, and whether a row moved. */
+export const deliveryRedriveAudit = z
+  .object({
+    tenantId,
+    scopeId,
+    intentId: z.string().min(1).optional(),
+    eventId: z.string().min(1).optional(),
+    executorId: z.string().min(1).optional(),
+    moved: z.boolean(),
+  })
+  .strict();
+export type DeliveryRedriveAudit = z.infer<typeof deliveryRedriveAudit>;
+
 export const orphanSweepAudit = z
   .object({
     tenantId,

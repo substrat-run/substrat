@@ -439,6 +439,8 @@ import {
   purgeHeldBy,
   type PurgeGateFacts,
   assertPlatformRequestRoom,
+  CONNECTOR_DISPATCH_REQUESTED_BY,
+  MAX_PENDING_CONNECTOR_DISPATCHES,
   purgeDueOf,
   purgeOnlyKeysOf,
   runPurgePass,
@@ -7546,9 +7548,15 @@ export function defineScopeDO(
      * One verb, not two, so the intent insert and the delivery journal commit together:
      * everything here is synchronous SQL in a single RPC, so a crash leaves either both
      * writes or neither, never an intent without its journal row (which would re-route
-     * the event on the next drain). Backpressure throws BEFORE any write — the caller
-     * records a failed attempt and the delivery retries on its own backoff, exactly as
-     * a throwing handler would.
+     * the event on the next drain).
+     *
+     * #3365: a full journal answers `null` BEFORE any write, and that is not an attempt: the
+     * delivery stays due (no journal row moves), the caller stops routing for its pass and asks
+     * for a drain, and the next pass after the drain has made room routes it. It used to throw,
+     * and the caller recorded a failed attempt with backoff, so under the default policy a
+     * backlog behind 32 pending intents was dead-lettered in seconds, before any drain ran. Room
+     * is counted over the routed deliveries alone (`MAX_PENDING_CONNECTOR_DISPATCHES`): module
+     * intents and `sweep-runs` reports no longer take a delivery's slot, nor it theirs.
      *
      * `invocationId` is LAST, and defaulted, for the RPC-skew reason `recordExecutorAttempt`
      * states at length.
@@ -7566,15 +7574,8 @@ export function defineScopeDO(
        * so leaving it null would make the column read "no call" for the common case.
        */
       invocationId: string | null = null,
-    ): PlatformRequestId {
-      const pending = Number(
-        (
-          this.sql
-            .exec(`SELECT COUNT(*) AS c FROM _substrat_platform_requests WHERE status = 'pending'`)
-            .toArray()[0] as { c: number }
-        ).c,
-      );
-      assertPlatformRequestRoom(pending, 'the delivery retries once some have drained');
+    ): PlatformRequestId | null {
+      if (this.pendingConnectorDispatches() >= MAX_PENDING_CONNECTOR_DISPATCHES) return null;
       const id = platformRequestId.parse(ulid());
       // K-42: the intent inherits the SOURCE EVENT's stamp rather than being written
       // unstamped. Nobody is impersonating at this moment — the drain runs long after
@@ -7600,6 +7601,61 @@ export function defineScopeDO(
       return id;
     }
 
+    /** #3365: the routed connector deliveries this scope holds pending — their own room. */
+    private pendingConnectorDispatches(): number {
+      return Number(
+        (
+          this.sql
+            .exec(
+              `SELECT COUNT(*) AS c FROM _substrat_platform_requests WHERE status = 'pending' AND requested_by = ?`,
+              CONNECTOR_DISPATCH_REQUESTED_BY,
+            )
+            .toArray()[0] as { c: number }
+        ).c,
+      );
+    }
+
+    /**
+     * #3365: re-drive one connector intent the drain settled `failed` — a give-up at the attempt
+     * ceiling, or a refusal the cause of which has since been fixed (a connection connected, a
+     * provider's 4xx answered). Back to `pending` with its attempts at zero, so the ceiling is a
+     * fresh one; its last error stays until the next settle replaces it. Only a `connector:`
+     * kind: re-running another kind's intent (a provision, an archive) is not a retry a person
+     * can judge from a journal row. Answers whether a row moved.
+     */
+    retryPlatformRequest(id: string): boolean {
+      return (
+        this.sql.exec(
+          `UPDATE _substrat_platform_requests
+              SET status = 'pending', attempts = 0, settled_at = NULL
+            WHERE id = ? AND status = 'failed' AND kind LIKE 'connector:%'`,
+          id,
+        ).rowsWritten > 0
+      );
+    }
+
+    /**
+     * #3365: re-drive one executor delivery that is dead-lettered — exhausted, or journaled before
+     * a full intent journal stopped counting as an attempt. Due now with its attempts at zero, so
+     * the next drain of this scope runs (or routes) it under a fresh policy. Only an executor's
+     * row, and only a dead one: a pending delivery is already due, and a delivered one is not
+     * repeated. A refusal (#1184) and an inert row (#2005) are dead letters too, and re-driving
+     * one asks its handler again, which is what a person pressing it means. Answers whether a row moved.
+     */
+    retryExecutorDelivery(eventId: string, deliveryId: string): boolean {
+      if (!deliveryId.startsWith('executor:')) return false;
+      return (
+        this.sql.exec(
+          `UPDATE _substrat_deliveries
+              SET attempts = 0, next_attempt_at = ?
+            WHERE event_id = ? AND consumer_module = ? AND error IS NOT NULL AND next_attempt_at IS NULL`,
+          new Date().toISOString(),
+          eventId,
+          deliveryId,
+        ).rowsWritten > 0
+      );
+    }
+
     /**
      * #1232: a CP-less pass's ONLY exit for its schedule outcomes — `admin.recordSweepRun`
      * is a control-plane write the null-CP proxy refuses. One batched intent per pass,
@@ -7611,8 +7667,10 @@ export function defineScopeDO(
       const counts = this.sql
         .exec(
           `SELECT COUNT(*) AS c, SUM(CASE WHEN kind = ? THEN 1 ELSE 0 END) AS k
-             FROM _substrat_platform_requests WHERE status = 'pending'`,
+             FROM _substrat_platform_requests WHERE status = 'pending' AND requested_by != ?`,
           SWEEP_RUNS_KIND,
+          // #3365: routed connector deliveries have a room of their own.
+          CONNECTOR_DISPATCH_REQUESTED_BY,
         )
         .toArray()[0] as { c: number; k: number | null };
       if (counts.c >= MAX_PENDING_PLATFORM_REQUESTS || (counts.k ?? 0) >= MAX_PENDING_SWEEP_RUNS) {
@@ -10123,10 +10181,15 @@ export function defineScopeDO(
           assertModuleEnqueueableKind(input.kind);
           // Backpressure (platform-intents.md): refuse when the scope already holds too many pending
           // intents, so a stuck or runaway vertical cannot flood the platform drain.
+          // #3365: routed connector deliveries are not counted — they have a room of their own
+          // (`MAX_PENDING_CONNECTOR_DISPATCHES`), so a connector backlog never refuses this call.
           const pending = Number(
             (
               sql
-                .exec(`SELECT COUNT(*) AS c FROM _substrat_platform_requests WHERE status = 'pending'`)
+                .exec(
+                  `SELECT COUNT(*) AS c FROM _substrat_platform_requests WHERE status = 'pending' AND requested_by != ?`,
+                  CONNECTOR_DISPATCH_REQUESTED_BY,
+                )
                 .toArray()[0] as { c: number }
             ).c,
           );

@@ -412,6 +412,17 @@ describe('router kick — /internal/drain-scope', () => {
       expect(spy.asked).toHaveLength(1);
     });
 
+    it("#3365: an intents kick hands the scope to its drain object, and an id not on record mints none", async () => {
+      const intentsKick = (scopeId: string) => ({ tenantId: t, scopeId, platformRequests: true, exports: false });
+      const res = await kickRoute({}, intentsKick(producers[0]!));
+      expect(res.status).toBe(200);
+      // Run from the object's alarm, never in the router's `waitUntil` that this request lives in.
+      expect(await res.json()).toEqual({ drained: 0, done: 0, failed: 0, pending: 0, drain: 'deferred' });
+      const spy = spyNamespace();
+      expect(await (await kickRoute({ PLATFORM_DRAIN_KICK: spy.ns }, intentsKick(ulid()))).json()).toMatchObject({ drain: 'not-on-record' });
+      expect(spy.asked).toEqual([]);
+    });
+
     it('a coalescer that is unavailable loses the kick quietly: 200, and the sweep is the backstop', async () => {
       const broken = {
         idFromName: () => ({}),

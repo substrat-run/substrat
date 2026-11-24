@@ -289,6 +289,75 @@ export const CrossVerticalKickDO = defineKickCoalescerDO<Env>({
 });
 
 /**
+ * #3365: how long one scope's kicked intent drains coalesce. A burst of kicks inside it costs one
+ * drain plus a trailing one, and a drain that stops with more to do runs again at its end.
+ */
+export const PLATFORM_DRAIN_KICK_WINDOW_MS = 2_000;
+
+/** #3365: one kicked drain's bound — rounds of re-listing and refilling, and wall time. */
+export const PLATFORM_DRAIN_KICK_ROUNDS = 25;
+export const PLATFORM_DRAIN_KICK_BUDGET_MS = 2 * 60_000;
+
+/**
+ * #3365: one object per scope decides WHEN a kicked platform-intent drain runs, and runs it from
+ * its alarm rather than inside the kick. A kick used to drain inline, in the router's `waitUntil`:
+ * cut off after ~30 s with a connector call in flight (whose lease then held the scope's dispatches
+ * for its full length), one listing per kick, and nothing coming back for what it did not reach. Here
+ * a drain re-lists and refills until its rounds or its budget run out, and a drain that stops with
+ * more to do is run again at the window's end, until one finishes. Scopes have their own objects, so
+ * one scope's backlog never waits behind another's. The drain is the sweep's own `drainOneScope`, so
+ * the object holds no authority; it is handed only a scope the route found on record.
+ */
+export const PlatformDrainKickDO = defineKickCoalescerDO<Env>({
+  windowMs: PLATFORM_DRAIN_KICK_WINDOW_MS,
+  passesFromAlarm: true,
+  run: async (env, { tenantId: t, scopeId: s }) => {
+    const report = await drainOneScope(env, t, s, {
+      rounds: PLATFORM_DRAIN_KICK_ROUNDS,
+      deadline: Date.now() + PLATFORM_DRAIN_KICK_BUDGET_MS,
+    });
+    return { more: report.more === true };
+  },
+  onError: (err) => console.error('platform drain kick: the drain failed; the sweep is the backstop', err),
+});
+
+/**
+ * #3365: ask a scope's drain object for a drain. `unwired` where the namespace is not bound (the
+ * caller drains inline, as before), `lost` where the object could not be reached: the intents are
+ * durable, so a lost kick costs latency and the sweep is the backstop.
+ */
+export async function kickPlatformDrain(
+  env: Pick<Env, 'PLATFORM_DRAIN_KICK'>,
+  scope: { tenantId: TenantId; scopeId: ScopeId },
+): Promise<KickOutcome | 'unwired' | 'lost'> {
+  const ns = env.PLATFORM_DRAIN_KICK;
+  if (!ns) return 'unwired';
+  try {
+    const stub = ns.get(ns.idFromName(kickCoalescerName(scope.tenantId, scope.scopeId))) as unknown as KickCoalescerDo;
+    return await stub.kick(scope.tenantId, scope.scopeId);
+  } catch (err) {
+    console.warn('platform drain kick lost; the sweep is the backstop', { scopeId: scope.scopeId, err });
+    return 'lost';
+  }
+}
+
+/**
+ * #3365: a tenant connected or rotated a credential for (vertical, provider). Every routed delivery
+ * that failed for want of it (`no live … connection`) is pending in the tenant's scopes of that
+ * vertical, and nothing else would run them before the next sweep. Each scope's drain object is
+ * kicked; one that is not an active, primary install of the vertical is left to the sweep.
+ */
+export async function kickConnectionDrains(env: Env, tenantId: TenantId, vertical: string): Promise<void> {
+  if (!env.PLATFORM_DRAIN_KICK) return;
+  const scopes = await hostFor(env).admin.listScopes(SWEEP_ACTOR, { tenantId, vertical, status: 'active' }).catch(() => []);
+  await Promise.all(
+    scopes
+      .filter((s) => s.vertical === vertical && s.status === 'active' && isPrimaryScope(s))
+      .map((s) => kickPlatformDrain(env, { tenantId, scopeId: s.id })),
+  );
+}
+
+/**
  * #2450 step 2: one object per background preview copy, stepped by alarm. Each step renews the
  * move's lease in the directory and moves pages between the two scripts the route resolved, by
  * their names; the object itself decides only when the next step runs. A control plane with no
@@ -573,6 +642,11 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * and the scheduled sweep delivers them: never a pass per flagged response.
    */
   CROSS_VERTICAL_KICK?: DurableObjectNamespace;
+  /**
+   * #3365: one Durable Object per scope, where a kicked platform-intent drain runs (from its alarm,
+   * `PlatformDrainKickDO`). Absent, a kick drains inline, as it did before.
+   */
+  PLATFORM_DRAIN_KICK?: DurableObjectNamespace;
   /**
    * #1877: where closed blocks of log counts are kept — one object per deployed script.
    * Absent, every aggregate read counts its span live (and a long window can time out).
@@ -2682,7 +2756,7 @@ async function drainOneScope(
    * #2431: intents an earlier drain this pass already tried — `PlatformDrainOptions.skip`. `rec`:
    * the scope's record when the caller already read it, so a kick reads it once.
    */
-  opts?: { skip?: readonly string[]; rec?: Scope },
+  opts?: { skip?: readonly string[]; rec?: Scope; rounds?: number; deadline?: number },
 ): Promise<ScopeDrainReport & { attempted: string[] }> {
   const host = hostFor(env);
   const resolveVerticalForScope = resolveVerticalForScopeFor(env);
@@ -2768,6 +2842,9 @@ async function drainOneScope(
           ? verticalConnectorDispatchHandler(verticalConnectorDepsFor(env, host, SWEEP_ACTOR))
           : undefined,
       ...(opts?.skip?.length ? { skip: new Set(opts.skip) } : {}),
+      // #3365: a kicked drain's rounds and budget (`PlatformDrainKickDO`); the sweep lists once.
+      ...(opts?.rounds !== undefined ? { rounds: opts.rounds } : {}),
+      ...(opts?.deadline !== undefined ? { deadline: opts.deadline } : {}),
       attempted,
     },
   );
@@ -3572,8 +3649,19 @@ export default {
         routedRec = routed!.rec;
         const drain = (s: { scopeId: ScopeId; rec: Scope | undefined }) =>
           drainOneScope(c.env, ids.data, s.scopeId, s.rec ? { rec: s.rec } : undefined).then(withoutAttempted);
-        report = await drain(routed!);
-        if (named) report.named = await drain(named);
+        if (c.env.PLATFORM_DRAIN_KICK) {
+          // #3365: handed to the scope's drain object, which runs it from its alarm and again while
+          // a backlog remains. Only for a scope on record with a vertical: a secret-holder naming
+          // fresh ids mints no objects (the #1737 rule), and such a scope holds no intents anyway.
+          const queue = async (s: { scopeId: ScopeId; rec: Scope | undefined }) =>
+            s.rec?.vertical ? kickPlatformDrain(c.env, { tenantId: ids.data, scopeId: s.scopeId }) : ('not-on-record' as const);
+          const answer: ScopeDrainReport & { drain?: string; namedDrain?: string } = { ...report, drain: await queue(routed!) };
+          if (named) answer.namedDrain = await queue(named);
+          report = answer;
+        } else {
+          report = await drain(routed!);
+          if (named) report.named = await drain(named);
+        }
       }
       // The scope's response committed an exported type: ask for THIS producer's outgoing edges.
       // Through its coalescer, never inline: the flag is a header tenant code sets, and a pass
@@ -3770,6 +3858,8 @@ export default {
               scopeOwnable,
               readLandings: (slug, versionId) => hostFor(c.env).versionConnectionLandings(slug, versionId),
             },
+            // #3365: a credential just stored — drain what waited for it, rather than the next sweep.
+            onUpserted: ({ tenantId: t, vertical }) => c.executionCtx.waitUntil(kickConnectionDrains(c.env, t, vertical).catch(() => undefined)),
           },
         );
         return c.json(result);
@@ -4166,6 +4256,12 @@ export default {
         verticalConnectorInspector: (provider, context) =>
           verticalConnectorInspector(verticalConnectorDepsFor(env, hostFor(env), SERVICE_ACTOR), provider, context),
         verticalConnectorDeclaration: servingConnectorDeclaration(env, SERVICE_ACTOR),
+        // #3365: a credential just stored — drain what waited for it, rather than the next sweep.
+        onConnectionUpserted: ({ tenantId: t, vertical }) => kickConnectionDrains(env, t, vertical),
+        // #3365: a re-driven delivery is the scope's drain's to run now.
+        onDeliveryRedriven: async (scope) => {
+          await kickPlatformDrain(env, scope);
+        },
         // Where the refs the console shows actually resolve, so staff get a link into the
         // Cloudflare dashboard instead of an id to hunt for. Account id + namespace only —
         // no credential — and absent when the account is not configured, which is the

@@ -564,6 +564,21 @@ export const KickSlowDO = defineKickCoalescerDO<KickEnv>({
   },
 });
 
+/**
+ * #3365: a coalescer that runs every pass from its alarm, never inside the kick, and whose first pass
+ * for a scope stops with `more` — as a drain at its deadline does — so the next one is armed.
+ */
+export const KickAlarmDO = defineKickCoalescerDO<KickEnv>({
+  windowMs: 60_000,
+  passesFromAlarm: true,
+  run: async (env, producer) => {
+    const log = kickLog(env) as unknown as { record(l: string): Promise<void>; lines(): Promise<string[]> };
+    await log.record(`pass:${producer.tenantId}:${producer.scopeId}`);
+    const passes = (await log.lines()).filter((l) => l.endsWith(`:${producer.scopeId}`)).length;
+    return { more: passes < 2 };
+  },
+});
+
 /** A coalescer whose every pass throws. The kick must still answer, never throw. */
 export const KickThrowDO = defineKickCoalescerDO<KickEnv>({
   windowMs: 60_000,

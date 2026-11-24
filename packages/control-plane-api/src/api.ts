@@ -1,4 +1,4 @@
-import { addDecimal, sourceBuildRequest, type SourceBuildRequest, type SourceBuildService, type BuiltSource, type VerticalChange, type VerticalChanges } from '@substrat-run/contracts';
+import { addDecimal, deliveryRedriveInput, platformRequestId as platformRequestIdSchema, sourceBuildRequest, type SourceBuildRequest, type SourceBuildService, type BuiltSource, type VerticalChange, type VerticalChanges } from '@substrat-run/contracts';
 import type { BuilderTurnsService } from './builder-turns.js';
 import type { BuilderSandboxObjectsService } from './builder-sandbox-objects.js';
 import { SourceBuildInterrupted } from './source-builds.js';
@@ -895,6 +895,16 @@ export interface ControlPlaneApiOptions {
    * from (`VerticalConnectorDeclarationOf`). Absent, that route refuses a dotted provider.
    */
   verticalConnectorDeclaration?: VerticalConnectorDeclarationOf;
+  /**
+   * #3365: told once a staff re-drive moved a delivery back into a scope's queue — a drain is what
+   * runs it. Kept alive past the response like `onConnectionUpserted`.
+   */
+  onDeliveryRedriven?: (scope: { tenantId: TenantId; scopeId: ScopeId }) => Promise<void> | void;
+  /**
+   * #3365: told once a connection's credential is stored through `POST /tenants/:t/connections`.
+   * What it returns is kept alive past the response (`waitUntil`), never awaited by it.
+   */
+  onConnectionUpserted?: (connection: { tenantId: TenantId; vertical: string; provider: string }) => Promise<void> | void;
   /**
    * Where this platform's compute actually runs — the coordinates a staff surface needs
    * to hand an operator a link INTO the provider's own console (the right script, the
@@ -3969,6 +3979,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           prepareCandidate,
           accountFromProbe,
           ...(options.verticalConnectorDeclaration ? { declarationOf: options.verticalConnectorDeclaration } : {}),
+          ...(options.onConnectionUpserted
+            ? { onUpserted: (connection) => afterResponse(c, options.onConnectionUpserted!(connection)) }
+            : {}),
         }),
       );
     } catch (err) {
@@ -6877,6 +6890,47 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // An unknown scope, another tenant's included, is the verb's own `not_found`: a 404.
     await c.var.admin.revokeCapability(c.get('actor'), tenantId, scopeId, capability);
     return c.body(null, 204);
+  });
+
+  // #3365: re-drive a delivery that gave up — a connector intent the drain settled `failed` (at the
+  // attempt ceiling, or refused for a cause since fixed), or an executor delivery that is
+  // dead-lettered (exhausted, or journaled when a full intent journal still counted as an attempt).
+  // Staff-only, like the capability revoke above. The scope's own deployment moves the row — only a
+  // dead one, so a second press moves nothing — and the admin log keeps who asked and whether it
+  // moved. A moved delivery is routed and the scope's drain asked for at once, so it runs in seconds.
+  app.post('/tenants/:tenantId/scopes/:scopeId/redrive', async (c) => {
+    if (confinedTenant(c.get('principal')) !== null) {
+      return refuse(c, 'forbidden', 'forbidden: re-driving a delivery is staff-only');
+    }
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const input = deliveryRedriveInput.safeParse(await c.req.json().catch(() => null));
+    if (!input.success) {
+      return refuse(c, 'validation_failed', 'name a failed connector intent ({ intentId }) or a dead-lettered executor delivery ({ eventId, executorId })');
+    }
+    const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    const vertical = await verticalForScope(c, scope);
+    if (!vertical) return refuseStatus(c, 501, await diagnoseUnboundScope(c.var.admin, c.get('actor'), scope));
+    const named = input.data;
+    let moved: boolean;
+    try {
+      if ('intentId' in named) {
+        const id = platformRequestIdSchema.safeParse(named.intentId);
+        if (!id.success) return refuse(c, 'validation_failed', 'intentId is not an intent id');
+        ({ moved } = await vertical.retryPlatformRequest(tenantId, scopeId, id.data));
+      } else {
+        ({ moved } = await vertical.retryExecutorDelivery(tenantId, scopeId, named.eventId, named.executorId));
+        // Due again: routed now, so the drain below finds it as an intent.
+        if (moved) await vertical.routeDueDeliveries(tenantId, scopeId).catch(() => null);
+      }
+    } catch (e) {
+      if (e instanceof ControlPlaneError) return relayRefusal(c, e);
+      throw e;
+    }
+    await c.var.admin.recordDeliveryRedrive(c.get('actor'), { tenantId, scopeId, ...named, moved });
+    if (moved && options.onDeliveryRedriven) afterResponse(c, options.onDeliveryRedriven({ tenantId, scopeId }));
+    return c.json({ moved });
   });
 
   // The owner seat (#925). Both reads go to the VERTICAL — the seat lives in its identity
@@ -14970,5 +15024,19 @@ async function readCappedJson(request: Request, max: number): Promise<unknown> {
     return JSON.parse(new TextDecoder().decode(bytes));
   } catch {
     throw new ControlPlaneError(422, 'the body is not JSON');
+  }
+}
+
+/**
+ * #3365: keep `work` alive past the response where the runtime offers it (`waitUntil`), and let it
+ * run unawaited where it does not (a node test's app has no execution context). Never throws.
+ */
+function afterResponse(c: { executionCtx: { waitUntil(p: Promise<unknown>): void } }, work: Promise<void> | void): void {
+  if (!work) return;
+  const settled = work.catch(() => undefined);
+  try {
+    c.executionCtx.waitUntil(settled);
+  } catch {
+    // No execution context: the work runs unawaited.
   }
 }

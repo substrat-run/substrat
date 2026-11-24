@@ -794,6 +794,27 @@ describe('the cross-vertical kick is coalesced per producer, fleet-wide (#1705 P
     expect((await storageOf(stub)).alarm).not.toBeNull();
   });
 
+  it('#3365: from its alarm only — a kick runs nothing, and a pass that says `more` arms the next until one does not', async () => {
+    const t = ulid();
+    const s = ulid();
+    const stub = coalescer(env.KICK_ALARM, t, s);
+    // Never inside the kick, whose caller's lifetime would bound the pass: it arms an alarm due at
+    // once, which the runtime may fire before this line does — so the pass is waited for, not forced.
+    expect(await kick(stub, t, s)).toBe('deferred');
+    await runDurableObjectAlarm(stub);
+    for (let i = 0; i < 400 && (await passesFor(s)).length < 1; i += 1) await new Promise((r) => setTimeout(r, 5));
+    expect(await passesFor(s)).toHaveLength(1);
+    // The pass stopped with more to do: the next is armed for the window's end with no kick.
+    await windowOver(stub);
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(await passesFor(s)).toHaveLength(2);
+    // That one finished: the object clears.
+    await windowOver(stub);
+    await runDurableObjectAlarm(stub);
+    expect(await passesFor(s)).toHaveLength(2);
+    expect(await storageOf(stub)).toEqual({ keys: [], alarm: null });
+  });
+
   it('two producers do not coalesce with each other', async () => {
     const t = ulid();
     const [a, b] = [ulid(), ulid()];
