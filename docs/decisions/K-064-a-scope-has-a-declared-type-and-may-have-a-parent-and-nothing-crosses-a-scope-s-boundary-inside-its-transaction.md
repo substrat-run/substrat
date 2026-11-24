@@ -19,9 +19,10 @@ tracking: ["#2992", "#2993", "#2994", "#2995", "#2996"]
 
 **One rule holds the rest together: nothing crosses a Durable Object's boundary inside a
 transaction, and everything that crosses one passes the door.** A call into another scope, or into a
-store, is made from host code, between two transactions, and it carries
-[K-58](./K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md)'s
-signed envelope naming the calling app and the actor. The receiver checks for itself. This is
+store, is made from host code, between two transactions, and it carries a signed envelope naming
+the calling app and the actor. The receiver checks for itself. That envelope is
+[K-58](./K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md)'s,
+extended (below). This is
 [K-62](./K-062-an-operation-does-not-await-an-outside-call-inside-its-transaction.md)'s rule applied
 to the platform's own objects as well as to outside services.
 
@@ -48,10 +49,17 @@ checks the (tenant, scope) pair and the declared binding, and once this is built
 proof an operation's check produced. Phase 1's spike (a call from inside a scope to its store) may
 reopen this for reads only. A write always goes this way.
 
-**The caller travels in the envelope.** #2994's signed caller assertion is K-58's actor. A store
-call carries it too, so that a store can tie a session to a person. That needs an amendment to
-[K-52](./K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md),
-which is a record of its own and is owed before the first store reads the actor.
+**The caller travels in the envelope.** #2994's signed caller assertion becomes two signed claims:
+the calling app and the actor. K-58's envelope does not carry them today. `substrat-wire/1` has
+fifteen fields in a closed table, and its `issuer` names only `router` or `platform`. Two amendments
+are owed, each a record of its own, before any receiver relies on either claim:
+
+- **K-58**, for a new version of its envelope that adds the calling app and the actor as signed
+  fields, with the (issuer, kind) pairs that carry them.
+- **[K-52](./K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md)**,
+  so that a store call carries the actor too, and a store can tie a session to a person.
+
+Until then, nothing in this record that reads the calling app or the actor is built.
 
 **K-53 is superseded: there is no store that several apps of a tenant write to.** Data has one
 owner. A tenant-wide data layer over a tenant's apps, K-53's requirement, takes one of two forms,
@@ -91,8 +99,8 @@ costs latency, not correctness.
 ## Not built
 
 All of it: scope types, the parent link and its intent, the proof the router requires for a store
-call, the actor in the store envelope (with K-52's amendment), and either form of a tenant-wide data
-layer. Scope-grain stores, the driver rename and K-49's door as it stands today are unchanged by it.
+call, the calling app and the actor as signed claims (with the amendments to K-58 and K-52), and either
+form of a tenant-wide data layer. Scope-grain stores, the driver rename and K-49's door as it stands today are unchanged by it.
 
 ## Revisit
 
