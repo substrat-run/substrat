@@ -3,19 +3,20 @@ id: D-64
 date: 2026-10-26
 layer: plan
 title: "A vertical may define its own connector, and it runs in the vertical's worker with a capability narrowed to one connection"
-status: proposed
+status: accepted
 aliases: []
 amends: ["D-18"]
 tracking: ["#2614"]
 ---
 # D-64 — A vertical may define its own connector, and it runs in the vertical's worker with a capability narrowed to one connection
 
-> Proposed, not accepted. It reverses a position two documents hold —
-> [commercial-model.md](../strategy/commercial-model.md) §5 ("keep connectors first-party / tightly
-> admitted much longer than verticals") and [connections.md](../architecture/connections.md) §7
-> ("a general connector marketplace … is a non-goal") — so it wants a human's ratification before
-> the code it describes is relied on. The design is
-> [vertical-connectors.md](../architecture/vertical-connectors.md).
+> **Ratified 2026-11-23: the platform opens connectors to customers.** It reverses a position two
+> documents held — [commercial-model.md](../strategy/commercial-model.md) §5 ("keep connectors
+> first-party / tightly admitted much longer than verticals") and
+> [connections.md](../architecture/connections.md) §7 ("a general connector marketplace … is a
+> non-goal"), and both carry the narrowing. The design is
+> [vertical-connectors.md](../architecture/vertical-connectors.md). What is not built, the listed
+> tier among it, is in **Limits and follow-ups** below.
 
 **A vertical may declare its own connectors and ship them with `substrat push`, with no change to
 this repository.** A vertical-defined provider is named `<namespace>.<name>`; first-party slugs never

@@ -6,9 +6,9 @@ platform. The platform still keeps the credential, the bindings, the connector's
 sweep schedule. It runs your provider code **in your app's own worker**, and hands it one
 connection at a time.
 
-::: warning Proposed
+::: tip Decision
 This rests on [D-64](https://github.com/substrat-run/substrat/blob/main/docs/decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md),
-which is awaiting ratification. The design is
+ratified on 2026-11-23. Listing your connector for other apps is not built yet. The design is
 [vertical-connectors.md](https://github.com/substrat-run/substrat/blob/main/docs/architecture/vertical-connectors.md).
 :::
 

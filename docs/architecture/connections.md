@@ -982,7 +982,7 @@ COORDINATOR, not here"*). Module code remains unable to `fetch` at all.
 > `host.dispatchConnector`, writing back over the §"write-back" seam. Self-host keeps
 > the in-process path; the registration is identical in both.
 
-> **A third placement: the vertical's own worker ([D-64](../decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md), proposed).**
+> **A third placement: the vertical's own worker ([D-64](../decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md), ratified).**
 > A vertical may define its own connector, named `<namespace>.<name>`. The platform keeps the
 > credential, the bindings, the state and the schedule, and calls the vertical's worker through the
 > router's `ConnectorCalls` entrypoint, so the vertical's declared `outbound` bounds it. The code is
@@ -1231,7 +1231,7 @@ a first sync. The facet is extracted from two implementations rather than from o
 ## 7. Non-goals (v0)
 
 ~~Webhook ingress (poll first, §5)~~ — landed, see §5. ~~A general connector marketplace~~ — a vertical
-may now define its own connector ([vertical-connectors.md](./vertical-connectors.md), D-64 proposed);
+may now define its own connector ([vertical-connectors.md](./vertical-connectors.md), D-64 ratified);
 listing one for other verticals is that document's §8 and is not built. A per-tenant connector
 enablement UI. OAuth **authorization-code** flows in the console — v0 accepts credentials
 administratively, which since §3.5.2 includes the tenant admin pasting them into the

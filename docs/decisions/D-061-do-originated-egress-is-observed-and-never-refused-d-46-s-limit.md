@@ -2,23 +2,30 @@
 id: D-61
 date: 2026-09-20
 layer: plan
-title: "DO-originated egress is observed and never refused: D-46's limit stands, and no platform-authored code enters a customer's bundle"
-status: proposed
+title: "DO-originated egress is observed and never refused: D-46's limit stands, and no platform-authored wrapper over fetch enters a customer's bundle"
+status: accepted
 aliases: []
 amends: []
 tracking: ["#861", "#1579"]
 ---
-# D-61 — DO-originated egress is observed and never refused: D-46's limit stands, and no platform-authored code enters a customer's bundle
+# D-61 — DO-originated egress is observed and never refused: D-46's limit stands, and no platform-authored wrapper over fetch enters a customer's bundle
 
-> Proposed, not accepted. It closes the fork [#861](https://github.com/substrat-run/substrat/issues/861)
-> states and [D-58](./D-058-d-46-s-durable-object-limit-is-enforcement-only-do-originat.md)
-> deferred to it, and it should be argued before the observation it commits to is paid for on
-> production.
+> **Ratified 2026-11-23, with its clause on platform code narrowed.** It closes the fork
+> [#861](https://github.com/substrat-run/substrat/issues/861) states and
+> [D-58](./D-058-d-46-s-durable-object-limit-is-enforcement-only-do-originat.md) deferred to it. As
+> proposed, it said that no platform-authored code enters a customer's bundle. The uploader has since
+> put a platform-authored entry in front of every pushed bundle
+> ([#1893](https://github.com/substrat-run/substrat/issues/1893)). That entry verifies the envelope and
+> stamps the request, and it wraps no capability the bundle holds. Read as a general rule, the clause
+> contradicted it, so the clause now refuses what this record argues against, a preamble over
+> `fetch` (Option B), and nothing wider ([one-model-for-shipped-code.md](../rfc/one-model-for-shipped-code.md) §5.3). The one action it obliges is
+> still open: production samples no spans, since `VERTICAL_TRACE_SAMPLING` is set only in the test
+> environment, so the egress report reads empty there until a production rate is chosen and paid for.
 
 **DO-originated egress is observed and never refused — [#861](https://github.com/substrat-run/substrat/issues/861)'s
 Option A — so [D-46](./D-046-a-hosted-vertical-s-outbound-egress-is-a-declared-per-versio.md)'s
-Durable-Object limit stays exactly as written and no platform-authored code is injected into a
-customer's bundle.** The mechanism is the one already built, unchanged: `apps/vertical-egress/src/worker.ts`
+Durable-Object limit stays exactly as written and no platform-authored wrapper over `fetch` is
+injected into a customer's bundle.** The mechanism is the one already built, unchanged: `apps/vertical-egress/src/worker.ts`
 is an out-of-process outbound worker on the dispatch namespace, deciding per subrequest and metering
 all five verdicts (`:143`, `:158`–`:206`), and its own header already carries the limit and D-58's
 correction to it (`:49`–`:61`). What is deliberately not built is Option B, a build-time preamble

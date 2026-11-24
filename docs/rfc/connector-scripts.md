@@ -1,15 +1,17 @@
 ---
-status: proposed
+status: building
 layer: plan
-description: "A connector is its own deployable unit with one call contract, and where it runs is a choice. Phase 1 is a pilot: Bolagsverket as its own script in the dispatch namespace, called by the control plane through the router behind a flag, TEST only, to measure the extra hop. D-73 records the direction as proposed."
+description: "A connector is its own deployable unit with one call contract, and where it runs is a choice. Phase 1 is a pilot: Bolagsverket as its own script in the dispatch namespace, called by the control plane through the router behind a flag, TEST only, to measure the extra hop. D-73 records it, ratified as a contract and a placement rule."
 ---
 
 # RFC: connectors as their own scripts
 
-**Status: proposed.** The direction is agreed with the owner as a direction, not decided:
-[D-73](../decisions/D-073-a-connector-is-its-own-deployable-unit-with-one-call-contract.md) records it
-as proposed. Phase 1 is a **pilot to measure**, not a rollout: it runs one connector out of process,
-in the test environment only, behind a flag that is off everywhere. **Extends:**
+**Status: building.**
+[D-73](../decisions/D-073-a-connector-is-its-own-deployable-unit-with-one-call-contract.md) was
+ratified on 2026-11-23 as a contract and a placement rule; moving a connector into a script of its
+own in production waits on phase 1's measurement. Phase 1 is a **pilot to measure**, not a rollout:
+it runs one connector out of process, in the test environment only, behind a flag that is off
+everywhere. **Extends:**
 [D-64](../decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md)
 and [vertical-connectors.md](../architecture/vertical-connectors.md) (the call contract).
 **Follows, where it fits:** the store-driver scripts of D-63, D-65, D-67, D-69 and D-70.
@@ -26,7 +28,7 @@ router, holding no platform authority (D-63, D-70). Vertical-defined connectors 
 own worker, handed one connection per call (D-64). First-party connectors are the last provider code
 that runs with the whole platform in reach.
 
-## 2. Direction (proposed, D-73)
+## 2. Direction (D-73)
 
 - **A connector is its own deployable unit, with one call contract.** The contract is D-64's:
   `connectorCallRequest` → `connectorCallResponse`, one shape per role (`probe-candidate`, `probe`,

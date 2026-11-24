@@ -3,7 +3,7 @@ id: K-62
 date: 2026-11-18
 layer: kernel
 title: "An operation does not await an outside call inside its transaction; an exchange that decides a commit is an attempt committed before the request leaves"
-status: proposed
+status: accepted
 aliases: []
 amends: []
 tracking: ["#3289"]
@@ -11,9 +11,11 @@ tracking: ["#3289"]
 
 # K-62 — An operation does not await an outside call inside its transaction; an exchange that decides a commit is an attempt committed before the request leaves
 
-> Proposed, not accepted. It answers #3289, a regulated cash register that needs a control code
+> **Ratified 2026-11-23.** It answers #3289, a regulated cash register that needs a control code
 > before a sale is registered, and it turns down that issue's `ctx.call` port. The design, the
 > regulation's text and the open questions are in [rfc/synchronous-port.md](../rfc/synchronous-port.md).
+> Those questions are about the register engine and the certified unit, and they stay open. None of
+> them changes this rule.
 
 **`OperationContext` gains no request/response verb, and an operation never awaits a call to an
 outside service inside its transaction.** R3 stays as it is. No host runs third-party I/O between an

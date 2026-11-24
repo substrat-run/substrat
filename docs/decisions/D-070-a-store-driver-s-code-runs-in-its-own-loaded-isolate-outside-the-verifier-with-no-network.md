@@ -3,7 +3,7 @@ id: D-70
 date: 2026-11-04
 layer: plan
 title: "A store driver's code runs in its own loaded isolate, outside the verifier, with no network"
-status: proposed
+status: accepted
 aliases: []
 amends: ["D-63", "D-67"]
 tracking: ["#2830"]
@@ -11,10 +11,9 @@ tracking: ["#2830"]
 
 # D-70 — A store driver's code runs in its own loaded isolate, outside the verifier, with no network
 
-> **Proposed 2026-11-04, not ratified.** The route is chosen. The spike in `spikes/store-facets/`
-> has run on a real dispatch namespace twice, and its figures, the billed cost among them, are in
-> **Measured** below. None rules the route out. If one had, this record would say so and be withdrawn
-> rather than ratified. Nothing is built on it until it is ratified.
+> **Proposed 2026-11-04, ratified 2026-11-23.** The route is chosen. The spike in
+> `spikes/store-facets/` has run on a real dispatch namespace twice, and its figures, the billed cost
+> among them, are in **Measured** below. None rules the route out.
 
 **The store script runs only platform code, and the driver's code runs beside it in an isolate of its own.** The store script keeps D-63's shape, one script per (driver, vertical), uploaded and rolled out as today. What changes is what runs in it:
 

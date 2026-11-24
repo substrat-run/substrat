@@ -7,7 +7,7 @@ description: A vertical defines its own connector, ships it with substrat push, 
 # RFC: vertical-defined connectors
 
 **Status:** building. **Decision:** [D-64](../decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md)
-(proposed). **Extends:** [connections.md](./connections.md) §4 (the connector interface) and §4.2
+(ratified 2026-11-23). **Extends:** [connections.md](./connections.md) §4 (the connector interface) and §4.2
 (where it runs). **Leaves for later:** the listed tier of [§8](#8-publishing--the-marketplace-tiers).
 
 ## 1. Problem
