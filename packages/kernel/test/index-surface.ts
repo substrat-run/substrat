@@ -478,6 +478,8 @@ export const INDEX_VALUE_EXPORTS = [
   'guardSecrets',
   'guardSpine',
   'guardSqlLimits',
+  // #3360: the keys a person could pass a check for, one helper so both adapters answer `heldPermissions` alike.
+  'heldKeysOf',
   'heldPurgePass',
   'holdStoreDriverIn',
   'idempotencyLookupQuery',
