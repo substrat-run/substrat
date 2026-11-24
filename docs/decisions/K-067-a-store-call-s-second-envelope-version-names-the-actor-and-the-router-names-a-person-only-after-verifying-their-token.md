@@ -3,7 +3,7 @@ id: K-67
 date: 2026-11-24
 layer: kernel
 title: "A store call's second envelope version names the actor, and the router names a person only after verifying their token"
-status: proposed
+status: accepted
 aliases: []
 amends: ["K-52"]
 tracking: ["#2994"]
@@ -11,12 +11,12 @@ tracking: ["#2994"]
 
 # K-67 — A store call's second envelope version names the actor, and the router names a person only after verifying their token
 
-> **Proposed 2026-11-24, not ratified.** It is the amendment to
+> **Proposed and ratified 2026-11-24, with the answers it proposed.** It is the amendment to
 > [K-52](./K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md)
 > that [K-64](./K-064-a-scope-has-a-declared-type-and-may-have-a-parent-and-nothing-crosses-a-scope-s-boundary-inside-its-transaction.md)
 > owes, so that a store can tie a session to a person (#2994). It is the store-call half of
 > [K-66](./K-066-the-wire-envelope-s-second-version-names-the-calling-app-its-scope-and-the-actor-and-the-router-signs-only-what-it-verified.md).
-> The design choices that are the maintainer's are named at the end. Nothing in it is built.
+> The maintainer's choices and the answers given are at the end. Nothing in it is built.
 
 **Version `2` of the store envelope adds one line to K-52's nine: the actor.** It follows the
 `<operation>` line. The other eight lines keep their meaning, order and rules, and so do the key per
@@ -91,6 +91,10 @@ behind this request: the app holds the token for as long as the session lives. A
 gets "this person's session at this app", which is what tying a session needs, and no more.
 
 ## For the maintainer
+
+Answered at ratification, 2026-11-24, as proposed: the router verifies the person, the id is the
+digest of the issuer and the `sub`, and the token is the app's own access token, which the router
+strips.
 
 1. **Router-verified person, or the app's word.** Proposed: router-verified. The alternative signs a
    person the app names and marks it as asserted, which protects against mistakes in the app and not

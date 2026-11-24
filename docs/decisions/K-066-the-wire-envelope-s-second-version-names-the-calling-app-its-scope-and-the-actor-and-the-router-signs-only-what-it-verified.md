@@ -3,7 +3,7 @@ id: K-66
 date: 2026-11-24
 layer: kernel
 title: "The wire envelope's second version names the calling app, its scope and the actor, and the router signs only what it verified"
-status: proposed
+status: accepted
 aliases: []
 amends: ["K-58"]
 tracking: ["#2994"]
@@ -11,11 +11,11 @@ tracking: ["#2994"]
 
 # K-66 — The wire envelope's second version names the calling app, its scope and the actor, and the router signs only what it verified
 
-> **Proposed 2026-11-24, not ratified.** It is the amendment to
+> **Proposed and ratified 2026-11-24, with the answers it proposed.** It is the amendment to
 > [K-58](./K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md)
 > that [K-64](./K-064-a-scope-has-a-declared-type-and-may-have-a-parent-and-nothing-crosses-a-scope-s-boundary-inside-its-transaction.md)
-> owes before any receiver relies on the calling app or the actor (#2994). The design choices that
-> are the maintainer's are named at the end. Nothing in it is built.
+> owes before any receiver relies on the calling app or the actor (#2994). The maintainer's choices
+> and the answers given are at the end. Nothing in it is built.
 
 **`substrat-wire/2` adds three lines to K-58's fifteen: the calling app, the calling scope and the
 actor.** They follow the `<vertical>` line, which keeps naming the target. The other fourteen lines
@@ -102,6 +102,10 @@ issuer signed for. Binding the token's digest keeps the router out of issuer tru
 the token useless on any other call.
 
 ## For the maintainer
+
+Answered at ratification, 2026-11-24, as proposed: the caller scope is its own line, the person on
+a peer call is bound by the token's digest, and version 1 is refused after a week with only
+version 2.
 
 1. **The caller scope as its own line**, rather than folded into the caller app. Proposed: its own
    line, because K-64's parent link is judged per scope.
