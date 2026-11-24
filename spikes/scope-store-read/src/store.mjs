@@ -8,19 +8,31 @@ import { DurableObject } from 'cloudflare:workers';
  */
 export class StoreObject extends DurableObject {
   inFlight = 0;
+  held = [];
 
-  /** How many reads are waiting on their delay now. The gate probe waits for one. */
+  /** How many reads are waiting now. The gate probe waits for one. */
   pending() {
     return this.inFlight;
+  }
+
+  /** Answers every read held with `hold: true`. The gate probe's independent release. */
+  release() {
+    const held = this.held;
+    this.held = [];
+    for (const resolve of held) resolve();
+    return { released: held.length };
   }
 
   async read(input) {
     const bytes = Math.max(0, Math.min(Number(input?.bytes ?? 0), 8 * 1024 * 1024));
     const delayMs = Math.max(0, Number(input?.delayMs ?? 0));
-    if (delayMs > 0) {
+    if (delayMs > 0 || input?.hold) {
       this.inFlight += 1;
       try {
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        await new Promise((resolve) => {
+          if (input?.hold) this.held.push(resolve);
+          else setTimeout(resolve, delayMs);
+        });
       } finally {
         this.inFlight -= 1;
       }

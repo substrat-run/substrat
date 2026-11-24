@@ -71,6 +71,7 @@ export default {
       tag: url.searchParams.get('tag') ?? '',
       failAfter: url.searchParams.get('failAfter') === '1',
       txn: url.searchParams.get('txn') !== '0',
+      grantMs: Number(url.searchParams.get('grantMs') ?? '1000'),
     };
     if (url.pathname === '/bench') return bench(env, door, args, url.searchParams);
     if (url.pathname === '/gate') return gate(env, door, args, caller);
@@ -112,28 +113,39 @@ async function bench(env, door, args, params) {
   // 2 ms, so the reads are sent (and the first is in its transaction) before the locals.
   await new Promise((resolve) => setTimeout(resolve, 2));
   const localCalls = Array.from({ length: locals }, () => timed({ ...args, mode: 'local', tag: 'local' }));
-  const localMs = await Promise.all(localCalls);
-  await Promise.all(readCalls);
-  return Response.json({ localMs, allReadsMs: Date.now() - started });
+  // Timed in its own continuation, so a read group that ends first is not charged for the locals.
+  const allReads = Promise.all(readCalls).then(() => Date.now() - started);
+  const [localMs, allReadsMs] = await Promise.all([Promise.all(localCalls), allReads]);
+  return Response.json({ localMs, allReadsMs });
 }
 
 /**
- * The gate probe, run inside workerd. The held operation starts its store read; the router
- * waits until the store object reports that read in flight, and only then sends the second
- * call. Both calls report in-object times, so "the second call waited" is judged by when it
- * RAN in the object against when the first call's read ended.
+ * The gate probe, run inside workerd, ordered by a handshake rather than by time. The held
+ * operation's store read is held by the store until the router releases it. The router waits
+ * until the store reports the read held, sends the second call, and gives that call a chance
+ * to finish while the read is still held. Then it releases the read through the store, which
+ * is a path independent of the scope. Whether the second call finished before the release,
+ * and the rows left behind, are the results. The in-object times are diagnostics only.
  */
 async function gate(env, door, args, caller) {
   const store = env.STORE.get(env.STORE.idFromName(`${caller.tenant}/${caller.vertical}/${caller.scope}/${args.binding}`));
   const hold = env.VERTICAL.run({ ...args, mode: 'gate-hold' }, door);
   const waitStarted = Date.now();
   while ((await store.pending()) === 0) {
-    if (Date.now() - waitStarted > 2000) return Response.json({ error: 'the read never started' }, { status: 500 });
+    if (Date.now() - waitStarted > 5000) return Response.json({ error: 'the read never started' }, { status: 500 });
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
-  const sentAt = Date.now();
-  const write = await env.VERTICAL.run({ ...args, mode: 'gate-write' }, door);
-  const held = await hold;
+  let writeDone = false;
+  const write = env.VERTICAL.run({ ...args, mode: 'gate-write' }, door).then((result) => {
+    writeDone = true;
+    return result;
+  });
+  // A chance, not a bound: a held second call cannot finish however long this is.
+  await Promise.race([write, new Promise((resolve) => setTimeout(resolve, args.grantMs))]);
+  const finishedWhileHeld = writeDone;
+  const releasedAt = Date.now();
+  await store.release();
+  const [written, held] = await Promise.all([write, hold]);
   const rows = await env.VERTICAL.run({ ...args, mode: 'rows' }, door);
-  return Response.json({ sentAt, ranAt: write.ranAt, ...held, rows });
+  return Response.json({ finishedWhileHeld, releasedAt, ranAt: written.ranAt, ...held, rows });
 }

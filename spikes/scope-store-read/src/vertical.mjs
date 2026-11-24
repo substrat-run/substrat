@@ -96,7 +96,7 @@ export class ScopeDO extends DurableObject {
     const body = async () => {
       this.write(args.tag, 'hold-before');
       times.readStartedAt = Date.now();
-      await door.read(args.binding, { bytes: args.bytes, delayMs: args.delayMs });
+      await door.read(args.binding, { bytes: args.bytes, hold: true });
       times.readEndedAt = Date.now();
       this.write(args.tag, 'hold-after');
       if (args.failAfter) throw new Error('the holding operation threw after its read');

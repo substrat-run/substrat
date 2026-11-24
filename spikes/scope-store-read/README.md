@@ -74,10 +74,12 @@ has no dispatch parameters. In local workerd the vertical's `outboundService` co
 Object too, so `inside-fetch` passes egress here. On Workers for Platforms it does not
 ([below](#1-a-policed-path-from-inside-the-object)). Everything runs in one process on one machine.
 
-**The gate probe** (`/gate` in `src/router.mjs`) sends the second call only once the store object
-reports the first call's read in flight. Both calls then report in-object times, so the probe
-compares when the second call ran in the object with when the read ended. A delayed delivery
-cannot pass for a stall.
+**The gate probe** (`/gate` in `src/router.mjs`) is ordered by a handshake, not by time. The
+store holds the first call's read until the router releases it. The router waits until the store
+reports the read held, then sends the second call and gives it a second to finish. Then it
+releases the read through the store, a path independent of the scope. The results are whether the
+second call finished while the read was held, and the rows left behind. Latency is not part of
+any check.
 
 **Timing.** The measurements are timed inside the router with `Date.now()`, which in workerd
 moves across I/O, and only I/O is timed. That leaves out the miniflare proxy between Node and
@@ -85,9 +87,10 @@ workerd, which added 100–300 ms per call in a first run timed from Node. The s
 for the time a real store takes to answer. It is the input of the experiment, not a platform
 constant.
 
-**Load.** The machine was an Apple M2 Pro shared with other work. Its load average was about 120
-during the run in the tables (run 3, 2026-11-24) and about 150 during a second run (run 4). Read the
-absolute numbers as loose. The shape is what repeated.
+**Load.** The machine was an Apple M2 Pro shared with other work. The tables are from run 5
+(2026-11-24), at a load average of about 28. Two earlier runs, at about 120 and 150, had the same
+shape with numbers 2–7× larger. Their timing of "all reads done" could include time waiting for the
+local operations; run 5 times it separately.
 
 ## Findings
 
@@ -103,59 +106,60 @@ All 12 pass. Each is a line in `run.mjs`.
 | `StoreCalls` refuses a scope other than the dispatch's | Yes |
 | Locally, a `ctx.exports` door kept past its request still answers in a later request | **Yes** |
 | Locally, the same kept door answers in an alarm | **Yes** |
-| Inside `storage.transaction`, **with no queue**, a second call sent while the first awaits a 200 ms read runs only once the read has ended | **Yes**: sent 200–201 ms before the read ended, it ran 0 ms after it, by in-object clocks. Its write landed after the first call's rollback, not inside it |
-| With no transaction, the input gate lets that second call run while the first awaits the store | Yes: it ran 200–201 ms before the read ended, and its write fell between the first call's two |
+| Inside `storage.transaction`, **with no queue**, a second call cannot finish while the first awaits the store | **Yes**: with the read held, it did not finish in a second. It ran once the read was released, and its write landed after the first call's rollback, not inside it |
+| With no transaction, the input gate lets that second call run and finish while the first awaits the store | Yes: it finished with the read still held, and its write fell between the first call's two |
 
 ### One call at a time
 
-Milliseconds, run 3, timed in the router, warm, store delay 0. 200 calls per cell (50 for 1 MiB).
+Milliseconds, run 5, timed in the router, warm, store delay 0. 200 calls per cell (50 for 1 MiB).
 `Date.now()` has 1 ms steps here.
 
 | Mode | 1 KiB p50 | 1 KiB p95 | 64 KiB p50 | 64 KiB p95 | 1 MiB p50 | 1 MiB p95 |
 |---|---|---|---|---|---|---|
-| `local` | 1 | 5 | 0 | 10 | 1 | 6 |
-| `inside-raw` | 1 | 9 | 1 | 11 | 3 | 14 |
-| `inside-door` | 1 | 8 | 0 | 3 | 1 | 12 |
-| `inside-fetch` | 1 | 10 | 2 | 32 | 5 | 107 |
-| `host-door` | 1 | 7 | 1 | 5 | 7 | 147 |
-| `host` | 2 | 17 | 7 | 146 | 24 | 174 |
+| `local` | 0 | 1 | 0 | 1 | 0 | 1 |
+| `inside-raw` | 0 | 1 | 0 | 1 | 1 | 1 |
+| `inside-door` | 0 | 1 | 0 | 3 | 1 | 6 |
+| `inside-fetch` | 0 | 1 | 1 | 2 | 3 | 7 |
+| `host-door` | 0 | 1 | 0 | 1 | 1 | 5 |
+| `host` | 1 | 2 | 1 | 2 | 4 | 10 |
 
-In one process every hop is a few microseconds of copying, so this table says little except that
-nothing here is expensive. In run 4 every cell was larger (p50 up to 70 ms), and the order of the
-paths changed, so no ranking between them holds locally. What a hop costs on the edge is not measured here (see
-[Not shown](#not-shown)).
+In one process every hop is a little copying, so this table says only that nothing here is
+expensive, and that the egress path (`host`) is the dearest by a few milliseconds per MiB. The
+order changed between the loaded runs, so no ranking holds locally. What a hop costs on the edge
+is not measured here (see [Not shown](#not-shown)).
 
 ### Reads and local operations at once on one scope
 
 R reads of one mode started together on one scope, then 2 ms later 20 `local` operations on the
-same scope. Milliseconds, run 3.
+same scope. Milliseconds, run 5.
 
 | Scenario | Mode | Local op p50 | Local op max | All reads done |
 |---|---|---|---|---|
-| 20 reads, store answers in 10 ms | `inside-raw` | 402 | 417 | 468 |
-| | `inside-door` | 564 | 569 | 578 |
-| | `host-door` | 36 | 153 | 504 |
-| | `host` | 79 | 85 | 562 |
-| 20 reads, store answers in 50 ms | `inside-raw` | 1 950 | 1 952 | 1 961 |
-| | `inside-door` | 1 626 | 1 638 | 1 653 |
-| | `host-door` | 7 | 45 | 346 |
-| | `host` | 29 | 44 | 384 |
-| 50 reads, store answers in 10 ms | `inside-raw` | 932 | 934 | 1 067 |
-| | `inside-door` | 1 609 | 1 678 | 1 682 |
-| | `host-door` | 18 | 22 | 713 |
-| | `host` | 23 | 26 | 943 |
+| 20 reads, store answers in 10 ms | `inside-raw` | 257 | 259 | 259 |
+| | `inside-door` | 256 | 257 | 257 |
+| | `host-door` | 4 | 4 | 17 |
+| | `host` | 2 | 4 | 22 |
+| 20 reads, store answers in 50 ms | `inside-raw` | 1 047 | 1 048 | 1 048 |
+| | `inside-door` | 1 059 | 1 060 | 1 060 |
+| | `host-door` | 10 | 16 | 68 |
+| | `host` | 16 | 17 | 71 |
+| 50 reads, store answers in 10 ms | `inside-raw` | 631 | 632 | 636 |
+| | `inside-door` | 653 | 654 | 656 |
+| | `host-door` | 3 | 3 | 54 |
+| | `host` | 2 | 3 | 54 |
 
-With the read inside the transaction, a local operation finishes at about the time the last read
-does: it waits for every read sent before it, one after another. The floor is the reads times
-the store's delay (20 × 50 ms = 1 000 ms). The rest is the hop and the load. On either host path,
-a local operation waits for the queued `attempt` and `record` operations only, never for the
-store. Run 4, at the higher load, had the same split with larger numbers: 2.1–7.5 s for a local
-operation behind reads inside the transaction, 0.06–0.6 s behind host-path reads.
+With the read inside the transaction, the reads run one after another, and a local operation
+finishes when the last read sent before it does. The floor is the reads times the store's delay
+(20 × 50 ms = 1 000 ms, measured 1 047–1 059). On either host path the reads run side by side, so
+all of them answer in about one store delay. A local operation waits only for the queued `attempt`
+and `record` operations, never for the store (2–16 ms). The two loaded runs had the same split:
+local operations waited 0.4–7.5 s behind reads inside the transaction and 0.01–0.6 s behind
+host-path reads.
 
-Large reads (10 × 1 MiB and 10 × 4 MiB, store delay 0) are in `run.mjs` too. Their order changed
-between runs 3 and 4, so they show nothing either way. Locally a payload moves in about a
-millisecond, so a large read with a store that answers at once holds the object for very little.
-On the edge it holds it for the transfer as well.
+Large reads (10 × 1 MiB and 10 × 4 MiB, store delay 0) are in `run.mjs` too. In run 5 every path
+finished them within about 100 ms, and their order changed between runs. Locally a payload moves in
+about a millisecond, so a large read with a store that answers at once holds the object for very
+little. On the edge it holds it for the transfer as well.
 
 ## What it means
 
@@ -189,7 +193,7 @@ On the edge it holds it for the transfer as well.
 ### 2. The stall is workerd's, not our queue's
 
 The gate probe takes `OperationQueue` away and keeps the transaction. A second call, sent while
-the first call's read is in flight, still runs only once that read has ended. Without the transaction, the input gate lets it in while
+the first call's read is held, still cannot finish until the read is released. Without the transaction, the input gate lets it in while
 the first call awaits. So with any path, a store read awaited inside the operation's transaction
 holds the scope for the store's whole answer time. Removing or loosening our queue would not
 change that. Holding it is also the safe behaviour: had the second call run inside the open
