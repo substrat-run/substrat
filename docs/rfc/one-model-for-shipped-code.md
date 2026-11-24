@@ -456,18 +456,21 @@ declarations, its rules and its migrations from it.
 
 1. **The generation target.** Does a generator write against the typed API, or against a declared
    surface that the platform loads, so that written code can fill only the obligations the surface
-   declares?
+   declares? *Answered in [D-76](../decisions/D-076-a-generator-writes-typed-typescript-and-the-platform-refuses-a-release-whose-re-emitted-surface-differs-by-a-byte.md):* typed TypeScript, against the same API
+   a hand-written app uses.
 2. **The surface check.** Does the platform refuse an app whose emitted surface does not match its
    model revision, or does that stay a check in CI? A check inside the bundle is not a boundary
-   against the app itself (D-61's reasoning), so a refusal compares what a push emits.
+   against the app itself (D-61's reasoning), so a refusal compares what a push emits. *Answered
+   in D-76:* the platform's build re-emits `model.json`, `openapi.json` and `PERMISSIONS.md` and
+   refuses a release where any differs by a byte.
 3. **The model's boundary.** [model-phase-plan.md](./model-phase-plan.md) says the model gets no
    richer vocabulary and points at written code instead. The addendum puts rules in the model. Where
    the line runs now is open.
 
-Until the first is answered, the generated entry
-([#3378](https://github.com/substrat-run/substrat/issues/3378)) waits, because it has to be the last
-link of the same generation chain, not a second generator beside the model's. *Done when* no coming
-build rests on a proposed record, and these three are answered.
+The generated entry ([#3378](https://github.com/substrat-run/substrat/issues/3378)) waited on the
+first, because it has to be the last link of the same generation chain, not a second generator
+beside the model's. D-76 answers it, and the third question remains. *Done when* no coming build
+rests on a proposed record, and these three are answered.
 
 **Phase 1: one door.** The platform's connectors move onto the shared contract and stay in
 process, with a sweep role per connection first, so a rate-limited provider is not polled once per
