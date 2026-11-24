@@ -37,6 +37,25 @@
  * first line names the protocol, so no message signed under another protocol (a store
  * envelope's first line is `1`) parses as one of these, whatever key signed it.
  *
+ * **Version 2 (K-66)** is `substrat-wire/2` and three more lines after `<vertical>`, eighteen in
+ * all. The other fifteen keep their meaning, order and rules, and neither version parses as the
+ * other:
+ *
+ * ```
+ * <caller app>                     the calling app's slug, or empty
+ * <caller scope>                   the calling scope's id (a ULID), or empty
+ * <actor>                          app | platform | person:<sha256 hex of the onBehalf token>, or empty
+ * ```
+ *
+ * Which of them an envelope carries is version 2's closed table ({@link wireCallerShape}), with
+ * one row the parser cannot judge alone: the router's call carries a caller (and acts as `app`
+ * or a person) on a peer invocation, and none (acting as `platform`) on a call it makes for the
+ * platform. The two are told apart by the target endpoint, so the verifier checks that row against
+ * the target it was given, as `caller`. A verifier accepts both versions; a signer sends version 1
+ * unless told otherwise, until the signers switch (#3373). A receiver reads the caller and the actor
+ * only from a version 2 envelope it verified ({@link wireVerifiedCallerOf}), never from a header or
+ * a body.
+ *
  * Every refusal of a caller is the same value, {@link WIRE_REFUSED}: a caller cannot tell a wrong
  * audience from a bad signature, and neither can whoever it answers. The reason goes to
  * `onRefusal`, for metrics only. A fault of the deployment's own throws instead: a key set it
@@ -58,9 +77,29 @@ import {
   type ScopeStoreKeyProblem,
 } from './scope-store-envelope.js';
 
-export const WIRE_ENVELOPE_VERSION = 1;
-/** The first line of every wire envelope: the protocol and its version. */
-export const WIRE_ENVELOPE_TAG = `substrat-wire/${WIRE_ENVELOPE_VERSION}` as const;
+/** Every envelope version a verifier of this module accepts. */
+export const WIRE_ENVELOPE_VERSIONS = Object.freeze([1, 2] as const);
+export type WireEnvelopeVersion = (typeof WIRE_ENVELOPE_VERSIONS)[number];
+/**
+ * The newest envelope version this module verifies: what an entry built from it records that it
+ * verifies (the capability record's `envelope`). Such an entry accepts every version in
+ * {@link WIRE_ENVELOPE_VERSIONS}.
+ */
+export const WIRE_ENVELOPE_VERSION = 2;
+/**
+ * The version a signer sends when it is not told: version 1, until every verifier the fleet runs
+ * knows version 2 and the signers switch (K-66, #3373).
+ */
+export const WIRE_SIGNED_VERSION_DEFAULT = 1 satisfies WireEnvelopeVersion;
+/**
+ * Each version's first line, spelled out: an entry that can parse version 2 carries its tag as text,
+ * which is how the fleet walk tells, from a script's own modules, which versions its entry verifies.
+ */
+const TAGS = Object.freeze({ 1: 'substrat-wire/1', 2: 'substrat-wire/2' } as const);
+/** The first line of an envelope of version `v`: the protocol and its version. */
+export const wireEnvelopeTag = <V extends WireEnvelopeVersion>(v: V): (typeof TAGS)[V] => TAGS[v];
+/** The first line of a version 1 envelope. */
+export const WIRE_ENVELOPE_TAG = wireEnvelopeTag(1);
 /** The request header carrying base64url of the canonical bytes. */
 export const WIRE_ENVELOPE_HEADER = 'x-substrat-wire-envelope';
 /** The request header carrying the base64url signature. */
@@ -104,15 +143,76 @@ const SHAPES: Readonly<Record<string, Readonly<Record<string, WireEnvelopeShape>
   },
 };
 
-/** What an (iss, kind) pair carries, or undefined when version 1 does not admit the pair. */
+/** What an (iss, kind) pair carries, or undefined when the envelope does not admit the pair. Both versions admit the same pairs. */
 export function wireEnvelopeShape(iss: string, kind: string): WireEnvelopeShape | undefined {
   const byKind = Object.hasOwn(SHAPES, iss) ? SHAPES[iss] : undefined;
   return byKind && Object.hasOwn(byKind, kind) ? byKind[kind] : undefined;
 }
 
+/**
+ * Who a version 2 call acts for (K-66): the calling app as itself, the platform, or a person whose
+ * token the issuer minted for this target (`onBehalf`), bound by the token's SHA-256.
+ */
+export type WireActor = 'app' | 'platform' | `person:${string}`;
+
+/** The person actor that binds `token`: `person:` and the SHA-256 hex of its UTF-8. */
+export async function wirePersonActor(token: string): Promise<WireActor> {
+  return `person:${await wireDigest(token)}`;
+}
+
+/** The actor grammar, in one place: `app`, `platform`, or `person:` and 64 lowercase hex. */
+const isWireActor = (value: string): value is WireActor => value === 'app' || value === 'platform' || /^person:[0-9a-f]{64}$/.test(value);
+
+/**
+ * Version 2's caller lines for one envelope (K-66's closed table), as one of the rows an (iss, kind)
+ * pair may carry:
+ *
+ * - `none`: no caller and no actor (a route).
+ * - `platform`: no caller, and the actor `platform` (a call the control plane signs, or one the
+ *   router makes for the platform: a connector call or probe).
+ * - `peer`: the calling app and scope, and the actor `app` or a person (a peer invocation).
+ */
+export type WireCallerShape = 'none' | 'platform' | 'peer';
+
+/**
+ * The rows version 2 admits for an (iss, kind) pair. The router's call admits two, told apart by
+ * the target endpoint ({@link wireCallerShapeOf}), which the verifier checks against the target.
+ */
+export function wireCallerShape(iss: string, kind: string): readonly WireCallerShape[] {
+  if (iss === 'router' && kind === 'route') return ['none'];
+  if (iss === 'router' && kind === 'call') return ['peer', 'platform'];
+  if (iss === 'platform' && kind === 'call') return ['platform'];
+  return [];
+}
+
+/** Which row a version 2 envelope's caller lines are, or undefined when they are no row. */
+function callerRowOf(callerApp: string, callerScope: string, actor: string): WireCallerShape | undefined {
+  if (callerApp === '' && callerScope === '' && actor === '') return 'none';
+  if (callerApp === '' && callerScope === '' && actor === 'platform') return 'platform';
+  if (isText(callerApp) && callerApp !== '' && ULID.test(callerScope) && isWireActor(actor) && actor !== 'platform') return 'peer';
+  return undefined;
+}
+
+/** The row a version 2 envelope's claims carry. */
+const callerRowOfClaims = (claims: WireClaims) => callerRowOf(claims.callerApp ?? '', claims.callerScope ?? '', claims.actor ?? '');
+
+/** The peer invocation's path: the one target at which the router's call names its caller. */
+const PEER_INVOCATION_PATH = '/internal/vertical-invoke';
+
+/**
+ * The row the router's call to `target` (a pathname, with or without its search) must carry: `peer`
+ * at the peer invocation, `platform` at every other endpoint the router calls.
+ */
+export function wireCallerShapeOf(iss: WireIssuer, kind: WireKind, target: string): WireCallerShape {
+  if (kind === 'route') return 'none';
+  if (iss === 'platform') return 'platform';
+  const pathname = target.split('?', 1)[0];
+  return pathname === PEER_INVOCATION_PATH ? 'peer' : 'platform';
+}
+
 /** One envelope's fields. An absent field is `null`, never an empty string. */
 export interface WireClaims {
-  readonly v: 1;
+  readonly v: WireEnvelopeVersion;
   readonly iss: WireIssuer;
   readonly kind: WireKind;
   readonly kid: string;
@@ -121,6 +221,12 @@ export interface WireClaims {
   readonly scopeId: string | null;
   readonly surface: string | null;
   readonly vertical: string | null;
+  /** Version 2: the calling app's slug, on a peer invocation. Always null on version 1. */
+  readonly callerApp: string | null;
+  /** Version 2: the calling scope's id, on a peer invocation. Always null on version 1. */
+  readonly callerScope: string | null;
+  /** Version 2: who the call acts for, on every call. Always null on a route and on version 1. */
+  readonly actor: WireActor | null;
   readonly method: string;
   readonly targetDigest: string;
   readonly bodyDigest: string | null;
@@ -129,7 +235,10 @@ export interface WireClaims {
   readonly nonce: string;
 }
 
-const LINES = 15;
+/** How many lines each version's encoding has. */
+const LINES: Readonly<Record<WireEnvelopeVersion, number>> = Object.freeze({ 1: 15, 2: 18 });
+/** Version 2's three caller lines sit after the ninth line, `<vertical>`. */
+const CALLER_AT = 9;
 /** The ULID grammar the router asserts and vertical-host's `ROUTED_ID` reads. */
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 /**
@@ -170,13 +279,19 @@ function admits(presence: WireFieldPresence, value: string, valid: (value: strin
 
 /** The claims those bytes name, or undefined when they are not exactly what the encoder emits. */
 export function parseWireEnvelope(canonical: string): WireClaims | undefined {
-  const lines = canonical.split('\n');
-  if (lines.length !== LINES) return undefined;
-  const [tag, iss, kind, kid, aud, tenantId, scopeId, surface, vertical, method, targetDigest, bodyDigest, iat, exp, nonce] =
-    lines as [string, string, string, string, string, string, string, string, string, string, string, string, string, string, string];
-  if (tag !== WIRE_ENVELOPE_TAG) return undefined;
+  const all = canonical.split('\n');
+  const v = WIRE_ENVELOPE_VERSIONS.find((version) => all[0] === wireEnvelopeTag(version));
+  if (v === undefined || all.length !== LINES[v]) return undefined;
+  // Version 2's caller lines, taken out so the fifteen shared lines read as version 1's.
+  const [callerApp, callerScope, actor] = v === 2 ? all.splice(CALLER_AT, 3) : ['', '', ''];
+  const [, iss, kind, kid, aud, tenantId, scopeId, surface, vertical, method, targetDigest, bodyDigest, iat, exp, nonce] =
+    all as [string, string, string, string, string, string, string, string, string, string, string, string, string, string, string];
   const shape = wireEnvelopeShape(iss, kind);
   if (!shape) return undefined;
+  if (v === 2) {
+    const row = callerRowOf(callerApp!, callerScope!, actor!);
+    if (row === undefined || !wireCallerShape(iss, kind).includes(row)) return undefined;
+  }
   if (!isCanonicalBase64Url(kid, 8) || !isCanonicalBase64Url(nonce, 16)) return undefined;
   if (!isWireAudience(aud)) return undefined;
   if ((tenantId === '') !== (scopeId === '')) return undefined;
@@ -186,7 +301,7 @@ export function parseWireEnvelope(canonical: string): WireClaims | undefined {
   if (!SECONDS.test(iat) || !SECONDS.test(exp)) return undefined;
   const orNull = (value: string) => (value === '' ? null : value);
   return {
-    v: 1,
+    v,
     iss: iss as WireIssuer,
     kind: kind as WireKind,
     kid,
@@ -195,6 +310,9 @@ export function parseWireEnvelope(canonical: string): WireClaims | undefined {
     scopeId: orNull(scopeId),
     surface: orNull(surface),
     vertical: orNull(vertical),
+    callerApp: orNull(callerApp!),
+    callerScope: orNull(callerScope!),
+    actor: orNull(actor!) as WireActor | null,
     method,
     targetDigest,
     bodyDigest: orNull(bodyDigest),
@@ -232,9 +350,16 @@ export class WireClaimsError extends Error {
   override readonly name = 'WireClaimsError';
 }
 
-/** Fifteen lines, no trailing newline. Throws {@link WireClaimsError} on a field the parser would refuse. */
+/**
+ * Fifteen lines (version 1) or eighteen (version 2), no trailing newline. Throws
+ * {@link WireClaimsError} on a field the parser would refuse, and on caller lines on version 1.
+ */
 export function canonicalWireEnvelope(claims: WireClaims): string {
-  if (claims.v !== WIRE_ENVELOPE_VERSION) throw new WireClaimsError(`unknown wire envelope version ${claims.v}`);
+  if (!WIRE_ENVELOPE_VERSIONS.includes(claims.v)) throw new WireClaimsError(`unknown wire envelope version ${String(claims.v)}`);
+  // `!= null`: version 1 has no line to carry them, so naming one there is never silently dropped.
+  if (claims.v === 1 && (claims.callerApp != null || claims.callerScope != null || claims.actor != null)) {
+    throw new WireClaimsError('a version 1 envelope carries no caller and no actor');
+  }
   for (const time of [claims.iat, claims.exp]) {
     if (!Number.isSafeInteger(time) || time < 0) throw new WireClaimsError('a wire envelope time is not a non-negative integer');
   }
@@ -243,7 +368,7 @@ export function canonicalWireEnvelope(claims: WireClaims): string {
     return value ?? '';
   };
   const lines = [
-    WIRE_ENVELOPE_TAG,
+    wireEnvelopeTag(claims.v),
     claims.iss,
     claims.kind,
     claims.kid,
@@ -252,6 +377,7 @@ export function canonicalWireEnvelope(claims: WireClaims): string {
     optional(claims.scopeId),
     optional(claims.surface),
     optional(claims.vertical),
+    ...(claims.v === 2 ? [optional(claims.callerApp ?? null), optional(claims.callerScope ?? null), optional(claims.actor ?? null)] : []),
     claims.method,
     claims.targetDigest,
     optional(claims.bodyDigest),
@@ -336,6 +462,8 @@ export async function importWireSigningKey(pkcs8: string): Promise<WireSigningKe
 
 /** What a signer is told. Absent optional fields are omitted or `null`. */
 export interface WireEnvelopeInput {
+  /** Defaults to {@link WIRE_SIGNED_VERSION_DEFAULT}, version 1. */
+  readonly v?: WireEnvelopeVersion;
   readonly iss: WireIssuer;
   readonly kind: WireKind;
   readonly aud: string;
@@ -343,6 +471,13 @@ export interface WireEnvelopeInput {
   readonly scopeId?: string | null;
   readonly surface?: string | null;
   readonly vertical?: string | null;
+  /**
+   * Version 2 only (K-66): the caller as the dispatch knows it, never as the caller's request says,
+   * and who the call acts for. A row version 2's table does not admit is refused by the encoder.
+   */
+  readonly callerApp?: string | null;
+  readonly callerScope?: string | null;
+  readonly actor?: WireActor | null;
   /** From {@link wireRequestBinding} over the request being sent. */
   readonly method: string;
   readonly target: string;
@@ -375,8 +510,9 @@ export async function signWireEnvelope(key: WireSigningKey, input: WireEnvelopeI
   const iat = input.iat ?? Math.floor(Date.now() / 1000);
   const exp = input.exp ?? iat + WIRE_ENVELOPE_LIFETIME_SECONDS;
   if (!lifetimeAdmitted(iat, exp)) throw new WireClaimsError('a wire envelope lives for at most the maximum lifetime, and ends after it starts');
+  const v = input.v ?? WIRE_SIGNED_VERSION_DEFAULT;
   const claims: WireClaims = {
-    v: 1,
+    v,
     iss: input.iss,
     kind: input.kind,
     kid: key.kid,
@@ -385,6 +521,9 @@ export async function signWireEnvelope(key: WireSigningKey, input: WireEnvelopeI
     scopeId: input.scopeId ?? null,
     surface: input.surface ?? null,
     vertical: input.vertical ?? null,
+    callerApp: input.callerApp ?? null,
+    callerScope: input.callerScope ?? null,
+    actor: input.actor ?? null,
     method: input.method,
     targetDigest: await wireDigest(input.target),
     bodyDigest: input.body === undefined ? null : await wireDigest(input.body),
@@ -393,6 +532,11 @@ export async function signWireEnvelope(key: WireSigningKey, input: WireEnvelopeI
     nonce: input.nonce ?? bytesToBase64Url(crypto.getRandomValues(new Uint8Array(16))),
   };
   const canonical = canonicalWireEnvelope(claims);
+  // The one row the parser cannot judge alone: the router's call names its caller exactly at the peer
+  // invocation. A signer that would send the other row is refused here, as the verifier would refuse it.
+  if (v === 2 && callerRowOfClaims(claims) !== wireCallerShapeOf(claims.iss, claims.kind, input.target)) {
+    throw new WireClaimsError(`a version 2 ${claims.kind} to this target carries the ${wireCallerShapeOf(claims.iss, claims.kind, input.target)} caller row`);
+  }
   const bytes = new TextEncoder().encode(canonical);
   const signature = await crypto.subtle.sign('Ed25519', key.key, bytes);
   return { claims, canonical, header: bytesToBase64Url(bytes), signature: bytesToBase64Url(new Uint8Array(signature)) };
@@ -510,6 +654,8 @@ export const WIRE_REFUSAL_REASONS = [
   'expired',
   'method',
   'target',
+  // Version 2 only: the caller row the envelope carries is not the one its target takes (K-66).
+  'caller',
   'body',
   'scope',
   'claim-after-until',
@@ -531,9 +677,10 @@ export const WIRE_REFUSED: WireRefused = Object.freeze({ ok: false });
 export type WireVerdict = WireAccepted | WireRefused;
 
 /**
- * Every check a deployment makes on an envelope, in one fixed order: present, well-formed, the
- * expected issuer and kind, a listed key id, the signature, then (all over signed bytes) the
- * audience, the lifetime, the clock, the method, the target, a call's body, any pinned tenant
+ * Every check a deployment makes on an envelope of either version, in one fixed order: present,
+ * well-formed, the expected issuer and kind, a listed key id, the signature, then (all over signed
+ * bytes) the audience, the lifetime, the clock, the method, the target, version 2's caller row for
+ * that target, a call's body, any pinned tenant
  * and scope, and last a call's nonce when its policy keeps them, so an envelope that fails anything
  * else never spends a cache entry. A route keeps no nonces. `nowSeconds` is the time the request
  * arrived, not when its body finished reading.
@@ -607,6 +754,9 @@ export async function verifyWireEnvelope(input: {
   if (!(nowSeconds <= claims.exp + WIRE_CLOCK_SKEW_SECONDS)) return refuse('expired');
   if (claims.method !== expected.method) return refuse('method');
   if (claims.targetDigest !== (await wireDigest(expected.target))) return refuse('target');
+  // Over signed bytes, and the target is the one just matched: the router's call names its caller at
+  // the peer invocation and nowhere else. Version 1 carries no caller lines to judge.
+  if (claims.v === 2 && callerRowOfClaims(claims) !== wireCallerShapeOf(claims.iss, claims.kind, expected.target)) return refuse('caller');
   if (expected.kind === 'call') {
     // A reader is read here and nowhere earlier. The type requires a call's body; an untyped caller
     // that leaves it out, or hands over the null of a body read that failed, is refused, never read
@@ -631,6 +781,60 @@ export async function verifyWireEnvelope(input: {
     if ((await replay.claim(claims.nonce, until)) !== true) return refuse('replay');
   }
   return { ok: true, claims };
+}
+
+/**
+ * What a verified version 2 call says about who made it and for whom (K-66): the calling app and
+ * scope on a peer invocation (null otherwise), and the actor, which every version 2 call carries.
+ */
+export interface WireVerifiedCaller {
+  readonly iss: WireIssuer;
+  readonly callerApp: string | null;
+  readonly callerScope: string | null;
+  readonly actor: WireActor;
+}
+
+/**
+ * Where the entry leaves what it verified, for the vertical's host in the same isolate to read: a
+ * map keyed by the very request the entry hands on. A registry symbol, not a module variable, because
+ * the entry and the vertical bundle their own copies of this module. Nothing outside the isolate can
+ * write it, which is the point: a header or a body field is the caller's word, and K-66 forbids
+ * reading the caller or the actor from either. The key names its value's shape: a change to
+ * {@link WireVerifiedCaller} that an older reader would misread takes a new key.
+ */
+const VERIFIED_CALLERS = Symbol.for('substrat-run/wire-verified-caller/1');
+
+function verifiedCallers(): WeakMap<object, WireVerifiedCaller> {
+  const holder = globalThis as unknown as Record<symbol, unknown>;
+  const existing = holder[VERIFIED_CALLERS];
+  if (existing instanceof WeakMap) return existing as WeakMap<object, WireVerifiedCaller>;
+  if (existing !== undefined) return new WeakMap(); // Something else under the key: read nothing, record nowhere shared.
+  const created = new WeakMap<object, WireVerifiedCaller>();
+  Object.defineProperty(globalThis, VERIFIED_CALLERS, { value: created, enumerable: false, writable: false, configurable: false });
+  return created;
+}
+
+/**
+ * The entry's half: record what a version 2 call's verified envelope says, on the request it hands
+ * the vertical. Only the platform entry calls it, with claims {@link verifyWireEnvelope} accepted. A
+ * route and a version 1 envelope carry no caller, so nothing is recorded for them.
+ */
+export function recordWireVerifiedCaller(request: Request, claims: WireClaims): void {
+  if (claims.v !== 2 || claims.kind !== 'call' || claims.actor === null) return;
+  verifiedCallers().set(
+    request,
+    Object.freeze({ iss: claims.iss, callerApp: claims.callerApp, callerScope: claims.callerScope, actor: claims.actor }),
+  );
+}
+
+/**
+ * The receiver's half: what the platform entry verified about the caller of `request`, or null when
+ * it verified no version 2 envelope on it (a version 1 envelope, the shared credential alone, a
+ * deployment with no entry, a route). A check that needs the caller or the actor refuses on null; it
+ * never falls back to a header or a body field (K-66).
+ */
+export function wireVerifiedCallerOf(request: Request): WireVerifiedCaller | null {
+  return verifiedCallers().get(request) ?? null;
 }
 
 /*
@@ -844,6 +1048,11 @@ export interface WireVerificationLine {
   readonly scopeId: string | null;
   /** The platform's `SUBSTRAT_VERSION_ID`, as on the invocation line. */
   readonly versionId: string | null;
+  /**
+   * The envelope version verified (K-66), so the switch to version 2 and the end of version 1 can be
+   * watched; null when no envelope was verified. Absent from a line an entry wrote before version 2.
+   */
+  readonly envelope?: WireEnvelopeVersion | null;
 }
 
 /*

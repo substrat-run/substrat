@@ -19,7 +19,7 @@
  * ids, or why nothing was given. The vertical never declares any of it.
  */
 import { verticalSlug, type WireAuthRecord } from '@substrat-run/contracts';
-import { wireUploadSettings, wireVerificationKeys, WIRE_ENVELOPE_VERSION, WIRE_UPLOAD_STATE } from '@substrat-run/contracts/wire-signing';
+import { wireEnvelopeTag, wireUploadSettings, wireVerificationKeys, WIRE_ENVELOPE_VERSION, WIRE_UPLOAD_STATE } from '@substrat-run/contracts/wire-signing';
 import { platformEntrySkipReason } from './platform-entry.js';
 import type { VerticalBundle } from './deploy.js';
 
@@ -87,6 +87,17 @@ export async function wireUploadFor(
 export function wireEntryOf(bundle: Pick<VerticalBundle, 'entry' | 'modules'>): WireEntry {
   const skipped = platformEntrySkipReason(bundle) ?? null;
   return { envelope: skipped === null ? WIRE_ENVELOPE_VERSION : null, entrySkipped: skipped };
+}
+
+/**
+ * The newest envelope version an already-uploaded entry module verifies, read from its own text: an
+ * entry built to parse version 2 carries that version's tag (`wireEnvelopeTag(2)`), and one uploaded
+ * before version 2 existed never does. For a script the walk reads back with no record, so it never
+ * records an older entry as verifying version 2 (K-66, #3372). An upload knows its bundle carries the
+ * current entry and records {@link WIRE_ENVELOPE_VERSION} without reading it.
+ */
+export function wireEntryEnvelopeOf(content: Uint8Array): 1 | 2 {
+  return new TextDecoder().decode(content).includes(wireEnvelopeTag(2)) ? 2 : 1;
 }
 
 /** The record's half that is a fact about the bundle: its envelope version, or why the entry was left off. */

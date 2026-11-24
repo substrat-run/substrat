@@ -37,6 +37,13 @@ import {
   wireReplayOf,
   WIRE_REPLAY_FREE_CALLS,
   wireEnvelopeShape,
+  wireCallerShape,
+  wireCallerShapeOf,
+  wirePersonActor,
+  recordWireVerifiedCaller,
+  wireVerifiedCallerOf,
+  WIRE_ENVELOPE_VERSIONS,
+  WIRE_SIGNED_VERSION_DEFAULT,
   WireClaimsError,
   WireKeyError,
   wireRequestBinding,
@@ -97,7 +104,16 @@ const storeVector = JSON.parse(readFileSync(new URL('./vectors/scope-store-envel
   readonly signature: string;
 };
 
-const [ROUTE, CALL, UNSCOPED, ROUTER_CALL] = fixture.vectors as [Vector, Vector, Vector, Vector];
+const [ROUTE, CALL, UNSCOPED, ROUTER_CALL, ROUTE_V2, PEER, PERSON, CONNECTOR_V2, PLATFORM_V2] = fixture.vectors as [
+  Vector, Vector, Vector, Vector, Vector, Vector, Vector, Vector, Vector,
+];
+/** The token the person vector's actor binds, as its name and body carry it. */
+const PERSON_TOKEN = 'a-delegated-token-for-the-target';
+/** The peer vector with its target moved to the connector call, validly signed: a peer row where the platform row belongs. */
+const PEER_AT_CONNECTOR: Vector = (() => {
+  const found = fixture.invalid.find((v) => v.name === 'version 2: the peer row at a connector call, validly signed')!;
+  return { ...PEER, header: found.header, signature: found.signature };
+})();
 const OTHER_ULID = '01JCV4Z3A7QWERTYX5N9M2K8HB';
 
 const keysOf = (router: string | undefined = fixture.keys.router.publicKey, platform: string | undefined = fixture.keys.platform.publicKey) =>
@@ -221,17 +237,20 @@ describe('wire envelope: the shared vectors', () => {
       expect(Buffer.from(vector.header, 'base64url').toString('utf8')).toBe(vector.canonical);
       const publicKey = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: fixture.keys[vector.signer].publicKey }, format: 'jwk' });
       expect(nodeVerify(null, Buffer.from(vector.canonical, 'utf8'), publicKey, Buffer.from(vector.signature, 'base64url')), vector.name).toBe(true);
-      // The target and body lines are SHA-256 of the input's own bytes, computed independently.
+      // The target and body lines are SHA-256 of the input's own bytes, computed independently:
+      // three lines later in version 2, after its caller app, caller scope and actor.
       const lines = vector.canonical.split('\n');
-      expect(lines[10]).toBe(createHash('sha256').update(vector.input.target, 'utf8').digest('hex'));
-      expect(lines[11]).toBe(vector.input.body === undefined ? '' : createHash('sha256').update(vector.input.body as string, 'utf8').digest('hex'));
+      const at = vector.input.v === 2 ? 13 : 10;
+      expect(lines[0]).toBe(`substrat-wire/${vector.input.v ?? 1}`);
+      expect(lines[at]).toBe(createHash('sha256').update(vector.input.target, 'utf8').digest('hex'));
+      expect(lines[at + 1]).toBe(vector.input.body === undefined ? '' : createHash('sha256').update(vector.input.body as string, 'utf8').digest('hex'));
       const { verdict } = await check({ vector });
       expect(verdict, vector.name).toEqual({ ok: true, claims: parseWireEnvelope(vector.canonical) });
     }
   });
 
   it('refuses every negative vector for the reason it names, and every invalid key list at load', async () => {
-    expect(fixture.invalid.length).toBeGreaterThanOrEqual(15);
+    expect(fixture.invalid.length).toBeGreaterThanOrEqual(27);
     const keys = await keysOf();
     for (const v of fixture.invalid) {
       const reasons: WireRefusalReason[] = [];
@@ -312,6 +331,7 @@ describe('wire envelope: one refusal for every failure', () => {
       ['expired', { now: ROUTE.input.exp + WIRE_CLOCK_SKEW_SECONDS + 1 }],
       ['method', { expected: { method: 'POST' } }],
       ['target', { expected: { target: '/api/lists?page=3' } }],
+      ['caller', { vector: PEER_AT_CONNECTOR, expected: { target: '/internal/connector-call' } }],
       ['body', { vector: CALL, expected: { body: '{"hello":"World"}' } }],
       ['scope', { expected: { scopeId: OTHER_ULID } }],
       ['claim-after-until', { vector: CALL, nonces: memoryNonces().cache, claimAt: CALL.input.exp + WIRE_CLOCK_SKEW_SECONDS + 1 }],
@@ -669,7 +689,9 @@ describe('wire envelope: the encoder', () => {
     expect(bad({ vertical: 'a\nb' })).toThrow(/newline/);
     expect(bad({ iat: -1 })).toThrow(/time/);
     expect(bad({ exp: 1.5 })).toThrow(/time/);
-    expect(bad({ v: 2 })).toThrow(/version/);
+    expect(bad({ v: 3 })).toThrow(/version/);
+    // Version 1 has no line for a caller or an actor, so naming one is refused, never dropped.
+    for (const patch of [{ callerApp: 'todo' }, { callerScope: OTHER_ULID }, { actor: 'app' }]) expect(bad(patch)).toThrow(/no caller/);
     expect(bad({ scopeId: null })).toThrow(/malformed/);
     // Non-ASCII text is carried as UTF-8 and round-trips, a surrogate pair included.
     for (const surface of ['bokföring', 'clef 𝄞']) {
@@ -711,7 +733,7 @@ describe('wire envelope: the encoder', () => {
   it('every refusal is the encoder’s own class, which a signer counts as `claims` (RFC §8)', async () => {
     const key = await importWireSigningKey(fixture.keys.router.privateKeyPkcs8);
     const claims = parseWireEnvelope(ROUTE.canonical)!;
-    for (const patch of [{ vertical: '' }, { vertical: 'a\nb' }, { iat: -1 }, { v: 2 }, { scopeId: null }]) {
+    for (const patch of [{ vertical: '' }, { vertical: 'a\nb' }, { iat: -1 }, { v: 3 }, { scopeId: null }]) {
       expect(() => canonicalWireEnvelope({ ...claims, ...patch } as WireClaims), JSON.stringify(patch)).toThrow(WireClaimsError);
     }
     const { body: _body, ...bodiless } = ROUTER_CALL.input;
@@ -1249,5 +1271,120 @@ describe('WIRE_UNSIGNED_HEADERS: the router headers listed as carrying no author
     twice.append(PARENT_REQUEST_ID_HEADER, ID);
     twice.append(PARENT_REQUEST_ID_HEADER, ID);
     expect(wireUnsignedHeadersOf('call', twice)).toEqual([]);
+  });
+});
+
+describe('wire envelope: version 2, the caller and the actor (K-66)', () => {
+  it('one verifier accepts both versions, and only version 2 names a caller or an actor', async () => {
+    expect([...WIRE_ENVELOPE_VERSIONS]).toEqual([1, 2]);
+    expect(WIRE_ENVELOPE_VERSION).toBe(2);
+    for (const vector of [ROUTE, CALL, ROUTER_CALL]) {
+      expect((await check({ vector })).verdict, vector.name).toMatchObject({ ok: true, claims: { v: 1, callerApp: null, callerScope: null, actor: null } });
+    }
+    expect((await check({ vector: PEER })).verdict).toMatchObject({
+      ok: true,
+      claims: { v: 2, iss: 'router', kind: 'call', vertical: 'notes', callerApp: 'todo', callerScope: OTHER_ULID, actor: 'app' },
+    });
+    expect((await check({ vector: PERSON })).verdict).toMatchObject({ ok: true, claims: { actor: await wirePersonActor(PERSON_TOKEN) } });
+    expect((await check({ vector: CONNECTOR_V2 })).verdict).toMatchObject({ ok: true, claims: { callerApp: null, callerScope: null, actor: 'platform' } });
+    expect((await check({ vector: PLATFORM_V2 })).verdict).toMatchObject({ ok: true, claims: { iss: 'platform', actor: 'platform' } });
+    expect((await check({ vector: ROUTE_V2 })).verdict).toMatchObject({ ok: true, claims: { v: 2, actor: null } });
+  });
+
+  it('a person actor is the SHA-256 of the exact token, as node computes it', async () => {
+    expect(await wirePersonActor(PERSON_TOKEN)).toBe(`person:${createHash('sha256').update(PERSON_TOKEN, 'utf8').digest('hex')}`);
+    expect(await wirePersonActor(`${PERSON_TOKEN} `)).not.toBe(await wirePersonActor(PERSON_TOKEN));
+  });
+
+  it('a caller line changed under the signature is refused as the signature, whichever it is', async () => {
+    for (const [index, value] of [[9, 'manyfold'], [10, ROUTE.input.scopeId!], [11, await wirePersonActor(PERSON_TOKEN)]] as const) {
+      expect(await reason({ vector: PEER, header: tampered(PEER, index, value) }), `line ${index}`).toBe('signature');
+    }
+    // A person's line moved to another token's digest, the swap the binding exists to stop.
+    expect(await reason({ vector: PERSON, header: tampered(PERSON, 11, await wirePersonActor('another-token')) })).toBe('signature');
+  });
+
+  it('refuses caller lines its closed table does not admit, before any key is looked up', async () => {
+    const other = await wirePersonActor('x');
+    for (const [vector, index, value] of [
+      [PEER, 11, ''], // a peer invocation always names its actor
+      [PEER, 11, 'platform'], // a caller beside the platform actor
+      [PEER, 11, 'person:'],
+      [PEER, 11, `person:${other.slice(7).toUpperCase()}`],
+      [PEER, 11, `${other}0`],
+      [PEER, 11, 'App'],
+      [PEER, 11, 'agent:planner'], // an agent inside an app is the app's claim, never a signed line
+      [PEER, 9, ''], // half a caller
+      [PEER, 10, ''],
+      [PEER, 10, OTHER_ULID.toLowerCase()],
+      [PEER, 9, 'a\u0007b'],
+      [CONNECTOR_V2, 11, ''], // a call always names its actor
+      [CONNECTOR_V2, 9, 'todo'], // the platform row names no caller
+      [PLATFORM_V2, 11, 'app'], // the platform signs only as the platform
+      [ROUTE_V2, 11, 'app'], // a route claims no actor
+      [ROUTE_V2, 9, 'todo'],
+    ] as const) {
+      expect(parseWireEnvelope(withLine(vector, index, value)), `${vector.name}: line ${index} = ${value}`).toBeUndefined();
+      expect(await reason({ vector, header: tampered(vector, index, value) }), `line ${index} = ${value}`).toBe('malformed');
+    }
+    // Neither version parses as the other: eighteen lines under the version 1 tag, fifteen under 2.
+    expect(parseWireEnvelope(withLine(PEER, 0, 'substrat-wire/1'))).toBeUndefined();
+    expect(parseWireEnvelope(withLine(ROUTER_CALL, 0, 'substrat-wire/2'))).toBeUndefined();
+    expect(wireCallerShape('router', 'call')).toEqual(['peer', 'platform']);
+    expect(wireCallerShape('platform', 'route')).toEqual([]);
+  });
+
+  it("judges the router call's row by its target: a caller at the peer invocation, the platform elsewhere", async () => {
+    expect(wireCallerShapeOf('router', 'call', '/internal/vertical-invoke')).toBe('peer');
+    expect(wireCallerShapeOf('router', 'call', '/internal/vertical-invoke?x=1')).toBe('peer');
+    for (const target of ['/internal/connector-call', '/internal/connector-probe', '/internal/vertical-invoke/', '/INTERNAL/vertical-invoke']) {
+      expect(wireCallerShapeOf('router', 'call', target), target).toBe('platform');
+    }
+    expect(wireCallerShapeOf('platform', 'call', '/internal/vertical-invoke')).toBe('platform');
+    expect(await reason({ vector: PEER_AT_CONNECTOR, expected: { target: '/internal/connector-call' } })).toBe('caller');
+    const platformAtPeer = fixture.invalid.find((v) => v.name.startsWith('version 2: the platform row at the peer'))!;
+    expect(await reason({ vector: PEER, header: platformAtPeer.header, signature: platformAtPeer.signature })).toBe('caller');
+  });
+
+  it('refuses an unknown kid, and rotates as version 1 does: a standby key verifies, a dropped key does not', async () => {
+    const other = await generateScopeStoreKeyPair();
+    expect(await reason({ vector: PEER, keys: await keysOf(other.publicKey) })).toBe('kid');
+    const next = await signWireEnvelope(await importWireSigningKey(other.privateKey), PEER.input);
+    const both = await keysOf(`${fixture.keys.router.publicKey},${other.publicKey}`);
+    expect((await check({ vector: PEER, keys: both })).verdict).toMatchObject({ ok: true, claims: { actor: 'app' } });
+    expect((await check({ vector: PEER, keys: both, header: next.header, signature: next.signature })).verdict).toMatchObject({ ok: true, claims: { kid: other.kid } });
+    const dropped = await keysOf(other.publicKey);
+    expect(await reason({ vector: PEER, keys: dropped })).toBe('kid');
+    expect((await check({ vector: PEER, keys: dropped, header: next.header, signature: next.signature })).verdict).toMatchObject({ ok: true });
+  });
+
+  it('a signer sends version 1 unless told, and refuses a version 2 row its target does not take', async () => {
+    expect(WIRE_SIGNED_VERSION_DEFAULT).toBe(1);
+    const key = await importWireSigningKey(fixture.keys.router.privateKeyPkcs8);
+    const { v: _v, callerApp: _a, callerScope: _s, actor: _actor, ...v1 } = PEER.input;
+    expect((await signWireEnvelope(key, v1)).claims.v).toBe(1);
+    await expect(signWireEnvelope(key, { ...v1, actor: 'app' })).rejects.toThrow(WireClaimsError);
+    await expect(signWireEnvelope(key, { ...PEER.input, target: '/internal/connector-call' })).rejects.toThrow(/caller row/);
+    await expect(signWireEnvelope(key, { ...CONNECTOR_V2.input, target: '/internal/vertical-invoke' })).rejects.toThrow(/caller row/);
+    await expect(signWireEnvelope(key, { ...PEER.input, actor: 'platform' })).rejects.toThrow(WireClaimsError);
+    await expect(signWireEnvelope(key, { ...PEER.input, actor: null })).rejects.toThrow(WireClaimsError);
+  });
+
+  it('hands a receiver the caller only from a verified version 2 call, and only on the request it was recorded on', async () => {
+    const request = () => new Request('https://vertical/internal/vertical-invoke', { method: 'POST' });
+    const peer = request();
+    recordWireVerifiedCaller(peer, (await check({ vector: PEER })).verdict.ok ? parseWireEnvelope(PEER.canonical)! : (undefined as never));
+    expect(wireVerifiedCallerOf(peer)).toEqual({ iss: 'router', callerApp: 'todo', callerScope: OTHER_ULID, actor: 'app' });
+    expect(Object.isFrozen(wireVerifiedCallerOf(peer))).toBe(true);
+    // A copy of the request is another request: nothing was verified on it.
+    expect(wireVerifiedCallerOf(new Request(peer))).toBeNull();
+    // Version 1 and a route carry no caller, so nothing is recorded for them.
+    for (const vector of [ROUTER_CALL, ROUTE_V2]) {
+      const r = request();
+      recordWireVerifiedCaller(r, parseWireEnvelope(vector.canonical)!);
+      expect(wireVerifiedCallerOf(r), vector.name).toBeNull();
+    }
+    // A header naming a caller is the caller's word, never read.
+    expect(wireVerifiedCallerOf(new Request('https://vertical/', { headers: { 'x-substrat-actor': 'app' } }))).toBeNull();
   });
 });

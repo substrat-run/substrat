@@ -22,11 +22,19 @@
  *
  * Every judged request writes one `{ substrat: 'wire' }` line (contracts'
  * `WireVerificationLine`), beside the invocation line and sharing its request id.
+ *
+ * **Both envelope versions (K-66).** The verifier accepts `substrat-wire/1` and `substrat-wire/2`.
+ * When a version 2 call verifies in full, the caller app, caller scope and actor it signs are
+ * recorded on the very request handed to the vertical (contracts' `recordWireVerifiedCaller`), in
+ * `dual` beside a valid legacy credential as well as alone, and the host reads them from there
+ * (`wireVerifiedCallerOf`). A version 1 envelope, the legacy credential alone, a refused envelope and
+ * `legacy-only` record nothing, so a check that needs the caller or the actor refuses those calls.
  */
 import { assertPlatformCall } from '@substrat-run/contracts/wire-auth';
 import { PLATFORM_SECRET_HEADER } from '@substrat-run/contracts/wire-headers';
 import {
   decodeWireEnvelope,
+  recordWireVerifiedCaller,
   verifyWireEnvelope,
   WIRE_AUDIENCE_VAR,
   WIRE_ENVELOPE_HEADER,
@@ -256,6 +264,7 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
         tenantId: null,
         scopeId: null,
         versionId: typeof v === 'string' && v.length > 0 ? v : null,
+        envelope: claims?.v ?? null,
         ...extra,
       };
       try {
@@ -375,6 +384,9 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
       // Served exactly as today, as the legacy credential says; the envelope is only counted.
       const outcome: WireOutcome = !claims ? 'legacy-accepted' : mismatched ? 'dual-mismatch' : 'signed-accepted';
       line(outcome, 'valid', { reason, ...servedAs(legacy.identity ?? claims ?? null) });
+      // A verified version 2 call's caller and actor reach the vertical however the request was
+      // admitted, and only through the isolate's own record, never a header (K-66).
+      if (claims) recordWireVerifiedCaller(downstream, claims);
       return serve(downstream, env, ctx);
     }
     if (!claims) {
@@ -392,6 +404,7 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
       return faulted('verifier', legacy.credential);
     }
     line(mismatched ? 'dual-mismatch' : 'signed-accepted', legacy.credential, servedAs(claims));
+    recordWireVerifiedCaller(proven, claims);
     return serve(proven, env, ctx);
   }
 

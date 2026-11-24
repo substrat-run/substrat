@@ -52,11 +52,12 @@ const SWEEPER_INTERVAL_MS = 120_000;
 const SWEEPER_CEILING_BYTES = 32_000;
 /**
  * The entry's: the invocation-log stamp, the routed-node check and the wire-signing verifier
- * with its nonce store, about 52 KB today. ~8% above that, so an ordinary addition fits and a
- * runtime dependency (a schema library alone would add several times the headroom) still
- * fails. Raise it deliberately, with the measured size, when the entry legitimately grows.
+ * with its nonce store, 58 491 bytes once it verified both envelope versions (K-66, #3372) beside
+ * the W3C trace id (#3368); it was 54 424 before both. ~6% above that, so an ordinary addition fits and a runtime dependency (a
+ * schema library alone would add several times the headroom) still fails. Raise it
+ * deliberately, with the measured size, when the entry legitimately grows.
  */
-const ENTRY_CEILING_BYTES = 56_000;
+const ENTRY_CEILING_BYTES = 62_000;
 
 const check = process.argv.includes('--check');
 

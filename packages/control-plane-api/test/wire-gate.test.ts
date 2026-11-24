@@ -20,6 +20,7 @@ import {
   WIRE_STATE_VAR,
   wireEndpoint,
   wireRequestBinding,
+  wireVerifiedCallerOf,
   type WireEnvelopeInput,
   type WireNonceCache,
   type WireSigningKey,
@@ -263,6 +264,7 @@ describe('dual, a routed request: the legacy credential serves it as today', () 
         tenantId: TENANT,
         scopeId: SCOPE,
         versionId: '01JZ0000000000000000VER001',
+        envelope: 1,
       },
     ]);
   });
@@ -1191,7 +1193,7 @@ describe('what the gate answers and writes', () => {
     await g.fetch(new Request(URL_ROUTE, { headers: { ...legacyRoute(), ...(await routeEnvelope()) } }), envOf('dual'));
     const [line] = g.lines;
     expect(Object.keys(JSON.parse(line!)).sort()).toEqual(
-      ['substrat', 'state', 'issuer', 'kind', 'outcome', 'reason', 'fault', 'legacy', 'tenantId', 'scopeId', 'versionId'].sort(),
+      ['substrat', 'state', 'issuer', 'kind', 'outcome', 'reason', 'fault', 'legacy', 'tenantId', 'scopeId', 'versionId', 'envelope'].sort(),
     );
     expect(line).not.toContain(ROUTER_VALUE);
   });
@@ -1258,5 +1260,66 @@ describe('the nonce store the entry claims in (RFC wire-signing §4)', () => {
     const res = await g.fetch(call({ ...callHeaders(true), ...(await signed()) }), envOf('dual'));
     expect(res.status).toBe(503);
     expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'nonce-store' });
+  });
+});
+
+/**
+ * K-66: the entry learns version 2 before any signer sends it, so a fleet walked once carries a
+ * verifier that accepts both. Version 1 is served exactly as before; a version 2 call that verifies in
+ * full hands its caller and actor to the vertical through the isolate's own record, never a header.
+ */
+describe('both envelope versions (K-66)', () => {
+  const INVOKE = 'https://vertical/internal/vertical-invoke';
+  const CALLER_SCOPE = '01JZ0000000000000000SCP003';
+  const body = '{"operation":"x"}';
+  const stored = { nonceCache: () => ({ claim: () => true }) };
+  const peer = (over: Partial<WireEnvelopeInput> = {}, key = router) =>
+    sign(key, {
+      v: 2, iss: 'router', kind: 'call', aud: AUD, method: 'POST', body, url: INVOKE, vertical: VERTICAL, tenantId: TENANT, scopeId: SCOPE,
+      callerApp: 'acme/notes', callerScope: CALLER_SCOPE, actor: 'app', ...over,
+    });
+  const invoke = (headers: Record<string, string>, legacy: boolean) =>
+    new Request(INVOKE, { method: 'POST', headers: { ...headers, ...(legacy ? { [PLATFORM_SECRET_HEADER]: CALL_VALUE } : {}) }, body });
+
+  it.each([
+    ['dual, beside a valid legacy credential', 'dual', true],
+    ['dual, on its envelope alone', 'dual', false],
+    ['signed-only', 'signed-only', false],
+  ] as const)('%s: a version 1 call is served as before and names no caller; a version 2 call hands its caller on', async (_, state, legacy) => {
+    const g = gated(stored);
+    const v1 = await sign(router, { iss: 'router', kind: 'call', aud: AUD, method: 'POST', body, url: INVOKE, vertical: VERTICAL, tenantId: TENANT, scopeId: SCOPE });
+    expect((await g.fetch(invoke(v1, legacy), envOf(state))).status).toBe(200);
+    expect((await g.fetch(invoke(await peer(), legacy), envOf(state))).status).toBe(200);
+    expect(g.wire().map((l) => [l.outcome, l.envelope])).toEqual([['signed-accepted', 1], ['signed-accepted', 2]]);
+    expect(wireVerifiedCallerOf(g.seen[0]!)).toBeNull();
+    expect(wireVerifiedCallerOf(g.seen[1]!)).toEqual({ iss: 'router', callerApp: 'acme/notes', callerScope: CALLER_SCOPE, actor: 'app' });
+    expect(await bodyOf((await g.fetch(invoke(await peer(), legacy), envOf(state))).clone())).toBe(body);
+  });
+
+  it('a caller line changed under the signature, or an unknown kid, is refused, and nothing is handed on as the caller', async () => {
+    const good = await peer();
+    const lines = Buffer.from(good[WIRE_ENVELOPE_HEADER]!, 'base64url').toString('utf8').split('\n');
+    lines[11] = `person:${'0'.repeat(64)}`;
+    const tampered = { ...good, [WIRE_ENVELOPE_HEADER]: Buffer.from(lines.join('\n'), 'utf8').toString('base64url') };
+    const stranger_ = await peer({}, stranger);
+    for (const [headers, why] of [[tampered, 'signature'], [stranger_, 'kid']] as const) {
+      const strict = gated(stored);
+      expect((await strict.fetch(invoke(headers, false), envOf('signed-only'))).status).toBe(401);
+      expect(strict.seen).toHaveLength(0);
+      // dual refuses nothing the legacy credential admits: served as today, with no caller recorded.
+      const dual = gated(stored);
+      expect((await dual.fetch(invoke(headers, true), envOf('dual'))).status).toBe(200);
+      expect(dual.wire()[0]).toMatchObject({ outcome: 'legacy-accepted', reason: why, envelope: null });
+      expect(wireVerifiedCallerOf(dual.seen[0]!)).toBeNull();
+    }
+  });
+
+  it('legacy-only records nothing, and no header is ever read as the caller', async () => {
+    const g = gated(stored);
+    const forged = { 'x-substrat-actor': 'app', 'x-substrat-caller-app': 'acme/notes' };
+    await g.fetch(invoke({ ...(await peer()), ...forged }, true), legacyEnv());
+    await g.fetch(invoke(forged, true), envOf('dual'));
+    expect(g.seen).toHaveLength(2);
+    for (const seen of g.seen) expect(wireVerifiedCallerOf(seen)).toBeNull();
   });
 });

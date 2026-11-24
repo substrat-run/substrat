@@ -8,6 +8,7 @@ import { LIST_PAGE_MAX, platformActorId, tenantId } from '@substrat-run/contract
 import { generateScopeStoreKeyPair, scopeStoreKeyId } from '@substrat-run/contracts/scope-store-envelope';
 import {
   WIRE_AUDIENCE_VAR,
+  WIRE_ENVELOPE_VERSION,
   WIRE_PLATFORM_KEYS_VAR,
   WIRE_ROUTER_KEYS_VAR,
   WIRE_STATE_VAR,
@@ -194,7 +195,7 @@ describe('the uploader gives the deployments the rollout names their lists, audi
       expect(records[script], script).toMatchObject({
         verticalSlug,
         versionId: id,
-        record: { envelope: 1, entrySkipped: null, state: 'dual', audience: script, routerKids: kids.router, platformKids: kids.platform, withheld: null },
+        record: { envelope: WIRE_ENVELOPE_VERSION, entrySkipped: null, state: 'dual', audience: script, routerKids: kids.router, platformKids: kids.platform, withheld: null },
       });
     }
   });
@@ -217,7 +218,7 @@ describe('the uploader gives the deployments the rollout names their lists, audi
       const records = await recordsOf(verticalSlug);
       for (const script of scripts) {
         expect(records[script]?.record, `${name} ${script}`).toEqual({
-          envelope: 1, entrySkipped: null, state: 'legacy-only', audience: null, routerKids: [], platformKids: [], withheld: 'unconfigured',
+          envelope: WIRE_ENVELOPE_VERSION, entrySkipped: null, state: 'legacy-only', audience: null, routerKids: [], platformKids: [], withheld: 'unconfigured',
         });
       }
     }

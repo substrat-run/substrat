@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { LIST_PAGE_MAX, platformActorId, tenantId, type DeploymentWireAuth } from '@substrat-run/contracts';
 import { generateScopeStoreKeyPair, scopeStoreKeyId } from '@substrat-run/contracts/scope-store-envelope';
-import { WIRE_AUDIENCE_VAR, WIRE_PLATFORM_KEYS_VAR, WIRE_ROUTER_KEYS_VAR, WIRE_STATE_VAR } from '@substrat-run/contracts/wire-signing';
+import { WIRE_AUDIENCE_VAR, WIRE_ENVELOPE_VERSION, WIRE_PLATFORM_KEYS_VAR, WIRE_ROUTER_KEYS_VAR, WIRE_STATE_VAR } from '@substrat-run/contracts/wire-signing';
 import { ulid } from '@substrat-run/kernel';
 import {
   createWfpUploader,
@@ -48,6 +48,8 @@ describe('the fleet walk', () => {
   let readFails: Set<string>;
   /** Scripts whose modules, read back, lack the platform's entry: uploaded before it existed. */
   let unwrapped: Set<string>;
+  /** Scripts whose entry, read back, is one built to verify version 2 (K-66): its text carries the tag. */
+  let bothVersions: Set<string>;
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'cp-wire-walk-'));
@@ -59,6 +61,7 @@ describe('the fleet walk', () => {
     writeHook = null;
     readFails = new Set();
     unwrapped = new Set();
+    bothVersions = new Set();
     const [r1, r2, p1, p2] = await Promise.all([1, 2, 3, 4].map(() => generateScopeStoreKeyPair()));
     routerKeys = `${r1!.publicKey},${r2!.publicKey}`;
     platformKeys = `${p1!.publicKey},${p2!.publicKey}`;
@@ -116,7 +119,8 @@ describe('the fleet walk', () => {
         moduleFetches.push(ref);
         const kind = 'application/javascript+module';
         const own = { name: 'worker.js', content: new TextEncoder().encode('export default {}'), contentType: kind };
-        return unwrapped.has(ref) ? [own] : [{ name: PLATFORM_ENTRY_MODULE, content: new TextEncoder().encode('export default {}'), contentType: kind }, own];
+        const entry = bothVersions.has(ref) ? 'const tags = ["substrat-wire/1", "substrat-wire/2"];' : 'export default {}';
+        return unwrapped.has(ref) ? [own] : [{ name: PLATFORM_ENTRY_MODULE, content: new TextEncoder().encode(entry), contentType: kind }, own];
       },
       wireSettings: settingsApi,
       ...(wireUpload ? { wireUpload } : {}),
@@ -271,7 +275,7 @@ describe('the fleet walk', () => {
     const records = await recordsOf(v.slug);
     for (const s of v.scripts) {
       expect(wireOf(s), s).toEqual({ [WIRE_ROUTER_KEYS_VAR]: routerKeys, [WIRE_PLATFORM_KEYS_VAR]: platformKeys, [WIRE_AUDIENCE_VAR]: s, [WIRE_STATE_VAR]: 'dual' });
-      expect(records[s]?.record, s).toEqual({ envelope: 1, entrySkipped: null, state: 'dual', audience: s, routerKids: kids.router, platformKids: kids.platform, withheld: null });
+      expect(records[s]?.record, s).toEqual({ envelope: WIRE_ENVELOPE_VERSION, entrySkipped: null, state: 'dual', audience: s, routerKids: kids.router, platformKids: kids.platform, withheld: null });
       // Every other binding as the upload sent it, the secret kept.
       expect((scripts.get(s) ?? []).filter((b) => !WIRE.test(b.name)).map((b) => b.name).sort(), s).toEqual(
         expect.arrayContaining(['PLATFORM_HELD', 'SCOPE', 'SUBSTRAT_VERSION_ID']),
@@ -378,7 +382,16 @@ describe('the fleet walk', () => {
     // Under the fleet: its bundle read back, its entry found, its lists given, its record written.
     expect((await walkAll(appWith(fleet()), { apply: true, limit: 10 })).map((s) => s.action)).toEqual(['updated']);
     expect(moduleFetches).toEqual([script]);
+    // Its entry's text names no version 2 tag, so it is recorded as verifying version 1 only (K-66):
+    // an entry uploaded before version 2 is never counted as knowing it.
     expect((await recordsOf(verticalSlug))[script]?.record).toMatchObject({ envelope: 1, entrySkipped: null, state: 'dual', audience: script });
+    // Its twin, whose entry was built to verify version 2, is recorded as such.
+    vi.spyOn(host.admin, 'recordWireAuth').mockRejectedValueOnce(new Error('directory unavailable'));
+    const newer = await push(appWith(off()), tenant);
+    const newerScript = deploymentRefFor(newer.verticalSlug, newer.id);
+    bothVersions.add(newerScript);
+    await walkAll(appWith(fleet()), { apply: true, limit: 10 });
+    expect((await recordsOf(newer.verticalSlug))[newerScript]?.record).toMatchObject({ envelope: 2, state: 'dual', audience: newerScript });
   });
 
   it('a script with no record that runs without the platform’s entry is skipped by name: no lists, no record saying it verifies', async () => {

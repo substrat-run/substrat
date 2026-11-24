@@ -26,6 +26,7 @@ import {
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { PEER_CALLER, peerMod } from '@substrat-run/contract-tests';
+import { parseWireEnvelope, recordWireVerifiedCaller, wirePersonActor, type WireActor } from '@substrat-run/contracts/wire-signing';
 import { invocationLog, mountPlatformSurface, type DelegatedPeerAnswer, type PlatformSurfaceDeps, type VerticalScopeHost } from '../src/index.js';
 
 type Env = { PLATFORM_SECRET: string };
@@ -217,6 +218,47 @@ describe('/internal/vertical-invoke for a person (#3161)', () => {
     const warned = spies[1]!.mock.calls.map((c) => JSON.parse(String(c[0])) as Record<string, unknown>);
     expect(warned).toContainEqual({ host: 'peer-on-behalf-refused', tenantId: t, scopeId: s, caller: PEER_CALLER, reason });
     expect(lines()[0]).toMatchObject({ status, principalKind: 'principal' });
+  });
+
+  describe('the caller and actor a verified version 2 envelope signs (K-66)', () => {
+    /** The call as the platform entry hands it on after verifying a version 2 envelope that signs these lines. */
+    const signedPost = (body: Record<string, unknown>, lines: { callerApp: string | null; callerScope: string | null; actor: WireActor }) => {
+      const request = new Request('https://vertical/internal/vertical-invoke', { method: 'POST', headers: platform, body: JSON.stringify(body) });
+      const claims = parseWireEnvelope(
+        ['substrat-wire/2', lines.callerApp === null ? 'platform' : 'router', 'call', 'AAAAAAAAAAA', 'aud', t, s, '', '', lines.callerApp ?? '', lines.callerScope ?? '', lines.actor, 'POST', '0'.repeat(64), '0'.repeat(64), '1', '2', 'AAAAAAAAAAAAAAAAAAAAAA'].join('\n'),
+      )!;
+      recordWireVerifiedCaller(request, claims);
+      return door.fetch(request, ENV);
+    };
+    const peerLines = async (actor?: WireActor) => ({ callerApp: PEER_CALLER, callerScope, actor: actor ?? (await wirePersonActor(TOKEN)) });
+
+    it('a person line that binds the very token runs the call as that person', async () => {
+      answer = { admitted: true, principal: ada, scope: [READ, WRITE], actor: 'todo-client' };
+      const res = await signedPost(call('peer/note', { id: 'signed-ada', body: 'x' }), await peerLines());
+      expect(res.status).toBe(200);
+      expect(await actorOf('signed-ada')).toBe(ada);
+    });
+
+    it.each([
+      ['another token’s digest under the person line', async () => ({ body: {}, lines: await peerLines(await wirePersonActor('another-token')) }), 'actor'],
+      ['a token under a line that says the app acts as itself', async () => ({ body: {}, lines: await peerLines('app') }), 'actor'],
+      ['a person line with no token in the body', async () => ({ body: { onBehalf: undefined }, lines: await peerLines() }), 'actor'],
+      ['a caller app the body does not name', async () => ({ body: {}, lines: { ...(await peerLines()), callerApp: 'stranger' } }), 'caller'],
+      ['a caller scope the body does not name', async () => ({ body: {}, lines: { ...(await peerLines()), callerScope: s } }), 'caller'],
+      ['a token on a call signed for the platform', async () => ({ body: {}, lines: { callerApp: null, callerScope: null, actor: 'platform' as const } }), 'actor'],
+    ] as const)('%s is refused 403 and runs nothing, the token never verified', async (_, setup, mismatch) => {
+      answer = { admitted: true, principal: ada, scope: [READ, WRITE], actor: 'todo-client' };
+      const { body, lines: signed } = await setup();
+      const id = `mismatch-${mismatch}-${ulid()}`;
+      const res = await signedPost({ ...call('peer/note', { id, body: 'x' }), ...body }, signed);
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'forbidden', detail: 'this call does not match the caller its envelope names' });
+      expect(delegatedPeer).not.toHaveBeenCalled();
+      expect(peerCalls).toHaveLength(0);
+      expect(await actorOf(id)).toBeUndefined();
+      const warned = spies[1]!.mock.calls.map((c) => JSON.parse(String(c[0])) as Record<string, unknown>);
+      expect(warned).toContainEqual({ host: 'peer-signed-caller-refused', tenantId: t, scopeId: s, caller: PEER_CALLER, mismatch });
+    });
   });
 
   it('a body that names a principal beside the token is still refused — strict — and nothing runs', async () => {
