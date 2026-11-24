@@ -84,6 +84,8 @@ import type {
   MeterReading,
   MeterDay,
   MeterDayTake,
+  StaleScope,
+  StaleScopeTake,
   VerticalOwnerPeriod,
   ScopeStorageSample,
   StorageGauge,
@@ -231,6 +233,7 @@ import type { ScopeStorageAttempt, ScopeStorageFilter, ScopeStorageReadingInput 
 import type { RequestDayFilter, RequestDayReadInput, RequestRollupDayFilter, TenantRequestMeterRow, RequestMeterDayRow } from './request-rollup.js';
 import type { CostContainersInput, CostContainersResult, CostDayFilter, CostDayReadInput, CostDayTotals, CostDayTotalsFilter, CostRollupDayFilter, ScopeObjectReadInput, ScopeObjectTarget } from './cost-rollup.js';
 import type { MeterDayFilter, MeterDayTakeFilter, MeterDayTakeInput, MeterDayTakeResult } from './meter-days.js';
+import type { StaleScopeFilter, StaleScopeTakeFilter, StaleScopeTakeInput, StaleScopeTakeResult } from './stale-scopes.js';
 import type { SealedSecret } from './secret-box.js';
 import type { OnSubjectErased } from './module-erasure.js';
 import type {
@@ -4683,6 +4686,20 @@ export interface HostAdmin {
    * went. Not audited, like `pruneRequestDays`.
    */
   pruneMeterDays?(actor: PlatformActorId, limit: number, retentionMonths: number | null): Promise<number>;
+  /**
+   * The daily stale-scopes report (#3313): record one attempt at the report of the UTC day of
+   * `input.at`. Without an error it takes the report, in one directory transaction, unless the day
+   * already has one: the findings `staleScopeFindingsAt` makes, each kept with when it was first and
+   * last seen, and those no longer made deleted. It reports and never moves a scope. With an error it
+   * records only the failed attempt. Not audited, like `recordMeterDay`: a sweep's bookkeeping.
+   *
+   * Optional, and the sweep's phase is skipped on a host that lacks it.
+   */
+  recordStaleScopes?(actor: PlatformActorId, input: StaleScopeTakeInput): Promise<StaleScopeTakeResult>;
+  /** The current stale-scope findings (#3313). See `StaleScopeFilter`. Access-logged (K-24). */
+  listStaleScopes?(actor: PlatformActorId, filter?: StaleScopeFilter): Promise<StaleScope[]>;
+  /** The record of each day a pass tried to report (#3313). Access-logged. */
+  listStaleScopeTakes?(actor: PlatformActorId, filter?: StaleScopeTakeFilter): Promise<StaleScopeTake[]>;
   /**
    * A staff verdict on one issue (#1233): resolve, ignore, or reopen. `regressed`
    * is ingest's word and not accepted here. Returns the updated row, or undefined

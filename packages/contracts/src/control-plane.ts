@@ -2855,6 +2855,90 @@ export const meterDaysReading = z.object({
 export type MeterDaysReading = z.infer<typeof meterDaysReading>;
 
 /**
+ * What the daily stale-scopes report can say about a scope (#3313). Each is decided from the
+ * directory alone, without waking the scope, except `idle`, which also reads the daily request
+ * rollup (#2501). The report never moves a scope: a person archives, and the retention reap deletes.
+ *
+ * - `tenant-not-active`: a live scope whose tenant is suspended, being deleted, reaped, or gone.
+ * - `vertical-gone`: a live scope naming a vertical the registry no longer holds.
+ * - `unreachable`: an active primary scope with no hostname and no peer binding pointing at it.
+ * - `stuck-provisioning`: a scope still `provisioning` a day after it was created.
+ * - `no-expiry`: a fork or preview, not archived, with no `expiresAt`, so the GC never reaps it.
+ * - `expired-not-reaped`: a fork or preview a day past its `expiresAt` that the GC has not reaped.
+ * - `archived-undated`: an archived scope with no `archivedAt`, which the retention reap skips.
+ * - `idle`: an active primary scope with no routed request in the idle window. Advisory only.
+ */
+export const staleScopeFindingKind = z.enum([
+  'tenant-not-active',
+  'vertical-gone',
+  'unreachable',
+  'stuck-provisioning',
+  'no-expiry',
+  'expired-not-reaped',
+  'archived-undated',
+  'idle',
+]);
+export type StaleScopeFindingKind = z.infer<typeof staleScopeFindingKind>;
+
+/**
+ * One finding of the stale-scopes report (#3313), keyed `(scopeId, finding)`. `firstSeen` is the
+ * first daily report that found it and `lastSeen` the latest, so its age is how long it has been
+ * true. A finding the latest report no longer makes is gone from the list.
+ *
+ * "Last used" (`lastRequestDay`) is the newest UTC day the daily request rollup counted a routed
+ * request for the scope: the router's own count, from the requests it dispatched. A scope reached
+ * only by peer calls or schedules has none, and one used rarely looks like one that is dead, which
+ * is why `idle` is advisory. Null when the rollup holds no request for it.
+ */
+export const staleScope = z.object({
+  tenantId,
+  /** The tenant's slug, or null when the directory holds no tenant row for it. */
+  tenantSlug: z.string().nullable(),
+  scopeId,
+  finding: staleScopeFindingKind,
+  vertical: z.string().nullable(),
+  kind: z.string().nullable(),
+  status: scopeStatus,
+  forkedFrom: scopeId.nullable(),
+  createdAt: instant,
+  lastRequestDay: utcDay.nullable(),
+  /** One sentence saying why, for a person reading the list. */
+  detail: z.string().min(1),
+  firstSeen: instant,
+  lastSeen: instant,
+});
+export type StaleScope = z.infer<typeof staleScope>;
+
+/** The record of one UTC day's stale-scopes report (#3313), with `meterDayTake`'s rules. */
+export const staleScopeTake = z.object({
+  day: utcDay,
+  attemptedAt: instant,
+  takenAt: instant.nullable(),
+  /** How many findings the report holds; null while no attempt has succeeded. */
+  findings: z.number().int().nonnegative().nullable(),
+  /**
+   * Whether the report judged `idle`: only when the request rollup has read every day back to the
+   * start of the idle window. When it did not, the `idle` findings already listed are kept as they
+   * were, neither added to nor resolved. Null while no attempt has succeeded.
+   */
+  idleJudged: z.boolean().nullable(),
+  error: z.string().nullable(),
+  failingSince: instant.nullable(),
+  failingCount: z.number().int().positive().nullable(),
+});
+export type StaleScopeTake = z.infer<typeof staleScopeTake>;
+
+/** `GET /stale-scopes` (#3313): the current findings, and the latest daily report's record. */
+export const staleScopesReading = z.object({
+  findings: z.array(staleScope),
+  /** True when `findings` stopped at the row limit. */
+  truncated: z.boolean(),
+  /** The newest report attempt, or null when no report has run. */
+  latest: staleScopeTake.nullable(),
+});
+export type StaleScopesReading = z.infer<typeof staleScopesReading>;
+
+/**
  * Storage, read on demand (#1524): the size of each of one tenant's scope DATABASES, and
  * their sum, read live when a person asks. Reading a scope's size wakes that scope's Durable
  * Object, so this reading is paged and has no fleet-wide form. The stored daily figure that

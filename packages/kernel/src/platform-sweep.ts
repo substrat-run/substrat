@@ -7,6 +7,7 @@ import type {
   MigrationStraggler,
   PlatformActorId,
   Scope,
+  StaleScopeFindingKind,
   ScopeId,
   TenantId,
   DrainedEvent,
@@ -29,6 +30,7 @@ import type { FindingPruneReport } from './findings.js';
 import { STORAGE_GAUGE_PRUNE_BATCH, STORED_SCOPE_STATUSES, holdsStore, type ScopeStorageReadingInput } from './storage-gauge.js';
 import { BILLING_ROLLUP_RETENTION_MONTHS, billingRollupHorizon, utcDayOf } from './billing-retention.js';
 import { METER_DAYS_PRUNE_BATCH, METER_SNAPSHOT_TIMEOUT_MS } from './meter-days.js';
+import { STALE_SCOPES_TIMEOUT_MS, assertIdleDays, type StaleScopeThresholds } from './stale-scopes.js';
 import {
   REQUEST_ROLLUP_DAYS_PER_PASS,
   REQUEST_ROLLUP_LOOKBACK_DAYS,
@@ -513,6 +515,12 @@ export interface PlatformSweepOptions {
    */
   meterSnapshot?: MeterSnapshotSweepOptions;
   /**
+   * The daily stale-scopes report (#3313): once per UTC day, the scopes nothing will clean up.
+   * UNSET (the default) skips the phase, as does a host without `recordStaleScopes` and
+   * `listStaleScopeTakes`. It reads the directory in one transaction and moves no scope.
+   */
+  staleScopes?: StaleScopeSweepOptions;
+  /**
    * Collect attachment bytes no row names (#2314), a bounded window of scopes per pass. UNSET (the
    * default) skips the phase: the sweep deletes tenant bytes, so a deployment opts in, and opts in
    * to a dry run first. See {@link OrphanAttachmentSweepOptions}.
@@ -733,6 +741,8 @@ export interface PlatformSweepReport {
   cloudflareCosts?: CostRollupSweepReport | null;
   /** What the meter-snapshot phase took and pruned (#2501). Null when the phase is off. */
   meterSnapshot?: MeterSnapshotSweepReport | null;
+  /** What the stale-scopes report phase did (#3313). Null when the phase is off. */
+  staleScopes?: StaleScopeSweepReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
   errors: {
     kind:
@@ -773,6 +783,9 @@ export interface PlatformSweepReport {
       // #2501: the day's meter snapshot failed. Nothing of it is written, and the next pass of the
       // same day tries again.
       | 'meter-snapshot'
+      // #3313: the day's stale-scopes report failed. Nothing of it is written, and the next pass of
+      // the same day tries again.
+      | 'stale-scopes'
       // A directory row that does not read as a scope: every phase of the pass stepped over it.
       // Named once per pass by its id and the fields that failed (`scopeReaderFor`).
       | 'scope-row';
@@ -1089,6 +1102,35 @@ export interface MeterSnapshotSweepOptions {
   pruneBatch?: number;
   /** The instant the pass snapshots at. Default the wall clock. */
   now?: () => string;
+}
+
+/**
+ * How the stale-scopes report phase runs (#3313). Like the meter snapshot, it reads only the
+ * directory in one transaction (`HostAdmin.recordStaleScopes`), so opting in with `{}` is enough.
+ * The first pass of each UTC day takes the day's report; a failed attempt is recorded and the next
+ * pass of the day tries again.
+ */
+export interface StaleScopeSweepOptions extends StaleScopeThresholds {
+  /** How long the report may take, in ms. Default `STALE_SCOPES_TIMEOUT_MS`. */
+  timeoutMs?: number;
+  /** The instant the pass reports at. Default the wall clock. */
+  now?: () => string;
+}
+
+/** What the stale-scopes report phase did in one pass (#3313). */
+export interface StaleScopeSweepReport {
+  /** The UTC day this pass reports, or null when the pass's instant was not one. */
+  day: string | null;
+  /** Whether this pass took the day's report. False on every later pass of the day. */
+  taken: boolean;
+  /** The day's findings by kind, when this pass took it. */
+  findings: Record<StaleScopeFindingKind, number> | null;
+  opened: number;
+  resolved: number;
+  idleJudged: boolean;
+  failed: number;
+  repeated: number;
+  streak: FailingRun | null;
 }
 
 /** What the meter-snapshot phase did in one pass (#2501). */
@@ -1576,6 +1618,9 @@ function assertSweepBatches(options: PlatformSweepOptions): void {
   if (snapshot?.pruneBatch !== undefined) assertRowLimit('meterSnapshot.pruneBatch', snapshot.pruneBatch);
   if (snapshot?.retentionMonths !== undefined) assertBillingRetention('meterSnapshot.retentionMonths', snapshot.retentionMonths);
   if (snapshot?.timeoutMs !== undefined) assertPositiveMs('meterSnapshot.timeoutMs', snapshot.timeoutMs);
+  const stale = options.staleScopes;
+  if (stale?.timeoutMs !== undefined) assertPositiveMs('staleScopes.timeoutMs', stale.timeoutMs);
+  if (stale?.idleAfterDays !== undefined) assertIdleDays('staleScopes.idleAfterDays', stale.idleAfterDays);
   const orphans = options.orphanAttachments;
   if (orphans?.batch !== undefined && !(Number.isInteger(orphans.batch) && orphans.batch >= 0)) {
     throw substratError('validation_failed', `orphanAttachments.batch must be a non-negative integer, got ${String(orphans.batch)}`);
@@ -1683,6 +1728,7 @@ export async function runPlatformSweep(
     scopeObjects: null,
     cloudflareCosts: null,
     meterSnapshot: null,
+    staleScopes: null,
     errors: [],
   };
   // Every fleet-wide read of the directory below goes through this, so one unreadable row is
@@ -2309,6 +2355,18 @@ export async function runPlatformSweep(
     typeof host.admin.listMeterDayTakes === 'function'
   ) {
     report.meterSnapshot = await sweepMeterSnapshot(host.admin, options.actor, options.meterSnapshot, report);
+  }
+
+  // -- the daily stale-scopes report (#3313) -----------------------------------
+  // Beside the meter snapshot and for its reason: one directory transaction, after the GC and the
+  // reaps, so a scope this pass reaped is not reported. It reads the request rollup's stored days,
+  // not Analytics Engine, so it waits on nothing outside.
+  if (
+    options.staleScopes &&
+    typeof host.admin.recordStaleScopes === 'function' &&
+    typeof host.admin.listStaleScopeTakes === 'function'
+  ) {
+    report.staleScopes = await sweepStaleScopes(host.admin, options.actor, options.staleScopes, report);
   }
 
   // -- the daily request rollup (#2501) ----------------------------------------
@@ -3663,6 +3721,64 @@ async function sweepMeterSnapshot(
     // A directory read or the prune failed: a snapshot already taken stays taken, and the next pass
     // tries the day again if it was not.
     report.errors.push({ kind: 'meter-snapshot', id: 'directory', error: message(err) });
+  }
+  return out;
+}
+
+/**
+ * One pass of the stale-scopes phase (#3313): take the report of the UTC day the pass runs in,
+ * unless the day already has one, with the meter snapshot's rules for a failed attempt.
+ */
+async function sweepStaleScopes(
+  admin: HostAdmin,
+  actor: PlatformActorId,
+  options: StaleScopeSweepOptions,
+  report: PlatformSweepReport,
+): Promise<StaleScopeSweepReport> {
+  const out: StaleScopeSweepReport = {
+    day: null,
+    taken: false,
+    findings: null,
+    opened: 0,
+    resolved: 0,
+    idleJudged: false,
+    failed: 0,
+    repeated: 0,
+    streak: null,
+  };
+  const now = options.now ?? (() => new Date().toISOString());
+  try {
+    const at = new Date(now()).toISOString();
+    const day = at.slice(0, 10);
+    out.day = day;
+    const takes = await admin.listStaleScopeTakes!(actor, { since: utcDayOf(Date.parse(at) - DAY_MS), until: day });
+    if (!takes.some((t) => t.day === day && t.takenAt !== null)) {
+      const { timeoutMs, now: _now, ...thresholds } = options;
+      try {
+        const taken = await withinDeadline(
+          admin.recordStaleScopes!(actor, { at, ...thresholds }),
+          timeoutMs ?? STALE_SCOPES_TIMEOUT_MS,
+          'the stale-scopes report',
+        );
+        out.taken = taken.taken;
+        if (taken.taken) out.findings = taken.findings;
+        out.opened = taken.opened;
+        out.resolved = taken.resolved;
+        out.idleJudged = taken.idleJudged;
+      } catch (err) {
+        const error = message(err);
+        out.failed = 1;
+        const { run, repeated } = extendRun(previousAttempt(takes), error, at);
+        out.streak = run;
+        if (repeated) out.repeated = 1;
+        else report.errors.push({ kind: 'stale-scopes', id: day, error });
+        await admin
+          .recordStaleScopes!(actor, { at, error, failingSince: run.since, failingCount: run.failures })
+          .catch(() => undefined);
+      }
+    }
+  } catch (err) {
+    report.errors.push({ kind: 'stale-scopes', id: 'directory', error: message(err) });
   }
   return out;
 }

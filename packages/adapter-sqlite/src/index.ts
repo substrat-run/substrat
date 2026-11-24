@@ -445,6 +445,13 @@ import {
   type CostRollupDayFilter,
   type ScopeObjectReadInput,
   METER_DAYS_DDL,
+  STALE_SCOPES_DDL,
+  listStaleScopeRows,
+  listStaleScopeTakeRows,
+  recordStaleScopeRows,
+  type StaleScopeFilter,
+  type StaleScopeTakeFilter,
+  type StaleScopeTakeInput,
   VERTICAL_OWNERS_BACKFILL,
   VERTICAL_OWNERS_DDL,
   closeVerticalOwnerRow,
@@ -3311,6 +3318,8 @@ export class SqliteScopeHost implements ScopeHost {
       ${COST_ROLLUP_DDL}
       -- #2501: the daily meter snapshot — one row per (UTC day, tenant), kernel-owned DDL.
       ${METER_DAYS_DDL}
+      -- #3313: the daily stale-scopes report — one row per (scope, finding), kernel-owned DDL.
+      ${STALE_SCOPES_DDL}
       -- #2501: who owned each vertical slug, period by period — kernel-owned DDL.
       ${VERTICAL_OWNERS_DDL}
       CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
@@ -14444,6 +14453,19 @@ export class SqliteScopeHost implements ScopeHost {
         this.directory.transaction(() =>
           pruneMeterDayRows(redactionSqlOf(this.directory), Date.now(), limit, retentionMonths),
         )(),
+      // #3313: the report reads and writes in one transaction, so its findings are one instant's.
+      recordStaleScopes: async (_actor, input: StaleScopeTakeInput) =>
+        this.directory.transaction(() => recordStaleScopeRows(redactionSqlOf(this.directory), input))(),
+      listStaleScopes: async (actor, filter?: StaleScopeFilter) => {
+        const rows = listStaleScopeRows(redactionSqlOf(this.directory), filter);
+        this.recordAccess(actor, 'listStaleScopes', { tenantId: filter?.tenantId ?? null }, filter ?? null, rows.length);
+        return rows;
+      },
+      listStaleScopeTakes: async (actor, filter?: StaleScopeTakeFilter) => {
+        const rows = listStaleScopeTakeRows(redactionSqlOf(this.directory), filter);
+        this.recordAccess(actor, 'listStaleScopeTakes', { tenantId: null }, filter ?? null, rows.length);
+        return rows;
+      },
       listModelUsage: async (actor, filter?: ModelUsageFilter): Promise<ModelUsageEntry[]> => {
         const rows = this.selectModelUsage(filter);
         this.recordAccess(

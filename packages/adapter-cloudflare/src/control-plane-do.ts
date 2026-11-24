@@ -65,6 +65,14 @@ import {
   type ScopeObjectReadInput,
   type ScopeObjectTarget,
   METER_DAYS_DDL,
+  STALE_SCOPES_DDL,
+  listStaleScopeRows,
+  listStaleScopeTakeRows,
+  recordStaleScopeRows,
+  type StaleScopeFilter,
+  type StaleScopeTakeFilter,
+  type StaleScopeTakeInput,
+  type StaleScopeTakeResult,
   VERTICAL_OWNERS_BACKFILL,
   VERTICAL_OWNERS_DDL,
   closeVerticalOwnerRow,
@@ -272,6 +280,8 @@ import type {
   CostDay,
   MeterDay,
   MeterDayTake,
+  StaleScope,
+  StaleScopeTake,
   VerticalOwnerPeriod,
   Tenant,
   TenantId,
@@ -1505,6 +1515,8 @@ const DIRECTORY_DDL = `
   ${COST_ROLLUP_DDL}
   -- #2501: the daily meter snapshot — one row per (UTC day, tenant), kernel-owned DDL.
   ${METER_DAYS_DDL}
+  -- #3313: the daily stale-scopes report — one row per (scope, finding), kernel-owned DDL.
+  ${STALE_SCOPES_DDL}
   -- #2501: who owned each vertical slug, period by period — kernel-owned DDL.
   ${VERTICAL_OWNERS_DDL}
   CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
@@ -5330,6 +5342,20 @@ export class ControlPlaneDO extends DurableObject {
     return this.ctx.storage.transactionSync(() =>
       pruneMeterDayRows(doRedactionSql(this.sql), Date.now(), limit, retentionMonths),
     );
+  }
+
+  // -- the daily stale-scopes report (#3313) — kernel `stale-scopes.ts` ------------
+  // One transaction: the report's reads and its rows are one instant of the directory.
+  recordStaleScopes(input: StaleScopeTakeInput): StaleScopeTakeResult {
+    return this.ctx.storage.transactionSync(() => recordStaleScopeRows(doRedactionSql(this.sql), input));
+  }
+
+  listStaleScopes(filter?: StaleScopeFilter): StaleScope[] {
+    return listStaleScopeRows(doRedactionSql(this.sql), filter);
+  }
+
+  listStaleScopeTakes(filter?: StaleScopeTakeFilter): StaleScopeTake[] {
+    return listStaleScopeTakeRows(doRedactionSql(this.sql), filter);
   }
 
   // -- identity pools (K-23) --------------------------------------------------

@@ -1099,6 +1099,8 @@ export type {
   ScopeObjectsSweepReport,
   MeterSnapshotSweepOptions,
   MeterSnapshotSweepReport,
+  StaleScopeSweepOptions,
+  StaleScopeSweepReport,
   FailingRun,
   CandidatesHint,
   CrossVerticalEdge,
@@ -1285,6 +1287,26 @@ export {
   type MeterDayTakeInput,
   type MeterDayTakeResult,
 } from './meter-days.js';
+export {
+  STALE_SCOPES_DDL,
+  STALE_SCOPES_LIMIT_DEFAULT,
+  STALE_SCOPES_LIMIT_MAX,
+  STALE_SCOPE_EXPIRED_GRACE_MS,
+  STALE_SCOPE_IDLE_DAYS,
+  STALE_SCOPE_IDLE_DAYS_MAX,
+  STALE_SCOPE_IDLE_DAYS_MIN,
+  STALE_SCOPE_STUCK_MS,
+  STALE_SCOPES_TIMEOUT_MS,
+  listStaleScopeRows,
+  listStaleScopeTakeRows,
+  recordStaleScopeRows,
+  staleScopeFindingsAt,
+  type StaleScopeFilter,
+  type StaleScopeTakeFilter,
+  type StaleScopeTakeInput,
+  type StaleScopeTakeResult,
+  type StaleScopeThresholds,
+} from './stale-scopes.js';
 
 export {
   moduleLog,
