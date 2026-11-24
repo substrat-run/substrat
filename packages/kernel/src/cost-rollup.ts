@@ -42,7 +42,14 @@ import { assertUtcDay, pruneBillingDays, pushDayWindow } from './billing-retenti
  *
  * Every per-object row keeps its object id, so a day read before its scopes' ids were recorded
  * (a pass that ran before a vertical could answer, a loaded snapshot) is attributed when they are:
- * recording an id re-attributes that object's `unmapped` and `unknown` rows in the same transaction.
+ * recording an id re-attributes that object's `unmapped`, `unknown` and `copy` rows in the same
+ * transaction.
+ *
+ * An object no id was recorded for, in a preview script, is attributed through the copy ledger
+ * (`scope_script_copies`, #1722) instead, when the ledger names one tenant's copies in that script
+ * (`copy`, #3353). A reaped preview script can no longer answer for its objects; the ledger outlives
+ * it. Rows stored `unmapped` before the ledger could be read are attributed by the same rule with
+ * every day the rollup records, so history since the rollup began reaches the tenant too.
  *
  * `_substrat_scope_objects` is the directory's record of each scope's Durable Object id: the hex id
  * Cloudflare reports, which is `SCOPE.idFromName(scopeId)` inside the script that holds the scope's
@@ -181,6 +188,12 @@ export interface CostDirectory {
   ownerBySlug: ReadonlyMap<string, string | null>;
   /** The scripts that hold some non-preview scope's data: a per-version script among them is live. */
   liveScripts: ReadonlySet<string>;
+  /**
+   * A script the copy ledger names → the one tenant whose copies it holds, or null when it names
+   * several. Read only for a preview script: a live one also holds scopes provisioned into it, which
+   * the ledger never names, so one tenant's copy there says nothing about its other objects.
+   */
+  copyTenantByScript: ReadonlyMap<string, string | null>;
 }
 
 interface ScriptInfo {
@@ -315,8 +328,12 @@ export function attributeCostDay(usage: CloudflareUsageDay, dir: CostDirectory):
     } else {
       // An object the directory recorded for no scope is reported apart: its script's vertical is a
       // fact, whose it is is not, so it carries no tenant. Its id stays, for when it is recorded.
+      // In a preview script the copy ledger says whose it is, when it names one tenant (#3353).
       const base = scriptRow(ns?.script ?? '', ns?.objectClass ?? null);
-      row = { ...base, objectId: o.objectId, attribution: base.attribution === 'script' ? 'unmapped' : base.attribution, tenantId: null };
+      const copyTenant = base.attribution === 'script' && base.kind === 'preview' ? dir.copyTenantByScript.get(base.script) ?? null : null;
+      row = copyTenant !== null
+        ? { ...base, objectId: o.objectId, attribution: 'copy', tenantId: copyTenant as TenantId }
+        : { ...base, objectId: o.objectId, attribution: base.attribution === 'script' ? 'unmapped' : base.attribution, tenantId: null };
     }
     add(row, 'do_rows_read', o.rowsRead);
     add(row, 'do_rows_written', o.rowsWritten);
@@ -415,7 +432,32 @@ export function readCostDirectory(sql: RedactionSql, day: string): CostDirectory
   for (const r of sql('SELECT DISTINCT script FROM _substrat_scope_objects WHERE kind = ?', ['live']) as { script: string }[]) {
     liveScripts.add(r.script);
   }
-  return { objects, slugByScript, versionByScript, versionById, ownerBySlug, liveScripts };
+  const copyTenantByScript = new Map<string, string | null>();
+  for (const r of sql(COPY_TENANTS_SQL, []) as { script_ref: string; tenant_id: string; tenants: number }[]) {
+    copyTenantByScript.set(r.script_ref, r.tenants === 1 ? r.tenant_id : null);
+  }
+  return { objects, slugByScript, versionByScript, versionById, ownerBySlug, liveScripts, copyTenantByScript };
+}
+
+/** Each script the copy ledger names, with one of its tenants and how many there are. */
+const COPY_TENANTS_SQL = `
+  SELECT script_ref, MIN(tenant_id) AS tenant_id, COUNT(DISTINCT tenant_id) AS tenants
+    FROM scope_script_copies GROUP BY script_ref`;
+
+/**
+ * Attribute the stored `unmapped` rows of preview scripts the copy ledger names one tenant for, by
+ * the rule `attributeCostDay` applies to a day it reads (#3353). For the days read before that rule:
+ * a preview's copy is written to the ledger before its data, so a day read since finds it there.
+ * One statement over the rows, never an `IN` list.
+ */
+function attributeStoredCopyRows(sql: RedactionSql): void {
+  sql(
+    `UPDATE _substrat_cost_days SET attribution = 'copy', tenant_id = c.tenant_id
+       FROM (${COPY_TENANTS_SQL}) AS c
+      WHERE _substrat_cost_days.script = c.script_ref AND c.tenants = 1
+        AND _substrat_cost_days.attribution = 'unmapped' AND _substrat_cost_days.kind = 'preview'`,
+    [],
+  );
 }
 
 // -- the day ledger -----------------------------------------------------------
@@ -449,6 +491,7 @@ export function recordCostDayRows(sql: RedactionSql, input: CostDayReadInput): n
   const rows = attributeCostDay(usage, readCostDirectory(sql, day)).map((r) => costDay.parse(r));
   sql('DELETE FROM _substrat_cost_days WHERE day = ?', [day]);
   insertCostRows(sql, day, rows);
+  attributeStoredCopyRows(sql);
   sql(
     `INSERT INTO _substrat_cost_day_reads (day, attempted_at, read_at, row_count, error, failing_since, failing_count)
      VALUES (?, ?, ?, ?, NULL, NULL, NULL)
@@ -513,7 +556,7 @@ export function recordCostContainerRows(sql: RedactionSql, input: CostContainers
   const held = sql('SELECT 1 FROM _substrat_cost_days WHERE day = ? AND object_class = ? LIMIT 1', [day, CONTAINER_OBJECT_CLASS]);
   if (held.length > 0) return { refused: 'already-recorded' };
   const usage = cloudflareUsageDay.parse({ day, workers: [], doInvocations: [], doObjects: [], namespaces: [], containers: input.containers });
-  const empty: CostDirectory = { objects: new Map(), slugByScript: new Map(), versionByScript: new Map(), versionById: new Map(), ownerBySlug: new Map(), liveScripts: new Set() };
+  const empty: CostDirectory = { objects: new Map(), slugByScript: new Map(), versionByScript: new Map(), versionById: new Map(), ownerBySlug: new Map(), liveScripts: new Set(), copyTenantByScript: new Map() };
   const rows = attributeCostDay(usage, empty).map((r) => costDay.parse(r));
   insertCostRows(sql, day, rows);
   sql('UPDATE _substrat_cost_day_reads SET row_count = COALESCE(row_count, 0) + ? WHERE day = ?', [rows.length, day]);
@@ -801,7 +844,7 @@ export function recordScopeObjectRow(sql: RedactionSql, input: ScopeObjectReadIn
   sql(
     `UPDATE _substrat_cost_days
         SET attribution = 'scope', scope_id = ?, tenant_id = ?, vertical = ?, kind = ?, version_id = ?, preview_tag = ?
-      WHERE object_id = ? AND attribution IN ('unmapped', 'unknown')`,
+      WHERE object_id = ? AND attribution IN ('unmapped', 'unknown', 'copy')`,
     [input.scopeId, input.tenantId, input.vertical, input.kind, input.versionId, input.previewTag, input.objectId],
   );
 }

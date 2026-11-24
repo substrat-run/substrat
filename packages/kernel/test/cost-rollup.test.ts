@@ -8,6 +8,7 @@ import {
   listCostDayRows,
   listCostRollupDayRows,
   pruneCostDayRows,
+  readCostDirectory,
   recordCostDayRows,
   recordScopeObjectRow,
   scopeObjectsDueRows,
@@ -43,6 +44,8 @@ function directory() {
       vertical_version_id TEXT, serving_ref TEXT, created_at TEXT NOT NULL);
     CREATE TABLE verticals (slug TEXT PRIMARY KEY, owner_tenant TEXT, serving_ref TEXT, created_at TEXT NOT NULL);
     CREATE TABLE vertical_versions (id TEXT PRIMARY KEY, vertical_slug TEXT NOT NULL, deployment_ref TEXT);
+    CREATE TABLE scope_script_copies (tenant_id TEXT NOT NULL, scope_id TEXT NOT NULL, script_ref TEXT NOT NULL,
+      move_id TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY (tenant_id, scope_id, script_ref, move_id));
     ${VERTICAL_OWNERS_DDL}
     ${COST_ROLLUP_DDL}
   `);
@@ -135,7 +138,7 @@ describe('the Cloudflare cost rollup', () => {
   });
 
   it('charges a labelled container to its tenant, and an unlabelled one to the platform (#3316)', () => {
-    const empty = { objects: new Map(), slugByScript: new Map(), versionByScript: new Map(), versionById: new Map(), ownerBySlug: new Map(), liveScripts: new Set<string>() };
+    const empty = { objects: new Map(), slugByScript: new Map(), versionByScript: new Map(), versionById: new Map(), ownerBySlug: new Map(), liveScripts: new Set<string>(), copyTenantByScript: new Map() };
     const box = { applicationId: 'app-1', cpuTimeSec: 2, allocatedMemory: 3 * 1024 ** 3, allocatedDisk: 4e9, txBytes: 0 };
     const rows = attributeCostDay(
       {
@@ -179,6 +182,40 @@ describe('the Cloudflare cost rollup', () => {
       `scope ${OWNER} ${PREVIEW} pr-7`,
       `scope ${OWNER} ${PREVIEW} pr-7`,
     ]);
+  });
+
+  it('charges a preview script\'s unrecorded objects to the one tenant the copy ledger names (#3353)', async () => {
+    const { sql, host, db } = directory();
+    // The preview's copy, and a copy into the live script: a live script also holds scopes provisioned
+    // into it, which the ledger never names, so its identity objects stay unmapped.
+    db.exec(`
+      INSERT INTO scope_script_copies VALUES ('${OWNER}', '${PREVIEW}', '${PER_VERSION}', 'm1', 'done');
+      INSERT INTO scope_script_copies VALUES ('${INSTALLER}', '${LIVE}', '${STABLE}', 'm2', 'retained');
+    `);
+    await sweep(host, { cloudflareCosts: costs(async () => USAGE) });
+    const objects = (rows: { objectId: string | null; attribution: string; tenantId: string | null; scopeId: string | null }[]) =>
+      rows.filter((r) => r.objectId !== null && r.objectId !== hex('a')).map((r) => `${r.objectId!.slice(0, 1)} ${r.attribution} ${r.tenantId ?? '-'} ${r.scopeId ?? '-'}`);
+    // The ledger names the scopes copied into a script, not which object is which: no scope.
+    expect(objects(listCostDayRows(sql))).toEqual([
+      'c unmapped - -', 'c unmapped - -', 'd unmapped - -', 'd unmapped - -',
+      `b copy ${OWNER} -`, `b copy ${OWNER} -`,
+    ]);
+    // A script holding two tenants' copies names neither.
+    db.exec(`INSERT INTO scope_script_copies VALUES ('${INSTALLER}', '01J00000000000000000000S09', '${PER_VERSION}', 'm3', 'done')`);
+    expect(objects(attributeCostDay(USAGE, readCostDirectory(sql, DAY))).filter((l) => l.startsWith('b'))).toEqual(['b unmapped - -', 'b unmapped - -']);
+  });
+
+  it('attributes rows stored unmapped by the copy ledger on the next day read, and a recorded object id still wins', async () => {
+    const { sql, host, db } = directory();
+    await sweep(host, { cloudflareCosts: costs(async () => USAGE) });
+    const preview = () => listCostDayRows(sql).filter((r) => r.objectId === hex('b')).map((r) => `${r.attribution} ${r.tenantId} ${r.scopeId}`);
+    expect(preview()).toEqual(['unmapped null null', 'unmapped null null']);
+    db.exec(`INSERT INTO scope_script_copies VALUES ('${OWNER}', '${PREVIEW}', '${PER_VERSION}', 'm1', 'done')`);
+    const next = { day: '2026-11-21', workers: [], doInvocations: [], doObjects: [], namespaces: [] };
+    recordCostDayRows(sql, { day: next.day, attemptedAt: NOW, usage: next });
+    expect(preview()).toEqual([`copy ${OWNER} null`, `copy ${OWNER} null`]);
+    await sweep(host, { scopeObjects: { read: objectIdOf }, cloudflareCosts: costs(async () => Promise.reject(new Error('unused'))) });
+    expect(preview()).toEqual([`scope ${OWNER} ${PREVIEW}`, `scope ${OWNER} ${PREVIEW}`]);
   });
 
   it('keeps a failed day unread and its rows untouched, and asks a failed scope again only after the retry', async () => {

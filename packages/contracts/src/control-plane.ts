@@ -2428,8 +2428,13 @@ export type CostDimension = z.infer<typeof costDimension>;
  *   or a container whose tenant label is not a tenant id.
  * - `container`: a Cloudflare Container the platform labelled with the tenant it ran for
  *   (`CONTAINER_TENANT_LABEL`), such as a builder sandbox: charged to that tenant.
+ * - `copy`: an object no scope was recorded for, in a preview script the directory's copy ledger
+ *   (`scope_script_copies`) names exactly one tenant's copies in: charged to that tenant. The ledger
+ *   names the scopes copied into a script, not which object is which, so the row names no scope. A
+ *   preview script holds only copies, each written to the ledger before its data, so this is a fact
+ *   the directory recorded even after the script is reaped. A recorded object id replaces it (`scope`).
  */
-export const costAttribution = z.enum(['scope', 'script', 'unmapped', 'platform', 'unknown', 'container']);
+export const costAttribution = z.enum(['scope', 'script', 'unmapped', 'platform', 'unknown', 'container', 'copy']);
 export type CostAttribution = z.infer<typeof costAttribution>;
 
 /**
