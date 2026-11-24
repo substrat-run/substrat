@@ -66,6 +66,17 @@ request that names an app or a scope is never copied into these lines.
 - empty: an end user's routed request. The app's own door authenticates the person, and the router
   claims nothing about them.
 
+**Which agent inside an app acted is the app's claim, and it is recorded in the history, not in the
+envelope.** An app may run several agents (modelling, planning, building, verifying) that act while
+no person is present. The router cannot tell them apart: they are code in the same app, so naming
+one in a signed line would sign the app's word. Until each agent has a client identity of its own
+that the platform registers (as #3134 does for an app's machine client), the app names the agent,
+and the history records it beside the actor, marked as asserted by the app, the way
+[K-42](./K-042-an-impersonated-operation-carries-two-actors-and-the-permis.md) records a second actor
+beside the first. The kernel stores what the app gives and vouches for none of it. Once an agent
+has its own client identity, the envelope can name it as a verified actor, and that is a change to
+this record.
+
 **The closed table, version 2:**
 
 | (issuer, kind) | caller app | caller scope | actor |
@@ -109,6 +120,8 @@ the token useless on any other call.
 Answered at ratification, 2026-11-24, as proposed: the caller scope is its own line, the person on
 a peer call is bound by the token's digest, and version 1 is refused after a week with only
 version 2.
+After ratification, the same day: an agent inside an app is recorded in the history as the app's
+claim, and enters the envelope only once it has a client identity of its own.
 
 1. **The caller scope as its own line**, rather than folded into the caller app. Proposed: its own
    line, because K-64's parent link is judged per scope.
