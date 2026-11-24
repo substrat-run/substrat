@@ -177,23 +177,41 @@ owner may *request* the `listed` flip; the flip itself is staff-admitted, the sa
 "builder promotes dev/staging, staff promotes prod." Owning a vertical (having pushed it) is the
 only prerequisite; there is no additional publish entitlement.
 
-## 5.1 Versioning — marketplace tracks prod, installs pin, upgrade is opt-in
+## 5.1 Versioning — installs follow within a major, and a breaking change is a new major
 
-Reuses machinery that already exists: a scope **binds a specific version** (distinct from the
-prod channel — `introspect-bound-version`), the dashboard shows an **"update available"** hint
-when prod moves past a scope's bound version, and **"update app"** rebinds the scope to prod
-(#213). The marketplace model is just those, stated:
+[K-65](../decisions/K-065-one-version-rule-an-install-follows-its-app-within-a-major-and-a-breaking-change-is-a-new-major-served-beside-the-old.md)
+decides this. It replaces what this section used to promise: that an install pins its version, and
+that a publisher cannot upgrade a running install. That promise could not hold once an app served
+in place from one script
+([K-33](../decisions/K-033-verticals-serve-in-place-from-one-stable-script-per-version-.md)): a
+scope's data belongs to the script that serves it, and a listed promote has re-provisioned every
+install since (#1653).
 
-- **`listed` tracks the vertical's `prod` channel** — a new install binds to prod's *current*
-  version. Publishing doesn't freeze a snapshot; the tile always offers the latest prod.
-- **Installed instances pin to their bound version — upgrading is the owner's call.** A scope
-  stays on the version it was bound to; the owner rebinds to prod when *they* choose. So
-  **older versions run in the wild by design** — a publisher cannot force-upgrade a running
-  instance (keeps the "nothing changes under a tenant unasked" trust story).
-- **Builders can roll back** — re-pointing `prod` at an *earlier already-admitted* version is
-  the revert path for a bad release. Re-promoting a version that already passed admission is
-  lower-risk than admitting new code, so it can be lighter than a first-time prod promotion;
-  new installs then get the rolled-back version and owners see it as their upgrade target.
+- **`listed` tracks the vertical's `prod` channel.** A new install binds to prod's current version.
+  Publishing does not freeze a snapshot, and the tile always offers the latest prod.
+- **An install follows the publisher within a major.** A promote within the major reaches every
+  install, paced by the listed reconcile (`PROVISION_RECONCILE_BATCH`, 50 per pass). Each install is
+  told, with K-33's badge: **code-only** or **schema-change**. A schema-change update applies on its
+  own. The point-in-time bookmark taken before the migration pass, and `rewindScope`, are the net.
+- **A breaking change is a new major, served by its own script beside the old one.** An install
+  moves to it when its tenant chooses, through `adopt-serving`. The old major keeps serving, and may
+  still take additive releases, until its end date: at least 90 days after the new major's release,
+  or later if the publisher says so.
+- **The platform refuses a breaking change within a major.** A listed promote is classified by the
+  rules `substrat changeset` and `lint:changeset-bump` use. One ranked major, or one the classifier
+  cannot rank, is refused unless it goes to a new major.
+- **Builders can roll back.** Re-pointing `prod` at an earlier, already-admitted version is the
+  revert path for a bad release. It is a promote like any other, so it reaches every install on the
+  major.
+- **The app's owner keeps its own bindings.** An owner can still bind a scope it owns to a version,
+  as a canary for its own tenants (`substrat scope bind`). A tenant that installed someone else's
+  listed app holds no such binding.
+
+**Built:** the channel, the listed reconcile, the badge, the bookmark, `rewindScope` and the
+classifier. **Not built:** a serving script per major, a major's end date, the notice to an
+install, the refusal of a breaking listed promote, and `adopt-serving` between majors of one app.
+**Not decided:** what happens to an install still on an old major at its end date, and whether a
+release within a major that asks for more permissions waits for the installing tenant's approval.
 
 ## 6. Registry schema (append-only)
 
