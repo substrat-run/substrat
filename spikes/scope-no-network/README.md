@@ -133,6 +133,14 @@ needs them in one Durable Object, so in one isolate. That decides what the mecha
 - **Every stub passed in must be safe for the vertical's code to call directly.** The modules can reach
   anything the kernel can. A stub is narrowed to one scope by its props and checks authority on its own
   side, never trusting that the kernel checked first.
+- **Scopes of one code version can share module-level state.** With one loader id per version, the
+  loader may run several scopes in one isolate, as the env trap above shows, or give a scope a fresh
+  one. A module-level variable is evaluated once per isolate, so scope-specific data held there can
+  answer a request from another scope. This is not new: today every scope object of a script can share
+  an isolate in the same way. The control chosen is the existing one: vertical and kernel code keep no
+  scope-specific data at module scope, and scope code depends on neither reuse nor a fresh isolate. A
+  loader id per scope would separate module state, at the price of one live id per scope (the open
+  billing question above), and buys nothing today's shape has.
 - **No secret enters the scope's isolate.** Whatever the kernel can read, the modules can read. A key
   the kernel needs, such as one that signs an envelope, stays with the supervisor or a platform
   service, and the scope asks for a signature through a stub.
