@@ -200,8 +200,10 @@ sensitive path, which cannot be done half-way.
 
 **5.3 A generated entry.** The entry is generated from the model and the modules, by a generator
 that ships with the kernel version the vertical pinned. Less code per app, a protocol change is a
-new push, and the same entry runs locally and hosted. *Costs:* freedom. A vertical doing something
-unusual needs room in the generator or a declared HTTP route of its own.
+new push, and the same entry runs locally and hosted. The entry generator and a model's generator
+are one chain under the rules for generated files, never two generators that do not know each
+other. *Costs:* freedom. A vertical doing something unusual needs room in the generator or a
+declared HTTP route of its own.
 
 **A platform entry already exists, and the generated entry sits beside it.** The uploader puts a
 platform-authored entry module in front of every pushed vertical's bundle
@@ -446,7 +448,26 @@ dependent-people.md becomes a decision: done on 2026-11-24, as K-63. K-53 and th
 ([#2992](https://github.com/substrat-run/substrat/issues/2992)) are settled together, being one
 question: done on 2026-11-24, as K-64, which supersedes K-53. The version rule is written once,
 with the answer to §7.5: done on 2026-11-24, as K-65. The words are fixed: done on 2026-11-24, as
-D-75. *Done when* no coming build rests on a proposed record.
+D-75.
+
+*Three questions remain open,* raised on 2026-11-24 by an addendum that takes the model as the
+source of an app's code: a modelling tool keeps the model, and a generator writes the vertical's
+declarations, its rules and its migrations from it.
+
+1. **The generation target.** Does a generator write against the typed API, or against a declared
+   surface that the platform loads, so that written code can fill only the obligations the surface
+   declares?
+2. **The surface check.** Does the platform refuse an app whose emitted surface does not match its
+   model revision, or does that stay a check in CI? A check inside the bundle is not a boundary
+   against the app itself (D-61's reasoning), so a refusal compares what a push emits.
+3. **The model's boundary.** [model-phase-plan.md](./model-phase-plan.md) says the model gets no
+   richer vocabulary and points at written code instead. The addendum puts rules in the model. Where
+   the line runs now is open.
+
+Until the first is answered, the generated entry
+([#3378](https://github.com/substrat-run/substrat/issues/3378)) waits, because it has to be the last
+link of the same generation chain, not a second generator beside the model's. *Done when* no coming
+build rests on a proposed record, and these three are answered.
 
 **Phase 1: one door.** The platform's connectors move onto the shared contract and stay in
 process, with a sweep role per connection first, so a rate-limited provider is not polled once per
