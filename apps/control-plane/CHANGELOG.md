@@ -1,5 +1,29 @@
 # @substrat-run/control-plane
 
+## 0.19.12
+
+### Patch Changes
+
+- 5c87d2a: A preview's Cloudflare cost now reaches the team whose preview it is, back to the first day the cost rollup holds (#3353). A preview script copies data only through the directory's copy ledger, which records each copy before its data is written and outlives the script, so an object in a reaped preview script is charged to the one team the ledger names for it, as the new `copy` attribution. Rows the rollup stored without a team are attributed the same way with the next day it records. A script whose copies belong to more than one team, and a live script, stay unattributed, and a recorded object id still takes over.
+- Updated dependencies [5c87d2a]
+- Updated dependencies [9287e1d]
+- Updated dependencies [512c5a8]
+  - @substrat-run/contracts@0.210.0
+  - @substrat-run/kernel@0.210.0
+  - @substrat-run/adapter-cloudflare@0.210.0
+  - @substrat-run/vertical-host@0.210.0
+  - @substrat-run/control-plane-api@0.210.0
+  - @substrat-run/connector-bolagsverket@0.1.6
+  - @substrat-run/connector-fortnox@0.9.2
+  - @substrat-run/connector-mail-in@0.1.47
+  - @substrat-run/connector-microsoft365@0.0.71
+  - @substrat-run/connector-planima@0.2.107
+  - @substrat-run/connector-scrive@0.15.12
+  - @substrat-run/connector-shopify@0.0.6
+  - @substrat-run/connector-stripe@0.0.12
+  - @substrat-run/connector-woocommerce@0.0.16
+  - @substrat-run/model-providers@0.5.100
+
 ## 0.19.11
 
 ### Patch Changes

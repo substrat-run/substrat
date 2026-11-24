@@ -1,5 +1,25 @@
 # @substrat-run/demo-hr
 
+## 0.7.123
+
+### Patch Changes
+
+- Updated dependencies [5c87d2a]
+- Updated dependencies [9287e1d]
+- Updated dependencies [512c5a8]
+  - @substrat-run/contracts@0.210.0
+  - @substrat-run/kernel@0.210.0
+  - @substrat-run/adapter-sqlite@0.210.0
+  - @substrat-run/adapter-cloudflare@0.210.0
+  - @substrat-run/vertical-host@0.210.0
+  - @substrat-run/control-plane-api@0.210.0
+  - @substrat-run/connector-scrive@0.15.12
+  - @substrat-run/engine-absence@0.6.94
+  - @substrat-run/engine-protocol@0.14.10
+  - @substrat-run/dev-issuer@0.9.12
+  - @substrat-run/vertical-auth@0.38.1
+  - @substrat-run/attachment-extractors@0.2.71
+
 ## 0.7.122
 
 ### Patch Changes
