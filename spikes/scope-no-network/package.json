@@ -1,0 +1,15 @@
+{
+  "name": "scope-no-network-spike",
+  "private": true,
+  "type": "module",
+  "description": "Evidence for #3371: whether no network in scope code can be a mechanism. Not a workspace member.",
+  "scripts": {
+    "local": "node run-local.mjs"
+  },
+  "dependencies": {
+    "miniflare": "4.20260730.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["workerd", "esbuild"]
+  }
+}

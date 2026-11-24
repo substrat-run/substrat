@@ -1,0 +1,8 @@
+// The namespace's outbound worker (RUNBOOK.md step 1): refuses everything, so whatever still arrives
+// was not routed through it.
+{
+  "name": "substrat-spike-scope-net-outbound",
+  "main": "index.mjs",
+  "compatibility_date": "2026-07-01",
+  "workers_dev": false
+}

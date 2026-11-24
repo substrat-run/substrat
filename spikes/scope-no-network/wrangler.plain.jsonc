@@ -1,0 +1,9 @@
+// Today's shape, uploaded to the spike's dispatch namespace (RUNBOOK.md step 2). A throwaway.
+{
+  "name": "substrat-spike-scope-net-plain",
+  "main": "src/plain.mjs",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": { "bindings": [{ "name": "SCOPE", "class_name": "PlainScope" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PlainScope"] }]
+}
