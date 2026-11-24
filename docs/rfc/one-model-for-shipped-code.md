@@ -461,16 +461,20 @@ declarations, its rules and its migrations from it.
 2. **The surface check.** Does the platform refuse an app whose emitted surface does not match its
    model revision, or does that stay a check in CI? A check inside the bundle is not a boundary
    against the app itself (D-61's reasoning), so a refusal compares what a push emits. *Answered
-   in D-76:* the platform's build re-emits `model.json`, `openapi.json` and `PERMISSIONS.md` and
-   refuses a release where any differs by a byte.
+   in part by D-76:* the platform's build re-emits `model.json`, `openapi.json` and `PERMISSIONS.md`
+   from the app's **source revision** and refuses a release where any differs by a byte. That holds
+   the files to the source, not the source to the model: if the model moves on and the generated
+   source does not, the check still passes. Whether a release is also checked against its **model
+   revision**, by regenerating the source from it, is still open.
 3. **The model's boundary.** [model-phase-plan.md](./model-phase-plan.md) says the model gets no
    richer vocabulary and points at written code instead. The addendum puts rules in the model. Where
    the line runs now is open.
 
 The generated entry ([#3378](https://github.com/substrat-run/substrat/issues/3378)) waited on the
 first, because it has to be the last link of the same generation chain, not a second generator
-beside the model's. D-76 answers it, and the third question remains. *Done when* no coming build
-rests on a proposed record, and these three are answered.
+beside the model's. D-76 answers it. The model-revision half of the second question and the third
+question remain. *Done when* no coming build rests on a proposed record, and these three are
+answered.
 
 **Phase 1: one door.** The platform's connectors move onto the shared contract and stay in
 process, with a sweep role per connection first, so a rate-limited provider is not polled once per
