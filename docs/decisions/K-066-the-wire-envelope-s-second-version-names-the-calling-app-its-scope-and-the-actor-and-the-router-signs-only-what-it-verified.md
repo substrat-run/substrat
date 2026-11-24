@@ -56,8 +56,11 @@ request that names an app or a scope is never copied into these lines.
 - `person:<sha256 hex>`: the call carries a person's token that the issuer minted for this target
   (the exchange of #3161, sent as `onBehalf`). The line binds the SHA-256 of that exact token. The
   router does not verify the person. The receiver verifies the token itself, as it does today, and
-  refuses one whose digest differs from the signed line, so a token cannot be moved onto another
-  call.
+  refuses one whose digest differs from the signed line. The digest stops a different token from
+  being put under a signed line. It does not stop the same token from being used again on a new
+  call. What limits that is the token itself: it is minted for this target only, and it lives 300
+  seconds ([dependent-people.md](../rfc/dependent-people.md) §6). Within that time the master that
+  holds it can use it again, which is the bound #3161 already states.
 - `platform`: the platform acts, on a call the control plane signs or a call the router makes for
   it, such as a connector sweep.
 - empty: an end user's routed request. The app's own door authenticates the person, and the router

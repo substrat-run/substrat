@@ -63,16 +63,23 @@ pseudonymous id instead:
   the app acting as itself.
 - **An invalid or expired token is refused at the router.** The call is not made as `app` instead.
 - **An app whose sign-in issuer the platform does not record cannot name a person.** Its store
-  calls are made as `app` until the platform knows the issuer it registered the app's client with.
+  calls with no token are made as `app` until the platform knows the issuer it registered the app's
+  client with. A call from such an app that does carry a token is refused, like an invalid one: the
+  router cannot verify it, and it never turns a token it cannot verify into `app`.
 
 **The store entry hands the driver the actor beside the call, after it verifies the envelope.** A
 driver that keeps a session ties it to the actor on first use, and refuses a different actor on
-that session. That is the protection #2994 asked for: no other code in the scope can resume, read
-or commit another person's session through the store.
+that session. That stops another person's requests from resuming, reading or committing that
+session through the store, which is the protection #2994 asked for. It does not stop other code in
+the scope that holds this person's token: that code receives the same actor, so the driver accepts
+it.
 
 **Stores learn version 2 before the router sends it,** as K-66 orders the wire envelope. Both store
 entries, TypeScript and Python, accept both versions first. Then the router switches. Version 1 is
-refused once only version 2 has been sent for a week.
+refused once only version 2 has been sent for a week. While both are accepted, a version 1 call
+carries no actor, and a driver treats that as matching no bound session: it cannot resume, read or
+commit a session that an actor is bound to. This is the store's form of K-66's rule that a check
+needing a claim refuses a call that does not carry one.
 
 ## Why
 
@@ -81,9 +88,11 @@ names is that app's word. On a peer call the receiver can check the issuer's tok
 A store cannot, so the router, which has the network and the directory, checks it once and signs
 the result. That puts issuer trust in one platform component rather than in every driver.
 
-**A pseudonymous id keeps personal data out of every store's sessions.** A `sub` may be an
-address. A digest of the issuer and the `sub` is stable enough to tie a session, carries no address,
-and stays erasable, because the platform can name it from the person's record.
+**The stored actor is pseudonymous personal data, not anonymous data.** A `sub` may be an
+address. The digest is unkeyed and the issuer is known, so whoever holds an actor can test a
+candidate address against it. The digest is still stable enough to tie a session, it keeps the
+address itself out of the store, and it stays erasable, because the platform can recompute it from
+the person's record.
 
 **What it proves is bounded the way #3161's exchange is.** A live token proves that the person
 signed in to the app, and that the session is not yet over. It does not prove that the person is
@@ -105,6 +114,10 @@ strips.
 3. **Which token: the app's own access token for the person, or one exchanged for the store hop.**
    Proposed: the app's own token, which the router strips. An exchanged token would add an issuer
    round trip to every store call that has no cached token.
+4. **A keyed digest.** Raised after ratification, and not yet answered. An unkeyed digest lets
+   whoever holds an actor test a candidate address against it. A digest keyed with a platform secret
+   would stop that, at the cost of a key the router holds and that erasure needs. Until this is
+   answered, the digest is unkeyed and the actor is treated as personal data.
 
 ## Revisit
 
