@@ -57,7 +57,9 @@ import {
   refuseStatus,
 } from '@substrat-run/vertical-host';
 import type { AuthServerStub, PreviewClientOutcome } from './do-contract.js';
-import { serveAsset } from './assets.js';
+import { indexHtml, serveAsset } from './assets.js';
+import { TEMPLATED_PATHS, templatedPage } from './page-template.js';
+import { PAGE_PATH_HEADER, type PageTemplateAnswer } from './page-template-data.js';
 import { log, noteVersion } from './log.js';
 import type { HealClaim } from './social-relay-heal.js';
 import { runHeal, type HealTransport } from './social-relay-self.js';
@@ -641,6 +643,48 @@ app.delete(MANAGED_CLIENT_PATH, async (c) => {
 app.all('/internal/*', (c) =>
   refuseStatus(c, 501, `auth-server does not implement ${c.req.method} ${new URL(c.req.url).pathname}`),
 );
+
+/**
+ * The hosted pages, drawn inside the install's page template when it has one (#3350,
+ * `src/page-template.ts`). Without one — and on `?builtin=0`, the way back in — they are exactly
+ * the built-in page the catch-all serves. Nothing here can stop the page being served: an issuer
+ * that does not answer, or a template that fails to render, is logged and the built-in page goes
+ * out instead.
+ *
+ * The issuer reads the template and this request's variables; the RENDER happens here, so a
+ * template that spends its whole budget costs this request and never the issuer's other callers.
+ */
+async function hostedPage(c: Context<{ Bindings: Env }>): Promise<Response> {
+  const url = new URL(c.req.url);
+  if (url.searchParams.get('builtin') === '0') return serveAsset(url);
+  let answer: PageTemplateAnswer;
+  try {
+    const headers = new Headers({ [PAGE_PATH_HEADER]: url.pathname });
+    for (const name of ['cookie', 'accept-language']) {
+      const value = c.req.header(name);
+      if (value) headers.set(name, value);
+    }
+    const res = await issuerFor(c.env, c.req.raw).fetch(new Request(`${url.origin}/__page-template${url.search}`, { headers }));
+    if (!res.ok) throw new Error(`the issuer answered ${res.status}`);
+    answer = (await res.json()) as PageTemplateAnswer;
+  } catch (e) {
+    log.error('page template: could not read it, serving the built-in page', { path: url.pathname, error: e });
+    return serveAsset(url);
+  }
+  if (!answer.template) return serveAsset(url);
+  const page = templatedPage(answer.template, answer.variables, answer.imageOrigins, indexHtml());
+  if ('error' in page) {
+    log.error('page template: render failed, serving the built-in page', {
+      path: url.pathname,
+      screen: answer.variables.prompt.screen.name,
+      error: page.error,
+    });
+    return serveAsset(url);
+  }
+  return new Response(page.html, { headers: page.headers });
+}
+
+for (const path of TEMPLATED_PATHS) app.get(path, hostedPage);
 
 // Serve the inlined admin SPA for everything else. MUST come last so the routes above win.
 app.all('*', (c) => serveAsset(new URL(c.req.url)));

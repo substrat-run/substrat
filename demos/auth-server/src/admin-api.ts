@@ -6,9 +6,11 @@ import { z } from 'zod';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
 import { adminMergeAccounts } from './account-merge.js';
-import { ISSUER_THEME, issuerTheme } from './branding.js';
+import { ISSUER_THEME, clientBranding, issuerTheme } from './branding.js';
+import { imageOrigins, isScreenName, readPageTemplate, sampleVariables, templatedPage } from './page-template.js';
+import { removeTemplate, saveTemplate, templateFromBody } from './page-template-api.js';
 import { themeProblems } from './theme-wire.js';
-import { ISSUER_LOCALE, LOCALES, issuerLocale } from './locale-wire.js';
+import { ISSUER_LOCALE, LOCALES, issuerLocale, supportedLocale } from './locale-wire.js';
 import {
   ACCOUNT_LINKING,
   ALLOW_SIGNUP,
@@ -159,6 +161,12 @@ export interface AdminApiDeps {
    * platform provisioned and can be asked from: claim a manual attempt, which the worker then makes.
    */
   socialRelayHeal?: { claim(): HealClaim | null };
+  /**
+   * The built SPA's `index.html`, which the page template's preview cuts its tags from
+   * (`page-template.ts`). Absent where nothing is built (the node dev server serves the app
+   * through Vite): the preview then draws the template around an empty mount point.
+   */
+  indexHtml?(): string | undefined;
 }
 
 const CLIENT_COLUMNS = `client_id, name, icon, metadata, redirect_uris, disabled, skip_consent,
@@ -520,6 +528,11 @@ function assertIssuerUrl(value: string): void {
   }
 }
 
+const HTML_ESCAPE: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"]/g, (ch) => HTML_ESCAPE[ch]!);
+}
+
 function parsedBody<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
   if (!result.success) {
@@ -615,6 +628,76 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
         : []),
     ]);
     return c.json(settingsView());
+  });
+
+  /* ---- the page template (#3350, `page-template.ts`) ---- */
+
+  /**
+   * The console's door to the install's page template: the same bodies, statuses and messages
+   * as Auth0's `/api/v2/branding/templates/universal-login`, which a machine client uses
+   * (`management-api.ts`), so the two are one contract. `{ body }` on a read, 404 when there is
+   * none; a write answers 201 when it created the template and 204 when it replaced it.
+   */
+  const TEMPLATE_PATH = '/branding/templates/universal-login';
+  const adminActor = async (headers: Headers) => ({ admin: (await deps.session(headers))?.sub ?? 'unknown' });
+
+  app.get(TEMPLATE_PATH, (c) => {
+    const template = readPageTemplate(deps.sql);
+    if (template === null) throw new HTTPException(404, { message: 'Template does not exist.' });
+    return c.json({ body: template });
+  });
+
+  app.put(TEMPLATE_PATH, async (c) => {
+    const parsed = templateFromBody(c.req.header('content-type'), await c.req.text());
+    if ('error' in parsed) throw new HTTPException(400, { message: parsed.error });
+    const saved = await saveTemplate(deps.sql, parsed.template, await adminActor(c.req.raw.headers));
+    if ('problems' in saved) throw new HTTPException(400, { message: saved.problems.join(' ') });
+    return c.body(null, saved.outcome === 'created' ? 201 : 204);
+  });
+
+  app.delete(TEMPLATE_PATH, async (c) => {
+    removeTemplate(deps.sql, await adminActor(c.req.raw.headers));
+    return c.body(null, 204);
+  });
+
+  /**
+   * The editor's live preview: a draft drawn for one screen and language, as a whole page, with
+   * the issuer's own theme, a sample application and (on the consent screen) a sample person.
+   * The console posts a FORM into an iframe, so the page loads at a real URL on this origin and
+   * the sign-in app inside it boots as it would on the hosted page; the mount point names the
+   * screen to draw (`data-preview-screen`), since a preview has no authorize request to draw
+   * it from.
+   *
+   * A form post is a simple request, so the origin is checked: only this origin's console may
+   * ask. A draft that does not render answers a page saying why, never an error status, because
+   * the iframe is where the editor shows it.
+   */
+  app.post(`${TEMPLATE_PATH}/preview`, async (c) => {
+    const origin = c.req.header('origin');
+    if (origin && origin !== new URL(c.req.url).origin) throw new HTTPException(403, { message: 'cross-origin preview refused' });
+    const type = c.req.header('content-type') ?? '';
+    const raw = await c.req.text();
+    let fields: Record<string, unknown>;
+    try {
+      fields = type.includes('application/json') ? (JSON.parse(raw) as Record<string, unknown>) : Object.fromEntries(new URLSearchParams(raw));
+    } catch {
+      throw new HTTPException(400, { message: 'the body must be a form or JSON' });
+    }
+    const screen = isScreenName(fields.screen) ? fields.screen : 'login';
+    const locale = supportedLocale(typeof fields.locale === 'string' ? fields.locale : null) ?? 'en';
+    const template = typeof fields.template === 'string' ? fields.template : readPageTemplate(deps.sql);
+    const notice = (message: string) =>
+      c.body(
+        `<!doctype html><meta charset="utf-8"><body style="font:14px system-ui;margin:24px;color:#7a1f1f"><p>${escapeHtml(message)}</p></body>`,
+        200,
+        { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'", 'cache-control': 'no-store' },
+      );
+    if (!template) return notice('No template is set: the screens are drawn with the built-in page.');
+    const { theme } = clientBranding(deps.sql, CONSOLE_CLIENT_ID, deps.effectiveCfg()[ISSUER_THEME]);
+    const variables = sampleVariables(screen, locale, screen === 'consent', theme);
+    const page = templatedPage(template, variables, imageOrigins(variables), deps.indexHtml?.(), { screen });
+    if ('error' in page) return notice(`This template does not render on the ${screen} screen: ${page.error}`);
+    return c.body(page.html, 200, page.headers);
   });
 
   /* ---- the Username-Password connection ---- */

@@ -19,6 +19,7 @@
     "src/assets.ts",
     "src/assets.generated.ts",
     "db/ddl.ts",
-    "test/internal-surface.test.ts"
+    "test/internal-surface.test.ts",
+    "test/page-template-routes.test.ts"
   ]
 }

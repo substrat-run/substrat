@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { PageHeader } from '@substrat-run/ui';
 import { issuerSettings, setIssuerSettings, type IssuerSettings } from '../api';
 import { useThemeForm } from './applications/client-forms';
+import { PageTemplatePanel } from './PageTemplate';
 
 /**
  * `/branding` — how this issuer's hosted screens look, for every application that does not say
@@ -24,6 +25,7 @@ export function BrandingView() {
       <PageHeader title="Branding" description="How sign-in looks for everyone this issuer serves." />
       {err && <p className="error">{err}</p>}
       {settings ? <BrandingForm settings={settings} /> : !err && <p className="muted">Loading…</p>}
+      <PageTemplatePanel />
     </>
   );
 }

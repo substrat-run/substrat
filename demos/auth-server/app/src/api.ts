@@ -1123,6 +1123,31 @@ export async function setIssuerSettings(
   return admin('/settings', { method: 'PATCH', body: JSON.stringify(patch) });
 }
 
+/* ---- the page template (`/api/admin/branding/templates/universal-login`, #3350) ---- */
+
+const PAGE_TEMPLATE_PATH = '/branding/templates/universal-login';
+
+/** Where the editor posts a draft to be drawn, as a form into its preview frame. */
+export const PAGE_TEMPLATE_PREVIEW_URL = `/api/admin${PAGE_TEMPLATE_PATH}/preview`;
+
+/** The install's page template, or null when the built-in page is used. */
+export async function pageTemplate(): Promise<string | null> {
+  const res = await fetch(`/api/admin${PAGE_TEMPLATE_PATH}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(await adminError(res, 'could not read the page template'));
+  return ((await res.json()) as { body: string }).body;
+}
+
+/** Set the template. Refused with every problem found, in one message. */
+export async function setPageTemplate(template: string): Promise<void> {
+  await admin(PAGE_TEMPLATE_PATH, { method: 'PUT', body: JSON.stringify({ template }) });
+}
+
+/** Remove the template: the screens go back to the built-in page. */
+export async function removePageTemplate(): Promise<void> {
+  await admin(PAGE_TEMPLATE_PATH, { method: 'DELETE' });
+}
+
 /* ---- the Username-Password connection (`/api/admin/connections/password`) ---- */
 
 /** Where a connection setting's effective value came from. `env` is the deprecated fallback key. */

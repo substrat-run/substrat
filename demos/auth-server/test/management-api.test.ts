@@ -349,3 +349,59 @@ describe('activity outlives the sign-in log', () => {
     expect(backfillActivity(sql)).toBe(false);
   });
 });
+
+describe('the page template, Auth0’s way (#3350)', () => {
+  const TEMPLATE = '<html><head>{%- auth0:head -%}</head><body>{%- auth0:widget -%}</body></html>';
+
+  /** A token for a fresh machine client holding `scopes`, with the ceiling allowing them. */
+  async function tokenFor(scopes: string[]): Promise<string> {
+    cfg = { [MACHINE_SCOPES]: ['read:users', 'read:branding', 'update:branding', 'delete:branding'].join(' ') };
+    const { clientId, clientSecret } = await machineClient(scopes);
+    const res = await auth0Token({ grant_type: 'client_credentials', client_id: clientId, client_secret: clientSecret, audience: AUDIENCE, scope: scopes.join(' ') });
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { access_token: string }).access_token;
+  }
+
+  function templateCall(token: string, method = 'GET', body?: string, type = 'application/json'): Promise<Response> {
+    const auth = authNow();
+    const app = managementApiApp({
+      sql,
+      verify: managementTokenVerifier(
+        async () => (await auth.handler(new Request(`${ORIGIN}/api/auth/jwks`) as never)).json() as Promise<JSONWebKeySet>,
+        ORIGIN,
+      ),
+      machineScopes,
+    });
+    return Promise.resolve(
+      app.request(`${ORIGIN}/api/v2/branding/templates/universal-login`, {
+        method,
+        headers: { authorization: `Bearer ${token}`, ...(body !== undefined ? { 'content-type': type } : {}) },
+        ...(body !== undefined ? { body } : {}),
+      }),
+    );
+  }
+
+  it('is set, read, replaced and deleted with Auth0’s bodies and statuses', async () => {
+    const token = await tokenFor(['read:branding', 'update:branding', 'delete:branding']);
+    expect(await (await templateCall(token)).json()).toMatchObject({ statusCode: 404, message: 'Template does not exist.' });
+    expect((await templateCall(token, 'PUT', JSON.stringify({ template: TEMPLATE }))).status).toBe(201);
+    expect(await (await templateCall(token)).json()).toEqual({ body: TEMPLATE });
+    // The bare HTML is a body Auth0 takes too.
+    expect((await templateCall(token, 'PUT', `${TEMPLATE}<!-- 2 -->`, 'text/html')).status).toBe(204);
+    expect(await (await templateCall(token)).json()).toEqual({ body: `${TEMPLATE}<!-- 2 -->` });
+    const refused = await templateCall(token, 'PUT', JSON.stringify({ template: '<p>no tags</p>' }));
+    expect(await refused.json()).toMatchObject({
+      statusCode: 400,
+      message: 'Payload content missing required Liquid tags (auth0:head and auth0:widget).',
+    });
+    expect((await templateCall(token, 'DELETE')).status).toBe(204);
+    expect((await templateCall(token)).status).toBe(404);
+  });
+
+  it('needs the branding scope for each verb', async () => {
+    const token = await tokenFor(['read:branding']);
+    const refused = await templateCall(token, 'PUT', JSON.stringify({ template: TEMPLATE }));
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ message: 'Insufficient scope, expected any of: update:branding', errorCode: 'insufficient_scope' });
+  });
+});

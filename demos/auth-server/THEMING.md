@@ -4,6 +4,9 @@ Every screen a person sees while signing in is styled and worded by one **theme 
 object. This page is the whole contract, so it can be handed to Claude with a screenshot or a
 brand guide and the answer pasted straight in.
 
+To change the page around the sign-in form (a header, a footer, a layout of your own), use a
+[page template](PAGE-TEMPLATES.md) beside the theme.
+
 **Where a theme goes.** In the console, either *Branding* (the issuer's theme, used everywhere)
 or an application's *Branding* tab (that application only). Press **Edit raw** and paste the
 file. An application's keys override the issuer's one at a time.

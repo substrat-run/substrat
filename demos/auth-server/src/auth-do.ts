@@ -91,6 +91,8 @@ import type {
   RetiredPreviewClients,
 } from '@substrat-run/contracts';
 import { log, noteVersion } from './log.js';
+import { PAGE_PATH_HEADER, pageTemplateFor } from './page-template-data.js';
+import { indexHtml } from './assets.js';
 
 /**
  * One issuer, as one Durable Object. STANDALONE (own worker, own hostname): a single
@@ -854,6 +856,33 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
         transaction: (fn) => this.ctx.storage.transactionSync(fn),
       }).fetch(request);
     }
+    // The install's page template and this request's variables (#3350, `page-template-data.ts`).
+    // The worker asks on every hosted page and renders the answer itself, so a slow or broken
+    // template costs the request that drew it and never this object's other callers.
+    if (url.pathname === '/__page-template') {
+      const cfg = this.effectiveCfg();
+      return Response.json(
+        await pageTemplateFor(
+          {
+            sql: this.ctx.storage.sql,
+            cfg,
+            secret: async () => (await auth.$context).secret,
+            user: async () => {
+              const subject = await session(request.headers);
+              return subject ? { id: subject.sub, name: subject.name, email: subject.email } : null;
+            },
+            offeredProviders: () => this.offeredProviders(),
+            tenantName: this.instanceMeta()?.name ?? null,
+          },
+          {
+            path: request.headers.get(PAGE_PATH_HEADER) ?? '',
+            search: url.search.slice(1),
+            cookie: request.headers.get('cookie'),
+            acceptLanguage: request.headers.get('accept-language'),
+          },
+        ),
+      );
+    }
     if (url.pathname === '/__client-options') {
       // No `client_id` is the console asking about ITSELF — the one caller with no relying
       // party to name. `clientIdOrConsole` is where that resolution lives, so this route and
@@ -886,6 +915,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
           offeredProviders: () => this.offeredProviders(),
           bankidTransport: (cfg) => this.bankidTransport(cfg),
           transaction: (fn) => this.ctx.storage.transactionSync(fn),
+          indexHtml,
           ...(this.socialRelayInstance()
             ? { socialRelayHeal: { claim: () => claimHeal(this.ctx.storage.sql, this.socialRelayInstance(), 'manual', new Date()) } }
             : {}),

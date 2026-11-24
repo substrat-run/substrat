@@ -188,3 +188,15 @@ html[data-console-theme='dark'] body { background: var(--gray-950); }
   background: none;
   font-size: inherit;
 }
+
+/* The page template editor (#3350): the draft drawn whole, as a person would see the page. */
+.console-root .page-template { margin-top: var(--space-6, 24px); }
+.console-root .page-template .row { align-items: end; flex-wrap: wrap; gap: 12px; }
+.console-root .page-template .field.inline { display: inline-flex; flex-direction: column; margin: 0; }
+.console-root .page-template-preview {
+  width: 100%;
+  height: 640px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: #fff;
+}

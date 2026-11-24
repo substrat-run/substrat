@@ -27,3 +27,8 @@ export function serveAsset(url: URL): Response {
   if (looksLikeFile || !index) return new Response('not found', { status: 404 });
   return new Response(index.body, { headers: { 'content-type': index.type } });
 }
+
+/** The built SPA's `index.html`, which a page template's tags are cut from (`page-template.ts`). */
+export function indexHtml(): string | undefined {
+  return ASSETS['/index.html']?.body;
+}
