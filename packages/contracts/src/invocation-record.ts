@@ -63,6 +63,73 @@ export function parentRequestIdOf(value: unknown): string | undefined {
   return typeof value === 'string' && REQUEST_ID_SHAPE.test(value) ? value : undefined;
 }
 
+/**
+ * #3368: the W3C Trace Context header (https://www.w3.org/TR/trace-context/) a trace id travels
+ * on, from the router through the vertical's worker to the calls the platform makes for that
+ * request: peer calls, store calls and connector calls. Its trace id goes on the invocation line
+ * as `traceId`, so one request can be followed across every app it touched.
+ *
+ * A correlation id, never authority, like {@link PARENT_REQUEST_ID_HEADER}. Anyone can send one,
+ * so nothing decides anything by it: it only relates lines a reader already reads under its own
+ * tenant. Every hop reads it through {@link parseTraceparent}, and a value that is not one W3C
+ * `traceparent` is dropped whole and a new trace started.
+ */
+export const TRACEPARENT_HEADER = 'traceparent';
+
+/**
+ * #3368: the vendor half of W3C Trace Context. The platform writes no entry of its own. The router
+ * passes a caller's `tracestate` on to the app it routes to only beside the `traceparent` it
+ * continued, and drops it when it starts a new trace, as the specification asks. No platform hop
+ * after that (peer, store, connector) carries one.
+ */
+export const TRACESTATE_HEADER = 'tracestate';
+
+/** #3368: one `traceparent`, read. Lowercase hex, as the header writes it. */
+export interface TraceParent {
+  /** 32 hex digits, not all zero: the id every hop of one trace shares. */
+  traceId: string;
+  /** 16 hex digits, not all zero: the span of the hop that sent it. */
+  parentId: string;
+  /** 2 hex digits. Only the sampled bit is kept when the trace is continued. */
+  flags: string;
+}
+
+// Kept small: the platform entry bundles it in front of every vertical. The lookaheads refuse
+// version `ff` and an all-zero trace or parent id.
+const TRACEPARENT_SHAPE = /^(?!ff)([\da-f]{2})-(?!0{32})([\da-f]{32})-(?!0{16})([\da-f]{16})-([\da-f]{2})(-|$)/;
+
+/**
+ * #3368: a `traceparent` as a hop may continue it, or `undefined`. Refused whole: a version of
+ * `ff`, an all-zero trace or parent id, uppercase hex, a version-00 value with anything after its
+ * flags, and a repeated header (which `Headers.get` joins with a comma). A later version is read
+ * by its first four fields, as the specification asks of a reader that knows only version 00.
+ */
+export function parseTraceparent(value: unknown): TraceParent | undefined {
+  const m = typeof value === 'string' && value.length <= 512 ? TRACEPARENT_SHAPE.exec(value) : null;
+  return m && (m[1] !== '00' || value === m[0]) ? { traceId: m[2]!, parentId: m[3]!, flags: m[4]! } : undefined;
+}
+
+/** #3368: the trace id of a `traceparent`, or `undefined` when it is not one. */
+export const traceIdOf = (value: unknown): string | undefined => parseTraceparent(value)?.traceId;
+
+/** Random lowercase hex. An all-zero id would be invalid, at odds of 2^-64 or less, so the last digit is never 0. */
+const randomHex = (bytes: number): string =>
+  Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (x, i) => ((i === bytes - 1 ? x | 1 : x) | 256).toString(16).slice(1)).join('');
+
+/**
+ * #3368: the `traceparent` a hop sends on: the incoming trace continued under a new span of its
+ * own when the incoming value is one ({@link parseTraceparent}), or a new trace when it is not.
+ * `continued` says which, so the router knows whether a caller's `tracestate` may go along.
+ * Always version 00, and only the sampled flag is carried over. A new trace is marked sampled,
+ * since every request line is kept.
+ */
+export function nextTraceparent(incoming: unknown): { traceparent: string; traceId: string; continued: boolean } {
+  const parent = parseTraceparent(incoming);
+  const traceId = parent?.traceId ?? randomHex(16);
+  const flags = parent && !(parseInt(parent.flags, 16) & 1) ? '00' : '01';
+  return { traceparent: `00-${traceId}-${randomHex(8)}-${flags}`, traceId, continued: !!parent };
+}
+
 /** The fields the header carries. Every one is optional: a request may reach no operation. */
 export interface InvocationRecordFields {
   operation?: string | null | undefined;

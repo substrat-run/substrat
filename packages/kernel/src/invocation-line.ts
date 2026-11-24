@@ -216,6 +216,14 @@ export interface InvocationLogLine extends AuthRecording {
    * tenant.
    */
   parentScopeId?: string;
+  /**
+   * #3368: the W3C trace id (`traceparent`) the request carried or the router started — the same
+   * on every line of every app one request touched, so a reader can follow it across a peer call,
+   * a store call and a connector call. Omitted when there is none, so every other line stays what
+   * it was. A correlation id, never authority: anyone may send one, and a reader still reads only
+   * under its own tenant. A `ctx.log` line joins it through its `invocationId`.
+   */
+  traceId?: string;
   /*
    * #1901: the async line's own fields. Present only when `kind` is, and written by
    * `asyncInvocationLine` (`async-invocation-log.ts`) — ids, names, counts and codes only,
@@ -324,6 +332,8 @@ export interface InvocationLineFields extends AuthRecording {
   parentInvocationId?: string;
   /** #2192: written only beside `parentInvocationId`. */
   parentScopeId?: string;
+  /** #3368: written only when there is one. */
+  traceId?: string;
   async?: Pick<
     InvocationLogLine,
     'outcome' | 'eventType' | 'eventId' | 'attempt' | 'dueAt' | 'latenessMs' | 'suppressed' | 'suppressedBy'
@@ -372,6 +382,7 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
     ...(f.parentInvocationId
       ? { parentInvocationId: f.parentInvocationId, ...(f.parentScopeId ? { parentScopeId: f.parentScopeId } : {}) }
       : {}),
+    ...(f.traceId ? { traceId: f.traceId } : {}),
     ...(f.async ?? {}),
   };
 }
@@ -497,6 +508,11 @@ export interface StoreCallSinkSlot {
    * predates it has none, and a caller then learns no id.
    */
   invocationId?(): string | undefined;
+  /**
+   * #3368: the `traceparent` of the request now running — its own span in the request's trace —
+   * for a peer call or a store call to send on. Optional, like `invocationId`.
+   */
+  traceparent?(): string | undefined;
 }
 
 /**
@@ -525,6 +541,22 @@ export function currentInvocationId(): string | undefined {
       | undefined;
     const id = typeof slot?.invocationId === 'function' ? slot.invocationId() : undefined;
     return typeof id === 'string' ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * #3368: the `traceparent` of the request now running, or `undefined` outside one — what a peer
+ * call or a store call sends on. Never throws, like {@link currentInvocationId}.
+ */
+export function currentTraceparent(): string | undefined {
+  try {
+    const slot = (globalThis as Record<symbol, unknown>)[Symbol.for(STORE_CALL_SINK_KEY)] as
+      | Partial<StoreCallSinkSlot>
+      | undefined;
+    const value = typeof slot?.traceparent === 'function' ? slot.traceparent() : undefined;
+    return typeof value === 'string' ? value : undefined;
   } catch {
     return undefined;
   }

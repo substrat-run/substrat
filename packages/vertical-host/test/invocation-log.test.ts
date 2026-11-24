@@ -621,6 +621,33 @@ describe('invocationLog', () => {
 });
 
 // #1904: the router meters the request with the vertical's record, carried on one header.
+describe('the request’s trace id on its line (#3368)', () => {
+  const TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
+  const lineFor = async (headers: Record<string, string>) => {
+    const cap = capture();
+    try {
+      const app = appWith((a) => a.get('/api/me', (c) => c.json({ ok: true })));
+      await app.request('/api/me', { headers: { ...routed, ...headers } }, ENV);
+      return cap.lines[0] as { traceId?: string };
+    } finally {
+      cap.restore();
+    }
+  };
+
+  it('keeps the trace the router sent', async () => {
+    expect((await lineFor({ traceparent: `00-${TRACE}-00f067aa0ba902b7-01` })).traceId).toBe(TRACE);
+  });
+
+  it.each([
+    ['none', {}],
+    ['a malformed one', { traceparent: `00-${TRACE}-${'0'.repeat(16)}-01` }],
+  ])('starts one when the request carried %s', async (_, headers) => {
+    const { traceId } = await lineFor(headers);
+    expect(traceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(traceId).not.toBe(TRACE);
+  });
+});
+
 describe('withInvocationLog — the record handed back to the router (#1904)', () => {
   const options = { routerSecret: (env: Env) => env.ROUTER_SECRET };
   const HEADER = 'x-substrat-invocation-record';
@@ -770,6 +797,8 @@ describe('the line’s outputFields (#1331)', () => {
       'substrat', 'tenantId', 'scopeId', 'vertical', 'surface', 'method', 'path', 'route', 'status', 'threw',
       'durationMs', 'invocationId', 'level', 'operation', 'problemCode', 'principalKind', 'eventCount',
       'logLines', 'eventTypes', 'entities', 'entityTypes', 'transitions', 'processStates', 'versionId',
+      // #3368: every stamped request has a trace, carried or started, so the key is always there.
+      'traceId',
     ]);
   });
 

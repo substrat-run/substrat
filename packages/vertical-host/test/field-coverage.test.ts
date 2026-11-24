@@ -379,7 +379,7 @@ describe('what reaches the line and the router (#1331)', () => {
       )) as Response;
       expect(lines).toHaveLength(1);
       const line = JSON.parse(lines[0]!) as Record<string, unknown>;
-      const normalised = JSON.stringify({ ...line, invocationId: '-', durationMs: 0 });
+      const normalised = JSON.stringify({ ...line, invocationId: '-', durationMs: 0, traceId: '-' });
       return { res, body: await res.text(), line, normalised };
     } finally {
       console.log = original;

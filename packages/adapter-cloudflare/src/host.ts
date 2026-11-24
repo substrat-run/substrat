@@ -632,7 +632,8 @@ import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, u
 import { ConnectorRevokeUnsupported } from '@substrat-run/kernel';
 import { assertWireAuthFilter, wireAuthAccessTarget, COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type DeploymentWireAuthFilter, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, readStoreDump, writeStoreDump, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
-import { PLATFORM_BINDING_PREFIX, PLATFORM_STORE_CODE, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, storeAnswerOf, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
+import { PLATFORM_BINDING_PREFIX, PLATFORM_STORE_CODE, parseTraceparent, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, storeAnswerOf, StoreError, TRACEPARENT_HEADER, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
+import { currentTraceparent } from '@substrat-run/kernel/invocation-line';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import type {
   StoreDriverApprovalRecord,
@@ -6037,9 +6038,11 @@ export class CloudflareScopeHost implements ScopeHost {
                   // The egress hop answers with the platform's own codes too (#2815).
                   through: 'platform',
                   send: async (request) => {
+                    // #3368: the request's trace, so the call joins it through egress and the router.
+                    const trace = currentTraceparent();
                     const response = await this.fetchImpl(STORE_CALL_URL, {
                       method: 'POST',
-                      headers: { 'content-type': 'application/json' },
+                      headers: { 'content-type': 'application/json', ...(parseTraceparent(trace) ? { [TRACEPARENT_HEADER]: trace! } : {}) },
                       body: JSON.stringify({ scopeId, binding, operation: request.operation, input: request.input }),
                     });
                     try {

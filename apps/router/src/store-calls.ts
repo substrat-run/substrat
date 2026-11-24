@@ -2,6 +2,7 @@ import {
   clientSafeStoreError,
   isPlatformStoreCode,
   issueScopeStoreEnvelope,
+  nextTraceparent,
   PLATFORM_STORE_CODE,
   SCOPE_STORE_ENVELOPE_HEADER,
   SCOPE_STORE_SIGNATURE_HEADER,
@@ -12,6 +13,7 @@ import {
   scopeStoreScriptName,
   storeCallRequest,
   storeAnswerOf,
+  TRACEPARENT_HEADER,
   type StoreCallRequest,
   type StoreResponse,
 } from '@substrat-run/contracts';
@@ -59,6 +61,11 @@ export async function handleStoreCall(
   env: StoreCallEnv,
   caller: StoreCallCaller,
   rawRequest: unknown,
+  /**
+   * #3368: `{ traceparent }`, the calling request's trace, continued under this hop's span on the
+   * request to the store. A correlation id only: the envelope above is what the store admits by.
+   */
+  rawContext?: unknown,
 ): Promise<StoreCallOutcome> {
   const parsed = storeCallRequest.safeParse(rawRequest);
   if (!parsed.success) {
@@ -123,6 +130,9 @@ export async function handleStoreCall(
           'content-type': 'application/json',
           [SCOPE_STORE_ENVELOPE_HEADER]: issued.header,
           [SCOPE_STORE_SIGNATURE_HEADER]: issued.signature,
+          [TRACEPARENT_HEADER]: nextTraceparent(
+            rawContext !== null && typeof rawContext === 'object' ? (rawContext as { traceparent?: unknown }).traceparent : undefined,
+          ).traceparent,
         },
         body,
       }),

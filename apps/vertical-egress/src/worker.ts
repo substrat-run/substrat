@@ -76,6 +76,8 @@ import {
   peerCallRequest,
   PARENT_REQUEST_ID_HEADER,
   parentRequestIdOf,
+  parseTraceparent,
+  TRACEPARENT_HEADER,
   PLATFORM_STORE_CODE,
   PROBLEM_CATALOG,
   PROBLEM_CONTENT_TYPE,
@@ -147,7 +149,8 @@ export interface Env {
    * The router's scope-store entrypoint (#2207). Same shape as `PEER_CALLS`: the
    * caller is this dispatch's parameters, and the body names only the call.
    */
-  STORE_CALLS?: { invoke(caller: unknown, request: unknown): Promise<StoreCallOutcome> };
+  /** #3368: `context` carries the call's `traceparent`; a router that predates it ignores it. */
+  STORE_CALLS?: { invoke(caller: unknown, request: unknown, context?: unknown): Promise<StoreCallOutcome> };
   /**
    * The control plane's `RelayGateway` entrypoint — the relay, reached with the caller this
    * dispatch was made for (see `relay`). Absent (an environment deployed before it) ⇒ relay
@@ -455,6 +458,7 @@ async function peerCall(request: Request, hostname: string, env: Env): Promise<R
   // #2192: the calling request's id, so the target's line can name it as its parent. The
   // caller's claim, never part of WHO is calling: passed beside the caller, and only as one ULID.
   const parent = parentRequestIdOf(request.headers.get(PARENT_REQUEST_ID_HEADER));
+  const context = { ...(parent ? { parentInvocationId: parent } : {}), ...traceContextOf(request) };
   const outcome = await env.PEER_CALLS.invoke(
     {
       vertical: policy.slug,
@@ -464,13 +468,23 @@ async function peerCall(request: Request, hostname: string, env: Env): Promise<R
       depth: policy.depth ?? 0,
     },
     parsed.data,
-    ...(parent ? [{ parentInvocationId: parent }] : []),
+    ...(Object.keys(context).length > 0 ? [context] : []),
   );
   if (!outcome.ok) return problemResponse(relayedProblem(outcome.status, outcome.code, outcome.message));
   return new Response(JSON.stringify({ result: outcome.result ?? null }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+/**
+ * #3368: the trace a platform call was made under — the calling request's `traceparent`, passed
+ * beside the caller and never as part of WHO is calling. Only a value that parses as one W3C
+ * `traceparent` is handed on; the router continues it under its own span.
+ */
+function traceContextOf(request: Request): { traceparent?: string } {
+  const value = request.headers.get(TRACEPARENT_HEADER);
+  return value !== null && parseTraceparent(value) ? { traceparent: value } : {};
 }
 
 /**
@@ -507,6 +521,7 @@ async function storeCall(request: Request, env: Env): Promise<Response> {
     return problem(403, `store operation '${parsed.data.operation}' is reserved for the platform`, PLATFORM_STORE_CODE.reservedOperation);
   }
   let outcome: StoreCallOutcome;
+  const trace = traceContextOf(request);
   try {
     outcome = await env.STORE_CALLS.invoke(
       {
@@ -516,6 +531,7 @@ async function storeCall(request: Request, env: Env): Promise<Response> {
         stores: policy.stores ?? null,
       },
       parsed.data,
+      ...(trace.traceparent ? [trace] : []),
     );
   } catch {
     // Not logged: a failure inside the router can carry a store's text in its message.

@@ -242,3 +242,34 @@ describe('a peer call hands on the calling request’s id (#2192)', () => {
     expect(peer.calls[0]!.rest).toEqual([]);
   });
 });
+
+describe('a platform call hands on the calling request’s trace; a third party gets none (#3368)', () => {
+  const TRACE = `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`;
+  const callWith = (env: Env, headers: Record<string, string>) =>
+    worker.fetch(
+      new Request(PEER_CALL_URL, { method: 'POST', headers, body: JSON.stringify({ vertical: 'acme/crm', operation: 'customer/list' }) }),
+      env,
+    );
+
+  it('passes a well-formed trace beside the caller, with the parent', async () => {
+    const peer = peerCalls();
+    await callWith(envWith({ PEER_CALLS: peer.binding, OUTBOUND_POLICY: policy() }), { [PARENT_REQUEST_ID_HEADER]: '01JABCDEFGHJKMNPQRSTVWXYZ0', traceparent: TRACE });
+    expect(peer.calls[0]!.rest).toEqual([{ parentInvocationId: '01JABCDEFGHJKMNPQRSTVWXYZ0', traceparent: TRACE }]);
+    expect(peer.calls[0]!.caller).not.toHaveProperty('traceparent');
+  });
+
+  it('drops a malformed trace, so the router starts one', async () => {
+    const peer = peerCalls();
+    await callWith(envWith({ PEER_CALLS: peer.binding, OUTBOUND_POLICY: policy() }), { traceparent: TRACE.toUpperCase() });
+    expect(peer.calls[0]!.rest).toEqual([]);
+  });
+
+  it('adds no trace header to a call to a third party', async () => {
+    const internet = vi.fn(async (_request: Request) => new Response('third party'));
+    vi.stubGlobal('fetch', internet);
+    await worker.fetch(new Request('https://api.example.com/v1'), envWith({ OUTBOUND_POLICY: policy({ hosts: ['api.example.com'] }) }));
+    const sent = internet.mock.calls[0]![0];
+    expect(sent.headers.has('traceparent')).toBe(false);
+    expect(sent.headers.has('tracestate')).toBe(false);
+  });
+});

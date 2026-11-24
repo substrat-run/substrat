@@ -170,6 +170,32 @@ describe('scope store door (cloudflare host, #2209)', () => {
     expect(refusal).toMatchObject({ code: 'forbidden', storeCode: 'substrat.refused' });
   });
 
+  it('the platform hop sends the running request’s trace, and only one that parses (#3368)', async () => {
+    const sent: (string | null)[] = [];
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      fetch: async (_input, init) => {
+        sent.push(new Headers(init?.headers).get('traceparent'));
+        return Response.json({ result: 1 });
+      },
+    });
+    const store = await host.getScopeStore(principal, tenantId.parse(ulid()), scopeId.parse(ulid()), 'GRAPH');
+    const key = Symbol.for('substrat.store-call-sink');
+    const g = globalThis as Record<symbol, unknown>;
+    const previous = g[key];
+    const trace = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+    try {
+      for (const value of [trace, 'not-a-trace']) {
+        g[key] = { current: () => undefined, traceparent: () => value };
+        await store.invoke('read');
+      }
+    } finally {
+      g[key] = previous;
+    }
+    expect(sent).toEqual([trace, null]);
+  });
+
   it("refuses transport 'platform' beside runners, which would never be used (#2288)", () => {
     const runner: ScopeStoreRunner = { driver: 'counter', async start() {}, async stop() {}, async invoke() { return { result: 0 }; } };
     expect(

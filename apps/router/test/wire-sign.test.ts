@@ -93,7 +93,11 @@ const ON = () => ({ WIRE_SIGN: 'on', WIRE_ROUTER_KEY: active.privateKey });
 
 /** A request as it left the router: method, url, every header, and the body. */
 async function shapeOf(request: Request) {
-  return { method: request.method, url: request.url, headers: [...request.headers].sort(), body: await request.text() };
+  // #3368: each dispatch goes out under a span of its own, so the trace is compared by its shape.
+  const headers = [...request.headers].map(([k, v]): [string, string] =>
+    k === 'traceparent' ? [k, v.replace(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/, 'a traceparent')] : [k, v],
+  );
+  return { method: request.method, url: request.url, headers: headers.sort(), body: await request.text() };
 }
 
 const claimsOf = (request: Request): WireClaims => decodeWireEnvelope(request.headers.get(WIRE_ENVELOPE_HEADER) ?? '')!.claims;

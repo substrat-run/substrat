@@ -60,8 +60,8 @@ function dispatch(response: () => Response = () => Response.json({ ok: true, res
   return Object.assign(ns, { seen: () => seen });
 }
 
-const call = (env: Partial<Env>, t: unknown, r: unknown) =>
-  handleConnectorCall({ PLATFORM_SECRET: SECRET, ...env } as unknown as Env, t, r);
+const call = (env: Partial<Env>, t: unknown, r: unknown, context?: unknown) =>
+  handleConnectorCall({ PLATFORM_SECRET: SECRET, ...env } as unknown as Env, t, r, context);
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -130,6 +130,20 @@ describe('ConnectorCalls', () => {
   });
 });
 
+describe('a connector call carries its trace (#3368)', () => {
+  const TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
+
+  it('continues the trace the control plane handed over, and starts one when it handed none', async () => {
+    const ns = dispatch();
+    await call({ DISPATCH: ns }, target(), sweep(), { traceparent: `00-${TRACE}-00f067aa0ba902b7-01` });
+    await call({ DISPATCH: ns }, target(), sweep());
+    const [continued, started] = ns.seen().map((s) => s.request!.headers.get('traceparent')!);
+    expect(continued).toMatch(new RegExp(`^00-${TRACE}-(?!00f067aa0ba902b7)[0-9a-f]{16}-01$`));
+    expect(started).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+    expect(started).not.toContain(TRACE);
+  });
+});
+
 describe('ConnectorCalls.callScript (docs/rfc/connector-scripts.md)', () => {
   const scriptTarget = (over: Record<string, unknown> = {}) => ({
     script: 'substrat-connector-bolagsverket',
@@ -138,7 +152,14 @@ describe('ConnectorCalls.callScript (docs/rfc/connector-scripts.md)', () => {
     ...over,
   });
   const candidate = { role: 'probe-candidate', provider: 'bolagsverket', secret: { clientId: 'c', clientSecret: 's' }, config: { environment: 'prod' } };
-  const callScript = (env: Partial<Env>, t: unknown, r: unknown) => handleConnectorScriptCall({ PLATFORM_SECRET: SECRET, ...env } as unknown as Env, t, r);
+  const callScript = (env: Partial<Env>, t: unknown, r: unknown, context?: unknown) =>
+    handleConnectorScriptCall({ PLATFORM_SECRET: SECRET, ...env } as unknown as Env, t, r, context);
+
+  it('carries the trace the control plane handed over (#3368)', async () => {
+    const ns = dispatch(() => Response.json({ ok: true, result: null, state: [], uses: [] }));
+    await callScript({ DISPATCH: ns }, scriptTarget({ tenantId: null }), candidate, { traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' });
+    expect(ns.seen()[0]?.request?.headers.get('traceparent')).toMatch(/^00-4bf92f3577b34da6a3ce929d0e0e4736-[0-9a-f]{16}-01$/);
+  });
 
   it("dispatches into the script under the connector's own egress, with no scope, no secret and no envelope", async () => {
     const ns = dispatch(() => Response.json({ ok: true, result: null, state: [], uses: [] }));

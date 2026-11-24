@@ -304,6 +304,16 @@ describe('/internal/vertical-invoke — the peer door over HTTP (#1706)', () => 
       expect(output().join('\n')).not.toContain(value);
     });
 
+    it('names the caller’s trace, as the router continued it, and a new one for a malformed one (#3368)', async () => {
+      const TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
+      await post(note('traced'), { ...platform, traceparent: `00-${TRACE}-00f067aa0ba902b7-01` });
+      await post(note('bad-trace'), { ...platform, traceparent: `00-${TRACE}-00f067aa0ba902b7-01, x` });
+      expect(lines()).toHaveLength(2);
+      expect(lines()[0]).toMatchObject({ traceId: TRACE });
+      expect(lines()[1]!['traceId']).toMatch(/^[0-9a-f]{32}$/);
+      expect(lines()[1]!['traceId']).not.toBe(TRACE);
+    });
+
     it('a call with no parent writes no parent key, so the line is what it was before the field', async () => {
       await post(note('no-parent'), platform);
       expect(lines()).toHaveLength(1);
