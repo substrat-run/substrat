@@ -1,12 +1,15 @@
 ---
-status: accepted
+status: superseded
+superseded-by: ../decisions/K-064-a-scope-has-a-declared-type-and-may-have-a-parent-and-nothing-crosses-a-scope-s-boundary-inside-its-transaction.md
 layer: kernel
 description: A tenant-level store instance that several verticals of one tenant connect to, weighed against the per-scope store of K-49/K-50. Four options, three authorization shapes, the lifecycle a shared object needs, and what it does to the open scope-store stack. Records the maintainer's direction of 2026-10-15: named tenant-level instances with explicit connections and platform-addressed partitions (B), a script per partition as the upgrade for stronger separation (B′), and per-scope stores kept for scope-grain drivers. Accepted: its 22 questions were answered on 2026-10-15 and the direction is K-53.
 ---
 
 # RFC: store instances
 
-**Status: accepted** (the 22 questions of §12 answered 2026-10-15, §12.1; the direction
+**Status: superseded** by [K-64](../decisions/K-064-a-scope-has-a-declared-type-and-may-have-a-parent-and-nothing-crosses-a-scope-s-boundary-inside-its-transaction.md)
+on 2026-11-24: no store is shared between a tenant's apps, and every driver is scope-grain. Before
+that it was accepted (the 22 questions of §12 answered 2026-10-15, §12.1; the direction
 recorded as [K-53](../decisions/K-053-a-tenant-level-store-is-a-named-instance-that-a-tenant-s-verticals-connect-to-explicitly.md);
 open: the background-write record of Q14, the K-52 amendment for tenant-grain envelopes and
 the `reader` audience, the quota numbers, and the isolation requirements of §11.1; the rename
