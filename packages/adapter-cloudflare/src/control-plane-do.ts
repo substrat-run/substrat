@@ -2463,11 +2463,9 @@ export class ControlPlaneDO extends DurableObject {
           // Untyped columns: no affinity, so every value is copied exactly as the table holds it.
           const neutral = columns.map((_, i) => `c${i}`).join(', ');
           this.sql.exec(`CREATE TABLE "${copyRowsTable(ord)}" (${neutral})`);
-          if (reference) {
-            this.sql.exec(`INSERT INTO "${copyRowsTable(ord)}" (rowid, ${neutral}) SELECT rowid, * FROM "${name}" WHERE ${where}`);
-          } else {
-            this.sql.exec(`INSERT INTO "${copyRowsTable(ord)}" SELECT * FROM "${name}" WHERE ${where}`);
-          }
+          // A by-reference table under `verify` keeps each row at its source rowid, for the last page's join.
+          const rows = reference ? `(rowid, ${neutral}) SELECT rowid, *` : 'SELECT *';
+          this.sql.exec(`INSERT INTO "${copyRowsTable(ord)}" ${rows} FROM "${name}" WHERE ${where}`);
         }
         this.sql.exec(
           `INSERT INTO _directory_copy_tables (ord, name, ddl, columns, reference, horizon, row_count) VALUES (?, ?, ?, ?, ?, ?, ?)`,
