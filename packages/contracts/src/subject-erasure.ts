@@ -49,6 +49,12 @@ export const entityErasure = z
     /** The columns whose value is a data subject id. Required for `blank` and `delete`. */
     subjects: z.array(sqlName).min(1).optional(),
     /**
+     * The entity's primary key columns, in key order (#3303). Subject access pages the entity's rows
+     * by it, so a row written or deleted between two pages neither repeats nor skips one. Optional:
+     * a manifest derived before it was carried still parses, and its rows are paged by offset.
+     */
+    primaryKey: z.array(sqlName).min(1).optional(),
+    /**
      * The erasable fields, each with what a blank writes into it: NULL where the field admits
      * it, else the empty string. Decided from the field's schema at derive time, so a NOT NULL
      * column is never handed a NULL it would refuse mid-erasure.

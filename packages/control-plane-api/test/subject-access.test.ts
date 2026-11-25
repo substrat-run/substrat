@@ -119,6 +119,8 @@ describe('subject access (D-74)', () => {
     expect(typeof numbered.host).toBe('string');
     expect(String(numbered.host)).not.toContain('4242');
     expect(visits.maskedColumns).toEqual(['guest', 'host']);
+    // The model's key reached the manifest, so the rows were paged by it (#3303).
+    expect(visits.paging).toBe('key');
     // The other person's id never appears; the subject's own does, where it is theirs.
     expect(JSON.stringify(pkg)).not.toContain(other);
     expect(visits.rows.flatMap((r) => [r.guest, r.host])).toContain(who);

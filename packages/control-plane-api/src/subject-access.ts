@@ -73,6 +73,12 @@ export interface PackageRecords {
   mode: 'blank' | 'delete';
   rows: Record<string, unknown>[];
   maskedColumns: string[];
+  /**
+   * How the entity's rows were paged (#3303). `offset`: the vertical's manifest carries no primary
+   * key for the entity (or its kernel predates paging by one), so a write to the scope while the
+   * package was read may have repeated or skipped one of its rows.
+   */
+  paging: 'key' | 'offset';
 }
 
 export interface SubjectAccessPackage {
@@ -181,7 +187,14 @@ export async function assembleSubjectAccess(
       }
       return out;
     });
-    return { module: r.module, entityType: r.entityType, mode: r.mode, rows, maskedColumns: [...masked].sort() };
+    return {
+      module: r.module,
+      entityType: r.entityType,
+      mode: r.mode,
+      rows,
+      maskedColumns: [...masked].sort(),
+      paging: r.paging ?? 'offset',
+    };
   });
 
   const events: PackageEvent[] = folded.events.map((e) => ({

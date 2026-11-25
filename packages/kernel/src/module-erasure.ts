@@ -353,6 +353,11 @@ export function subjectMatchOf(
   return { where: `(${subjects.map((s) => `${s} = ?`).join(' OR ')})`, params: subjects.map(() => subjectId) };
 }
 
+/** A declared column (a subject or primary key column), re-checked as an identifier. */
+export function erasureColumnOf(column: string): string {
+  return ident(column);
+}
+
 /** The declared table of a `blank`/`delete` entity, re-checked as an identifier. */
 export function erasureTableOf(entity: { readonly table: string }): string {
   return ident(entity.table);
