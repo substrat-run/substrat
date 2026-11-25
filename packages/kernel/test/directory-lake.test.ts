@@ -8,6 +8,7 @@ import {
   ensureDirectoryLakeTriggers,
   advanceDirectoryLakeBackfill,
   parseDirectoryLakeCapture,
+  pruneDirectoryLakeWindow,
   readDirectoryLakeBackfill,
   readDirectoryOutbox,
   setDirectoryLakeCapture,
@@ -145,6 +146,30 @@ describe('the directory outbox (K-70)', () => {
     expect(advanceDirectoryLakeBackfill(d.sql, 'access_log', { after: 0, next: 9, done: true }, NOW).changed).toBe(false);
   });
 
+  it('prunes only once the lake provably holds the rows, older than the window, and ships no delete', () => {
+    const d = directory();
+    d.access('A1'); // at NOW
+    const after = '2026-11-26T00:00:00.000Z';
+    expect(pruneDirectoryLakeWindow(d.sql, 'access_log', after, 10)).toEqual({ pruned: 0, refused: 'not-capturing' });
+    setDirectoryLakeCapture(d.sql, ['access_log', 'meter_days'], NOW);
+    expect(pruneDirectoryLakeWindow(d.sql, 'access_log', after, 10)).toEqual({ pruned: 0, refused: 'not-backfilled' });
+    advanceDirectoryLakeBackfill(d.sql, 'access_log', { after: 0, next: 1, done: true }, NOW);
+    d.access('A2'); // queued, not yet shipped
+    expect(pruneDirectoryLakeWindow(d.sql, 'access_log', after, 10)).toEqual({ pruned: 0, refused: 'queued-before-window' });
+    ackDirectoryOutbox(d.sql, readDirectoryOutbox(d.sql, 10).at(-1)!.seq!);
+    expect(pruneDirectoryLakeWindow(d.sql, 'access_log', NOW, 10)).toEqual({ pruned: 0, refused: null });
+    expect(pruneDirectoryLakeWindow(d.sql, 'access_log', after, 1)).toEqual({ pruned: 1, refused: null });
+    expect(pruneDirectoryLakeWindow(d.sql, 'access_log', after, 10)).toEqual({ pruned: 1, refused: null });
+    expect(readDirectoryOutbox(d.sql, 10)).toEqual([]);
+
+    // A day-keyed set compares the day with the cut's UTC day.
+    advanceDirectoryLakeBackfill(d.sql, 'meter_days', { after: 0, next: null, done: true }, NOW);
+    d.meter('2026-11-24', 'active');
+    ackDirectoryOutbox(d.sql, readDirectoryOutbox(d.sql, 10).at(-1)!.seq!);
+    expect(pruneDirectoryLakeWindow(d.sql, 'meter_days', '2026-11-24T23:00:00.000Z', 10).pruned).toBe(0);
+    expect(pruneDirectoryLakeWindow(d.sql, 'meter_days', '2026-11-25T00:00:00.000Z', 10).pruned).toBe(1);
+  });
+
   it('reads the switch from the environment, refusing a name it does not know', () => {
     expect(parseDirectoryLakeCapture(undefined)).toEqual([]);
     expect(parseDirectoryLakeCapture(' off ')).toEqual([]);
@@ -159,6 +184,7 @@ describe('the pass phase', () => {
   const adminOver = (sql: RedactionSql): HostAdmin =>
     ({
       setDirectoryLakeCapture: async (_a, ds) => setDirectoryLakeCapture(sql, ds, NOW),
+      pruneDirectoryLakeWindow: async (_a, ds, before, limit) => pruneDirectoryLakeWindow(sql, ds, before, limit),
       directoryOutbox: async (_a, limit) => readDirectoryOutbox(sql, limit),
       ackDirectoryOutbox: async (_a, upTo) => ackDirectoryOutbox(sql, upTo),
     }) as Partial<HostAdmin> as HostAdmin;
@@ -185,5 +211,18 @@ describe('the pass phase', () => {
       sink: { ship: async () => { throw new Error('stream down'); } }, capture: ['access_log'],
     }, report())).rejects.toThrow('stream down');
     expect(readDirectoryOutbox(d.sql, 10).map((r) => r.rowKey)).toEqual(['A4']);
+  });
+
+  it('prunes after the drain, only the listed data sets, and reports why one pruned nothing', async () => {
+    const d = directory();
+    const admin = adminOver(d.sql);
+    const sink = { ship: async () => ({ ref: 'r' }) };
+    await sweepDirectoryLake(admin, actor, { sink, capture: ['access_log', 'meter_days'] }, report());
+    advanceDirectoryLakeBackfill(d.sql, 'access_log', { after: 0, next: null, done: true }, NOW);
+    d.access('A1'); // queued now, shipped by the same pass that prunes it
+    const out = report();
+    const nowMs = Date.parse('2027-01-01T00:00:00.000Z');
+    await sweepDirectoryLake(admin, actor, { sink, capture: ['access_log', 'meter_days'], prune: ['access_log', 'meter_days'], nowMs }, out);
+    expect(out.pruned).toEqual({ access_log: 1, meter_days: 'not-backfilled' });
   });
 });

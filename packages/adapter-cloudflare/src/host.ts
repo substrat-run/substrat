@@ -333,6 +333,7 @@ import type {
   DirectoryLakeCaptureResult,
   DirectoryLakeCaptureState,
   DirectoryLakeDataset,
+  DirectoryLakePruneRefusal,
   DirectoryLakeRow,
 } from '@substrat-run/kernel';
 import {
@@ -1404,6 +1405,7 @@ interface ControlPlaneStub {
   ackDirectoryOutbox(upToSeq: number, ref: string, audit: AdminEntry): Promise<number>;
   directoryLakeBackfill(dataset: DirectoryLakeDataset, after: number, limit: number): Promise<DirectoryLakeBackfillPage>;
   advanceDirectoryLakeBackfill(dataset: DirectoryLakeDataset, page: { after: number; next: number | null; done: boolean }, audit: AdminEntry): Promise<DirectoryLakeCaptureState>;
+  pruneDirectoryLakeWindow(dataset: DirectoryLakeDataset, before: string, limit: number, audit: AdminEntry): Promise<{ pruned: number; refused: DirectoryLakePruneRefusal | null }>;
   // #37 — the per-subject key store. Storage only; the crypto is the kernel's.
   readSubjectKey(
     scopeId: string,
@@ -11365,6 +11367,9 @@ export class CloudflareScopeHost implements ScopeHost {
       advanceDirectoryLakeBackfill: async (actor, dataset, page) =>
         this.directory('advanceDirectoryLakeBackfill', dataset, page,
           this.adminEntry(actor, 'backfillDirectoryLake', { tenantId: null }, null, null)),
+      pruneDirectoryLakeWindow: async (actor, dataset, before, limit) =>
+        this.directory('pruneDirectoryLakeWindow', dataset, before, assertRowLimit('limit', limit),
+          this.adminEntry(actor, 'pruneDirectoryLake', { tenantId: null }, null, null)),
       auditLog: async (actor, filter?: AuditLogFilter): Promise<AdminLogEntry[]> => {
         const rows = await this.cp.auditLog({
           tenantId: filter?.tenantId,

@@ -425,6 +425,43 @@ export function advanceDirectoryLakeBackfill(
   return { state: readDirectoryLakeCapture(sql).find((c) => c.dataset === dataset)!, changed: true };
 }
 
+/** Why a prune of a data set did nothing this time, when it did nothing for a reason. */
+export type DirectoryLakePruneRefusal = 'not-capturing' | 'not-backfilled' | 'queued-before-window';
+
+/**
+ * K-70's window, applied: delete up to `limit` of a data set's rows older than `before`, oldest
+ * first, **only rows the lake already holds.** That is provable for a data set, not per row:
+ *
+ * - it captures, and its backfill reached the end (`backfilledAt`), so every row written before
+ *   capture began was shipped by the backfill and every row since was queued by its trigger;
+ * - and none of its queued rows is older than `before`, so every such row has been confirmed by
+ *   the sink and acknowledged out of the outbox.
+ *
+ * Otherwise it deletes nothing and says why. A delete queues nothing (no delete trigger), so the
+ * lake keeps every pruned row. Day-keyed data sets compare the day with `before`'s UTC day.
+ */
+export function pruneDirectoryLakeWindow(
+  sql: RedactionSql,
+  dataset: DirectoryLakeDataset,
+  before: string,
+  limit: number,
+): { pruned: number; refused: DirectoryLakePruneRefusal | null } {
+  assertRowLimit('limit', limit);
+  if (!isDirectoryLakeDataset(dataset)) throw new Error(`directory lake: no data set named ${String(dataset)}`);
+  const held = readDirectoryLakeCapture(sql).find((c) => c.dataset === dataset);
+  if (!held) return { pruned: 0, refused: 'not-capturing' };
+  if (held.backfilledAt === null) return { pruned: 0, refused: 'not-backfilled' };
+  const spec: DirectoryLakeDatasetSpec = DIRECTORY_LAKE_DATASETS[dataset];
+  const cut = spec.at === 'day' ? before.slice(0, 10) : before;
+  const queued = sql(`SELECT 1 AS q FROM _substrat_directory_outbox WHERE dataset = ? AND at < ? LIMIT 1`, [dataset, cut]);
+  if (queued.length > 0) return { pruned: 0, refused: 'queued-before-window' };
+  const table = quoteIdent(spec.table);
+  const doomed = sql(`SELECT rowid AS rid FROM ${table} WHERE ${quoteIdent(spec.at)} < ? ORDER BY rowid LIMIT ?`, [cut, limit]) as { rid: number }[];
+  if (doomed.length === 0) return { pruned: 0, refused: null };
+  sql(`DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE ${quoteIdent(spec.at)} < ? ORDER BY rowid LIMIT ?)`, [cut, limit]);
+  return { pruned: doomed.length, refused: null };
+}
+
 /**
  * The switch as the control plane's environment spells it: unset, empty or `off` captures
  * nothing; `all` captures every data set; otherwise a comma list of data set names. A name this
@@ -457,6 +494,16 @@ export interface DirectoryLakeSweepOptions {
   sink: DirectoryLakeSink;
   /** The data sets that capture. Empty switches capture off; queued rows still drain. */
   capture: readonly DirectoryLakeDataset[];
+  /**
+   * The data sets whose rows older than the window are pruned once the lake holds them
+   * (`pruneDirectoryLakeWindow`). Empty, the default, prunes nothing. The caller decides which may
+   * be listed: one whose history readers do not read the lake yet must not be.
+   */
+  prune?: readonly DirectoryLakeDataset[];
+  /** The window, in days; `DIRECTORY_LAKE_WINDOW_DAYS` by default. */
+  windowDays?: number;
+  /** The pass's clock, for the window's start. */
+  nowMs?: number;
   batch?: number;
   batchesPerPass?: number;
 }
@@ -467,6 +514,8 @@ export interface DirectoryLakeSweepReport {
   shipped: number;
   acked: number;
   ref: string | null;
+  /** Per data set listed for pruning: rows pruned this pass, or why none were. */
+  pruned?: Partial<Record<DirectoryLakeDataset, number | DirectoryLakePruneRefusal>>;
 }
 
 /**
@@ -492,6 +541,22 @@ export async function sweepDirectoryLake(
     out.shipped += pending.length;
     out.ref = ref;
     out.acked += await admin.ackDirectoryOutbox(actor, pending[pending.length - 1]!.seq!, ref);
-    if (pending.length < batch) return;
+    if (pending.length < batch) break;
+  }
+  // After the drain, so rows it just acknowledged count as shipped.
+  if (options.prune && options.prune.length > 0 && admin.pruneDirectoryLakeWindow) {
+    const before = new Date((options.nowMs ?? Date.now()) - (options.windowDays ?? DIRECTORY_LAKE_WINDOW_DAYS) * 86_400_000).toISOString();
+    out.pruned = {};
+    for (const dataset of options.prune) {
+      let total = 0;
+      let refused: DirectoryLakePruneRefusal | null = null;
+      for (let i = 0; i < batches; i++) {
+        const r = await admin.pruneDirectoryLakeWindow(actor, dataset, before, batch);
+        total += r.pruned;
+        refused = r.refused;
+        if (r.refused !== null || r.pruned < batch) break;
+      }
+      out.pruned[dataset] = total === 0 && refused !== null ? refused : total;
+    }
   }
 }

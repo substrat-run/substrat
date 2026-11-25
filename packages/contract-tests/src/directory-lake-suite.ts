@@ -62,6 +62,26 @@ export function directoryLakeContractSuite(adapterName: string, makeFixture: () 
       }
     });
 
+    it('prunes nothing for a data set not capturing or not backfilled, and records no row when it pruned nothing', async () => {
+      const { host, cleanup } = await makeFixture();
+      const staff = platformActorId.parse(ulid());
+      // A cut far in the past: this case asserts the refusals and the no-op, and never deletes a
+      // row another case of a shared directory reads.
+      const before = '2000-01-01T00:00:00.000Z';
+      try {
+        expect(await host.admin.pruneDirectoryLakeWindow!(staff, 'admin_log', before, 10)).toEqual({ pruned: 0, refused: 'not-capturing' });
+        await host.admin.setDirectoryLakeCapture!(staff, ['admin_log']);
+        expect(await host.admin.pruneDirectoryLakeWindow!(staff, 'admin_log', before, 10)).toEqual({ pruned: 0, refused: 'not-backfilled' });
+        const [state] = await host.admin.directoryLakeCapture!(staff);
+        await host.admin.advanceDirectoryLakeBackfill!(staff, 'admin_log', { after: 0, next: state!.backfillUntil, done: true });
+        expect(await host.admin.pruneDirectoryLakeWindow!(staff, 'admin_log', before, 10)).toEqual({ pruned: 0, refused: null });
+        expect(await host.admin.auditLog(staff, { action: 'pruneDirectoryLake', actor: staff })).toEqual([]);
+      } finally {
+        await host.admin.setDirectoryLakeCapture!(staff, []);
+        await cleanup();
+      }
+    });
+
     it('backfills rows written before capture, and records a backfill only while capturing and without a gap', async () => {
       const { host, cleanup } = await makeFixture();
       const staff = platformActorId.parse(ulid());

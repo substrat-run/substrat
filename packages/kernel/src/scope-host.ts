@@ -252,6 +252,7 @@ import type {
   DirectoryLakeCaptureResult,
   DirectoryLakeCaptureState,
   DirectoryLakeDataset,
+  DirectoryLakePruneRefusal,
   DirectoryLakeRow,
 } from './directory-lake.js';
 // Type-only, and the cycle it completes is therefore not one at runtime: `job-run.ts`
@@ -4982,6 +4983,18 @@ export interface HostAdmin {
     dataset: DirectoryLakeDataset,
     page: { after: number; next: number | null; done: boolean },
   ): Promise<DirectoryLakeCaptureState>;
+
+  /**
+   * K-70's window: delete up to `limit` of a data set's rows older than `before`, only once the lake
+   * provably holds them (`pruneDirectoryLakeWindow`). One `pruneDirectoryLake` admin row, in the same
+   * transaction, when anything was deleted. Called by the pass only for data sets its switch lists.
+   */
+  pruneDirectoryLakeWindow?(
+    actor: PlatformActorId,
+    dataset: DirectoryLakeDataset,
+    before: string,
+    limit: number,
+  ): Promise<{ pruned: number; refused: DirectoryLakePruneRefusal | null }>;
 }
 
 export interface ProvisionScopeInput {
