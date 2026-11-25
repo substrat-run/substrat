@@ -66,7 +66,7 @@ export const SCOPE_WORK_ORIGINS = {
   executor: [
     'pendingExecutorDeliveries', 'pendingExecutorEvents', 'recordExecutorAttempt', 'executorAttempts', 'executorDeadLetters',
     'pendingPlatformRequests', 'platformRequestHistory', 'settlePlatformRequest', 'settlePlatformRequestWithEvent',
-    'routeExecutorEventToPlatform',
+    'routeExecutorEventToPlatform', 'retryPlatformRequest', 'retryExecutorDelivery',
   ],
   'event-import': ['importApply', 'importCursorMove', 'importStateRead'],
   export: ['exportDump', 'exportDumpPage', 'exportDumpChanges', 'exportDumpStamped', 'endDumpCapture', 'estimateDump'],

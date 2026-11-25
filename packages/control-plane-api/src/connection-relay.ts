@@ -178,6 +178,13 @@ export async function relayConnectionUpsert(
       scopeOwnable: (provider: string) => boolean;
       readLandings: ConnectionLandingOptionsInput['read'];
     };
+    /**
+     * #3365: told once a credential is stored, created or rotated. A connector's routed deliveries
+     * that failed for want of it are pending in the tenant's scopes, and this is the moment to
+     * drain them rather than wait for the sweep. Never awaited for the answer, and never a reason
+     * to fail the upsert that has already happened.
+     */
+    onUpserted?: (connection: { tenantId: TenantId; vertical: string; provider: string }) => void;
   } = {},
 ): Promise<ConnectionRelayResult> {
   const parsed = connectionRelayRequest.safeParse(body);
@@ -399,6 +406,12 @@ export async function relayConnectionUpsert(
   // added to replace. A refusal never reaches here (it threw above), and an unreachable
   // provider records nothing: unverified must not look like failed.
   if (probe?.ok) await host.admin.recordConnectionUse(id, { ok: true });
+
+  try {
+    options.onUpserted?.({ tenantId: input.tenantId, vertical, provider: input.provider });
+  } catch {
+    // The credential is stored; a drain that could not be asked for is the sweep's.
+  }
 
   return { connectionId: id, created, granted: grants, ...(probe ? { probe } : {}) };
 }

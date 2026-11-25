@@ -32,7 +32,15 @@ export interface KickCoalescerConfig<Env> {
    * authority lives: the deployment runs `runCrossVerticalFrom` here with the same reach and
    * gates as its sweep, so this object decides only WHEN, never what or for whom.
    */
-  run(env: Env, producer: KickProducer): Promise<void>;
+  run(env: Env, producer: KickProducer): Promise<void | { more?: boolean }>;
+  /**
+   * #3365: every pass runs from the alarm, never inside the kick. A kick only marks the producer
+   * dirty and arms the alarm (at once when no pass started within the window), so a pass is never
+   * bound by its caller's lifetime — a router's `waitUntil`, which cut a drain off at ~30 s and
+   * cancelled the connector call in flight. Default false: the kick runs the pass it starts, as the
+   * cross-vertical kick always has.
+   */
+  passesFromAlarm?: boolean;
   /** A pass that threw. Never rethrown: a lost kick costs latency, and the sweep is the backstop. */
   onError?(err: unknown, env: Env): void;
 }
@@ -86,7 +94,7 @@ export function defineKickCoalescerDO<Env>(
         return 'coalesced';
       }
       const now = Date.now();
-      if (now - state.lastStartedAt < windowMs) {
+      if (config.passesFromAlarm || now - state.lastStartedAt < windowMs) {
         await this.ctx.storage.put('state', { ...state, dirty: true });
         await this.#armFor(state.lastStartedAt);
         return 'deferred';
@@ -122,7 +130,13 @@ export function defineKickCoalescerDO<Env>(
       await this.ctx.storage.put('state', { ...state, lastStartedAt: startedAt, dirty: false });
       this.#running = (async () => {
         try {
-          await config.run(this.env, state.producer);
+          const outcome = await config.run(this.env, state.producer);
+          // #3365: the pass stopped with work left (a deadline, its last round). Dirty again, so
+          // the alarm at this window's end runs the next one, and so on until a pass finishes.
+          if (outcome && outcome.more) {
+            const now = await this.ctx.storage.get<KickState>('state');
+            if (now) await this.ctx.storage.put('state', { ...now, dirty: true });
+          }
         } catch (err) {
           config.onError?.(err, this.env);
         }

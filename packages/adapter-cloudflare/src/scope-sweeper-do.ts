@@ -329,9 +329,14 @@ export function defineScopeSweeperDO<Env>(
               continue;
             }
           }
+          let needsPlatformDrain = false;
           if (config.drainRetries !== false) {
             try {
               const r = await host.drainDue(tenantId, scopeId);
+              // #3365: a delivery this pass routed is the platform's to run, and one it left for
+              // want of room waits for a drain to make it. Either asks for the drain now: before
+              // this, only a schedule's intent did, and routed deliveries waited for the 15-minute sweep.
+              if ((r.routedToPlatform ?? 0) > 0 || (r.awaitingRoom ?? 0) > 0) needsPlatformDrain = true;
               report.drainTotals.attempted += r.attempted;
               report.drainTotals.delivered += r.delivered;
               report.drainTotals.retrying += r.retrying;
@@ -370,7 +375,6 @@ export function defineScopeSweeperDO<Env>(
             }
           }
           let touched = false;
-          let needsPlatformDrain = false;
           // #1232: the pass's outcomes, batched for ONE intent per scope — a pass every
           // couple of minutes times N schedules cannot be one intent each against the
           // journal cap. Stamped with pass time here; the drain runs a window later.

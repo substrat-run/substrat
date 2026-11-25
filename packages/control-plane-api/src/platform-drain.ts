@@ -38,6 +38,7 @@ import {
   type z,
   type PlatformActorId,
   type PlatformRequest,
+  type PlatformRequestEntry,
   type PlatformRequestFailure,
   type PlatformOutcomeEvent,
   type Scope,
@@ -175,6 +176,12 @@ export interface PlatformDrainReport {
     /** The stored ids, as text (`null` for SQL NULL), the first {@link UNSETTLEABLE_IDS} of them. */
     ids: (string | null)[];
   };
+  /**
+   * #3365: the drain stopped at its deadline or its last round with intents it had not reached,
+   * or with new ones arriving. A caller that can come back (`ScopeDrainKickDO`) drains again soon.
+   * Absent otherwise, and always absent from a single-round drain with no deadline.
+   */
+  more?: true;
 }
 
 /** How many stored ids an `unsettleable` report names; `count` stays exact. */
@@ -224,6 +231,15 @@ export interface PlatformDrainOptions {
   skip?: ReadonlySet<string>;
   /** #2431: filled with the id of each intent this drain dispatches, for a later drain's `skip`. */
   attempted?: string[];
+  /**
+   * #3365: how many times the drain lists the scope's intents. After each round that settled
+   * something, the scope routes the deliveries a full room left due (`routeDueDeliveries`), and the
+   * next round runs what is new — never an intent this drain already tried. Default 1: one listing,
+   * as the drain always was. Out of rounds with work still arriving, the report says `more`.
+   */
+  rounds?: number;
+  /** #3365: epoch ms (on {@link now}'s clock) after which no further intent is started; `more` then. */
+  deadline?: number;
   /**
    * The handler for a kind `handlers` has no entry for (a vertical-defined provider's
    * `connector:<namespace>.<name>`). Asked only when the record has none; absent, or answering
@@ -374,28 +390,20 @@ function withheldAttribution(failure: PlatformRequestFailure | undefined): Platf
  * The `VerticalClient` transport is narrowed so tests can pass a fake.
  */
 export async function drainScopePlatformRequests(
-  client: Pick<VerticalClient, 'listPlatformRequests' | 'settlePlatformRequest'>,
+  client: Pick<VerticalClient, 'listPlatformRequests' | 'settlePlatformRequest'> & Partial<Pick<VerticalClient, 'routeDueDeliveries'>>,
   ctx: PlatformDrainContext,
   handlers: Record<string, PlatformRequestHandler>,
   opts?: PlatformDrainOptions,
 ): Promise<PlatformDrainReport> {
-  const listed = await client.listPlatformRequests(ctx.tenantId, ctx.scopeId);
-  // #1637: a row whose identity did not decode can be refused only if its stored id is still an
-  // id — the settle route parses it as a ULID. Decided on the id ITSELF, never on a settle's
-  // caught error, which would also swallow a transient outage. The rest are reported, not run.
-  const unsettleable = listed.filter((e) => isUndecodablePlatformRequest(e) && !platformRequestId.safeParse(e.id).success);
-  const pending = listed.filter((e) => !unsettleable.includes(e) && !(e.id !== null && opts?.skip?.has(e.id)));
-  const reported = unsettleable.length
-    ? { unsettleable: { count: unsettleable.length, ids: unsettleable.slice(0, UNSETTLEABLE_IDS).map((e) => e.id) } }
-    : {};
-  // #1713: a held scope's intents wait. Not settled `pending` either, since a settle counts an
-  // attempt and the ceiling would give up on an intent nobody tried.
-  if (lifecycleRefusal(ctx.lifecycle) !== null) {
-    return { drained: 0, done: 0, failed: 0, pending: pending.length, held: true, ...reported };
-  }
-  const report: PlatformDrainReport = { drained: pending.length, done: 0, failed: 0, pending: 0, ...reported };
+  const rounds = Math.max(1, opts?.rounds ?? 1);
+  const clock = () => (opts?.now?.() ?? new Date()).getTime();
+  // #3365: every intent this drain has dispatched, across its rounds — each is tried at most once
+  // per drain, so a failing one cannot be retried in a loop by the re-list.
+  const tried = new Set<string>(opts?.skip ?? []);
   const primary = isPrimaryScope(ctx.scope);
-  for (const request of pending) {
+  let report: PlatformDrainReport | undefined;
+  // The work for one intent: dispatch it, and settle what its handler decided.
+  const drainOne = async (request: PlatformRequestEntry, report: PlatformDrainReport): Promise<void> => {
     // A row whose identity did not decode has no kind to dispatch on; its id parses (above).
     const { id, kind, attempts } = isUndecodablePlatformRequest(request)
       ? { id: platformRequestId.parse(request.id), kind: 'undecodable', attempts: 0 }
@@ -442,7 +450,7 @@ export async function drainScopePlatformRequests(
     }
     if (outcome.status === 'deferred') {
       report.pending++;
-      continue;
+      return;
     }
     // The attempt ceiling (#570): `attempts` counts SETTLED passes, so this pass is
     // attempts + 1. At the ceiling a still-pending outcome settles `failed` carrying its
@@ -518,8 +526,55 @@ export async function drainScopePlatformRequests(
       ...(outcome.event ? { event: outcome.event } : {}),
     });
     report[status]++;
+  };
+  for (let round = 0; round < rounds; round++) {
+    const listed = await client.listPlatformRequests(ctx.tenantId, ctx.scopeId);
+    // #1637: a row whose identity did not decode can be refused only if its stored id is still an
+    // id — the settle route parses it as a ULID. Decided on the id ITSELF, never on a settle's
+    // caught error, which would also swallow a transient outage. The rest are reported, not run.
+    const unsettleable = listed.filter((e) => isUndecodablePlatformRequest(e) && !platformRequestId.safeParse(e.id).success);
+    const pending = listed.filter((e) => !unsettleable.includes(e) && !(e.id !== null && tried.has(e.id)));
+    const reported = unsettleable.length
+      ? { unsettleable: { count: unsettleable.length, ids: unsettleable.slice(0, UNSETTLEABLE_IDS).map((e) => e.id) } }
+      : {};
+    if (report === undefined) {
+      // #1713: a held scope's intents wait. Not settled `pending` either, since a settle counts an
+      // attempt and the ceiling would give up on an intent nobody tried.
+      if (lifecycleRefusal(ctx.lifecycle) !== null) {
+        return { drained: 0, done: 0, failed: 0, pending: pending.length, held: true, ...reported };
+      }
+      report = { drained: 0, done: 0, failed: 0, pending: 0, ...reported };
+    } else {
+      // The newest listing's count: an unsettleable row stays until an operator repairs it.
+      delete report.unsettleable;
+      Object.assign(report, reported);
+    }
+    if (pending.length === 0) break;
+    const settledBefore = report.done + report.failed;
+    for (const request of pending) {
+      // #3365: a deadline stops between intents, never inside one; what is left is `more`.
+      if (opts?.deadline !== undefined && clock() >= opts.deadline) {
+        report.more = true;
+        return report;
+      }
+      if (request.id !== null) tried.add(request.id);
+      report.drained++;
+      await drainOne(request, report);
+    }
+    if (round === rounds - 1) {
+      // Out of rounds with work still arriving: what the re-list would find is the next drain's.
+      if (rounds > 1) report.more = true;
+      break;
+    }
+    // #3365: the refill. Settles made room in the scope's journal; the deliveries a full room left
+    // due are routed into it now, and the next round's listing finds them. Only when room was made,
+    // and never a reason to fail the drain: a deployment that predates it answers null, and the
+    // next pass routes them.
+    if (report.done + report.failed > settledBefore && client.routeDueDeliveries) {
+      await client.routeDueDeliveries(ctx.tenantId, ctx.scopeId).catch(() => null);
+    }
   }
-  return report;
+  return report!;
 }
 
 /**

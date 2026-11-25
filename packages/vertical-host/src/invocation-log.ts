@@ -65,8 +65,11 @@ import {
   INVOCATION_RECORD_FIELD_MAX,
   INVOCATION_RECORD_HEADER,
   invocationLevelOf,
+  nextTraceparent,
   parentRequestIdOf,
   REQUEST_ID_HEADER,
+  TRACEPARENT_HEADER,
+  traceIdOf,
 } from '@substrat-run/contracts/invocation-record';
 import { forgetTraceStart, installedTraceSink, markTraceStart } from '@substrat-run/contracts/trace-sink';
 import type { EmittedReport, ScopeStoreStubOptions } from '@substrat-run/kernel';
@@ -179,7 +182,7 @@ interface StoreCallSlot extends StoreCallSinkSlot {
    * #2192: `invocationId` is the request's own, for a peer call to hand on. A slot that predates
    * it ignores the argument.
    */
-  run<R>(tally: RecordingTally, fn: () => R, invocationId?: string): R;
+  run<R>(tally: RecordingTally, fn: () => R, invocationId?: string, traceparent?: string): R;
   recording?(): OutboundRecording | undefined;
 }
 
@@ -214,14 +217,15 @@ function storeCallSlot(provided: AsyncLocalStorageClass | undefined): StoreCallS
     if (typeof existing?.run === 'function' && typeof existing.current === 'function') return existing as StoreCallSlot;
     const Als = provided ?? builtinAsyncLocalStorage();
     if (!Als) return undefined;
-    const storage = new Als<{ tally: RecordingTally; invocationId: string | undefined }>();
+    const storage = new Als<{ tally: RecordingTally; invocationId: string | undefined; traceparent?: string | undefined }>();
     const slot: StoreCallSlot = {
       current() {
         const tally = storage.getStore()?.tally;
         return tally ? (call) => tallyStoreCall(tally, call) : undefined;
       },
       invocationId: () => storage.getStore()?.invocationId,
-      run: (tally, fn, invocationId) => storage.run({ tally, invocationId }, fn),
+      traceparent: () => storage.getStore()?.traceparent,
+      run: (tally, fn, invocationId, traceparent) => storage.run({ tally, invocationId, traceparent }, fn),
       recording: () => storage.getStore()?.tally,
     };
     g[key] = slot;
@@ -261,7 +265,7 @@ function runRecording<R>(stamp: InvocationStamp, started: number, provided: Asyn
   }
   markRequestStart(stamp.record, started);
   installOutboundRecorder(currentRecording);
-  return slot.run(stamp.record, fn, stamp.invocationId);
+  return slot.run(stamp.record, fn, stamp.invocationId, stamp.traceparent);
 }
 
 /**
@@ -416,6 +420,13 @@ export interface InvocationStamp {
    * {@link armedFieldCoverageId}. Written on the line beside the report, as its provenance.
    */
   fieldCoverageId?: string;
+  /**
+   * #3368: this request's own span in its trace — the `traceparent` it arrived with, continued
+   * under a new span, or a new trace when it carried none that parses. What a peer call or a store
+   * call made while it runs sends on; its trace id goes on the line. Optional: a stamp begun by a
+   * layer that predates it has none. Always version 00, so its trace id is characters 3–35.
+   */
+  traceparent?: string;
 }
 
 /**
@@ -502,6 +513,12 @@ function beginStamp<Env>(request: { headers: HeaderReader }, env: Env, options: 
   // #2358: the request's zero on the trace's shared time axis. Every step the scope host records
   // counts from here, so an outbound call recorded below and a check recorded there agree.
   if (installedTraceSink()) markTraceStart(stamp.invocationId);
+  try {
+    // #3368: a correlation id, so a request that carried none, or a malformed one, starts its own.
+    stamp.traceparent = nextTraceparent(request.headers.get(TRACEPARENT_HEADER)).traceparent;
+  } catch {
+    /* a trace is a convenience: the request runs without one */
+  }
   const fieldCoverageId = armedFieldCoverageId(request.headers, env, options);
   if (fieldCoverageId) stamp.fieldCoverageId = fieldCoverageId;
   stamps().set(request, stamp);
@@ -678,6 +695,7 @@ function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, opti
     ...(record.outboundCallsDropped ? { outboundCallsDropped: record.outboundCallsDropped } : {}),
     ...(record.authChecks?.length ? { authChecks: record.authChecks } : {}),
     ...(record.authChecksDropped ? { authChecksDropped: record.authChecksDropped } : {}),
+    ...(stamp.traceparent ? { traceId: stamp.traceparent.slice(3, 35) } : {}),
   });
   console.log(JSON.stringify(line));
 }
@@ -703,6 +721,8 @@ export interface PlatformCallLine {
   emitted: EmittedReport | undefined;
   /** #2762: optional, so a caller written before it still compiles; absent is "not recorded". */
   logLines?: number;
+  /** #3368: the `traceparent` the call arrived with: its trace id goes on the line, if it is one. */
+  traceparent?: string | undefined;
   started: number;
 }
 
@@ -719,6 +739,7 @@ export function writePlatformCallLine(call: PlatformCallLine): void {
     const parent = parentRequestIdOf(call.parentInvocationId);
     // The same one-ULID check: a scope id is a ULID too, and this is only where to look.
     const parentScope = parentRequestIdOf(call.parentScopeId);
+    const traceId = traceIdOf(call.traceparent);
     console.log(
       JSON.stringify(
         invocationLine({
@@ -739,6 +760,7 @@ export function writePlatformCallLine(call: PlatformCallLine): void {
           logLines: call.logLines,
           versionId: versionIdOf(call.env),
           ...(parent ? { parentInvocationId: parent, ...(parentScope ? { parentScopeId: parentScope } : {}) } : {}),
+          ...(traceId ? { traceId } : {}),
         }),
       ),
     );

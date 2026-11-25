@@ -83,6 +83,102 @@ function fakeTransport(pending: PlatformRequestEntry[]) {
   return { client, settled };
 }
 
+/**
+ * #3365: a vertical whose room for routed deliveries is smaller than its backlog. The journal holds
+ * at most `room` pending intents; the rest of the backlog waits as due deliveries, and the vertical's
+ * refill (`routeDueDeliveries`) routes them into whatever room the drain's settles made.
+ */
+function verticalWithBacklog(room: number, backlog: number) {
+  const KIND = connectorDispatchKind('acme.media');
+  const journal = new Map<string, PlatformRequest>();
+  const due = Array.from({ length: backlog }, (_, i) => `event-${i}`);
+  let refills = 0;
+  const route = () => {
+    let routed = 0;
+    while (due.length > 0 && [...journal.values()].filter((r) => r.status === 'pending').length < room) {
+      const row = intent(KIND, { payload: { event: due.shift() } });
+      journal.set(row.id, row);
+      routed += 1;
+    }
+    return { routed, awaitingRoom: due.length };
+  };
+  route();
+  const client = {
+    listPlatformRequests: async () => [...journal.values()].filter((r) => r.status === 'pending').map((r) => ({ ...r })),
+    settlePlatformRequest: async (_t: unknown, _s: unknown, id: string, o: { status: PlatformRequest['status']; lastError?: string | null }) => {
+      const row = journal.get(id)!;
+      journal.set(id, { ...row, status: o.status, attempts: row.attempts + 1, lastError: o.lastError ?? null });
+    },
+    routeDueDeliveries: async () => {
+      refills += 1;
+      return route();
+    },
+  };
+  return { KIND, journal, due, client, refills: () => refills };
+}
+
+describe('drainScopePlatformRequests — a backlog larger than the room (#3365)', () => {
+  const ctx = { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()), vertical: 'demo-vert', scope: INSTALL, lifecycle: LIVE };
+
+  it('drains it in one drain: each round settles, the refill routes into the room made, and the next round runs them', async () => {
+    const v = verticalWithBacklog(3, 8);
+    const delivered: unknown[] = [];
+    const handler: PlatformRequestHandler = async (_ctx, request) => {
+      delivered.push((request.payload as { event: string }).event);
+      return { status: 'done' };
+    };
+    const report = await drainScopePlatformRequests(v.client, ctx, { [v.KIND]: handler }, { rounds: 10 });
+    expect(delivered).toEqual(Array.from({ length: 8 }, (_, i) => `event-${i}`));
+    expect(report).toEqual({ drained: 8, done: 8, failed: 0, pending: 0 });
+    expect(v.due).toEqual([]);
+    // One drain is still one listing when the caller asks for one, as the sweep does.
+    const single = verticalWithBacklog(3, 8);
+    expect(await drainScopePlatformRequests(single.client, ctx, { [single.KIND]: handler })).toEqual({ drained: 3, done: 3, failed: 0, pending: 0 });
+    expect(single.refills()).toBe(0);
+  });
+
+  it('a failing endpoint is tried once per drain, gives up visibly at the ceiling, and a re-drive delivers it', async () => {
+    const v = verticalWithBacklog(3, 3);
+    let up = false;
+    const calls: string[] = [];
+    const handler: PlatformRequestHandler = async (_ctx, request) => {
+      calls.push(request.id);
+      if (!up) throw new Error("no live 'acme.media' connection");
+      return { status: 'done' };
+    };
+    const failures: unknown[] = [];
+    const opts = { rounds: 10, maxAttempts: 2, recordFailure: (f: unknown) => failures.push(f) };
+    // Nothing settled out of pending, so no room was made and the re-list finds nothing new: no loop.
+    expect(await drainScopePlatformRequests(v.client, ctx, { [v.KIND]: handler }, opts)).toEqual({ drained: 3, done: 0, failed: 0, pending: 3 });
+    expect(calls).toHaveLength(3);
+    expect(v.refills()).toBe(0);
+    // The second drain reaches the ceiling: failed, each with an operator's row.
+    expect(await drainScopePlatformRequests(v.client, ctx, { [v.KIND]: handler }, opts)).toMatchObject({ failed: 3 });
+    expect(failures).toHaveLength(3);
+    expect(failures[0]).toMatchObject({ operation: `intent.${v.KIND}`, stage: 'attempt-ceiling' });
+    // The re-drive (`retryPlatformRequest`): back to pending with a fresh ceiling, and delivered.
+    const [first] = [...v.journal.values()];
+    v.journal.set(first!.id, { ...first!, status: 'pending', attempts: 0 });
+    up = true;
+    expect(await drainScopePlatformRequests(v.client, ctx, { [v.KIND]: handler }, opts)).toMatchObject({ done: 1, failed: 0 });
+  });
+
+  it('stops at its deadline between intents and says there is more', async () => {
+    const v = verticalWithBacklog(3, 3);
+    let now = 1_000;
+    const handler: PlatformRequestHandler = async () => {
+      now += 600;
+      return { status: 'done' };
+    };
+    const report = await drainScopePlatformRequests(v.client, ctx, { [v.KIND]: handler }, {
+      rounds: 10,
+      deadline: 2_000,
+      now: () => new Date(now),
+    });
+    expect(report).toEqual({ drained: 2, done: 2, failed: 0, pending: 0, more: true });
+  });
+});
+
 describe('drainScopePlatformRequests — the kind→handler dispatcher', () => {
   const ctx = { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()), vertical: 'demo-vert', scope: INSTALL, lifecycle: LIVE };
 

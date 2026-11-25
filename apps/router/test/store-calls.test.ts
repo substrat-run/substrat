@@ -66,6 +66,29 @@ describe('handleStoreCall', () => {
   });
 });
 
+describe('handleStoreCall carries the calling request’s trace (#3368)', () => {
+  const TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
+  const sentTrace = async (context?: unknown): Promise<string | null> => {
+    let trace: string | null = null;
+    await handleStoreCall(
+      { STORE_CALLER_KEY: KEY, DISPATCH: { get: () => ({ fetch: async (request) => ((trace = request.headers.get('traceparent')), Response.json({ result: 1 })) }) } },
+      { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', driver: 'graph' }] },
+      { scopeId: SCOPE, binding: 'GRAPH', operation: 'read' },
+      context,
+    );
+    return trace;
+  };
+
+  it('continues a handed trace under a new span, and starts one for a missing or malformed one', async () => {
+    expect(await sentTrace({ traceparent: `00-${TRACE}-00f067aa0ba902b7-01` })).toMatch(new RegExp(`^00-${TRACE}-(?!00f067aa0ba902b7)[0-9a-f]{16}-01$`));
+    for (const context of [undefined, { traceparent: 'not-a-trace' }]) {
+      const started = await sentTrace(context);
+      expect(started).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+      expect(started).not.toContain(TRACE);
+    }
+  });
+});
+
 describe('handleStoreCall without a usable key (#2287)', () => {
   const caller = { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', driver: 'graph' }] };
   const dispatch = { get: () => { throw new Error('not dispatched'); } };

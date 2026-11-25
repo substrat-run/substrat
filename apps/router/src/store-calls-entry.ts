@@ -7,7 +7,8 @@ import type { Env } from './worker.js';
  * it. The caller is the dispatch parameters, which a vertical cannot change.
  */
 export class ScopeStoreCalls extends WorkerEntrypoint<Env> {
-  invoke(caller: StoreCallCaller, request: unknown): Promise<StoreCallOutcome> {
+  /** #3368: `context` carries the call's `traceparent`; an egress that predates it sends none. */
+  invoke(caller: StoreCallCaller, request: unknown, context?: unknown): Promise<StoreCallOutcome> {
     const dispatch = this.env.DISPATCH;
     return handleStoreCall(
       {
@@ -18,6 +19,7 @@ export class ScopeStoreCalls extends WorkerEntrypoint<Env> {
       },
       caller,
       request,
+      context,
     );
   }
 }

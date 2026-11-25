@@ -165,6 +165,7 @@ import {
   connectionBindingAudit,
   copyMarkAudit,
   orphanSweepAudit,
+  deliveryRedriveAudit,
   type EventEffectsInput,
   type EffectsTree,
   type InvocationEventsInput,
@@ -323,6 +324,7 @@ import {
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import { prePromoteSnapshotExpiresAt } from '@substrat-run/kernel';
 import {
+  CONNECTOR_DISPATCH_REQUESTED_BY,
   markupRecordValues,
   markupScheduleOf,
   newMarkupRow,
@@ -632,7 +634,8 @@ import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, u
 import { ConnectorRevokeUnsupported } from '@substrat-run/kernel';
 import { assertWireAuthFilter, wireAuthAccessTarget, COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type DeploymentWireAuthFilter, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, readStoreDump, writeStoreDump, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
-import { PLATFORM_BINDING_PREFIX, PLATFORM_STORE_CODE, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, storeAnswerOf, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
+import { PLATFORM_BINDING_PREFIX, PLATFORM_STORE_CODE, parseTraceparent, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, storeAnswerOf, StoreError, TRACEPARENT_HEADER, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
+import { currentTraceparent } from '@substrat-run/kernel/invocation-line';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import type {
   StoreDriverApprovalRecord,
@@ -1572,7 +1575,12 @@ interface ScopeStubRpc {
     requestedBy: string,
     /** #1525: the call this routing ran in, or null. LAST and defaulted, as above. */
     invocationId?: string | null,
-  ): Promise<PlatformRequestId>;
+    /** #3365: null when the scope holds no room for another routed delivery — not an attempt. */
+  ): Promise<PlatformRequestId | null>;
+  /** #3365: re-drive a `failed` connector intent; whether a row moved. */
+  retryPlatformRequest(id: string): Promise<boolean>;
+  /** #3365: re-drive a dead-lettered executor delivery; whether a row moved. */
+  retryExecutorDelivery(eventId: string, deliveryId: string): Promise<boolean>;
   /** #1232: a CP-less pass's schedule outcomes as one batched intent. Null = dropped (backpressure). */
   enqueueSweepRuns(payload: string, requestedBy: string): Promise<PlatformRequestId | null>;
   /** The migration that failed on this instance, read on `migrate()`'s reject path. */
@@ -3720,7 +3728,12 @@ export class CloudflareScopeHost implements ScopeHost {
     const isHeld = async (): Promise<boolean> => this.cpLess
       ? this.lifecycleHeld(scopeId)
       : (await this.cp.scopeAccessRefusal(tenantId, scopeId)) !== null;
+    // #3365: set at the first delivery that finds the scope's routed-delivery room full. Every
+    // later connector delivery in this pass would meet the same answer, each a round trip that
+    // records nothing, so routing stops for the pass and the drain the report asks for makes room.
+    let roomFull = false;
     drain: for (const [id, executor] of this.executors) {
+      if (roomFull && executor.kind === 'connector' && this.cpLess) continue;
       const deliveryId = `executor:${id}`;
       const { events, undecodable } = await stub.pendingExecutorDeliveries(deliveryId, executor.eventType);
       // #1636: an event the DO could not decode is dead-lettered for this executor at once,
@@ -3780,14 +3793,22 @@ export class CloudflareScopeHost implements ScopeHost {
             // the authority this host lacks. The intent row carries the retry
             // state from here on; the handler's own idempotency ledger absorbs
             // the at-least-once residue, as it already must in-process.
-            await stub.routeExecutorEventToPlatform(
+            const routed = await stub.routeExecutorEventToPlatform(
               event.id,
               deliveryId,
               connectorDispatchKind(executor.provider),
               JSON.stringify({ executorId: id, event } satisfies ConnectorDispatchPayload),
-              JSON.stringify({ system: 'connector-dispatch' }),
+              CONNECTOR_DISPATCH_REQUESTED_BY,
               invocationId,
             );
+            if (routed === null) {
+              // #3365: no room. Not an attempt — nothing was journaled, so the delivery stays due
+              // and the first pass after a drain routes it. The attempt counted here is undone.
+              report.attempted -= 1;
+              report.awaitingRoom = (report.awaitingRoom ?? 0) + 1;
+              roomFull = true;
+              continue drain;
+            }
             report.routedToPlatform! += 1;
             outcomeOf(event, 'routed');
             // Handed on, not run here: the platform's drain owns its attempts from now on.
@@ -4018,6 +4039,31 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.migrateAndRecord(scopeId);
     // Tolerant (#1588, #1637): an undecodable row comes back naming why, never throws for the list.
     return (await this.scopeStub(scopeId).pendingPlatformRequests()).map(platformRequestOf);
+  }
+
+  /**
+   * #3365: route this scope's due deliveries now, into whatever room a drain has just made — what
+   * the platform's drain calls between rounds, so a backlog larger than the routed-delivery room
+   * keeps moving inside one drain instead of a pass at a time. `drainDue`, answered as the two
+   * numbers the drain reads.
+   */
+  async routeDueDeliveries(tenantId: TenantId, scopeId: ScopeId): Promise<{ routed: number; awaitingRoom: number }> {
+    const report = await this.drainDue(tenantId, scopeId);
+    return { routed: report.routedToPlatform ?? 0, awaitingRoom: report.awaitingRoom ?? 0 };
+  }
+
+  /** #3365: re-drive one `failed` connector intent (`retryPlatformRequest`). Whether a row moved. */
+  async retryPlatformRequestLocal(tenantId: TenantId, scopeId: ScopeId, id: PlatformRequestId): Promise<boolean> {
+    await this.validateScopeAccess(tenantId, scopeId, 'retryPlatformRequest');
+    await this.migrateAndRecord(scopeId);
+    return this.scopeStub(scopeId).retryPlatformRequest(id);
+  }
+
+  /** #3365: re-drive one dead-lettered executor delivery (`retryExecutorDelivery`). Whether a row moved. */
+  async retryExecutorDeliveryLocal(tenantId: TenantId, scopeId: ScopeId, eventId: string, executorId: string): Promise<boolean> {
+    await this.validateScopeAccess(tenantId, scopeId, 'retryExecutorDelivery');
+    await this.migrateAndRecord(scopeId);
+    return this.scopeStub(scopeId).retryExecutorDelivery(eventId, `executor:${executorId}`);
   }
 
   async listPlatformRequestHistory(
@@ -6037,9 +6083,11 @@ export class CloudflareScopeHost implements ScopeHost {
                   // The egress hop answers with the platform's own codes too (#2815).
                   through: 'platform',
                   send: async (request) => {
+                    // #3368: the request's trace, so the call joins it through egress and the router.
+                    const trace = currentTraceparent();
                     const response = await this.fetchImpl(STORE_CALL_URL, {
                       method: 'POST',
-                      headers: { 'content-type': 'application/json' },
+                      headers: { 'content-type': 'application/json', ...(parseTraceparent(trace) ? { [TRACEPARENT_HEADER]: trace! } : {}) },
                       body: JSON.stringify({ scopeId, binding, operation: request.operation, input: request.input }),
                     });
                     try {
@@ -7595,8 +7643,10 @@ export class CloudflareScopeHost implements ScopeHost {
         // Routed connector deliveries (#574 phase 3) count too: the inline drain just
         // turned this operation's event into a `connector:<provider>` intent, and the
         // kick is what collapses its dispatch latency from sweep-cadence to seconds.
+        // #3365: so do deliveries left waiting for room — the drain is what makes it, and without
+        // the kick nothing but the 15-minute sweep would run one.
         const enqueued = envelope.platformRequests + (drained.routedToPlatform ?? 0);
-        if (enqueued > 0) options?.onPlatformRequests?.(enqueued, scopeId);
+        if (enqueued > 0 || (drained.awaitingRoom ?? 0) > 0) options?.onPlatformRequests?.(enqueued, scopeId);
         if ((envelope.exported ?? 0) > 0) options?.onExportedEvents?.(envelope.exported!);
         if (envelope.concurrency) invokeOptions?.onEntityVersion?.(envelope.concurrency.version);
         if (envelope.idempotency?.replayed) invokeOptions?.onIdempotentReplay?.();
@@ -11207,6 +11257,11 @@ export class CloudflareScopeHost implements ScopeHost {
       recordCopyMark: async (actor, entry) => {
         const { tenantId, scopeId, action, ...after } = copyMarkAudit.parse(entry);
         await this.recordAdmin(actor, action === 'mark' ? 'markScopeCopy' : 'clearScopeCopyMark', { tenantId, scopeId }, null, after);
+      },
+      /** #3365: one staff re-drive, written after the scope's own move. */
+      recordDeliveryRedrive: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = deliveryRedriveAudit.parse(entry);
+        await this.recordAdmin(actor, 'redriveDelivery', { tenantId, scopeId }, null, after);
       },
       /** #2314: one orphan-attachment pass over a scope, written after the vertical's own pass. */
       recordOrphanSweep: async (actor, entry) => {

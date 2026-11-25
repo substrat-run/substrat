@@ -53,6 +53,7 @@ import type {
   ConnectionBindingAudit,
   CopyMarkAudit,
   OrphanSweepAudit,
+  DeliveryRedriveAudit,
   BindHostnameInput,
   AdminLogEntry,
   OpsFailureEntry,
@@ -1415,6 +1416,13 @@ export interface ExecutorDrainReport {
    * the response so the router kicks an immediate drain.
    */
   routedToPlatform?: number;
+  /**
+   * Connector deliveries a CP-less host left due because the scope's room for routed deliveries
+   * was full (#3365, `MAX_PENDING_CONNECTOR_DISPATCHES`). Not attempts: nothing was journaled, so
+   * each is routed by the first pass after a drain has made room. A harness treats a non-zero
+   * count like `routedToPlatform` — it asks for a drain, which is what makes that room.
+   */
+  awaitingRoom?: number;
   /**
    * Deliveries journaled as not executed because the scope is not primary — a fork, a
    * snapshot or a preview, which cause no outbound effects (#2005, `INERT_SCOPE_REASON`).
@@ -4834,6 +4842,12 @@ export interface HostAdmin {
    * `recordCopyMark`'s shape. Throws when the row cannot be written.
    */
   recordOrphanSweep(actor: PlatformActorId, entry: OrphanSweepAudit): Promise<void>;
+  /**
+   * #3365: one staff re-drive of a delivery that gave up — a `failed` connector intent or a
+   * dead-lettered executor delivery — written after the scope's own move, whether or not a row
+   * moved. `recordCopyMark`'s shape. Throws when the row cannot be written.
+   */
+  recordDeliveryRedrive(actor: PlatformActorId, entry: DeliveryRedriveAudit): Promise<void>;
 
   /**
    * Record one phase of a dashboard member change (#1150) — an invite, a role move or a removal

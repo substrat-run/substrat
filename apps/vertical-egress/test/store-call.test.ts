@@ -13,6 +13,7 @@ const SCOPE = '01J00000000000000000000S01';
 function storeCall(
   invoke: NonNullable<Env['STORE_CALLS']>['invoke'],
   call: object = { scopeId: SCOPE, binding: 'GRAPH', operation: 'read' },
+  headers: Record<string, string> = {},
 ): Promise<Response> {
   const env: Env = {
     ROUTER: { fetch: async () => new Response('routed') } as unknown as Fetcher,
@@ -24,6 +25,7 @@ function storeCall(
   return worker.fetch(
     new Request(STORE_CALL_URL, {
       method: 'POST',
+      headers,
       body: JSON.stringify(call),
     }),
     env,
@@ -66,5 +68,16 @@ describe('a store call through egress', () => {
       { error: { code: 'substrat.reserved_operation', status: 403, body: "store operation 'substrat.wipe' is reserved for the platform" } },
     ]);
     expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe('a store call hands on the calling request’s trace (#3368)', () => {
+  it('passes a well-formed trace beside the caller, and none for a malformed one', async () => {
+    const TRACE = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+    const seen: unknown[][] = [];
+    const invoke = async (...args: unknown[]) => (seen.push(args.slice(2)), { ok: true as const, status: 200, body: { result: 1 } });
+    await storeCall(invoke, undefined, { traceparent: TRACE });
+    await storeCall(invoke, undefined, { traceparent: 'nope' });
+    expect(seen).toEqual([[{ traceparent: TRACE }], []]);
   });
 });
