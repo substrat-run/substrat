@@ -140,6 +140,7 @@ jobs:
           CF_D1_AUTH_DB_ID: ${{ vars.CF_D1_AUTH_DB_ID }}
           CF_D1_AUTH_DB_ID_TEST: ${{ vars.CF_D1_AUTH_DB_ID_TEST }}
           CF_PIPELINE_OUTBOX_STREAM_ID: ${{ vars.CF_PIPELINE_OUTBOX_STREAM_ID }}
+          CF_PIPELINE_DIRECTORY_STREAM_ID: ${{ vars.CF_PIPELINE_DIRECTORY_STREAM_ID }}
       - name: Deploy control-plane
         if: steps.gate.outputs.release == 'true'
         run: pnpm --filter @substrat-run/control-plane cf:deploy
@@ -153,6 +154,7 @@ jobs:
           CF_D1_AUTH_DB_ID: ${{ vars.CF_D1_AUTH_DB_ID }}
           CF_D1_AUTH_DB_ID_TEST: ${{ vars.CF_D1_AUTH_DB_ID_TEST }}
           CF_PIPELINE_OUTBOX_STREAM_ID: ${{ vars.CF_PIPELINE_OUTBOX_STREAM_ID }}
+          CF_PIPELINE_DIRECTORY_STREAM_ID: ${{ vars.CF_PIPELINE_DIRECTORY_STREAM_ID }}
       # The dispatch namespace's outbound worker (#442). Deploys BEFORE the router: the
       # router names it in `dispatch_namespaces.outbound`, and the egress worker holds a
       # service binding back to the already-live router — so the pair settles router → egress → router.

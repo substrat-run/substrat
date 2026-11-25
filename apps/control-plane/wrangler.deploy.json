@@ -1,3 +1,6 @@
 {
-  "pipelines": [{ "binding": "SUBSTRAT_OUTBOX_STREAM", "stream": "${CF_PIPELINE_OUTBOX_STREAM_ID}" }]
+  "pipelines": [
+    { "binding": "SUBSTRAT_OUTBOX_STREAM", "stream": "${CF_PIPELINE_OUTBOX_STREAM_ID}" },
+    { "binding": "DIRECTORY_LAKE_STREAM", "stream": "${CF_PIPELINE_DIRECTORY_STREAM_ID}" }
+  ]
 }

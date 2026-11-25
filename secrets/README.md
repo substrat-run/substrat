@@ -271,6 +271,7 @@ So the ids live here instead, and `tools/wrangler-config.mjs` substitutes them a
 | `CF_D1_AUTH_DB_ID` | the staff roster D1 (control-plane + builder) |
 | `CF_D1_AUTH_DB_ID_TEST` | the same, for the `test` env |
 | `CF_PIPELINE_OUTBOX_STREAM_ID` | the Tier-2 outbox stream (#1334) |
+| `CF_PIPELINE_DIRECTORY_STREAM_ID` | the directory lake stream (K-70), `pnpm lake:provision --lake directory` |
 
 `node scripts/secrets.mjs github` publishes them (`--dry-run` to see what would change).
 It compares before writing, so a re-run reports `unchanged` rather than pushing blind — a

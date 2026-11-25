@@ -998,6 +998,12 @@ async function configIds(deploy, account, prodValues) {
   if (stream) out.CF_PIPELINE_OUTBOX_STREAM_ID = stream;
   else if (ENV !== 'prod') out.CF_PIPELINE_OUTBOX_STREAM_ID = '0'.repeat(32);
   else fail('CF_PIPELINE_OUTBOX_STREAM_ID is blank — `pnpm lake:check` prints it');
+  // K-70: the directory lake's stream, bound beside the outbox's and resolved the same way.
+  const directoryStream =
+    process.env.CF_PIPELINE_DIRECTORY_STREAM_ID ?? values.CF_PIPELINE_DIRECTORY_STREAM_ID ?? prodValues.CF_PIPELINE_DIRECTORY_STREAM_ID;
+  if (directoryStream) out.CF_PIPELINE_DIRECTORY_STREAM_ID = directoryStream;
+  else if (ENV !== 'prod') out.CF_PIPELINE_DIRECTORY_STREAM_ID = '0'.repeat(32);
+  else fail('CF_PIPELINE_DIRECTORY_STREAM_ID is blank — `pnpm lake:check:directory` prints it');
   return out;
 }
 
@@ -1023,7 +1029,9 @@ function gh(args, input) {
  * The variables CI's deploy-test job cannot run without: `tools/wrangler-config.mjs` refuses a
  * config whose ids it cannot resolve, and the prod ones are resolved in a test deploy too.
  */
-const CI_DEPLOY_VARIABLES = ['CLOUDFLARE_ACCOUNT_ID', 'CF_D1_AUTH_DB_ID', 'CF_D1_AUTH_DB_ID_TEST', 'CF_PIPELINE_OUTBOX_STREAM_ID'];
+const CI_DEPLOY_VARIABLES = [
+  'CLOUDFLARE_ACCOUNT_ID', 'CF_D1_AUTH_DB_ID', 'CF_D1_AUTH_DB_ID_TEST', 'CF_PIPELINE_OUTBOX_STREAM_ID', 'CF_PIPELINE_DIRECTORY_STREAM_ID',
+];
 
 async function github(deploy, account, smokeFailed) {
   // The D1 and stream ids go through `secrets.mjs github`, the one publisher of CI variables,

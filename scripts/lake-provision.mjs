@@ -13,6 +13,7 @@
  *   node scripts/lake-provision.mjs                    # create whatever is missing
  *   node scripts/lake-provision.mjs --recreate         # only while the lake is EMPTY
  *   node scripts/lake-provision.mjs --file <env file>  # default secrets/platform.prod.env
+ *   node scripts/lake-provision.mjs --lake directory   # the directory's lake (K-70); default events
  *
  * It speaks to the REST API wrangler wraps (`/accounts/<id>/pipelines/v1/…`, `/r2/…`,
  * `/r2-catalog/…`) rather than to wrangler, for three reasons that are each a review
@@ -99,7 +100,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  * is the opposite (R2 takes lowercase, digits and hyphens only), which is why the two
  * halves of the same lake are spelled differently.
  */
-const LAKE = {
+const LAKES = {
+ events: {
   bucket: 'substrat-lake',
   namespace: 'kernel',
   table: 'events',
@@ -131,6 +133,28 @@ const LAKE = {
   // why boundary-lint R8's star-read ban does not transfer — R8 protects a published
   // surface from drifting with a physical table; here the lake IS the record.)
   sql: (l) => `INSERT INTO ${l.sink} SELECT * FROM ${l.stream}`,
+  // The repository variable and secrets-file key the control plane's binding is spliced from.
+  idVar: 'CF_PIPELINE_OUTBOX_STREAM_ID',
+ },
+ // K-70 (tenants × time data leaves the objects): the directory's own logs and meters, shipped
+ // through its outbox (packages/kernel/src/directory-lake.ts). Same bucket, namespace, format and
+ // roll settings as the events lake, for the same reasons; its own stream, sink, pipeline and
+ // table, because a stream has one schema. `--lake directory` selects it.
+ directory: {
+  bucket: 'substrat-lake',
+  namespace: 'kernel',
+  table: 'directory',
+  stream: 'substrat_directory_stream',
+  sink: 'substrat_directory_sink',
+  pipeline: 'substrat_directory',
+  // GENERATED from the directory outbox DDL by tools/lake-schema-emit.mjs (`pnpm lint:lake-schema`).
+  schemaFile: 'scripts/lake/directory-stream-schema.generated.json',
+  compression: 'zstd',
+  rollSizeMb: 100,
+  rollIntervalSeconds: 300,
+  sql: (l) => `INSERT INTO ${l.sink} SELECT * FROM ${l.stream}`,
+  idVar: 'CF_PIPELINE_DIRECTORY_STREAM_ID',
+ },
 };
 
 const argv = process.argv.slice(2);
@@ -142,6 +166,10 @@ const flag = (n) => {
 const dryRun = has('dry-run');
 const recreate = has('recreate');
 const secretsFile = flag('file') ?? 'secrets/platform.prod.env';
+// Which declared lake this run provisions or checks; the events lake unless told otherwise.
+const lakeName = flag('lake') ?? 'events';
+if (!Object.prototype.hasOwnProperty.call(LAKES, lakeName)) fail(`--lake must be one of ${Object.keys(LAKES).join(', ')}`);
+const LAKE = LAKES[lakeName];
 
 function fail(msg) {
   console.error(`✗ ${msg}`);
@@ -643,11 +671,13 @@ plane ships to a stream that no longer exists. Run them ONE AT A TIME — pasted
 the shell carries on past a failure and can publish the old id:
 
   1. In secrets/platform.prod.env set:
-       CF_PIPELINE_OUTBOX_STREAM_ID=${id ?? '<the id the create returned — dry run, none yet>'}
+       ${LAKE.idVar}=${id ?? '<the id the create returned — dry run, none yet>'}
   2. node scripts/secrets.mjs github
   3. pnpm --filter @substrat-run/control-plane cf:deploy
        — note the time it FINISHES; step 4 needs it
-  4. pnpm lake:redrain --drained-before=<that time, ISO 8601>
+  4. ${lakeName === 'directory'
+    ? 'switch DIRECTORY_LAKE_CAPTURE off for one pass and back on, then\n       node scripts/directory-lake-backfill.mjs --apply  (the directory has no redrain: its\n       outbox deletes what it shipped, so the rows still in the directory are backfilled again)'
+    : 'pnpm lake:redrain --drained-before=<that time, ISO 8601>'}
 
 Step 2 is the one that is easy to skip and the most expensive. CI reads the repository
 VARIABLE and never the secrets file, so skipping it leaves every release failing on the
