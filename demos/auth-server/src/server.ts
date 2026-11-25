@@ -26,6 +26,7 @@ import { ISSUER_LOCALE, issuerLocale } from './locale-wire.js';
 import { AUTH_SERVER_ENV } from './manifest.js';
 import { createAdminApi } from './admin-api.js';
 import type { SqlExec } from './introspect.js';
+import { PRUNE_DEFAULTS, pruneExpired, pruneSettingsOf } from './expiry-prune.js';
 import type { SessionSubject } from './do-contract.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, MACHINE_SCOPES, accountLinkingMode, deliveredConfig, isTruthy, machineScopesOf, supabaseBridgeFrom } from './settings.js';
 import { databaseConnectionSettings } from './database-connection.js';
@@ -120,6 +121,20 @@ const seededConsole = ensureConsoleClient(sql);
 const config = (): Record<string, string | undefined> =>
   resolveScopedEnvSpec(AUTH_SERVER_ENV, process.env as Record<string, unknown>, deliveredConfig(sql, AUTH_SERVER_ENV))
     .values;
+
+// K-71 (`expiry-prune.ts`): the prune a hosted issuer runs from its Durable Object's alarm,
+// on a timer here. Off unless `PRUNE_EXPIRED` says otherwise; a run stopped at its bound is
+// finished by the next.
+setInterval(() => {
+  const settings = pruneSettingsOf(config());
+  if (settings.mode === 'off') return;
+  try {
+    const result = pruneExpired(sql, Date.now(), { mode: settings.mode, graceMs: settings.graceMs });
+    console.log(JSON.stringify({ message: 'expired rows pruned', mode: settings.mode, ...result }));
+  } catch (error) {
+    console.error('expired-row prune failed', error);
+  }
+}, PRUNE_DEFAULTS.intervalMs).unref();
 
 /**
  * Better Auth over the dev database. Rebuilt per request, as the DO does, for the same

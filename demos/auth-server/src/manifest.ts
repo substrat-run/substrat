@@ -149,6 +149,27 @@ export const AUTH_SERVER_ENV: EnvVarSpec[] = [
     secret: false,
     group: 'Email',
   },
+  // K-71's first half (`src/expiry-prune.ts`). Off until an operator turns it on: deleting is
+  // the one step a revert cannot undo, so `count` comes first and reports what `on` would do.
+  {
+    key: 'PRUNE_EXPIRED',
+    label: 'Delete expired sessions and tokens',
+    description:
+      'Delete sessions, OAuth access and refresh tokens, sign-in challenges and client-assertion markers once they are past their expiry plus the grace below. `off` (the default) deletes nothing; `count` logs what would be deleted and deletes nothing; `on` deletes, in small batches from the issuer\'s own timer. A session is kept while any token still names it.',
+    placeholder: 'off',
+    required: false,
+    secret: false,
+    group: 'Maintenance',
+  },
+  {
+    key: 'PRUNE_GRACE_HOURS',
+    label: 'Keep expired rows for (hours)',
+    description: 'How long an expired session, token or challenge is kept past its own expiry before it may be deleted. Default 24.',
+    placeholder: '24',
+    required: false,
+    secret: false,
+    group: 'Maintenance',
+  },
 ];
 
 /**

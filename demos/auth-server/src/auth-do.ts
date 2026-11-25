@@ -23,6 +23,7 @@ import { ISSUER_THEME, clientBranding, issuerTheme } from './branding.js';
 import { clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, clientSignInRoute, clientStraightThrough, readSignInPolicy } from './sign-in-policy.js';
 import { readSignInLog, signInLoggerFor, type SignInLogQuery } from './sign-in-log.js';
+import { PRUNE_DEFAULTS, nextPruneAlarm, pruneExpired, pruneSettingsOf } from './expiry-prune.js';
 import { optionalTwilioFrom } from './twilio.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, MACHINE_SCOPES, accountLinkingMode, deliveredConfig, isTruthy, machineScopesOf, putDeliveredConfig, supabaseBridgeFrom } from './settings.js';
 import { databaseConnectionSettings } from './database-connection.js';
@@ -642,6 +643,55 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
     return resolveScopedEnvSpec(AUTH_SERVER_ENV, this.env as Record<string, unknown>, delivered).values;
   }
 
+  /** When this object's alarm is set for, as last read or set here: `undefined` until read. */
+  private pruneAlarmAt: number | null | undefined;
+
+  /**
+   * Make sure an issuer that is in use prunes at least every `intervalMs` (K-71,
+   * `expiry-prune.ts`). After the first read per instance this is a comparison in memory, and
+   * a `setAlarm` at most once an interval; it reads no table. An idle issuer is never armed
+   * from here, only by its own last run, for the moment its next row expires (D-79).
+   */
+  private async armPrune(now: number): Promise<void> {
+    if (this.pruneAlarmAt != null && this.pruneAlarmAt <= now + PRUNE_DEFAULTS.intervalMs) return;
+    if (pruneSettingsOf(this.effectiveCfg()).mode === 'off') return;
+    if (this.pruneAlarmAt === undefined) {
+      this.pruneAlarmAt = await this.ctx.storage.getAlarm();
+      if (this.pruneAlarmAt !== null && this.pruneAlarmAt <= now + PRUNE_DEFAULTS.intervalMs) return;
+    }
+    const at = now + PRUNE_DEFAULTS.intervalMs;
+    await this.ctx.storage.setAlarm(at);
+    this.pruneAlarmAt = at;
+  }
+
+  /** The prune's run: bounded batches, the counts logged, then re-armed for what is next. */
+  override async alarm(): Promise<void> {
+    const now = Date.now();
+    const settings = pruneSettingsOf(this.effectiveCfg());
+    if (settings.mode === 'off') {
+      this.pruneAlarmAt = null;
+      return;
+    }
+    let next: number | null;
+    try {
+      const result = pruneExpired(this.ctx.storage.sql, now, { mode: settings.mode, graceMs: settings.graceMs });
+      log.info(settings.mode === 'on' ? 'expired rows pruned' : 'expired rows counted, none deleted', {
+        mode: settings.mode,
+        graceHours: settings.graceMs / 3_600_000,
+        counts: result.counts,
+        more: result.more,
+      });
+      next = nextPruneAlarm(this.ctx.storage.sql, now, settings.graceMs, result.more);
+    } catch (error) {
+      // Not rethrown: the runtime would retry at once and again. The next interval retries it.
+      log.error('expired-row prune failed', { error });
+      next = now + PRUNE_DEFAULTS.intervalMs;
+    }
+    if (next === null) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(next);
+    this.pruneAlarmAt = next;
+  }
+
   /**
    * Read-only introspection of THIS issuer's SQLite (§5.4's admin-query RPC) — the
    * dashboard Data tab, arriving via the platform-gated `/internal/tables` routes.
@@ -778,6 +828,8 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
    * token, jwks, userinfo), and Better Auth's own admin API.
    */
   override async fetch(request: Request): Promise<Response> {
+    // Never in the way of the request it rides on: a failed arm is retried by the next one.
+    await this.armPrune(Date.now()).catch((error: unknown) => log.error('expired-row prune: arming failed', { error }));
     const url = new URL(request.url);
     const auth = this.auth(url.origin);
     const session = (headers: Headers): Promise<SessionSubject | null> =>
