@@ -40,7 +40,9 @@ is released after a lease.
 
 **Cross-tenant reads read a projection, never the tenant objects.** Staff lists and search read one
 D1 database holding one row per tenant, one per hostname and one per (login, tenant), projected by
-each tenant object through an outbox. Every such list says when its rows were true. A staff action
+each tenant object through an outbox, batched at most every five minutes (the freshness bound of
+[D-77](./D-077-routing-changes-and-suspension-take-effect-within-five-minutes-through-the-edge-read-model.md)).
+Every such list says when its rows were true. A staff action
 opens the tenant's own object, which is authoritative.
 
 **Neither object is on the request path.** The router reads the edge read model, step 1 of the

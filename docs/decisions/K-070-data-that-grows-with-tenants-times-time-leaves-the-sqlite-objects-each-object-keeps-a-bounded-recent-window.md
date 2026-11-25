@@ -33,8 +33,10 @@ by design: the lake on R2 (Iceberg, fed today by the outbox stream), Analytics E
 **The admin log is written in the same transaction as the change, in the object that makes it**: a
 tenant's directory object for a tenant's change, the registry for a platform change
 ([K-68](./K-068-the-control-plane-directory-is-a-small-global-registry-and-one-directory-object-per-tenant.md)).
-The object ships its rows through an outbox, as a scope ships its events, and prunes only rows the
-lake has acknowledged. A change across two objects writes a row in each, linked by its intent id. A
+The object ships its rows through an outbox, as a scope ships its events, in batches at most five
+minutes apart (the freshness bound of
+[D-77](./D-077-routing-changes-and-suspension-take-effect-within-five-minutes-through-the-edge-read-model.md)),
+and prunes only rows the lake has acknowledged. A change across two objects writes a row in each, linked by its intent id. A
 tenant's Activity page reads its own window; anything older, and every staff-wide query, reads the
 lake.
 
