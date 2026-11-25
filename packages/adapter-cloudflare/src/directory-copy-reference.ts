@@ -27,7 +27,7 @@
  * rows are in R2 (`access-log/` beside the copies). So nothing is left out of a copy here; it is
  * only no longer written twice. The tenant-scale RFC's step 2 ships these logs to the lake; a table
  * it starts pruning stays `log`, and the admin log, if it is pruned, moves from `append-only` to
- * `log` in the same change (the source scan refuses the DELETE until it does).
+ * `log` in the same change: left append-only, every copy a prune overlaps is refused by the count.
  */
 
 export type DirectoryReferenceKind = 'append-only' | 'log';
