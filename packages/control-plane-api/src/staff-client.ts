@@ -49,6 +49,8 @@ import type {
   RequestRollupReading,
   CostRollupReading,
   StaffPlatformCosts,
+  StaleScopeFindingKind,
+  StaleScopesReading,
   CostAttribution,
   MeterDaysReading,
   VerticalOwnersReading,
@@ -418,6 +420,10 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // tenant is charged for, over `days` closed UTC days (default 30) ending `until` (default yesterday).
   readPlatformCosts = (q: { days?: number; until?: string } = {}): Promise<StaffPlatformCosts> =>
     this.call(`/meters/platform-costs${query({ ...q })}`);
+  // The daily stale-scopes report (#3313): every scope nothing will clean up, as the latest daily
+  // pass found it, with when each finding was first and last seen, and that report's record.
+  readStaleScopes = (q: { tenantId?: TenantId; finding?: StaleScopeFindingKind; limit?: number } = {}): Promise<StaleScopesReading> =>
+    this.call(`/stale-scopes${query({ ...q })}`);
   // Meter days (#2501): meters 1 and 2 per tenant as the first scheduled pass of each UTC day found
   // them, over an inclusive window of days (by default the 31 days ending today), and which of
   // those days were taken. Omit `tenantId` for the fleet.

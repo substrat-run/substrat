@@ -1160,6 +1160,37 @@ tenant reads like a missing one at the gate but is still visible as a tombstone 
    scope-reap seam (archive-if-needed → wipe each scope's DO in its vertical deployment →
    `reapScope`), so the control plane's orchestrated per-scope wipe applies here for free.
 
+**Finding what nothing will clean up ([#3313](https://github.com/substrat-run/substrat/issues/3313)).**
+Both reaps act only on what is already marked: an archived scope, a `deleting` tenant, a fork
+past its `expiresAt`. An active scope nobody uses, a fork with no expiry, or a scope stuck half
+made stays forever. Once a UTC day, `runPlatformSweep`'s stale-scopes phase lists them, in one
+directory transaction (kernel `stale-scopes.ts`, run by both adapters):
+
+| Finding | Decided from |
+|---|---|
+| `tenant-not-active` | a live scope whose tenant is suspended, deleting, reaped or gone |
+| `vertical-gone` | a live scope naming a vertical the registry no longer holds |
+| `unreachable` | an active primary scope with no hostname and no peer binding |
+| `stuck-provisioning` | a scope still `provisioning` a day after it was created |
+| `no-expiry` | a fork or preview, not archived, with no `expiresAt`: the GC never reaps it |
+| `expired-not-reaped` | a fork or preview a day past its `expiresAt` the GC has not reaped |
+| `archived-undated` | an archived scope with no `archivedAt`, which the retention reap skips |
+| `idle` | an active primary scope with no routed request in 30 days (advisory) |
+
+Every finding but `idle` reads only directory rows, so no scope is woken. **"Last used" is the
+daily request rollup** (#2501): the newest UTC day the router counted a request it dispatched to
+the scope. Nothing is stamped on the request path, since that would be a directory write per
+request. So `idle` is advisory: a scope reached only by peer calls or schedules shows no request,
+and one used once a year looks like a dead one. It is judged only when the rollup has read every
+day of the window. Until then the `idle` findings already listed are kept as they are.
+
+Each finding is one row keyed `(scope, finding)` with the first and latest report that made it,
+so the list shows how long each has been true. A finding the latest report no longer makes is
+deleted. Staff read it at `GET /stale-scopes`, and the console lists it on the Scopes page,
+grouped by finding. Each row opens the scope, where Archive and Retire are the way to act. The pass
+that takes the day's report writes one `stale-scopes` line to the control plane's log with the
+counts. **The report moves nothing.** It deletes no scope and changes no retention setting.
+
 **Not tenant export** — that is the next section, and deliberately a separate act: deleting a
 tenant and handing a tenant its data are different requests, arriving from different people,
 and the second must not be a side effect of the first.

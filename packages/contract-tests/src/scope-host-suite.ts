@@ -12833,6 +12833,138 @@ export function scopeHostContractSuite(
       });
     });
 
+    // -- the daily stale-scopes report (#3313) -------------------------------------
+
+    describe('the daily stale-scopes report (#3313)', () => {
+      // The report reads the whole directory, which every other test also writes to, so each test
+      // reads only its own tenants' findings. A day's record is fleet-wide, so each test owns its days,
+      // far in the future so that every scope this test makes is old by then.
+      const newTenant = async () => {
+        const t = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: t, slug: `stale-${t.toLowerCase()}`, name: 'Stale' });
+        return t;
+      };
+      const newScope = async (tenant: TenantId, opts: { vertical?: string; activate?: boolean } = {}) => {
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: tenant, scopeId: s, ...(opts.vertical ? { vertical: opts.vertical } : {}) });
+        if (opts.activate !== false) await host.admin.activateScope(staff, tenant, s);
+        return s;
+      };
+      const bind = (tenant: TenantId, scope: ScopeId) =>
+        host.admin.bindHostname(staff, {
+          hostname: `stale-${scope.toLowerCase()}.test.example`, tenantId: tenant, scopeId: scope, surface: 'app', region: null, canonical: true,
+        });
+      const findings = async (...tenants: TenantId[]) =>
+        (await Promise.all(tenants.map((t) => host.admin.listStaleScopes!(staff, { tenantId: t }))))
+          .flat()
+          .map((f) => [f.scopeId, f.finding])
+          .sort();
+
+      it('finds each structural kind from the directory alone, keeps its first-seen age, and drops what is no longer true', async () => {
+        const t = await newTenant();
+        const reached = await newScope(t);
+        await bind(t, reached);
+        const unreachable = await newScope(t);
+        const stuck = await newScope(t, { activate: false });
+        const gone = await newScope(t, { vertical: `stale-gone-${ulid().toLowerCase()}` });
+        await bind(t, gone);
+        const kept = await host.snapshotScope(staff, t, reached);
+        const lapsed = await host.snapshotScope(staff, t, reached, { expiresAt: '2039-01-01T00:00:00.000Z' });
+        const off = await newTenant();
+        const underOff = await newScope(off);
+        await bind(off, underOff);
+        await host.admin.setTenantStatus(staff, off, 'suspended');
+
+        const first = '2040-01-01T00:10:00.000Z';
+        const taken = await host.admin.recordStaleScopes!(staff, { at: first });
+        expect(taken).toMatchObject({ day: '2040-01-01', taken: true, idleJudged: false });
+        expect(await findings(t, off)).toEqual(
+          [
+            [unreachable, 'unreachable'],
+            [stuck, 'stuck-provisioning'],
+            [gone, 'vertical-gone'],
+            [kept, 'no-expiry'],
+            [lapsed, 'expired-not-reaped'],
+            [underOff, 'tenant-not-active'],
+          ].sort(),
+        );
+        expect((await host.admin.listStaleScopes!(staff, { tenantId: t, finding: 'no-expiry' }))[0]).toMatchObject({
+          tenantSlug: `stale-${t.toLowerCase()}`,
+          forkedFrom: reached,
+          status: 'active',
+          lastRequestDay: null,
+          firstSeen: first,
+          lastSeen: first,
+        });
+        // The day is taken once: a later attempt changes nothing.
+        expect(await host.admin.recordStaleScopes!(staff, { at: '2040-01-01T00:25:00.000Z' })).toMatchObject({ taken: false });
+
+        // A person archives the copy and binds a hostname: both findings go, the rest keep their age.
+        await host.admin.archiveScope(staff, t, kept);
+        await bind(t, unreachable);
+        const next = '2040-01-02T00:10:00.000Z';
+        expect(await host.admin.recordStaleScopes!(staff, { at: next })).toMatchObject({ taken: true });
+        const after = await host.admin.listStaleScopes!(staff, { tenantId: t });
+        expect(after.map((f) => [f.scopeId, f.finding]).sort()).toEqual(
+          [
+            [stuck, 'stuck-provisioning'],
+            [gone, 'vertical-gone'],
+            [lapsed, 'expired-not-reaped'],
+          ].sort(),
+        );
+        expect(after.every((f) => f.firstSeen === first && f.lastSeen === next)).toBe(true);
+        expect((await host.admin.listStaleScopeTakes!(staff, { since: '2040-01-01', until: '2040-01-02' })).map((d) => d.day)).toEqual([
+          '2040-01-01',
+          '2040-01-02',
+        ]);
+        expect((await host.admin.accessLog(staff, { method: 'listStaleScopes' })).some((r) => r.tenantId === t)).toBe(true);
+      });
+
+      it('judges idle only over a window the request rollup has read, from the newest day it counted a request', async () => {
+        const t = await newTenant();
+        const [used, idle] = [await newScope(t), await newScope(t)];
+        await Promise.all([bind(t, used), bind(t, idle)]);
+        // Unread: nothing is said about idle.
+        expect(await host.admin.recordStaleScopes!(staff, { at: '2041-03-10T00:10:00.000Z', idleAfterDays: 3 })).toMatchObject({
+          idleJudged: false,
+        });
+        expect(await findings(t)).toEqual([]);
+
+        const count = { tenantId: t, vertical: null, scopeId: used, requests: 4, class2xx: 4, class3xx: 0, class4xx: 0, class5xx: 0, rateLimited: 0, sampled: false };
+        for (const day of ['2041-03-08', '2041-03-09']) {
+          await host.admin.recordRequestDay!(staff, { day, attemptedAt: `${day}T23:00:00.000Z`, counts: day === '2041-03-09' ? [count] : [] });
+        }
+        const taken = await host.admin.recordStaleScopes!(staff, { at: '2041-03-11T00:10:00.000Z', idleAfterDays: 3 });
+        expect(taken).toMatchObject({ idleJudged: true });
+        expect(await host.admin.listStaleScopes!(staff, { tenantId: t })).toMatchObject([
+          { scopeId: idle, finding: 'idle', lastRequestDay: null },
+        ]);
+        await expect(() => host.admin.recordStaleScopes!(staff, { at: '2041-03-12T00:10:00.000Z', idleAfterDays: 1 })).rejects.toThrow(
+          /idleAfterDays/,
+        );
+      });
+
+      it('the sweep phase takes the day on its first pass, and not again until the next day', async () => {
+        const t = await newTenant();
+        const s = await newScope(t);
+        const pass = (now: string) =>
+          runPlatformSweep(host, {
+            actor: staff,
+            fetch: connectorTestFetch,
+            sweepers: {},
+            drainRetries: false,
+            gcSnapshots: false,
+            staleScopes: { now: () => now },
+          });
+        const first = await pass('2042-01-01T00:04:00.000Z');
+        expect(first.errors.filter((e) => e.kind === 'stale-scopes')).toEqual([]);
+        expect(first.staleScopes).toMatchObject({ day: '2042-01-01', taken: true, failed: 0, streak: null });
+        expect(first.staleScopes?.findings?.unreachable).toBeGreaterThanOrEqual(1);
+        expect((await pass('2042-01-01T00:19:00.000Z')).staleScopes).toMatchObject({ taken: false, findings: null });
+        expect(await findings(t)).toEqual([[s, 'unreachable']]);
+      });
+    });
+
     // -- the history of vertical ownership (#2501) ---------------------------------
 
     describe('the history of vertical ownership (#2501)', () => {

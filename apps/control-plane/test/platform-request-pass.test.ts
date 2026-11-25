@@ -29,6 +29,7 @@ import worker, {
   drainContextOf,
   drainTarget,
   meterSnapshotLogOf,
+  staleScopesLogOf,
   oncePerScope,
   pendingWrites,
   platformRequestSweepRun,
@@ -818,6 +819,20 @@ describe('the scheduled pass runs the steps after a failed hostname reconcile', 
   });
 });
 
+describe('the daily stale-scopes report in the scheduled pass (#3313)', () => {
+  it('the log line names the day taken with its counts, a failing run, and nothing else', () => {
+    const base = { day: '2026-11-25', taken: false, findings: null, opened: 0, resolved: 0, idleJudged: false, failed: 0, repeated: 0, streak: null };
+    expect(staleScopesLogOf(null)).toBeNull();
+    expect(staleScopesLogOf(base)).toBeNull();
+    const findings = { 'tenant-not-active': 0, 'vertical-gone': 0, unreachable: 2, 'stuck-provisioning': 0, 'no-expiry': 5, 'expired-not-reaped': 0, 'archived-undated': 1, idle: 0 };
+    expect(staleScopesLogOf({ ...base, taken: true, findings, opened: 3, resolved: 1 })).toEqual({
+      day: '2026-11-25', findings, opened: 3, resolved: 1, idleJudged: false,
+    });
+    const streak = { error: 'directory busy', since: '2026-11-25T00:00:00.000Z', failures: 2 };
+    expect(staleScopesLogOf({ ...base, failed: 1, repeated: 1, streak })).toEqual({ day: '2026-11-25', failing: streak });
+  });
+});
+
 describe('the daily meter snapshot in the scheduled pass (#2501)', () => {
   const base = { day: '2026-10-23', taken: false, tenants: 0, failed: 0, repeated: 0, streak: null, pruned: 0 };
 
@@ -848,6 +863,9 @@ describe('the daily meter snapshot in the scheduled pass (#2501)', () => {
     // day already: what holds either way is that the day is taken, at an instant inside it.
     const takes = await host.admin.listMeterDayTakes!(staff, { since: before, until: after });
     expect(takes.some((t) => t.error === null && t.takenAt?.slice(0, 10) === t.day)).toBe(true);
+    // #3313: the same pass takes the day's stale-scopes report.
+    const reports = await host.admin.listStaleScopeTakes!(staff, { since: before, until: after });
+    expect(reports.some((t) => t.error === null && t.takenAt?.slice(0, 10) === t.day)).toBe(true);
   });
 });
 

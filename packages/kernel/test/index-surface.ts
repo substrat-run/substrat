@@ -210,6 +210,10 @@ export const INDEX_VALUE_EXPORTS = [
   'SETTLE_OUTCOME_SQL',
   'SHAPE_MARKER_INDEX_DDL',
   'SHAPE_MARKER_READS_PER_ROW',
+  // #3313: the daily stale-scopes report, shared by both directories.
+  'STALE_SCOPES_DDL',
+  'STALE_SCOPES_LIMIT_DEFAULT',
+  'STALE_SCOPES_LIMIT_MAX',
   'STORAGE_GAUGE_RETENTION_MONTHS',
   // #2915: the most history rows one read returns — a caller at the cap knows its read was clipped.
   'STORAGE_HISTORY_LIMIT_MAX',
@@ -564,6 +568,8 @@ export const INDEX_VALUE_EXPORTS = [
   'listScopeStorageAttemptRows',
   'listScopeStorageRows',
   'listScopeStoreStorageRows',
+  'listStaleScopeRows',
+  'listStaleScopeTakeRows',
   'listSystemSwitchRecords',
   'listVerticalOwnerRows',
   'listedPromoteRefusal',
@@ -729,6 +735,7 @@ export const INDEX_VALUE_EXPORTS = [
   'recordRequestDayRows',
   'recordScopeObjectRow',
   'recordScopeStorageRows',
+  'recordStaleScopeRows',
   'recordStoreDriverReleaseIn',
   'recordStoreDriverRevokeWalkIn',
   'recordSwitchedOff',

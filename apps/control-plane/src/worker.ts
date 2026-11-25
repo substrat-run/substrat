@@ -81,6 +81,7 @@ import {
   type ScopeObjectsSweepOptions,
   type ScopeObjectsSweepReport,
   type MeterSnapshotSweepReport,
+  type StaleScopeSweepReport,
   type FailingRun,
 } from '@substrat-run/kernel';
 import {
@@ -1310,6 +1311,29 @@ export function meterSnapshotLogOf(snapshot: MeterSnapshotSweepReport | null | u
     day: snapshot.day,
     ...(snapshot.taken ? { tenants: snapshot.tenants } : {}),
     ...(snapshot.streak ? { failing: snapshot.streak } : {}),
+  };
+}
+
+/**
+ * #3313: what the pass's log line says about the daily stale-scopes report, or null when it did
+ * nothing worth a line: the pass that takes the day's report, with its counts, and every pass of a
+ * failing run.
+ */
+export function staleScopesLogOf(stale: StaleScopeSweepReport | null | undefined): {
+  day: string | null;
+  findings?: Record<string, number>;
+  opened?: number;
+  resolved?: number;
+  idleJudged?: boolean;
+  failing?: FailingRun;
+} | null {
+  if (!stale || (!stale.taken && stale.streak === null)) return null;
+  return {
+    day: stale.day,
+    ...(stale.taken && stale.findings
+      ? { findings: stale.findings, opened: stale.opened, resolved: stale.resolved, idleJudged: stale.idleJudged }
+      : {}),
+    ...(stale.streak ? { failing: stale.streak } : {}),
   };
 }
 
@@ -3147,7 +3171,14 @@ export default {
       // #2501: each UTC day's meters 1 and 2, one row per tenant, taken by the day's first pass and
       // kept for the billing horizon. A directory transaction, so nothing to configure.
       meterSnapshot: {},
+      // #3313: once a UTC day, the scopes nothing will clean up (idle, orphaned, never-expiring,
+      // stuck), listed for staff at GET /stale-scopes. A directory transaction; it moves no scope.
+      staleScopes: {},
     });
+    // #3313: the day's stale-scopes report, one line on the pass that takes it (and on every pass of
+    // a failing run), so the tail shows the fleet's counts without opening the console.
+    const stale = staleScopesLogOf(report.staleScopes);
+    if (stale) console.log('stale-scopes', stale);
     // #1713 — the lifecycle heal: re-deliver to every hosted scope whose deployment did not
     // acknowledge the directory's lifecycle, and to every scope held now. Each failed delivery is
     // already an ops-failure row (so it reaches the digest below); the tail says a pass had any.

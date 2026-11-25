@@ -67,6 +67,11 @@ const WIRE: Record<string, [(c: C) => Promise<unknown>, string, string, unknown?
     `/meters/cloudflare-costs?tenantId=${T}&attribution=unmapped&since=2026-09-01`,
   ],
   readPlatformCosts: [(c) => c.readPlatformCosts({ days: 7, until: '2026-11-20' }), 'GET', '/meters/platform-costs?days=7&until=2026-11-20'],
+  readStaleScopes: [
+    (c) => c.readStaleScopes({ tenantId: T as never, finding: 'no-expiry', limit: 5 }),
+    'GET',
+    `/stale-scopes?tenantId=${T}&finding=no-expiry&limit=5`,
+  ],
   readMeterDays: [
     (c) => c.readMeterDays({ tenantId: T as never, since: '2026-09-01', until: '2026-09-30', limit: 5 }),
     'GET',

@@ -105,6 +105,8 @@ import {
   costDay,
   meterDay,
   meterDayTake,
+  staleScope,
+  staleScopeTake,
   verticalOwnerPeriod,
   subjectRef,
   createConnectionInput,
@@ -206,6 +208,8 @@ import {
   type CostDay,
   type MeterDay,
   type MeterDayTake,
+  type StaleScope,
+  type StaleScopeTake,
   type VerticalOwnerPeriod,
   type ProjectedConnectionGrant,
   type ProjectedConnectionKey,
@@ -627,6 +631,10 @@ import {
   type MeterDayFilter,
   type MeterDayTakeFilter,
   type MeterDayTakeInput,
+  type StaleScopeFilter,
+  type StaleScopeTakeFilter,
+  type StaleScopeTakeInput,
+  type StaleScopeTakeResult,
   type MeterDayTakeResult,
   verticalOwnerNow,
 } from '@substrat-run/kernel';
@@ -1176,6 +1184,10 @@ interface ControlPlaneStub {
   listMeterDays(filter?: MeterDayFilter): Promise<MeterDay[]>;
   listMeterDayTakes(filter?: MeterDayTakeFilter): Promise<MeterDayTake[]>;
   pruneMeterDays(limit: number, retentionMonths: number | null): Promise<number>;
+  /** #3313: the daily stale-scopes report — kernel `stale-scopes.ts`, run inside the directory DO. */
+  recordStaleScopes(input: StaleScopeTakeInput): Promise<StaleScopeTakeResult>;
+  listStaleScopes(filter?: StaleScopeFilter): Promise<StaleScope[]>;
+  listStaleScopeTakes(filter?: StaleScopeTakeFilter): Promise<StaleScopeTake[]>;
   insertConnection(row: {
     id: string;
     tenantId: string;
@@ -11582,6 +11594,17 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       pruneMeterDays: async (_actor, limit: number, retentionMonths: number | null) =>
         this.cp.pruneMeterDays(assertRowLimit('limit', limit), retentionMonths),
+      recordStaleScopes: async (_actor, input: StaleScopeTakeInput) => this.cp.recordStaleScopes(input),
+      listStaleScopes: async (actor, filter?: StaleScopeFilter) => {
+        const rows = (await this.cp.listStaleScopes(filter)).map((r) => staleScope.parse(r));
+        await this.recordAccess(actor, 'listStaleScopes', { tenantId: filter?.tenantId ?? null }, filter ?? null, rows.length);
+        return rows;
+      },
+      listStaleScopeTakes: async (actor, filter?: StaleScopeTakeFilter) => {
+        const rows = (await this.cp.listStaleScopeTakes(filter)).map((r) => staleScopeTake.parse(r));
+        await this.recordAccess(actor, 'listStaleScopeTakes', { tenantId: null }, filter ?? null, rows.length);
+        return rows;
+      },
       recordModelUsage: async (input: ModelUsageInput): Promise<{ recorded: boolean }> => {
         const l = input.line;
         return this.cp.recordModelUsage({
