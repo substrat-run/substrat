@@ -405,6 +405,7 @@ import {
   type StorePlace,
 } from './store-move-ends.js';
 import { backupDirectoryIfDue } from './directory-backup.js';
+import { readReconcileProgress } from './reconcile-progress.js';
 import { deployedDoClasses, platformSweeperDecision } from './platform-entry.js';
 import {
   extractedMigrationsDigest,
@@ -10550,6 +10551,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!admin.listVerticalOwners) return refuseStatus(c, 501, 'this control plane keeps no ownership history');
     const slug = verticalSlug.parse(c.req.param('slug'));
     return c.json(verticalOwnersReading.parse({ slug, owners: await admin.listVerticalOwners(c.get('actor'), slug) }));
+  });
+
+  // K-69 (rfc/tenant-scale.md §7.5): how far the provision reconcile has reached this vertical's
+  // installs, idle ones included, counted per version run and per receipt. Staff-only: absent from
+  // BUILDER_ROUTES and the tenant pins, since it counts other tenants' installs. The full slug.
+  app.get('/verticals/:slug/reconcile-progress', async (c) => {
+    const slug = verticalSlug.parse(c.req.param('slug'));
+    return c.json(await readReconcileProgress(c.var.admin, c.get('actor'), slug));
   });
 
   app.get('/verticals/:slug/channels', async (c) => {

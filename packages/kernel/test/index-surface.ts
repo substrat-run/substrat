@@ -705,6 +705,8 @@ export const INDEX_VALUE_EXPORTS = [
   'promoteRaceRefusal',
   'promoteReviewDigest',
   'promoteReviewRefusalOf',
+  // K-69: the provision reconcile's one rule, read by the batched pass, the on-wake handler and the count.
+  'provisionReconcileTarget',
   'provisionedVersionsParams',
   'pruneCostDayRows',
   // K-70: the window prune both adapters run.
@@ -763,6 +765,7 @@ export const INDEX_VALUE_EXPORTS = [
   'rebindReviewDigest',
   'rebindReviewRefusalOf',
   'reconcileAttachmentText',
+  'reconcileProgressOf',
   'recordAttachmentText',
   'recordAuditOutcome',
   'recordConnectorCall',

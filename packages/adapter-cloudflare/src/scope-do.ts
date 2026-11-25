@@ -372,6 +372,7 @@ import {
 import { replyOf, type DoReply } from './do-reply.js';
 import { OperationQueue } from './serialization.js';
 import type { AnalyticsEngineDatasetLike } from './connector-calls.js';
+import { reconcileOnWake } from './reconcile-on-wake.js';
 import { meterScopeWorkEntries, ScopeWorkMeter } from './scope-work.js';
 import { assertNoWorkerdStorage, doScopedSql, doBuiltColumnsOf, doRedactionSql, doSpineSql } from './sql.js';
 import {
@@ -1827,6 +1828,8 @@ export function defineScopeDO(
     private lastFailure: { version: string; error: string } | null = null;
     /** Passes of `applyPendingMigrations` that had work to do — see `migrationAttemptsOnInstance`. */
     private migrationRuns = 0;
+    /** K-69: this instance's wake wrote a `provision-reconcile` intent no invoke has reported yet. */
+    private reconcileAskUnsignalled = false;
     /**
      * TEST-ONLY (#1860): no production code reads this. An exact `'ping'` is answered
      * by `setWebSocketAutoResponse` without reaching `webSocketMessage` at all, and
@@ -3966,7 +3969,8 @@ export function defineScopeDO(
         const exported = exportMark !== null && !replayed ? this.exportedSince(exportTypes, exportMark) : 0;
         return {
           result,
-          platformRequests: signals.platformRequests,
+          // K-69: plus the intent this instance's wake wrote, once, so the router kicks its drain.
+          platformRequests: signals.platformRequests + this.takeReconcileAsk(),
           // #1705 PR 2: the coordinator fires `onExportedEvents` from this. Omitted at 0, so
           // the envelope of a deployment that exports nothing is byte-for-byte what it was.
           ...(exported > 0 ? { exported } : {}),
@@ -7010,13 +7014,44 @@ export function defineScopeDO(
 
     private ensureMigrations(): Promise<boolean> {
       if (!this.migrationPromise) {
+        // K-69: read before the pass, so a scope with nothing applied yet reads as a provision.
+        const upgrade = this.applied.size > 0;
         // #3316: counted as the migration it is, not as whichever entry woke it — the first
         // operation after a promote runs the whole pass.
-        this.migrationPromise = this.scopeWork
+        const pass = this.scopeWork
           ? this.scopeWork.apart('migration-pass', 'migration', () => this.applyPendingMigrations())
           : this.applyPendingMigrations();
+        // K-69: only after the pass SUCCEEDED — a scope failing closed asks for nothing, and the
+        // rejection passes through untouched.
+        this.migrationPromise = pass.then((applied) => {
+          this.askReconcileOnWake(upgrade);
+          return applied;
+        });
       }
       return this.migrationPromise;
+    }
+
+    /**
+     * K-69 (rfc/tenant-scale.md §7.5): the first wake on a version this scope has not asked about
+     * writes one `provision-reconcile` intent (`reconcileOnWake`). Never throws: a scope that cannot
+     * ask is still reached by the batched pass, and failing the request over it protects nothing.
+     */
+    private askReconcileOnWake(upgrade: boolean): void {
+      try {
+        const asked = reconcileOnWake(this.sql, this.env.SUBSTRAT_VERSION_ID, upgrade, new Date().toISOString());
+        if (asked === 'requested') this.reconcileAskUnsignalled = true;
+      } catch (err) {
+        console.warn('reconcile-on-wake: could not ask; the batched pass is the backstop', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    /** K-69: 1 once, on the first committed invoke after the wake asked, so its response flags a drain. */
+    private takeReconcileAsk(): number {
+      if (!this.reconcileAskUnsignalled) return 0;
+      this.reconcileAskUnsignalled = false;
+      return 1;
     }
 
     /** Every registered module's derivation plans — what `repairDerivedObjects` and its checks read. */

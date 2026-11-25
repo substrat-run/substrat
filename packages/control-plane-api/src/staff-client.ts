@@ -51,6 +51,7 @@ import type {
   StaffPlatformCosts,
   StaleScopeFindingKind,
   StaleScopesReading,
+  ReconcileProgressReading,
   CostAttribution,
   MeterDaysReading,
   VerticalOwnersReading,
@@ -730,6 +731,9 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
     this.json('DELETE', `/verticals/${seg(slug)}`);
   // Who owned a vertical slug when (#2501): every period, oldest first, a deleted slug's included.
   readVerticalOwners = (slug: string): Promise<VerticalOwnersReading> => this.call(`/verticals/${seg(slug)}/owners`);
+  // K-69 (rfc/tenant-scale.md step 5): how far a promote's provision reconcile has reached the vertical's installs,
+  // idle ones included, counted per version run and per receipt.
+  readReconcileProgress = (slug: string): Promise<ReconcileProgressReading> => this.call(`/verticals/${seg(slug)}/reconcile-progress`);
   promoteVersion = (
     slug: string,
     channel: ChannelName,

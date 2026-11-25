@@ -1116,6 +1116,9 @@ export type {
 // every receipt writer and the sweep answer both questions the same way.
 export { isPrimaryScope, isPrimaryScopeRow, INERT_SCOPE_REASON, runningVersionOf } from './scope-identity.js';
 export type { ServingPointer } from './scope-identity.js';
+// K-69: the provision reconcile's one rule, for the batched pass, the on-wake reconcile and the count.
+export { provisionReconcileTarget, reconcileProgressOf } from './provision-reconcile.js';
+export type { ProvisionReconcileTarget, ReconcileScopeFields } from './provision-reconcile.js';
 export { opsFailureReferenceWhere, withheldOpsFailure, withheldStaffFailure } from './ops-failure-reference.js';
 export { landingRefusalSaid } from './landing-refusal.js';
 export {

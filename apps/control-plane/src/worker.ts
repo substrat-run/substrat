@@ -42,6 +42,7 @@ import {
   SET_ENTITLEMENTS_KIND,
   MODEL_USAGE_KIND,
   SWEEP_RUNS_KIND,
+  PROVISION_RECONCILE_KIND,
   SEND_EMAIL_KIND,
   connectorDispatchKind,
   CONNECTOR_DISPATCH_KIND_PREFIX,
@@ -195,6 +196,8 @@ import {
   setEntitlementsHandler,
   modelUsageHandler,
   sweepRunsHandler,
+  provisionReconcileHandler,
+  reconcileOnWakeEnabled,
   connectorDispatchHandler,
   sendEmailHandler,
   type ManagedTenantDeps,
@@ -634,6 +637,15 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * value falls back to the default rather than to either extreme.
    */
   PROVISION_RECONCILE_BATCH?: string;
+  /**
+   * K-69 (rfc/tenant-scale.md §7.5, step 5): the on-wake provision reconcile. A scope writes one
+   * `provision-reconcile` intent the first time it wakes on a version, and the drain reconciles it
+   * then, instead of waiting for the batched phase above. On unless `off`: the handler then settles
+   * each intent without reconciling, and `PROVISION_RECONCILE_BATCH` is the one that reaches the
+   * scope. The batched phase stays on beside it until the progress count has been watched through
+   * several promotes.
+   */
+  PROVISION_RECONCILE_ON_WAKE?: string;
   /**
    * #2314: the orphan-attachment sweep. Unset or `off` (the default) skips it. `dry-run` reports, in
    * the admin log, what each visited scope's pass would delete and deletes nothing. `delete`
@@ -2936,6 +2948,14 @@ async function drainOneScope(
       [MODEL_USAGE_KIND]: modelUsageHandler({ host }),
       // #1232: a CP-less pass's schedule outcomes, landed in _substrat_sweep_runs.
       [SWEEP_RUNS_KIND]: sweepRunsHandler({ host }),
+      // K-69: the scope's own wake signal after a promote — reconciled now if the directory says it
+      // is behind, with the batched phase's own rule, reach and receipt.
+      [PROVISION_RECONCILE_KIND]: provisionReconcileHandler({
+        admin: host.admin,
+        actor: SWEEP_ACTOR,
+        enabled: reconcileOnWakeEnabled(env.PROVISION_RECONCILE_ON_WAKE),
+        reconcile: (tenant, scope, target) => reconcileOneScope(env, tenant, scope, target),
+      }),
       // #2102: a vertical's mail, requested inside an operation and sent once it committed —
       // through the platform's sender, or the tenant connection that covers the `from`.
       [SEND_EMAIL_KIND]: sendEmailHandler(

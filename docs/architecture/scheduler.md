@@ -204,6 +204,23 @@ from request traffic would have closed the same gap and opened a worse one — a
 a fork of production data, restored rather than provisioned and then routed — so the roster
 stays platform-fed.
 
+**On wake, beside the batch (K-69, step 5 of [rfc/tenant-scale.md](../rfc/tenant-scale.md) §7.5).**
+The roster stays platform-fed; what changes is when a scope on it is reached. The first time a scope
+object runs its migration pass on a version it has not asked about, it writes one
+`provision-reconcile` intent into its own journal (`adapter-cloudflare` `reconcile-on-wake.ts`,
+remembered in `_substrat_meta` so it is once per version, never per wake). The response that woke
+it is flagged like any intent, so the router kicks the drain in seconds; a scope woken by an alarm
+is reached by the drain's backstop. The handler (`control-plane-api`
+`provision-reconcile-intent.ts`) reads the directory and reconciles with this phase's own rule,
+reach and receipt (`provisionReconcileTarget`), so a scope the phase already reached settles
+`up-to-date`. Nothing asks at a first provision (the provision writes its own receipt), from a
+copy (`isCopy`), after a migration that failed (the scope fails closed and asks after the pass that
+succeeds), or into a journal at its cap (asked again on the next wake). `PROVISION_RECONCILE_ON_WAKE=off`
+turns the handler into a no-op. The batched phase stays on behind `PROVISION_RECONCILE_BATCH` until
+the progress count (`GET /verticals/:slug/reconcile-progress`, the console's vertical page) has been
+watched through several promotes; removing it is a later change. Self-host (`adapter-sqlite`) asks
+nothing on wake and keeps the batched phase.
+
 The split this leaves is clean: a CP-less deployment owns its **scope-local** recurring work
 (retries, schedules); the **directory-owned** phases — connector sweeps, snapshot GC, reaps,
 migration reconciliation — stay with the platform, which has the directory and the
