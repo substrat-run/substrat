@@ -205,9 +205,9 @@ that.
 
 A deployed worker serves a file **as the signed-in person**. `workerDoor({ attachments: true })`
 mounts `GET /api/attachments/:id`, which streams the file and answers one byte range, and
-`DELETE` beside it. An id that names no file is a `404`. A file that exists but the person may
-not read is refused with `403`, after the read permission is checked, so the two are
-distinguishable today. The response is hardened before anything can go wrong: `nosniff`, a sandbox content
+`DELETE` beside it. An id that names no file is a `404`, and a read of a file the person may
+not read is the same `404`, so the route does not say that the file exists. The refusal is
+still recorded. The response is hardened before anything can go wrong: `nosniff`, a sandbox content
 policy, no caching, and always `Content-Disposition: attachment`. A media element ignores the
 disposition, so `<audio src>` plays the file while navigating to it saves it instead of rendering
 it.

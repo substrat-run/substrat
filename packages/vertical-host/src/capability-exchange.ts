@@ -55,7 +55,7 @@ import type { Context, Env, Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { substratError, z, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import type { ScopeAttachments, ScopeHost, ScopeStub, ScopeStubOptions } from '@substrat-run/kernel';
-import { hardenFileResponse, serveAttachment } from './attachment-serve.js';
+import { answerAttachment, hardenFileResponse } from './attachment-serve.js';
 import { problemResponse } from './errors.js';
 
 
@@ -399,7 +399,7 @@ export interface LinkShareDownloadOptions<E extends Env = Env> {
  * link share of its folder or document reaches, or, with no capability cookie, one the
  * signed-in visitor may read themselves.
  *
- * 200 with the bytes, streamed; 206 for a byte range (`serveAttachment`, #3139); 404 for an id
+ * 200 with the bytes, streamed; 206 for a byte range (as `serveAttachment`, #3139); 404 for an id
  * the scope does not know; 403 for a file outside the capability's subtree, or one its minter can
  * no longer read (recorded in the denial log against the capability); 401 for a revoked or
  * expired link, or no session at all.
@@ -430,7 +430,7 @@ export function mountLinkShareDownload<E extends Env>(
         { cookieName: options.cookieName },
       );
       if (!files) throw substratError('unauthenticated', 'sign in, or open the link you were sent');
-      return await serveAttachment(c, files, attachmentId);
+      return await answerAttachment(c, files, attachmentId);
     } catch (err) {
       return problemResponse(c, err);
     }
