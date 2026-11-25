@@ -1,7 +1,7 @@
 ---
 status: proposed
 layer: plan
-description: "How the platform's own data scales to 100,000 tenants. Every data set the control-plane directory holds today (69 tables, 52 transaction sites), where each goes, the numbers at 100, 10,000 and 100,000 tenants, Cloudflare's limits read from its documentation, the owner's five-minute freshness bound with every design choice ranked by request latency and cost per tenant, the cost of an idle tenant, what breaks first, and a migration order in which every step ships and reverts on its own. Proposes K-68 to K-71 and D-77 to D-79. Design only."
+description: "How the platform's own data scales to 100,000 tenants. Every data set the control-plane directory holds today (69 tables, 53 transaction sites), where each goes, the numbers at 100, 10,000 and 100,000 tenants, Cloudflare's limits read from its documentation, the owner's five-minute freshness bound with every design choice ranked by request latency and cost per tenant, the cost of an idle tenant, what breaks first, and a migration order in which every step ships and reverts on its own. Proposes K-68 to K-71 and D-77 to D-79. Design only."
 ---
 
 # RFC: the platform's data at 100,000 tenants
@@ -30,7 +30,7 @@ reached as `idFromName('control-plane')`
 | Measure | Value | Source |
 |---|---:|---|
 | Tables in the directory | **69**: 34 written in `DIRECTORY_DDL`, 35 more interpolated from 15 kernel-owned DDL fragments | source |
-| Transaction sites | **52**: 51 `transactionSync` and one async `transaction` (`importDump`). One of them, `writeAndAudit`, is called from 47 places | source |
+| Transaction sites | **53** on today's `main`: 52 `transactionSync` and one async `transaction` (`importDump` holds both a sync and the async one). #3393 added the 53rd, `recordStaleScopes`, while this was written. One of them, `writeAndAudit`, is called from 46 places, and two helpers (`audited`, `auditedConnectLink`) from 4 and 4 | source |
 | Scopes in the directory | 311 on 2026-11-21, of which about 25 primary scopes in real use and 164 fork snapshots with no expiry | [#3313](https://github.com/substrat-run/substrat/issues/3313) |
 | Tenants with routed traffic | 10 in 90 days; 4 to 9 on any one day | router Analytics Engine dataset |
 | Directory stored bytes | **≈1.3 GB** at rest; **2.19 GB** during the daily backup copy | `durableObjectsSqlStorageGroups` |
@@ -316,7 +316,7 @@ though the read model is the first step.
 Prices from §6, read 2026-11-25. Included allowances are left out, so these are a cost basis, not
 an invoice.
 
-**An idle tenant after the split** holds a directory object (≈ 25 KB), a home scope object at rest
+**An idle tenant after the split** (one with no recent history) holds a directory object (≈ 25 KB), a home scope object at rest
 (≈ 200 KB of spine, migrations and an empty app, estimated), two KV keys, a registry row, an index
 row and a few issuer rows. At $0.20 per GB-month for Durable Object storage, $0.50 for KV and
 $0.75 for D1: **≈ $0.00005 a month**, about **$0.0006 a year**. It sets no alarm and wakes for
@@ -326,7 +326,10 @@ nothing. Three things add to it, each a plan decision rather than a storage cost
   non-Enterprise plan.
 - **A per-tenant D1 database or R2 bucket** (`tenant_stores`, `blob_stores`): free up to 100,000
   each on the account, then $0.10 a month each.
-- **Logs** at rest: none for an idle tenant.
+- **Logs retained from earlier use.** A tenant that was active and is now idle keeps its recent
+  window (about 100 to 150 KB, ≈ $0.00003 a month) until the window ages out. Ageing out is due
+  work, so the object's one alarm fires once at the window's end and prunes it; that is one alarm,
+  not a schedule. Its older history stays in the lake at $0.015 per GB-month.
 
 **An idle tenant today** costs about **$0.38 a month** at list price, nearly all of it rows written
 in the directory: 7,300 rows per scope per day (≈ 2,000 from the pass's bookkeeping and access
@@ -426,18 +429,21 @@ and in particular not D-75's **home scope**, which is an app's scope holding wha
 tenant within that app. A home scope stays app data; the tenant directory object stays platform
 data.
 
-### 7.2 The 52 transaction sites after the split
+### 7.2 The 53 transaction sites after the split
 
 | Group | Sites | After |
 |---|---|---|
 | Schema and maintenance | `armVersionMigrationsBackfill`, `applyDirectorySchema` (2), `addColumn`, `rebuildAtomically`, `ensureAdminLogTenantNullable`, `ensureSweepRunsIntentKind`, `ensureDirectoryColumns` (8) | run in every directory object, each its own schema |
-| Backup and restore | `snapshotDirectory`, `importDump` (2) | retired for the whole directory; per object, D-78 (PITR and incremental export) |
+| Backup and restore | `snapshotDirectory`, `importDump` (2: one sync, one async) (3) | retired for the whole directory; per object, D-78 (PITR and incremental export) |
 | Store drivers | `recordStoreDriverRevokeWalk`, `storeDriverState`, `storeDriverDeclarations`, `storeDriverRolloutPending`, `storeDriverRolloutWalked`, `holdStoreDriver`, `claimStoreDriverRebuild`, `advanceStoreDriverRebuild` (8) | **G**, unchanged in shape |
-| A tenant's state | `transitionScopeOrRefusal`, `defineRoleOrRefusal`, `assignTenantRole`, `deleteScopeDirectory`, `backfillScopeScriptCopy`, `claimExpiredScopeScriptCopies`, `settleScopeScriptCopy`, `applyMembership`, `revokeAndFence`, `restoreConnectLink`, `grantConnectionInDirectory`, `revokeConnectionGrantInDirectory`, `writeSwitchIntent`, `restoreSwitchRecord`, `swapConnectorState`, `putConnectorStateFenced`, `settleUnrecordedOutcome`, `pruneFindings` (18) | **D**, still one transaction each. `claimExpiredScopeScriptCopies` stops being a fleet-wide claim and becomes the tenant's own |
+| A tenant's state | `transitionScopeOrRefusal`, `defineRoleOrRefusal`, `assignTenantRole`, `deleteScopeDirectory`, `backfillScopeScriptCopy`, `claimExpiredScopeScriptCopies`, `settleScopeScriptCopy`, `applyMembership`, `revokeAndFence`, `auditedConnectLink` (insert, revoke, consume and restore a connect link), `audited` (findings: prune, status, rule create and revoke), `grantConnectionInDirectory`, `revokeConnectionGrantInDirectory`, `writeSwitchIntent`, `restoreSwitchRecord`, `swapConnectorState`, `putConnectorStateFenced`, `settleUnrecordedOutcome` (18) | **D**, still one transaction each. `claimExpiredScopeScriptCopies` stops being a fleet-wide claim and becomes the tenant's own |
 | Rollups and logs | `recordScopeStorage`, `recordRequestDay`, `pruneRequestDays`, `recordCostDay`, `recordCostContainers`, `pruneCostDays`, `recordScopeObject`, `recordMeterDay`, `pruneMeterDays`, `recordOpsFailure`, `recordSweepRun` (11) | a window in **D** and shipping to **L**; the cost rollup writes **L** directly |
+| Platform reports | `recordStaleScopes` (1, #3393) | **G** (platform operations), computed from the index and Analytics Engine (§8.2) |
 | Hostnames | `bindHostnameInDirectory`, `auditedHostnameUpdate` (2) | **cross-object**: claim in **G**, bind in **D** (§7.3) |
 | Vertical scope stores | `verticalScopeStores` (1) | **G** |
-| `writeAndAudit` | 1 site, 47 callers | split by caller: 18 to **G** (versions, verticals, channels, store driver releases, identity pools, markup defaults, issues), 25 to **D** (entitlements, connections, orgs, identities, tuples, impersonation, stores, scope marks), 2 log housekeeping to **L**, and **4 cross-object**: `createTenant`, `setTenantStatus` (projection only), `reapTenant`, `deleteHostname` |
+| `writeAndAudit` | 1 site, 46 call sites in 46 methods | split by caller: 19 to **G** (versions, verticals, channels, store driver releases, wire auth, identity pools, markup defaults, issues), 21 to **D** (tenant name, entitlements, connections and secrets, orgs, identities, tuples, impersonation, tenant and blob stores, scope marks and moves), 2 log housekeeping to **L** (`markAccessLogDrained`, `pruneAccessLog`), and **4 cross-object**: `createTenant`, `setTenantStatus` (projection only), `reapTenant`, `deleteHostname` |
+
+The groups add to 53: 8 + 3 + 8 + 18 + 11 + 1 + 2 + 1 + 1.
 
 So, of every write path, six cross from one object to another: tenant create, tenant reap, tenant
 status (a projection), hostname bind, hostname update and hostname delete. A provisioner tenant
@@ -452,10 +458,16 @@ object records the outcome. A crash between leaves an intent that a retry or the
 finishes, never a half that nobody owns.
 
 - **Hostname bind.** The tenant's object records `binding: requested` (intent and admin row, one
-  transaction). Host code asks the registry to claim the hostname for (tenant, scope). The
-  registry's claim is one transaction and refuses a hostname another tenant holds. The tenant's
-  object records `bound` and projects to KV. A claim the tenant never confirms is released by the
-  registry after a lease; a confirmed binding whose claim is missing is a safety-net finding.
+  transaction). Host code asks the registry to claim the hostname for (tenant, scope); the claim is
+  one transaction, refuses a hostname another tenant holds, and returns a claim id with a lease.
+  Before anything is bound or published, host code asks the registry to **confirm** that claim id.
+  The confirm is one registry transaction that refuses a claim that has expired or been superseded,
+  and turns a live claim into a permanent one with no lease. Only after a confirm succeeds does the
+  tenant's object record `bound`, and the route it publishes carries the confirmed claim id; the
+  read-model writer publishes a hostname key only for the claim the registry holds as confirmed. A
+  resumed operation whose lease ran out is refused at the confirm and records the failure, so a
+  delayed tenant cannot bind a hostname another tenant claimed meanwhile. An unconfirmed claim is
+  released after its lease; a confirmed binding whose claim is missing is a safety-net finding.
 - **Tenant create.** The registry claims id and slug (lease). The new tenant's object is created
   with its record, its owner seat and its admin row. The registry confirms. A managed tenant's
   provisioner records its `provision-tenant` intent first, exactly as today's platform-intent
@@ -464,9 +476,11 @@ finishes, never a half that nobody owns.
   hostnames released in the registry, then the slug. The registry keeps a tombstone so an id is
   never reused.
 - **Tenant status.** Authoritative in the tenant's object, which rewrites its routes in the edge read
-  model within the bound (D-77, five-minute bound) and
-  projects to the registry and the index for lists. Neither the registry nor the index decides
-  anything from it.
+  model within the target (D-77, five-minute bound) and projects to the registry and the index for
+  lists. No suspension flag is fanned out to scopes. The lifecycle states a scope's own code must
+  know, such as `deleting` before a reap, keep reaching scopes through the existing lifecycle
+  delivery (#1713), which is not new and is not what enforces a suspension. Neither the registry nor
+  the index decides anything from the status.
 
 ### 7.4 Work without a pass (K-69, no scheduled walk over tenants)
 
@@ -474,7 +488,7 @@ finishes, never a half that nobody owns.
 |---|---|---|
 | Platform-intent drain | every pass walks every active scope; the router's kick is the fast path | the scope's alarm when it enqueues; the kick stays; the safety net finds a scope with an old pending row through the due index |
 | Cross-vertical events, lake drain | pass phases over every scope; kick by #3388 | the producing scope kicks its own delivery and shipping on commit (#3388's pattern), and sets an alarm while anything is undelivered; Queues and Workflows stay #3367's and #3369's questions |
-| Connector sweeps | every pass, every connection (back-off since #3331) | the tenant object's alarm per connection, with per-connection back-off (#3331) and one sweep per connection, not per scope (#3376) |
+| Connector sweeps | every pass, every connection (back-off since #3331) | a due row per connection in the tenant object, run by the object's one alarm, with per-connection back-off (#3331) and one sweep per connection, not per scope (#3376) |
 | Copy claims, reaps, retention prunes, lifecycle heal | pass phases | the tenant object's alarm, set by the event that makes the work due (an archive sets the reap date, a failed delivery sets its retry) |
 | Storage gauge | read for every scope the drain woke | read by the scope when it is awake for other reasons, at most daily, shipped to the lake |
 | Meter snapshot | one row per tenant per day in the directory, for every tenant | written by the tenant's object on its first wake of a UTC day; a day with no wake has no usage, and the meter reads that as zero |
@@ -482,9 +496,20 @@ finishes, never a half that nobody owns.
 | Directory backup | daily whole copy | D-78 (PITR and incremental export) |
 | Promote reconcile | 50 scopes a pass | each scope on its next wake; a queue warms active scopes; progress counted per (vertical, version) |
 
+**One alarm per object, armed for the earliest due row.** A Durable Object holds one alarm at a time,
+and a later `setAlarm()` replaces the earlier one (§6). So an object does not set an alarm per
+connection or per task. Each event that makes work due writes a due row in the object's own table
+(time, kind, unit) in the same transaction as the event. The object arms its alarm for the earliest
+due row; the alarm runs every row that is due, then re-arms for the next earliest, or clears.
+
 **The due index.** A table in the registry (or in D1, owner's choice) with one row per object that
-has work due: object id, due time, kind. An object writes its row when it sets an alarm and clears
-it when the alarm finishes its work. The safety net runs hourly, reads rows due more than an hour
+has work due: object id, earliest due time. The write order is fixed, because the index lives in
+another object and cannot commit with the alarm: **the index row is made durable first, and only
+then is the alarm set.** If the index write fails, the object does not set the alarm and retries the
+index write on its next invocation; its own due rows keep the work from being lost. An index row
+with no matching alarm is harmless: the safety net kicks the object, which re-arms from its due rows,
+or clears the index row when nothing is due. The object updates or clears its index row when its
+alarm has run. The safety net runs hourly, reads rows due more than an hour
 ago, and kicks those objects. It costs one small query when everything is healthy, whatever the
 number of tenants. It is the "sparse" in the owner's rule 2, made measurable: the safety net's work
 is the number of objects whose alarm failed, not the number of tenants.
@@ -503,8 +528,11 @@ What remains central is the provision-hook reconcile (#1172, #1653). Under K-69 
 - A queue warms scopes that were active in the last 30 days (from Analytics Engine), so they do not
   pay the reconcile on a person's request. Its consumer calls each scope once; at 5,000 messages a
   second per queue that is 100,000 scopes in under a minute of sending.
-- Progress is a count per (vertical, version): each scope, after reconciling, writes one Analytics
-  Engine data point. The console shows the count against the number of installs from the index.
+- Progress is durable: each scope's applied version is recorded in its tenant's directory object
+  (the scope row already carries it), and the tenant object projects a count per (vertical, version)
+  into the index. Completion is that count reaching the install count, however long the last idle
+  scope takes to wake. Analytics Engine, kept three months, carries only the live progress chart,
+  never the completion test.
 - A fleet re-upload (a platform entry change, #1893) and a backfill go the same way: a version or
   a backfill id recorded once, applied on next wake, warmed by a queue, counted.
 
@@ -546,8 +574,12 @@ whatever the fleet size.
 ### 8.4 Admin log reads
 
 The admin row is written **in the same transaction as the change, in the object that makes it**:
-the tenant object for a tenant's change, the registry for a platform change. That keeps today's
-`writeAndAudit` guarantee (the change and its row commit together). Each object ships its rows to
+the tenant object for a tenant's change, the registry for a platform change. That keeps, and
+widens, today's `writeAndAudit` guarantee (the change and its row commit together). Today it holds
+only for the directory-only writes that run through `writeAndAudit`; many `HostAdmin` mutations in
+`packages/adapter-cloudflare/src/host.ts` write their admin row in a separate `recordAdmin` call after
+the change returns, which is the window #1292 recorded. Moving each admin row into the deciding
+object's transaction is what closes it for every write. Each object ships its rows to
 the lake through an outbox, the way scopes already ship events, and keeps a 35-day window. A
 tenant's Activity page reads its own object; history beyond the window and every staff-wide query
 reads the lake. A crossing change writes a row in each object it touches, linked by the intent id.
@@ -557,6 +589,12 @@ answer: an access-log row records a person reading a tenant's data, written in t
 object. The platform's own bookkeeping reads, which are 95 % of today's inflow, are reads of a
 tenant's directory object by the tenant's own alarm, and the proposal is to stop logging them as
 staff access (an open choice in K-70 (tenants × time data leaves the objects)).
+
+**A staff read that visits no tenant object is still recorded.** Staff lists and search over the
+index, staff queries over the lake and staff reads of the registry are `HostAdmin` reads under K-24.
+Each writes one access-log row, with K-24's fields (actor, method, tenant or scope where one is
+named, a parameter summary and the result count), in the registry, which ships it to the lake like
+any other row. Where staff-wide rows are stored is the owner's choice; that they are written is not.
 
 ### 8.5 Hostname uniqueness
 
@@ -715,7 +753,9 @@ be one function both can call. *Revert:* the router reads the directory again.
 build usage, cost, request and meter days ship to the lake through an outbox in the directory (the
 same shipping the scope outbox uses), and the directory keeps a 35-day window. Reads beyond the
 window move to the lake first, then the prune is switched on. This is where most of the directory's
-bytes and most of its rows written go. *Revert:* switch the prune off; the rows are still there.
+bytes and most of its rows written go. *Revert:* switch the prune off. Rows it has already pruned
+are not restored: history older than the window is served from the lake from then on, and the lake's
+read path stays in place after a revert, so nothing that was readable becomes unreadable.
 Includes the export of D-78 (§13) for the registry part.
 
 **Step 3. Per-tenant directory objects (dual-write, verify, cut over).**
@@ -730,13 +770,18 @@ Includes the export of D-78 (§13) for the registry part.
 - 3e. **Cut over reads per tenant**, behind a per-tenant flag in the registry: a tenant's reads go
   to its object. Writes then go to the tenant object first, with the directory dual-written as the
   fallback, for a period the owner sets.
-- 3f. **Cut over writes**, stop dual-writing, keep the old rows read-only for the rollback window,
-  then drop them.
+- 3f. **Cut over writes.** The tenant object becomes the only writer. For the rollback window a
+  **reverse copy** runs: each tenant object's outbox replays its changes into the old directory, so
+  the old rows stay current and flipping the flag back serves fresh data. The comparison job of 3d
+  keeps running and reports any difference. The window ends when the owner stops the reverse copy;
+  then the old rows are dropped.
 - Includes **#1343**: the dashboard's own `ControlPlaneDO` is retired into the same target, not into
   the old shared directory. Its brief's phases (shadow read, continuous copy, cut over with a reverse
   copy) are this step's phases applied to the dashboard's identity links, which move to the tenant
   objects directly. Doing #1343 first against the old directory would move the same data twice.
-*Revert:* flip the per-tenant flag back; the directory was written all along until 3f.
+*Revert:* flip the per-tenant flag back. Until 3f the directory was written all along; during 3f's
+rollback window the reverse copy keeps it current. After the window, a rollback is no longer a flip:
+it is a restore of the tenant objects' exports into a directory (§13), and is planned as a migration.
 
 **Step 4. Per-tenant and per-scope sweeps.** Each phase of the pass moves to alarms one at a time,
 in the order of §5.4's breakage: the platform-intent drain and lake drain first (they wake every
@@ -769,7 +814,10 @@ For most of what it is for, yes; for some, no.
   it, which is not a recovery tool.
 
 D-78 (PITR and incremental export) therefore: PITR is the first recovery tool for every directory object; an **incremental export
-to R2** replaces the daily whole copy. A tenant object exports itself when it has changed since its
+to R2** replaces the daily whole copy. **An export in the same account does not cover losing the
+account**, so the exports are also copied to storage outside it, in another Cloudflare account or
+another provider, written by a job with write-only credentials there and read only by the restore
+path. Where that copy lives, and who can read it, is the owner's choice. A tenant object exports itself when it has changed since its
 last export, at most daily, from its alarm, and a registry export runs daily (about 150 MB at
 100,000 tenants). The logs are in the lake already. Restore of one tenant is an import into a fresh
 object, under a new epoch, as `importDump` does now. Until step 3, step 0's change to #3325 is the

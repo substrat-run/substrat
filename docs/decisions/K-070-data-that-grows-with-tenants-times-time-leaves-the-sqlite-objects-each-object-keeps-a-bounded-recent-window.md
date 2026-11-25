@@ -44,6 +44,15 @@ lake.
 platform's own bookkeeping reads of a directory object by that object's own alarm are not staff
 access and write no row, unless the owner decides otherwise (below).
 
+**A staff read that visits no tenant object is recorded too.** Staff lists and search over the
+cross-tenant index, staff queries over the lake and staff reads of the registry are `HostAdmin` reads
+under [K-24](./K-024-staff-reads-are-audited-into-a-separate-access-log-that-drai.md). Each writes one
+access-log row with K-24's fields (actor, method, the tenant or scope where one is named, a parameter
+summary and the result count) in the registry, which ships it to the lake. Where staff-wide rows are
+stored is an open choice; that they are written is not. This record changes where K-24's rows are
+written, not which reads K-24 records, with one exception the owner may take: the bookkeeping reads
+above. If that exception is taken, this record amends K-24 explicitly.
+
 **The billing rollups stop being kept forever in the directory.** `BILLING_ROLLUP_RETENTION_MONTHS`
 (today `null`, keep all) becomes the window above once the lake holds the history.
 
@@ -58,9 +67,12 @@ days behind since it was measured (#3326), and it breaks above about 205 scopes.
 tenants. Rows kept for good grow by about 88 MB a day at 100,000 tenants, and reach the usable 5 GB
 (10 GB less the daily copy) in about a month (rfc §5.3).
 
-**Writing the admin row where the change is made keeps today's guarantee.** `writeAndAudit` commits
-the change and its row together. A central log written afterwards could miss a row on a crash; one
-shipped from an outbox cannot.
+**Writing the admin row where the change is made keeps today's guarantee and widens it.** Today the
+guarantee holds for the directory-only writes that run through `writeAndAudit`, which commits the
+change and its row together. Many `HostAdmin` mutations write their admin row in a separate
+`recordAdmin` call after the change returns (`packages/adapter-cloudflare/src/host.ts`), the window
+#1292 recorded. Writing every admin row in the deciding object's own transaction closes that window
+for every write; a row shipped from an outbox afterwards cannot be lost.
 
 ## Open choices for the owner
 

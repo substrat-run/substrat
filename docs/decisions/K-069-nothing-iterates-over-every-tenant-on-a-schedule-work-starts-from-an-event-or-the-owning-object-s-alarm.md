@@ -21,14 +21,22 @@ event that makes it due, and runs in the object that owns the state:
 - A scope that enqueues a platform request, an undelivered event or a lake shipment kicks its own
   drain on commit (the pattern of #3388) and keeps an alarm set while anything is pending.
 - A tenant's directory object ([K-68 (directory split)](./K-068-the-control-plane-directory-is-a-small-global-registry-and-one-directory-object-per-tenant.md))
-  sets an alarm for each connection's next sweep, with per-connection back-off (#3331) and one sweep
-  per connection rather than per scope (#3376), and for its reaps, copy claims, retries and lifecycle
-  deliveries, each set by the event that makes it due.
+  writes a due row for each connection's next sweep, with per-connection back-off (#3331) and one
+  sweep per connection rather than per scope (#3376), and for its reaps, copy claims, retries and
+  lifecycle deliveries, each written by the event that makes it due, in the same transaction.
+- **An object keeps one alarm**, because a Durable Object holds one alarm at a time and a later
+  `setAlarm()` replaces the earlier. The alarm is armed for the earliest due row; it runs every row
+  that is due, then re-arms for the next earliest, or clears.
 - An object with nothing due sets no alarm. An idle tenant costs storage only
   ([D-79 (idle tenant costs storage only)](./D-079-a-tenant-at-rest-costs-storage-only-and-every-platform-change-is-held-to-that.md)).
 
-**The central pass becomes a safety net over a due index.** An object writes a row (object, due
-time, kind) when it sets an alarm and clears it when the work is done. The safety net runs hourly,
+**The central pass becomes a safety net over a due index.** An object keeps one row in the index
+(object, earliest due time), which lives in another object and cannot commit with the alarm, so the
+order is fixed: **the index row is made durable first, then the alarm is set.** If the index write
+fails, the object does not set the alarm and retries on its next invocation; its own due rows keep
+the work. An index row with no matching alarm is harmless: the safety net kicks the object, which
+re-arms from its due rows or clears the row. The object updates or clears its index row after its
+alarm has run. The safety net runs hourly,
 reads only rows overdue by more than an hour, and kicks those objects. Its work is the number of
 alarms that failed, not the number of tenants. Reads of external datasets and of the index (the
 daily cost rollup, the stale-scopes report) stay central; they wake nothing.

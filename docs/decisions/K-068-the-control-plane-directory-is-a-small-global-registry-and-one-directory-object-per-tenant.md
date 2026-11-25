@@ -64,7 +64,7 @@ every platform job passes through is what ran out of memory twice (#2868, #3324)
 and a 1,000-requests-a-second soft limit bound. The fixed part per tenant is about 25 KB, so it is
 not the size of the registry that forces the split but the throughput and the growth (rfc §5).
 
-**The tenant is the grain where the invariants already are.** Of 52 transaction sites, the
+**The tenant is the grain where the invariants already are.** Of 53 transaction sites, the
 read-decide-writes that matter are each about one tenant. Splitting by tenant keeps all of them
 single-object, and leaves only uniqueness global.
 

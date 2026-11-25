@@ -29,6 +29,11 @@ exports daily. Logs are in the lake already
 so no export carries them. Restoring a tenant is an import into a fresh object under a new epoch, as
 `importDump` does today.
 
+**A copy of the exports lives outside the account.** An export in the same account's R2 does not
+survive losing the account. The exports are therefore also copied to storage outside it, in another
+Cloudflare account or another provider, by a job that holds write-only credentials there; only the
+restore path reads it.
+
 **Until the split**, the existing daily backup stops copying the whole directory into itself (#3325):
 append-only tables are carried by reference to the previous copy, and the logs are left out of it once
 they are shipped.
@@ -42,9 +47,13 @@ during the copy on 2026-11-24), which halves the usable 10 GB. It grows with the
 **PITR covers most of what the copy is for, and not all.** It covers an operator error, a bad
 migration and a bug, within 30 days. It does not cover losing the object, the namespace or the
 account, anything older than 30 days, reading old rows without rewinding the live object (no restore
-into another object is documented), or a self-host. The export covers those.
+into another object is documented), or a self-host. The export covers those, and the copy outside
+the account covers losing the account.
 
 ## Open choices for the owner
+
+- Where the copy outside the account lives (another Cloudflare account or another provider), and
+  who may read it.
 
 - The export cadence for a changed tenant (daily proposed) and for the registry.
 - Whether the registry also keeps a periodic full export besides the incremental one.

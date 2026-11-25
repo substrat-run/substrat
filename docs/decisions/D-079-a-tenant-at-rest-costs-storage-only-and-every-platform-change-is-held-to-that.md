@@ -29,7 +29,10 @@ storage cost:
   custom hostnames below an Enterprise plan.
 - **A per-tenant D1 database or R2 bucket** a vertical declares: 100,000 of each included on the
   account, then $0.10 a month each.
-- **Logs and traces at rest**: none for an idle tenant.
+- **Logs kept from earlier use.** A tenant that was active and is now idle keeps its recent window in
+  its object (about 100 to 150 KB) until it ages out; ageing out is due work, so one alarm at the
+  window's end prunes it. Older history is in the lake at $0.015 per GB-month. A tenant with no recent
+  history holds none.
 
 **A free tier is priced from this.** A free tenant at rest is a storage cost; a free tenant's use is
 priced from its requests, rows and logs, which are metered already (#3316).
