@@ -1,5 +1,31 @@
 # @substrat-run/vertical-host
 
+## 0.211.0
+
+### Minor Changes
+
+- 48f81c6: A hosted vertical's connector deliveries now go out within seconds of the commit, and a large backlog drains instead of being dead-lettered (#3365). Routed connector deliveries have a room of their own (`MAX_PENDING_CONNECTOR_DISPATCHES`), so module intents and sweep reports no longer take their slots. A delivery that finds the room full is no longer counted as an attempt. It stays due, and the scope asks for a drain. The control plane runs a kicked drain in a per-scope object (`PlatformDrainKickDO`) rather than the router's `waitUntil`. The drain re-lists and refills until the backlog is gone, and runs again while more remains. The scope's sweeper pass and a connection being connected or rotated each ask for a drain. Staff can re-drive a failed connector intent or a dead-lettered executor delivery with `POST /tenants/:t/scopes/:s/redrive`, audited as `redriveDelivery`.
+- e50545c: A W3C trace id now follows a request across every app it touches. The router continues the incoming `traceparent` when it is well formed, and starts a new trace when there is none or it is malformed. It puts the trace on the request it dispatches and names its id as `traceId` on its own request line. The trace goes on to every call the platform makes for that request: peer calls, store calls and connector calls. Each hop continues it under a new span. The invocation line has an optional `traceId`, so one request can be followed across apps, and a `ctx.log` line joins it through its `invocationId`. A trace id is a correlation id only and grants nothing. A caller's `tracestate` reaches the routed app only beside the trace it belongs to. No platform hop after that carries one, and a call to a third party gets no trace header from the platform. Contracts adds `TRACEPARENT_HEADER`, `TRACESTATE_HEADER`, `parseTraceparent`, `traceIdOf` and `nextTraceparent`. The kernel adds `currentTraceparent`.
+- d4b2c07: contracts: the wire envelope's version 2 (`substrat-wire/2`, K-66) adds the caller app, caller scope and actor lines. `verifyWireEnvelope` accepts both versions and refuses a version 2 caller row that does not fit its target (`caller`); signers still send version 1 unless told otherwise. `wireVerifiedCallerOf` reads what a verified version 2 call signed, and `wirePersonActor` binds an `onBehalf` token. The capability record's `envelope` may now be `2`.
+  control-plane-api: the platform entry verifies both versions, hands a verified version 2 call's caller and actor to the vertical in the isolate (never a header), and writes the envelope version on its wire line. An upload records `envelope: 2`; the fleet walk reads an unrecorded script's version from its own entry.
+  vertical-host: `/internal/vertical-invoke` refuses a call whose body disagrees with the caller and actor its verified version 2 envelope signs, a different `onBehalf` token included.
+  control-plane: ships the uploader that gives every pushed version the entry that verifies both envelope versions.
+  contract-tests: the capability record suite accepts `envelope: 2` and refuses a version no entry verifies.
+
+### Patch Changes
+
+- f059ec8: `serveAttachment`, and so `GET /api/attachments/:attachmentId`, answers a file the caller may not read with the 404 of an unknown id instead of a 403.
+- Updated dependencies [48f81c6]
+- Updated dependencies [f2df1c8]
+- Updated dependencies [d909214]
+- Updated dependencies [ae9dfd2]
+- Updated dependencies [e50545c]
+- Updated dependencies [d4b2c07]
+  - @substrat-run/contracts@0.211.0
+  - @substrat-run/kernel@0.211.0
+  - @substrat-run/model-providers@0.5.101
+  - @substrat-run/vertical-auth@0.38.2
+
 ## 0.210.0
 
 ### Minor Changes
