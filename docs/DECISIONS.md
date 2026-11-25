@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-143 decisions · 76 plan · 67 kernel
+150 decisions · 79 plan · 71 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -71,7 +71,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-23](decisions/K-023-identity-pools-are-registered-and-declare-topology-rather-th.md) | 2026-07-19 | kernel | Identity pools are registered, and declare topology rather than audience | #48 |
 | [K-24](decisions/K-024-staff-reads-are-audited-into-a-separate-access-log-that-drai.md) | 2026-07-19 | kernel | Staff reads are audited into a separate access log that drains rather than expires | #43, #42 |
 | [K-25](decisions/K-025-the-idp-is-not-fronted-whatever-mints-externalid-becomes-the.md) | 2026-07-19 | kernel | The IdP is not fronted: whatever mints externalId becomes the identity of record |  |
-| [K-26](decisions/K-026-one-environment-wide-router-verticals-are-unreachable-except.md) | 2026-07-19 | kernel | One environment-wide router; verticals are unreachable except through it; residency is… | #31 |
+| [K-26](decisions/K-026-one-environment-wide-router-verticals-are-unreachable-except.md) | 2026-07-19 | kernel | One environment-wide router; verticals are unreachable except through it; residency is… <br>*amended by D-77* | #31 |
 | [K-27](decisions/K-027-the-router-presents-a-shared-secret-and-the-vertical-verifie.md) | 2026-07-19 | kernel | The router presents a shared secret and the vertical verifies it; the vertical reads its… <br>*amended by K-58* |  |
 | [K-28](decisions/K-028-workers-for-platforms-fits-the-architecture-unchanged-a-user.md) | 2026-07-19 | kernel | Workers for Platforms fits the architecture unchanged: a user worker in a dispatch… |  |
 | [D-35](decisions/D-035-the-hosted-product-has-paid-cloudflare-dependencies-they-are.md) | 2026-07-20 | plan | The hosted product has paid Cloudflare dependencies; they are a cost line, not a discovery |  |
@@ -82,10 +82,10 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-36](decisions/D-036-the-staff-admission-gate-moves-to-the-audience-boundary-a-pr.md) | 2026-07-26 | plan | The staff admission gate moves to the audience boundary: a private vertical is self-serve… |  |
 | [D-38](decisions/D-038-builders-keep-the-substrate-vocabulary-the-cloudflare-mappin.md) | 2026-07-26 | plan | Builders keep the substrate vocabulary; the Cloudflare mapping lives behind the platform | #190 |
 | [D-37](decisions/D-037-version-updates-carry-data-forward-verticals-serve-in-place-.md) | 2026-07-27 | plan | Version updates carry data forward: verticals serve in place from ONE stable script per… <br>*restated as K-33* | #286 |
-| [K-33](decisions/K-033-verticals-serve-in-place-from-one-stable-script-per-version-.md) | 2026-07-27 | kernel | Verticals serve IN PLACE from one stable script; per-version scripts become the push archive <br>*restated as D-37* <br>*amended by K-65* | #286, #278 |
+| [K-33](decisions/K-033-verticals-serve-in-place-from-one-stable-script-per-version-.md) | 2026-07-27 | kernel | Verticals serve IN PLACE from one stable script; per-version scripts become the push archive <br>*restated as D-37* <br>*amended by K-65* <br>*amended by K-69* | #286, #278 |
 | [D-39](decisions/D-039-the-permission-registry-ships-in-the-deploy-manifest-the-dec.md) | 2026-07-28 | plan | The permission registry ships in the deploy manifest; the declared surface is a per-version… |  |
 | [D-40](decisions/D-040-the-hosted-vertical-sandbox-is-a-positive-binding-allowlist-.md) | 2026-07-28 | plan | The hosted-vertical sandbox is a positive binding allowlist, not a denylist | #302, #301 |
-| [D-41](decisions/D-041-a-hosted-vertical-reads-its-entitlements-at-request-time-fro.md) | 2026-07-28 | plan | A hosted vertical reads its entitlements at request time from a scope-local projection —… | #304, #302, #33 |
+| [D-41](decisions/D-041-a-hosted-vertical-reads-its-entitlements-at-request-time-fro.md) | 2026-07-28 | plan | A hosted vertical reads its entitlements at request time from a scope-local projection —… <br>*amended by D-77* | #304, #302, #33 |
 | [D-42](decisions/D-042-the-platform-delivers-a-tenant-s-entitlements-with-provision.md) | 2026-07-28 | plan | The platform delivers a tenant's entitlements WITH provisioning, and grant/revoke… | #310 |
 | [K-34](decisions/K-034-the-event-envelope-records-what-authorized-it.md) | 2026-07-28 | kernel | The event envelope records what authorized it |  |
 | [K-35](decisions/K-035-permission-denials-are-recorded-in-a-scope-local-denial-log-.md) | 2026-07-28 | kernel | Permission denials are recorded in a scope-local denial log, never the admin log | #867 |
@@ -155,3 +155,10 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-65](decisions/K-065-one-version-rule-an-install-follows-its-app-within-a-major-and-a-breaking-change-is-a-new-major-served-beside-the-old.md) | 2026-11-24 | kernel | One version rule: an install follows its app within a major, and a breaking change is a new major served beside the old <br>*amends K-33* |  |
 | [K-66](decisions/K-066-the-wire-envelope-s-second-version-names-the-calling-app-its-scope-and-the-actor-and-the-router-signs-only-what-it-verified.md) | 2026-11-24 | kernel | The wire envelope's second version names the calling app, its scope and the actor, and the router signs only what it verified <br>*amends K-58* | #2994 |
 | [K-67](decisions/K-067-a-store-call-s-second-envelope-version-names-the-actor-and-the-router-names-a-person-only-after-verifying-their-token.md) | 2026-11-24 | kernel | A store call's second envelope version names the actor, and the router names a person only after verifying their token <br>*amends K-52* | #2994 |
+| [D-77](decisions/D-077-suspension-is-enforced-in-the-scope-projected-like-entitlements-not-at-the-edge.md) | 2026-11-25 | plan | Suspension is enforced in the scope, from a flag projected like entitlements, not at the edge <br>*awaiting ratification* <br>*amends D-41, K-26* |  |
+| [D-78](decisions/D-078-a-directory-object-recovers-by-point-in-time-restore-and-an-incremental-export-not-a-daily-whole-copy.md) | 2026-11-25 | plan | A directory object recovers by point-in-time restore and an incremental export to R2, not by a daily whole copy <br>*awaiting ratification* | #3325, #40, #2868 |
+| [D-79](decisions/D-079-a-tenant-at-rest-costs-storage-only-and-every-platform-change-is-held-to-that.md) | 2026-11-25 | plan | A tenant at rest costs the platform storage only, and every platform change is held to that <br>*awaiting ratification* | #3316 |
+| [K-68](decisions/K-068-the-control-plane-directory-is-a-small-global-registry-and-one-directory-object-per-tenant.md) | 2026-11-25 | kernel | The control-plane directory is a small global registry and one directory object per tenant, and a change across them commits its intent first <br>*awaiting ratification* | #3325, #3326, #1343 |
+| [K-69](decisions/K-069-nothing-iterates-over-every-tenant-on-a-schedule-work-starts-from-an-event-or-the-owning-object-s-alarm.md) | 2026-11-25 | kernel | Nothing iterates over every tenant on a schedule: work starts from an event or the owning object's alarm, and a fleet-wide change is applied on each scope's next wake, warmed by a queue and counted <br>*awaiting ratification* <br>*amends K-33* | #3324, #3331, #3376, #3388, #3367, #3369, #1653 |
+| [K-70](decisions/K-070-data-that-grows-with-tenants-times-time-leaves-the-sqlite-objects-each-object-keeps-a-bounded-recent-window.md) | 2026-11-25 | kernel | Data that grows with tenants times time leaves the SQLite objects: each object keeps a bounded recent window, and the admin log is written where the change is made and shipped onward <br>*awaiting ratification* | #3326, #3325, #3316, #2501, #1232 |
+| [K-71](decisions/K-071-the-hosted-issuer-partitions-its-people-by-person-and-prunes-what-expires.md) | 2026-11-25 | kernel | A shared hosted issuer partitions its people by person, and prunes the sessions and tokens that expire <br>*awaiting ratification* |  |
