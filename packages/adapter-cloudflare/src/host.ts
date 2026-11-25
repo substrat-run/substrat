@@ -250,6 +250,7 @@ import {
   type RoleDefinition,
   type Scope,
   type DirectoryDump,
+  type DirectoryCopyByReference,
   type DirectoryDumpPage,
   type ScopeDump,
   type ScopeDumpInput,
@@ -1466,7 +1467,10 @@ interface ControlPlaneStub {
   listTenantBuildUsage(query: TenantBuildUsageFilter): Promise<TenantBuildUsageRow[]>;
   // #40 — the directory's own backup/restore pair.
   exportDump(): Promise<ScopeDumpTable[]>;
-  exportDumpPage(cursor: string | null, opts?: { maxBytes?: number }): Promise<DirectoryDumpPage & { copiedTables?: number }>;
+  exportDumpPage(
+    cursor: string | null,
+    opts?: { maxBytes?: number; byReference?: DirectoryCopyByReference },
+  ): Promise<DirectoryDumpPage & { copiedTables?: number }>;
   importDump(tables: ScopeDumpTable[], audit?: AdminEntry): Promise<void>;
   // New replied names: an old DO does not recognize these, so it cannot ignore the audit row.
   putTenantStoreAndAudit: AuditRequired<ControlPlaneStub['putTenantStore']>;
@@ -10407,8 +10411,12 @@ export class CloudflareScopeHost implements ScopeHost {
       exportDirectoryPage: async (actor, cursor, opts): Promise<DirectoryDumpPage> => {
         const { copiedTables, ...page } = await this.cp.exportDumpPage(cursor, opts);
         // One access-log row per copy, as a whole export writes: its first page takes the copy, so
-        // the count is every table the copy holds, and the params say it was paged.
-        if (cursor === null) await this.recordAccess(actor, 'exportDirectory', {}, { paged: true }, copiedTables ?? page.tables.length);
+        // the count is every table the copy holds, and the params say it was paged, and how it carried
+        // the tables it can read by reference (#3325).
+        if (cursor === null) {
+          await this.recordAccess(actor, 'exportDirectory', {}, { paged: true, byReference: opts?.byReference ?? 'off' },
+            copiedTables ?? page.tables.length);
+        }
         return page;
       },
       restoreDirectory: async (actor, dump: DirectoryDump): Promise<void> => {

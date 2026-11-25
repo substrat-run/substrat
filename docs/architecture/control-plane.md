@@ -1282,6 +1282,22 @@ mutate the directory, so a copy is of a settled directory rather than one mid-sw
   written, replaced or migrated while its pages are read. The last page drops the snapshot; one
   a copy left behind is dropped by the next copy's first page, and pages a cut-off copy left in
   R2 are swept by a later commit once they are a day old.
+- **Append-only and log tables are read by reference** ([#3325](https://github.com/substrat-run/substrat/issues/3325),
+  the interim [D-78](../decisions/D-078-a-directory-object-recovers-by-point-in-time-restore-and-an-incremental-export-not-a-daily-whole-copy.md)
+  names until the tenant-scale RFC's step 3). The snapshot wrote one row per directory row a
+  day, 44 % of the directory's rows written, and most of it was five tables: the admin log and
+  the version migrations (append-only) and the access log, ops failures and sweep runs (logs).
+  With `DIRECTORY_BACKUP_BY_REFERENCE=on` those are not copied; their pages read the live table
+  up to the rowid it held at the first page. An append-only table that loses a row under that
+  horizon while the copy is read refuses the copy, and a deploy that alters one of the tables
+  does too; what each log may lose or change, and why the copy is still right, is in
+  `adapter-cloudflare/src/directory-copy-reference.ts`. `verify` copies as before and reports
+  what a by-reference copy would have held; unset or `off` is the copy as before. Nothing is
+  left out of the copy: none of these tables is in the lake yet.
+- **A PITR bookmark with every copy** (#3325). The first page takes the directory's
+  point-in-time-recovery bookmark right after the snapshot, and the copy's manifest carries it,
+  so a rewind of the live object (within Cloudflare's 30 days) and a restore of the copy name
+  the same instant.
 - **Cadence: one copy a day.** Enforced by reading the newest stored copy, not by a second
   trigger — so the quarter-hourly cron takes one per day, a missed tick is caught up on the
   next pass (late, never never), and the schedule needs no durable state of its own. A copy

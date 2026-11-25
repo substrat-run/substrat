@@ -377,6 +377,7 @@ import {
   type QueryReader,
 } from './tenant-request-query.js';
 import type { PlatformRuntime } from './platform-runtime.js';
+import type { DirectoryCopyByReference } from '@substrat-run/contracts';
 import { namespacesForScript, type DoNamespaceReader } from './do-namespaces.js';
 import type {
   DirectoryBackup,
@@ -953,6 +954,11 @@ export interface ControlPlaneApiOptions {
    * inferred from an absence of backups nobody looked for.
    */
   directoryBackups?: DirectoryBackupStore;
+  /**
+   * How a directory copy carries the tables the host can read by reference (#3325): `off` (the
+   * default), `verify` or `on`. The manual copy takes it as the scheduled one does.
+   */
+  directoryBackupByReference?: DirectoryCopyByReference;
   /**
    * Issues + polls Cloudflare-for-SaaS custom hostnames (#305, §4.7) — host-injected
    * like `deployVertical`, so this package holds no Cloudflare credential (D-34). When
@@ -8030,6 +8036,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       store: options.directoryBackups,
       actor: c.get('actor'),
       force: true,
+      ...(options.directoryBackupByReference ? { byReference: options.directoryBackupByReference } : {}),
     });
     return c.json(result.taken as DirectoryBackup, 201);
   });
