@@ -28,6 +28,17 @@ export type {
 export { defineScopeDO } from './scope-do.js';
 export { ControlPlaneDO } from './control-plane-do.js';
 export type { DirectoryInventory } from './control-plane-do.js';
+// K-68 (directory split), step 3a: the registry and the per-tenant directory object, empty of traffic.
+export {
+  DirectoryRegistryDO,
+  TenantDirectoryDO,
+  REGISTRY_OBJECT_NAME,
+  durableDirectoryObjects,
+  registryStub,
+  tenantDirectoryNameOf,
+  tenantDirectoryStub,
+} from './directory-objects.js';
+export { DIRECTORY_PLACEMENT, directoryObjectSchema, type DirectoryObjectKind, type Placement, type TablePlacement } from './directory-placement.js';
 export { OperationQueue } from './serialization.js';
 export { doScopedSql } from './sql.js';
 export { createDoTupleChecker } from './checker.js';

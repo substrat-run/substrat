@@ -97,7 +97,11 @@
       { "name": "SUBSTRAT_STORE_GRAPH", "class_name": "ScopeStoreCounterDO" },
       // #1686: vertical-auth's real identity directory, for the owner claim link suite — the
       // claim link is a capability in a ScopeDO and a record in this, and both are held here.
-      { "name": "AUTH", "class_name": "IdentityDO" }
+      { "name": "AUTH", "class_name": "IdentityDO" },
+      // K-68 (directory split), step 3a: the registry and the per-tenant directory object —
+      // directory-objects.test.ts and the directory crossing contract suite.
+      { "name": "DIRECTORY_REGISTRY", "class_name": "DirectoryRegistryDO" },
+      { "name": "TENANT_DIRECTORY", "class_name": "TenantDirectoryDO" }
     ]
   },
   "migrations": [
@@ -195,6 +199,10 @@
     {
       "tag": "v23",
       "new_sqlite_classes": ["KickAlarmDO"]
+    },
+    {
+      "tag": "v24",
+      "new_sqlite_classes": ["DirectoryRegistryDO", "TenantDirectoryDO"]
     }
   ]
 }

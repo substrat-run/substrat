@@ -17,6 +17,7 @@ import {
   scopeCausedByContractSuite,
   membershipExecutorContractSuite,
   findingsContractSuite,
+  directoryCrossingContractSuite,
   scopeStoreContractSuite,
   findingsAtomicContractSuite,
   capabilityAttachmentContractSuite,
@@ -272,6 +273,19 @@ scopeStoreContractSuite('adapter-sqlite', async (scopeStores) => {
   const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker, scopeStores });
   return {
     host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// K-68 (directory split): one database behind the registry's ports and every tenant's.
+directoryCrossingContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-crossing-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  return {
+    objects: host.directoryObjects(),
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });

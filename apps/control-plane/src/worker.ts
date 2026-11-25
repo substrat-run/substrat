@@ -436,6 +436,8 @@ export async function kickCrossVertical(
   }
 }
 export { ControlPlaneDO };
+// K-68 (directory split), step 3a: bound in wrangler.jsonc, addressed by nothing yet.
+export { DirectoryRegistryDO, TenantDirectoryDO } from '@substrat-run/adapter-cloudflare';
 export { ObservabilityCacheDO };
 export { PersonaIssuerDO };
 export { ReviewJobDO };

@@ -368,6 +368,8 @@ export const NarrowedPeerScopeDO = defineScopeDO([peerModNarrowed], {});
 export const RemovedPeerScopeDO = defineScopeDO([peerModWithoutCaller], {});
 
 export { ControlPlaneDO };
+// K-68 (directory split), step 3a.
+export { DirectoryRegistryDO, TenantDirectoryDO } from '../src/directory-objects.js';
 
 /**
  * #1899: a directory per harness that counts. Two bindings to ONE class share one namespace,
