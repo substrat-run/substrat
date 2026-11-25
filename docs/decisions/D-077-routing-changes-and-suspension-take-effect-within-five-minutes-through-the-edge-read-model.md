@@ -2,14 +2,14 @@
 id: D-77
 date: 2026-11-25
 layer: plan
-title: "Routing changes and suspension take effect within five minutes, through the edge read model; read models are held to that bound and placed for latency and cost"
+title: "Routing changes and suspension are designed to take effect within five minutes, through the edge read model; five minutes is the read models' target, and they are placed for latency and cost"
 status: proposed
 aliases: []
 amends: ["D-41", "K-26"]
 tracking: ["#3395"]
 ---
 
-# D-77 — Routing changes and suspension take effect within five minutes, through the edge read model; read models are held to that bound and placed for latency and cost
+# D-77 — Routing changes and suspension are designed to take effect within five minutes, through the edge read model; five minutes is the read models' target, and they are placed for latency and cost
 
 > **Proposed 2026-11-25, not ratified.** The owner set the bound on 2026-11-25: a suspension and
 > any other routing change may take up to five minutes to take effect, and performance and cost
@@ -18,17 +18,23 @@ tracking: ["#3395"]
 > the request path, and the record answering K-26's cache question, belong to the router's edge
 > read model ([#3395](https://github.com/substrat-run/substrat/issues/3395)).
 
-**Five minutes is the freshness bound for every read model the platform serves from.** A routing
-change, a suspension or its lifting, a deleted or new hostname, a promote's per-version policy, a
-staff list, a projected count: each may be up to five minutes behind the object that decided it.
+**Five minutes is the freshness target every read model the platform serves from is designed and
+measured against.** A routing change, a suspension or its lifting, a deleted or new hostname, a
+promote's per-version policy, a staff list, a projected count: each is designed to be at most five
+minutes behind the object that decided it.
+
+**The target is not a guaranteed maximum.** KV documents propagation of "60 seconds or more", with
+no upper bound, so a cache budget alone cannot promise five minutes; a route can occasionally lag
+longer. Each read model reports its measured lag against the target. A hard maximum needs a bounded
+fallback in the mechanism, and is an open choice below.
 
 **Where five minutes is enough, the cheaper and faster placement wins.** Design choices are ranked by
 request latency first, then cost per tenant, then freshness inside the bound. A placement that is
 fresher than five minutes but adds request latency or per-tenant cost needs a named reason.
 
-**Suspension is enforced without a per-request read of any object.** The edge read model stops
-routing a suspended tenant within the bound. Nothing is added to a request to check a tenant's status
-more freshly than that.
+**Suspension is enforced without a per-request read of any object.** The edge read model is
+designed to stop routing a suspended tenant within the target. Nothing is added to a request to check
+a tenant's status more freshly than that.
 
 **A strongly consistent scope-side refusal is not required by this bound.** The scopes already refuse
 once a lifecycle change is delivered to them (#1713). This record neither depends on that delivery
@@ -61,6 +67,10 @@ fan-out per change that the request must wait for. Five minutes leaves room for 
 - Whether the scopes' existing lifecycle refusal (#1713) stays as a second lever beside the edge, or
   is reserved for a bound tighter than five minutes.
 - Whether a suspended tenant's owner may still reach their data export through the dashboard.
+- **Whether five minutes must be a hard maximum.** If so, #3395's mechanism needs a bounded fallback
+  rather than the cache budget alone, for example a cached route that carries its own expiry and is
+  revalidated against the authority once past it, at the cost of that read on the requests that hit
+  an expired entry. If not, the target stands and the measured lag is reported against it.
 
 ## Not built
 
