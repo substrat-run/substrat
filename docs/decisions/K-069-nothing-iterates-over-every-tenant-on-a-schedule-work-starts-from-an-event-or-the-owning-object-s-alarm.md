@@ -44,9 +44,11 @@ daily cost rollup, the stale-scopes report) stay central; they wake nothing.
 **A fleet-wide change is recorded once and applied lazily.** A promote, a fleet re-upload or a
 backfill records a version or a backfill id in the registry. Each scope applies it on its next wake,
 inside the migration pass it already runs on the first operation after a promote. A queue warms the
-scopes active in the last 30 days so a person's request does not pay for it. Each scope writes one
-Analytics Engine data point when it has applied the change, and the console shows the count against
-the number of installs. `PROVISION_RECONCILE_BATCH` and its pass phase are removed.
+scopes active in the last 30 days so a person's request does not pay for it. Progress is durable:
+each scope's applied version is recorded in its tenant's directory object, which projects a count per
+(vertical, version) into the cross-tenant index, and completion is that count reaching the install
+count, however late the last scope wakes. Analytics Engine, kept three months, carries only the live
+progress chart. `PROVISION_RECONCILE_BATCH` and its pass phase are removed.
 
 **This amends [K-33](./K-033-verticals-serve-in-place-from-one-stable-script-per-version-.md)** in one
 part only: serving in place from one stable script, the per-scope migration pass and its PITR bookmark

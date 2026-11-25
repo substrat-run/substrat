@@ -47,14 +47,15 @@ during the copy on 2026-11-24), which halves the usable 10 GB. It grows with the
 **PITR covers most of what the copy is for, and not all.** It covers an operator error, a bad
 migration and a bug, within 30 days. It does not cover losing the object, the namespace or the
 account, anything older than 30 days, reading old rows without rewinding the live object (no restore
-into another object is documented), or a self-host. The export covers those, and the copy outside
-the account covers losing the account.
+into another object is documented), or a self-host. The export covers those, within its limits: a
+point older than 30 days can be recovered only as one of the exported points, at most one a day, and
+only for as long as exports are kept, which is an open choice below, so an older point is not
+guaranteed. The copy outside the account covers losing the account.
 
 ## Open choices for the owner
 
 - Where the copy outside the account lives (another Cloudflare account or another provider), and
   who may read it.
-
 - The export cadence for a changed tenant (daily proposed) and for the registry.
 - Whether the registry also keeps a periodic full export besides the incremental one.
 - How long exports are kept in R2.

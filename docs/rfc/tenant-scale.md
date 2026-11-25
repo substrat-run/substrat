@@ -108,7 +108,7 @@ then cost per tenant**, then freshness inside the bound.
 
 | # | Choice | Request latency | Cost per tenant | Freshness | Verdict |
 |---|---|---|---|---|---|
-| 1 | Route and per-version policy from an edge read model (step 1, [#3395](https://github.com/substrat-run/substrat/issues/3395): router memory, then KV; residency-pinned routes per K-36) | none on a hit; one KV read on a miss. #3395 measured today's directory read at p50 41–297 ms outside the object's colo | storage ≈ 2 KB; KV reads only on misses, at most ≈ $0.04 per active tenant a month if every request missed | ≤ 5 min | **chosen**. Today's per-request directory RPC adds a Durable Object call to every request, costs $0.15 per million plus duration, and is the single object's 1,000/s limit. |
+| 1 | Route and per-version policy from an edge read model (step 1, [#3395](https://github.com/substrat-run/substrat/issues/3395): router memory, then KV; residency-pinned routes per K-36) | none on a hit; at most two KV reads on a full miss (route and serving policy). #3395 measured today's directory read at p50 41–297 ms outside the object's colo | storage ≈ 2 KB; KV reads only on misses: a ceiling of $1.00 per million requests if every request missed, ≈ $0.08 per active tenant a month; $0.0056 per million for a hostname at 1 request/s with a 180 s cache (measured and modelled in [#3397](https://github.com/substrat-run/substrat/pull/3397)) | ≤ 5 min | **chosen**. Today's per-request directory RPC adds a Durable Object call to every request, costs $0.15 per million plus duration, and is the single object's 1,000/s limit. |
 | 2 | Suspension through the edge read model, no per-request status read | none | a read-model write per route per suspension | ≤ 5 min | **chosen** (D-77, five-minute bound; mechanism in #3395). The scopes' existing lifecycle refusal (#1713) stays as it is; a strongly consistent scope-side refusal is an option only if a tighter bound is ever wanted. A per-request status read is rejected. |
 | 3 | Entitlements projected into scopes (D-41, unchanged) | none | rows on change | at fan-out | kept |
 | 4 | Work on the owning object's alarm instead of a central pass (K-69, no scheduled walk over tenants) | none either way | idle: $0 instead of ≈ $0.38 a month | — | **chosen** |
@@ -301,7 +301,7 @@ though the read model is the first step.
 
 | Object or service | Rows / bytes | Requests | Notes |
 |---|---|---|---|
-| Edge read model (KV + router memory) | ≈ 150 K hostname keys + one key per version, ≈ 150 MB | 289/s mean, 868/s peak, mostly from memory | KV reads are $0.50 per million; even if every request missed (25 M a day) that is ≈ $375 a month, ≈ $0.04 per active tenant. The five-minute bound lets the router cache for minutes. Designed and measured in #3395. |
+| Edge read model (KV + router memory) | ≈ 150 K hostname keys + one key per version, ≈ 150 MB | 289/s mean, 868/s peak, mostly from memory | KV reads are $0.50 per million and a full miss costs at most two, so the ceiling is $1.00 per million requests: ≈ $750 a month at 25 M requests a day if every one missed, ≈ $0.08 per active tenant. A hot hostname costs far less ($0.0056 per million at 1 request/s with a 180 s cache). Designed and measured in #3395 / [#3397](https://github.com/substrat-run/substrat/pull/3397). |
 | Global registry object | ≈ 100 K tenant rows, 150 K hostname rows, verticals, versions without manifests, ≈ 150 MB | writes on tenant create, hostname claim, push, promote: well under 1/s; staff reads | no request-path reads, no sweep reads |
 | Tenant directory object | ≈ 25 KB fixed + a 35-day window ≈ 100–150 KB | an active tenant's dashboard and drains: far under 1/s | one per tenant, 100,000 objects |
 | Cross-tenant index (D1) | 100 K rows × ≈ 0.5 KB = 50 MB | staff search, reports | at most five minutes behind; 10 GB cap far away |
@@ -636,17 +636,21 @@ bound, and nothing is added to a request to check a tenant's status more freshly
 
 **The mechanism is #3395's.** How the router's cache is filled and invalidated, how the five
 minutes are split between its memory and KV, and how residency-pinned routes are read under K-36
-(which keeps KV off them) are designed and measured there. This document's numbers use a
-**provisional split, pending #3395's measurements**: KV's own propagation ("60 seconds or more",
-§6) and edge `cacheTtl`, plus a few minutes in the router's memory. "Or more" is KV's caveat, so
-the bound is a target measured against, not a guarantee KV gives. If #3395 measures other figures,
-they replace these.
+(which keeps KV off them) are designed and measured there, and implemented in [#3397](https://github.com/substrat-run/substrat/pull/3397). This
+document adopts #3397's chosen split: **180 s in the router's memory for routes and refusals, 60 s
+for negative answers, KV's default 60 s `cacheTtl`, a publish under a second after the directory
+write, about four minutes in all**, which leaves about a minute for KV propagation beyond its cache.
+KV propagation itself was **not measured** (no KV namespace exists yet; #3397's `compare` mode is
+where it will be); it rests on Cloudflare's "60 seconds or more", so five minutes is a target the
+read model is measured against, not a guarantee KV gives. #3397 publishes a suspended tenant's
+routes as refusals, which the router answers with no directory read. Residency-pinned routes are
+never written to KV (K-36) and are read from the directory.
 
 **What it costs.** Nothing per request: the route is read anyway. A write to the read model per
 route entry per suspension.
 
 **The scopes already refuse once a lifecycle change reaches them** (#1713, the CP-less host's
-lifecycle gate), delivered today by the pass's lifecycle heal and, under K-69 (no scheduled walk over tenants), by the tenant
+lifecycle gate; #3397 measured it landing under a second after the transition where it exists), delivered today by the pass's lifecycle heal and, under K-69 (no scheduled walk over tenants), by the tenant
 object's alarm. D-77 (five-minute bound) does not depend on that delivery and does not remove it. A strongly
 consistent scope-side refusal is not a requirement of the bound; it is the option if a tighter
 bound is ever wanted.
@@ -744,7 +748,7 @@ of the design:
 *Revert:* each is a config value or a small change.
 
 **Step 1. The router's edge read model ([#3395](https://github.com/substrat-run/substrat/issues/3395),
-in progress).** Designed there, with a `compare` mode before the router reads it and its own
+in progress as [#3397](https://github.com/substrat-run/substrat/pull/3397)).** Designed there, with a `compare` mode before the router reads it and its own
 record; this RFC adds only that the projection's source will move from
 the one directory to the registry and the tenant objects in step 3, so the projection writer should
 be one function both can call. *Revert:* the router reads the directory again.
@@ -817,7 +821,9 @@ D-78 (PITR and incremental export) therefore: PITR is the first recovery tool fo
 to R2** replaces the daily whole copy. **An export in the same account does not cover losing the
 account**, so the exports are also copied to storage outside it, in another Cloudflare account or
 another provider, written by a job with write-only credentials there and read only by the restore
-path. Where that copy lives, and who can read it, is the owner's choice. A tenant object exports itself when it has changed since its
+path. Where that copy lives, and who can read it, is the owner's choice. A point older than PITR's 30 days
+is recoverable only as one of the exported points, at most one a day per changed tenant, and only
+for as long as exports are kept, which the owner sets; an arbitrary older point is not guaranteed. A tenant object exports itself when it has changed since its
 last export, at most daily, from its alarm, and a registry export runs daily (about 150 MB at
 100,000 tenants). The logs are in the lake already. Restore of one tenant is an import into a fresh
 object, under a new epoch, as `importDump` does now. Until step 3, step 0's change to #3325 is the
@@ -890,10 +896,10 @@ and event delivery build on, and K-69 (no scheduled walk over tenants) decides n
 - **Durable Object storage billing** is documented as starting in January 2026; the page still says
   so, and whether the account is billed for it today was not checked against an invoice (billing
   reads need a token this work did not have).
-- **KV read cost on the request path** depends on the router's memory cache, which is #3395's
-  design and was not measured here. The split of the five minutes between memory and KV is
-  provisional until #3395 measures it.
-- **Residency-pinned routes.** K-36 keeps KV off them, so under #3395 they are still read from the
+- **KV propagation** was not measured by #3397 either; the four-minute split rests on Cloudflare's
+  "60 seconds or more" until #3397's `compare` mode measures it. KV read cost is #3397's model (a
+  ceiling of $1.00 per million requests), not a measurement at scale.
+- **Residency-pinned routes.** K-36 keeps KV off them, so under #3397 they are still read from the
   directory. None exists in production today; at scale, a pinned tenant's route read is a
   request-path read of a global object again, unless #3395's record gives pinned routes their own
   read model.

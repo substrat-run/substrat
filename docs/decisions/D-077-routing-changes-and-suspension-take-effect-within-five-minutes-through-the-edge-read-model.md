@@ -6,7 +6,7 @@ title: "Routing changes and suspension are designed to take effect within five m
 status: proposed
 aliases: []
 amends: ["D-41", "K-26"]
-tracking: ["#3395"]
+tracking: ["#3395", "#3397"]
 ---
 
 # D-77 — Routing changes and suspension are designed to take effect within five minutes, through the edge read model; five minutes is the read models' target, and they are placed for latency and cost
@@ -16,7 +16,10 @@ tracking: ["#3395"]
 > matter more than freshness. The reasoning is in [rfc/tenant-scale.md](../rfc/tenant-scale.md)
 > (§2.1, §9). This record states the bound and the principle only. The mechanism that meets it on
 > the request path, and the record answering K-26's cache question, belong to the router's edge
-> read model ([#3395](https://github.com/substrat-run/substrat/issues/3395)).
+> read model ([#3395](https://github.com/substrat-run/substrat/issues/3395), implemented in
+> [#3397](https://github.com/substrat-run/substrat/pull/3397) with its own record, "The router reads
+> routes from a KV read model the directory publishes"). #3397 chooses a split of about four minutes
+> (180 s in the router's memory, KV's 60 s `cacheTtl`) inside this target.
 
 **Five minutes is the freshness target every read model the platform serves from is designed and
 measured against.** A routing change, a suspension or its lifting, a deleted or new hostname, a
