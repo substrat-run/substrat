@@ -429,6 +429,7 @@ export {
 // transport. Which one a deployment binds is its choice; the drain never learns.
 export { createPipelinesEventSink } from './pipelines-sink.js';
 export { createPipelinesDirectoryLakeSink } from './directory-lake-sink.js';
+export { parseDirectoryLakeReads, readAdminLogHistory, readWholeAdminLog, type DirectoryLakeReads } from './directory-lake-reads.js';
 // #1334 — the lake's query engine seam, and its R2 SQL row. The gateway that scopes every
 // read to one tenant stays inside the API; a host only chooses the engine.
 export type { LakeQueryEngine } from './lake-gateway.js';

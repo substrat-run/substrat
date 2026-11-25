@@ -137,6 +137,8 @@ import {
   createR2AccessLogSink,
   createPipelinesEventSink,
   createPipelinesDirectoryLakeSink,
+  parseDirectoryLakeReads,
+  type DirectoryLakeReads,
   createR2SqlEngine,
   type LakeQueryEngine,
   createR2BackupStore,
@@ -509,6 +511,12 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * `DIRECTORY_LAKE_DATASET_NAMES`. A list with an unknown name is logged and read as `off`.
    */
   DIRECTORY_LAKE_CAPTURE?: string;
+  /**
+   * K-70: where history before the directory's window is read: `off` (the default) the directory
+   * only, `compare` the directory with the lake checked beside it, `on` the lake. Needs the lake's
+   * query engine (`lakeQueryFor`). A value it does not know is logged and read as `off`.
+   */
+  DIRECTORY_LAKE_READS?: string;
   /**
    * Reads the Tier-2 lake with R2 SQL (#1334), pushed by `scripts/secrets.mjs`. Provisioned as
    * an R2 "Admin Read only" token scoped to the lake bucket; whether that permission set is
@@ -1866,6 +1874,16 @@ function directoryLakeCaptureOf(env: Env): DirectoryLakeDataset[] {
   } catch (err) {
     console.error('directory-lake: DIRECTORY_LAKE_CAPTURE refused, capture stays off:', (err as Error).message);
     return [];
+  }
+}
+
+/** K-70: the history-read switch, as the capture switch: a value it refuses is logged and read as off. */
+function directoryLakeReadsOf(env: Env): DirectoryLakeReads {
+  try {
+    return parseDirectoryLakeReads(env.DIRECTORY_LAKE_READS);
+  } catch (err) {
+    console.error('directory-lake: DIRECTORY_LAKE_READS refused, reads stay off:', (err as Error).message);
+    return 'off';
   }
 }
 
@@ -4321,6 +4339,7 @@ export default {
         observability: observabilityFor(env),
         // #1334: the lake's query engine. Absent unless fully configured ⇒ the lake route 501s.
         lakeQuery: lakeQueryFor(env),
+        directoryLakeReads: directoryLakeReadsOf(env),
         // #605: the same connector closure the dispatch and the sweep already use, in its
         // third role — answering FOR a connection instead of acting through one. The
         // control plane is the only place that can: it holds the directory, the secret
