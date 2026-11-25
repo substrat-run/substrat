@@ -152,7 +152,8 @@ const LAKES = {
   compression: 'zstd',
   rollSizeMb: 100,
   rollIntervalSeconds: 300,
-  sql: (l) => `INSERT INTO ${l.sink} SELECT * FROM ${l.stream}`,
+  // The same pass-through statement, for the same reason: the lake is fed whole, never reshaped.
+  sql: (l) => LAKES.events.sql(l),
   idVar: 'CF_PIPELINE_DIRECTORY_STREAM_ID',
  },
 };
