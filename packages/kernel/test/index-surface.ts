@@ -689,6 +689,8 @@ export const INDEX_VALUE_EXPORTS = [
   'promoteReviewRefusalOf',
   'provisionedVersionsParams',
   'pruneCostDayRows',
+  // K-70: the window prune both adapters run.
+  'pruneDirectoryLakeWindow',
   'pruneDrainedOutbox',
   'pruneFindings',
   'pruneInputOf',
