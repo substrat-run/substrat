@@ -2,6 +2,7 @@ export { testOperations, type RawDerivedMaps } from './test-operations.js';
 export { scopeHostContractSuite, scopeAdminAuditTransactionSuite } from './scope-host-suite.js';
 export { scopePermissionAuditSuite } from './scope-permission-audit-suite.js';
 export { directoryAdminAuditTransactionSuite, type DirectoryAuditFixture } from './directory-audit-suite.js';
+export { directoryLakeContractSuite, type DirectoryLakeFixture } from './directory-lake-suite.js';
 export { derivedDigestOf, heldMigrations, heldVersion } from './held-migrations.js';
 export type { ScopeHostFixture, ScopeHostSuiteOptions } from './scope-host-suite.js';
 export { permissionContractSuite } from './permission-suite.js';

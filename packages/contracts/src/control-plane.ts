@@ -122,6 +122,15 @@ export const adminAction = z.enum([
   // #1334 — the retention prune: drained outbox rows deleted once their window ran out and
   // nothing in the scope still needed them. A deletion of a tenant's events, so it is recorded.
   'pruneEvents',
+  // K-70 (tenants × time data leaves the objects): which directory data sets capture their rows
+  // into the outbox to the lake, switched on or off. A switch that decides what leaves the platform.
+  'setDirectoryLakeCapture',
+  // K-70: queued directory rows the lake confirmed, deleted from the outbox. The egress receipt, as
+  // `drainAccessLog` is for the access log: what left, up to where, and where it landed.
+  'drainDirectoryOutbox',
+  // K-70: a backfill walked a capturing data set to its end, so the rows it held before capture
+  // began have reached the lake too.
+  'backfillDirectoryLake',
   'pruneAccessLog', // K-24 — deleting drained access rows is itself a mutation // K-23 — a provider declares its topology before it may link
   'createTenant', // §4.1
   // §4.1/§4.8 — before/after carry the transitioned status. Starting the delete grace

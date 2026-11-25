@@ -246,6 +246,13 @@ import type { GrantedEntitiesPage } from './grant-scoped-read.js';
 import type { EntityVersion } from './entity-version.js';
 import type { UndrainedEvents } from './outbox-event.js';
 import type { PruneDrainedEventsInput } from './outbox-prune.js';
+import type {
+  DirectoryLakeBackfillPage,
+  DirectoryLakeCaptureResult,
+  DirectoryLakeCaptureState,
+  DirectoryLakeDataset,
+  DirectoryLakeRow,
+} from './directory-lake.js';
 // Type-only, and the cycle it completes is therefore not one at runtime: `job-run.ts`
 // imports only types from here.
 import type {
@@ -4928,6 +4935,46 @@ export interface HostAdmin {
    * now one the operator opts out of rather than one the platform imposes.
    */
   pruneAccessLog(actor: PlatformActorId, limit: number): Promise<number>;
+
+  /**
+   * K-70 (tenants × time data leaves the objects): reconcile which directory data sets capture
+   * their rows into the directory's outbox to the lake (`directory-lake.ts`). Idempotent; one
+   * `setDirectoryLakeCapture` admin row, in the same transaction, only when something changed.
+   * Optional, like every member a host may predate: the pass skips the phase without it.
+   */
+  setDirectoryLakeCapture?(actor: PlatformActorId, datasets: readonly DirectoryLakeDataset[]): Promise<DirectoryLakeCaptureResult>;
+
+  /** The capture switch as recorded: which data sets capture, since when, and whether backfilled. */
+  directoryLakeCapture?(actor: PlatformActorId): Promise<DirectoryLakeCaptureState[]>;
+
+  /**
+   * The oldest `limit` rows queued in the directory's outbox to the lake. A staff read of
+   * tenants' logs, so it records one access row (K-24), which itself queues and ships next pass.
+   */
+  directoryOutbox?(actor: PlatformActorId, limit: number): Promise<DirectoryLakeRow[]>;
+
+  /**
+   * Delete the queued rows up to `upToSeq`, **only after the sink confirmed them**. Records one
+   * `drainDirectoryOutbox` admin row with `ref` in the same transaction when anything was deleted.
+   */
+  ackDirectoryOutbox?(actor: PlatformActorId, upToSeq: number, ref: string): Promise<number>;
+
+  /**
+   * One page of the rows a data set held before its capture began, read by rowid after `after`,
+   * in the outbox's shape. Writes nothing but its access row; the caller ships the page.
+   */
+  directoryLakeBackfill?(actor: PlatformActorId, dataset: DirectoryLakeDataset, after: number, limit: number): Promise<DirectoryLakeBackfillPage>;
+
+  /**
+   * Record that a real backfill shipped one page of a CAPTURING data set (`after` → `next`),
+   * refused unless `after` is where the last recorded page ended; `done` records `backfilledAt`.
+   * One `backfillDirectoryLake` admin row per recorded page, in the same transaction.
+   */
+  advanceDirectoryLakeBackfill?(
+    actor: PlatformActorId,
+    dataset: DirectoryLakeDataset,
+    page: { after: number; next: number | null; done: boolean },
+  ): Promise<DirectoryLakeCaptureState>;
 }
 
 export interface ProvisionScopeInput {

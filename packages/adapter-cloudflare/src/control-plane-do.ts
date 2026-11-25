@@ -83,6 +83,19 @@ import {
   listMeterDayTakeRows,
   pruneMeterDayRows,
   recordMeterDayRows,
+  DIRECTORY_LAKE_DDL,
+  ackDirectoryOutbox,
+  ensureDirectoryLakeTriggers,
+  advanceDirectoryLakeBackfill,
+  readDirectoryLakeBackfill,
+  readDirectoryLakeCapture,
+  readDirectoryOutbox,
+  setDirectoryLakeCapture,
+  type DirectoryLakeBackfillPage,
+  type DirectoryLakeCaptureResult,
+  type DirectoryLakeCaptureState,
+  type DirectoryLakeDataset,
+  type DirectoryLakeRow,
   type MeterDayFilter,
   type MeterDayTakeFilter,
   type MeterDayTakeInput,
@@ -1515,6 +1528,7 @@ const DIRECTORY_DDL = `
   ${COST_ROLLUP_DDL}
   -- #2501: the daily meter snapshot — one row per (UTC day, tenant), kernel-owned DDL.
   ${METER_DAYS_DDL}
+  ${DIRECTORY_LAKE_DDL}
   -- #3313: the daily stale-scopes report — one row per (scope, finding), kernel-owned DDL.
   ${STALE_SCOPES_DDL}
   -- #2501: who owned each vertical slug, period by period — kernel-owned DDL.
@@ -1748,6 +1762,10 @@ export const REPLIED_METHODS = [
   'unlinkIdentityAndAudit',
   'markAccessLogDrainedAndAudit',
   'pruneAccessLogAndAudit',
+  // K-70: the directory outbox's writes, each with its admin row in the same transaction.
+  'setDirectoryLakeCapture',
+  'ackDirectoryOutbox',
+  'advanceDirectoryLakeBackfill',
   'writeImpersonationAndAudit',
   'endImpersonationAndAudit',
   'setIssueStatusAndAudit',
@@ -1910,6 +1928,9 @@ export class ControlPlaneDO extends DurableObject {
         this.sql.exec(membershipFencesBackfillSql(new Date().toISOString()));
       });
     }
+    // K-70: a capture trigger held to its table as built (a column a deploy added ships from the
+    // first write). Writes nothing while capture is off, or when every trigger already matches.
+    ensureDirectoryLakeTriggers(doRedactionSql(this.sql));
   }
 
   /**
@@ -6307,6 +6328,53 @@ export class ControlPlaneDO extends DurableObject {
     return drained > 0;
     }, audit ? () => ({ ...audit, after: { drained, upToId, drainedAt } }) : undefined);
     return drained;
+  }
+
+  // -- K-70: the directory's outbox to the lake (`directory-lake.ts`) --------
+  // The writers take their admin entry as a required argument: a name an old DO does not know is
+  // refused by `reply`, so none of them can be called on one that would drop the row.
+
+  setDirectoryLakeCapture(datasets: readonly DirectoryLakeDataset[], audit: AdminEntryInput): DirectoryLakeCaptureResult {
+    let result!: DirectoryLakeCaptureResult;
+    this.writeAndAudit(() => {
+      result = setDirectoryLakeCapture(doRedactionSql(this.sql), datasets, new Date().toISOString());
+      return result.enabled.length > 0 || result.disabled.length > 0;
+    }, () => ({ ...audit, after: { enabled: result.enabled, disabled: result.disabled, capturing: result.current.map((c) => c.dataset) } }));
+    return result;
+  }
+
+  directoryLakeCapture(): DirectoryLakeCaptureState[] {
+    return readDirectoryLakeCapture(doRedactionSql(this.sql));
+  }
+
+  directoryOutbox(limit: number): DirectoryLakeRow[] {
+    return readDirectoryOutbox(doRedactionSql(this.sql), limit);
+  }
+
+  ackDirectoryOutbox(upToSeq: number, ref: string, audit: AdminEntryInput): number {
+    let acked = 0;
+    this.writeAndAudit(() => {
+      acked = ackDirectoryOutbox(doRedactionSql(this.sql), upToSeq);
+      return acked > 0;
+    }, () => ({ ...audit, after: { acked, upToSeq, ref } }));
+    return acked;
+  }
+
+  directoryLakeBackfill(dataset: DirectoryLakeDataset, after: number, limit: number): DirectoryLakeBackfillPage {
+    return readDirectoryLakeBackfill(doRedactionSql(this.sql), dataset, after, limit);
+  }
+
+  advanceDirectoryLakeBackfill(
+    dataset: DirectoryLakeDataset,
+    page: { after: number; next: number | null; done: boolean },
+    audit: AdminEntryInput,
+  ): DirectoryLakeCaptureState {
+    let result!: ReturnType<typeof advanceDirectoryLakeBackfill>;
+    this.writeAndAudit(() => {
+      result = advanceDirectoryLakeBackfill(doRedactionSql(this.sql), dataset, page, new Date().toISOString());
+      return result.changed;
+    }, () => ({ ...audit, after: { dataset, ...page } }));
+    return result.state;
   }
 
   /** ONLY drained rows. Age alone is not a licence to delete evidence (K-24). */

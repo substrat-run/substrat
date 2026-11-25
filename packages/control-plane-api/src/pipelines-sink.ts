@@ -20,7 +20,7 @@ interface PipelineStreamLike {
  * kilobyte over is a scope that never drains again — its next pass builds the same
  * oversized batch, forever.
  */
-const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
+export const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 
 /**
  * The serialized size of one row in BYTES.
@@ -36,7 +36,7 @@ const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
  * Node — the same reason the repo reaches for `globalThis.crypto` over a node import.
  */
 const UTF8 = new TextEncoder();
-const byteLength = (row: Record<string, unknown>): number => UTF8.encode(JSON.stringify(row)).length;
+export const byteLength = (row: Record<string, unknown>): number => UTF8.encode(JSON.stringify(row)).length;
 
 /**
  * An event the platform cannot ship at all, because one event exceeds a whole request.
@@ -137,6 +137,43 @@ function toSizedRow(e: DrainedEvent): Record<string, unknown> {
 }
 
 /**
+ * Send rows in requests packed under the byte budget, one after another, and answer how many
+ * requests it took. Shared by the event sink and the directory's (`directory-lake-sink.ts`).
+ *
+ * Packed by BYTES, not by count. The drain's budget is a row count (200 by default) and the
+ * ceiling here is a size, so one scope emitting fat payloads reaches the limit in far fewer rows
+ * than one emitting thin ones. A count-based split would work until the day a vertical started
+ * attaching documents. Sequential, so a failure part-way re-sends a bounded prefix next time.
+ */
+export async function sendPacked(
+  stream: unknown,
+  items: readonly { row: Record<string, unknown>; refuse(bytes: number): Error }[],
+): Promise<number> {
+  const pipeline = stream as PipelineStreamLike;
+  let batch: Record<string, unknown>[] = [];
+  let bytes = 0;
+  let requests = 0;
+  const flush = async () => {
+    if (batch.length === 0) return;
+    await pipeline.send(batch);
+    requests += 1;
+    batch = [];
+    bytes = 0;
+  };
+  for (const { row, refuse } of items) {
+    // The BUDGET measures the row as actually sent, `bytes` field included — what Cloudflare
+    // weighs is the request, not the row. +1 for the comma this row contributes to the array.
+    const size = byteLength(row) + 1;
+    if (size > MAX_REQUEST_BYTES) throw refuse(size);
+    if (bytes + size > MAX_REQUEST_BYTES) await flush();
+    batch.push(row);
+    bytes += size;
+  }
+  await flush();
+  return requests;
+}
+
+/**
  * The Pipelines implementation of the `EventSink` seam (#1334) — Tier 2 proper, the row
  * kernel-design §5.3 names for the Cloudflare adapter: "Event transport | Pipelines →
  * Iceberg/R2". `createR2EventSink` is the same seam's NDJSON staging shape, and the pure
@@ -157,7 +194,6 @@ function toSizedRow(e: DrainedEvent): Record<string, unknown> {
  * here so that a change to it is a change to something written down.
  */
 export function createPipelinesEventSink(stream: unknown): EventSink {
-  const pipeline = stream as PipelineStreamLike;
   return {
     async ship(scope, events) {
       const first = events[0];
@@ -168,33 +204,7 @@ export function createPipelinesEventSink(stream: unknown): EventSink {
         throw new Error('event sink: refusing to ship an empty batch');
       }
 
-      // Packed by BYTES, not by count. The drain's budget is a row count (200 by
-      // default) and the ceiling here is a size, so one scope emitting fat payloads
-      // reaches the limit in far fewer rows than one emitting thin ones. A count-based
-      // split would work until the day a vertical started attaching documents.
-      let batch: Record<string, unknown>[] = [];
-      let bytes = 0;
-      let requests = 0;
-      const flush = async () => {
-        if (batch.length === 0) return;
-        await pipeline.send(batch);
-        requests += 1;
-        batch = [];
-        bytes = 0;
-      };
-      for (const event of events) {
-        const row = toSizedRow(event);
-        // The BUDGET measures the row as actually sent, `bytes` field included — what
-        // Cloudflare weighs is the request, not the event. Deliberately not the same
-        // number as the column: one answers "will this request fit", the other "what did
-        // this tenant store". +1 for the comma this row contributes to the encoded array.
-        const size = byteLength(row) + 1;
-        if (size > MAX_REQUEST_BYTES) throw tooLarge(event, size);
-        if (bytes + size > MAX_REQUEST_BYTES) await flush();
-        batch.push(row);
-        bytes += size;
-      }
-      await flush();
+      const requests = await sendPacked(stream, events.map((event) => ({ row: toSizedRow(event), refuse: (bytes: number) => tooLarge(event, bytes) })));
 
       // Not addressable, and shaped so it cannot be mistaken for something that is: a
       // stream has no key to hand back the way an R2 object does. What the caller's

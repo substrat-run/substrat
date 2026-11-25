@@ -1,4 +1,5 @@
 import { drainedEvent, instant, scopeId as scopeIdSchema, substratError } from '@substrat-run/contracts';
+import { sweepDirectoryLake, type DirectoryLakeSweepOptions, type DirectoryLakeSweepReport } from './directory-lake.js';
 import type {
   AccessLogEntry,
   Connection,
@@ -447,6 +448,12 @@ export interface PlatformSweepOptions {
    */
   accessLogSink?: AccessLogSink;
   /**
+   * K-70: ship the directory's own logs and meters to the lake through its outbox
+   * (`directory-lake.ts`). UNSET skips the phase; capture is reconciled to `capture` every pass,
+   * so an empty list switches it off while what is already queued still drains.
+   */
+  directoryLake?: DirectoryLakeSweepOptions;
+  /**
    * Where each scope's domain events are shipped (#1334). UNSET ⇒ no scope is
    * drained, exactly as before the seam existed — the same "absent is a supported
    * answer" shape `accessLogSink` and `recordSweepRun` already have.
@@ -715,6 +722,8 @@ export interface PlatformSweepReport {
    * nothing and its log grows by design", zeros is "shipped, nothing was waiting".
    */
   accessLog: AccessLogSweepReport | null;
+  /** The directory outbox's drain (K-70). Null when the phase is not configured. */
+  directoryLake?: DirectoryLakeSweepReport | null;
   /** What the event drain shipped this pass (#1334). Null when no sink is bound. */
   eventDrain: EventDrainReport | null;
   /** Every cross-vertical edge this pass looked at (#1705). Null when the phase is off. */
@@ -786,6 +795,8 @@ export interface PlatformSweepReport {
       // #3313: the day's stale-scopes report failed. Nothing of it is written, and the next pass of
       // the same day tries again.
       | 'stale-scopes'
+      // K-70: the directory outbox's drain failed; what it had not confirmed stays queued.
+      | 'directory-lake'
       // A directory row that does not read as a scope: every phase of the pass stepped over it.
       // Named once per pass by its id and the fields that failed (`scopeReaderFor`).
       | 'scope-row';
@@ -2413,6 +2424,17 @@ export async function runPlatformSweep(
       // One bad pass never sinks the sweep, and never prunes: a throw anywhere in
       // ship→stamp→prune leaves the rows exactly where they were.
       report.errors.push({ kind: 'access-log', id: 'access-log', error: message(err) });
+    }
+  }
+
+  // -- ship the directory's logs and meters to the lake (K-70) -----------------
+  // After the access-log drain, so the admin rows it wrote are already queued.
+  if (options.directoryLake) {
+    report.directoryLake = { capture: null, shipped: 0, acked: 0, ref: null };
+    try {
+      await sweepDirectoryLake(host.admin, options.actor, options.directoryLake, report.directoryLake);
+    } catch (err) {
+      report.errors.push({ kind: 'directory-lake', id: 'directory-lake', error: message(err) });
     }
   }
 

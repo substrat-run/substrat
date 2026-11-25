@@ -508,7 +508,15 @@ function proveItRefuses(reference) {
  * derived artifact too, and by the same route.
  */
 export function scopeTableColumns(table) {
-  const side = PAIRS[0].sides[0];
+  return tableColumnsOf(PAIRS[0].sides[0], table);
+}
+
+/** K-70: a directory table's columns as the pure adapter builds them, for the directory's lake stream. */
+export function directoryTableColumns(table) {
+  return tableColumnsOf(PAIRS[1].sides[0], table);
+}
+
+function tableColumnsOf(side, table) {
   const src = read(side.file);
   const { additions } = additionsFor(side, src);
   const schema = schemaOf(ddlFor(side, src, kernelFragments()), additions, side.label);

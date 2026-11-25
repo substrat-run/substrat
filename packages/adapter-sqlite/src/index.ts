@@ -445,6 +445,15 @@ import {
   type CostRollupDayFilter,
   type ScopeObjectReadInput,
   METER_DAYS_DDL,
+  DIRECTORY_LAKE_DDL,
+  ackDirectoryOutbox,
+  ensureDirectoryLakeTriggers,
+  advanceDirectoryLakeBackfill,
+  readDirectoryLakeBackfill,
+  readDirectoryLakeCapture,
+  readDirectoryOutbox,
+  setDirectoryLakeCapture,
+  type DirectoryLakeCaptureResult,
   STALE_SCOPES_DDL,
   listStaleScopeRows,
   listStaleScopeTakeRows,
@@ -3318,6 +3327,8 @@ export class SqliteScopeHost implements ScopeHost {
       ${COST_ROLLUP_DDL}
       -- #2501: the daily meter snapshot — one row per (UTC day, tenant), kernel-owned DDL.
       ${METER_DAYS_DDL}
+      -- K-70: the outbox to the lake and its capture switch — kernel-owned DDL, empty until switched on.
+      ${DIRECTORY_LAKE_DDL}
       -- #3313: the daily stale-scopes report — one row per (scope, finding), kernel-owned DDL.
       ${STALE_SCOPES_DDL}
       -- #2501: who owned each vertical slug, period by period — kernel-owned DDL.
@@ -3325,6 +3336,8 @@ export class SqliteScopeHost implements ScopeHost {
       CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
     `);
     this.ensureDirectoryColumns();
+    // K-70: a capture trigger held to its table as this code built it (a column added above ships).
+    ensureDirectoryLakeTriggers(redactionSqlOf(this.directory));
   }
 
   /**
@@ -13918,6 +13931,48 @@ export class SqliteScopeHost implements ScopeHost {
           this.recordAdmin(actor, 'pruneAccessLog', { tenantId: null }, null, { pruned });
         });
         return pruned;
+      },
+      // K-70: the directory's outbox to the lake (`directory-lake.ts`). Each change and its admin row
+      // commit together; reads record their access row first, as every staff read does.
+      setDirectoryLakeCapture: async (actor, datasets) => {
+        let result!: DirectoryLakeCaptureResult;
+        this.directoryWriteAndAudit(() => {
+          result = setDirectoryLakeCapture(redactionSqlOf(this.directory), datasets, new Date().toISOString());
+          return result.enabled.length > 0 || result.disabled.length > 0;
+        }, () => this.recordAdmin(actor, 'setDirectoryLakeCapture', { tenantId: null }, null,
+          { enabled: result.enabled, disabled: result.disabled, capturing: result.current.map((c) => c.dataset) }));
+        return result;
+      },
+      directoryLakeCapture: async (actor) => {
+        const state = readDirectoryLakeCapture(redactionSqlOf(this.directory));
+        this.recordAccess(actor, 'directoryLakeCapture', { tenantId: null }, null, state.length);
+        return state;
+      },
+      directoryOutbox: async (actor, limit) => {
+        const rows = readDirectoryOutbox(redactionSqlOf(this.directory), limit);
+        this.recordAccess(actor, 'directoryOutbox', { tenantId: null }, { limit }, rows.length);
+        return rows;
+      },
+      ackDirectoryOutbox: async (actor, upToSeq, ref) => {
+        let acked = 0;
+        this.directoryWriteAndAudit(() => {
+          acked = ackDirectoryOutbox(redactionSqlOf(this.directory), upToSeq);
+          return acked > 0;
+        }, () => this.recordAdmin(actor, 'drainDirectoryOutbox', { tenantId: null }, null, { acked, upToSeq, ref }));
+        return acked;
+      },
+      directoryLakeBackfill: async (actor, dataset, after, limit) => {
+        const page = readDirectoryLakeBackfill(redactionSqlOf(this.directory), dataset, after, limit);
+        this.recordAccess(actor, 'directoryLakeBackfill', { tenantId: null }, { dataset, after, limit }, page.rows.length);
+        return page;
+      },
+      advanceDirectoryLakeBackfill: async (actor, dataset, page) => {
+        let result!: ReturnType<typeof advanceDirectoryLakeBackfill>;
+        this.directoryWriteAndAudit(() => {
+          result = advanceDirectoryLakeBackfill(redactionSqlOf(this.directory), dataset, page, new Date().toISOString());
+          return result.changed;
+        }, () => this.recordAdmin(actor, 'backfillDirectoryLake', { tenantId: null }, null, { dataset, ...page }));
+        return result.state;
       },
       auditLog: async (actor, filter?: AuditLogFilter): Promise<AdminLogEntry[]> => {
         const where: string[] = [];

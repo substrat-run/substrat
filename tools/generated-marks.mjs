@@ -47,6 +47,7 @@ const COMMENTABLE = new Set(['.ts', '.tsx', '.mts', '.mjs', '.js', '.md', '.css'
  */
 const COMMENTLESS = new Map([
   ['scripts/lake/outbox-stream-schema.generated.json', 'tools/lake-schema-emit.mjs (pnpm lint:lake-schema)'],
+  ['scripts/lake/directory-stream-schema.generated.json', 'tools/lake-schema-emit.mjs (pnpm lint:lake-schema)'],
   // The social relay's TLS module: rustls compiled to WebAssembly from apps/social-relay/mtls-wasm/.
   ['apps/social-relay/src/mtls-wasm/mtls-wasm.generated.wasm', 'tools/mtls-wasm-emit.mjs (pnpm lint:mtls-wasm)'],
 ]);
