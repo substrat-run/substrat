@@ -2623,12 +2623,14 @@ export const WALK_HOLD_BINDINGS_MAX = 64;
 export const wireAuthRecord = z
   .object({
     /**
-     * The envelope version the uploaded entry verifies (`WIRE_ENVELOPE_VERSION`), or null when the
-     * bundle was uploaded without the platform's entry, which carries the verifier. A wrapped bundle
-     * whose default export has no `fetch` verifies nothing either; no upload can see that, so the
-     * report reads it from the counts.
+     * The newest envelope version the uploaded entry verifies (`WIRE_ENVELOPE_VERSION`), or null when
+     * the bundle was uploaded without the platform's entry, which carries the verifier. `2` verifies
+     * both versions (K-66); `1` is an entry uploaded before version 2 existed, which refuses a version 2
+     * envelope as malformed, so the signers switch only once no live script records `1` (#3373). A
+     * wrapped bundle whose default export has no `fetch` verifies nothing either; no upload can see
+     * that, so the report reads it from the counts.
      */
-    envelope: z.literal(1).nullable(),
+    envelope: z.union([z.literal(1), z.literal(2)]).nullable(),
     /** Why the platform's entry was left off, when it was. */
     entrySkipped: z.string().nullable(),
     /** The state the upload gave (one of `WIRE_STATES`; `legacy-only` when it gave no lists). */

@@ -54,6 +54,7 @@ import {
 } from '@substrat-run/kernel';
 import type { DelegatedRefusal } from '@substrat-run/vertical-auth/people';
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
+import { wirePersonActor, wireVerifiedCallerOf, type WireVerifiedCaller } from '@substrat-run/contracts/wire-signing';
 import { platformSweeperOf, registerScopeSweepHost } from './scope-sweep-host.js';
 import { isVerticalConnectors, runConnectorCall, type VerticalConnectors } from './connectors.js';
 import {
@@ -1522,6 +1523,27 @@ export type DelegatedPeerAnswer =
 /** What a refused call for a person is told, whatever the reason: the reason is the operator's. */
 const ON_BEHALF_REFUSED = 'this call for a person was refused';
 
+/** What a peer call is told when its body does not match the caller its envelope signed (K-66). */
+const SIGNED_CALLER_REFUSED = 'this call does not match the caller its envelope names';
+
+/**
+ * Why a peer invocation's body disagrees with what its verified version 2 envelope signs (K-66), or
+ * null when it agrees. The caller app and scope the router wrote from the dispatch must be the body's
+ * `caller`, and the actor must bind exactly what the body carries: `app` with no `onBehalf`, the
+ * SHA-256 of the very token it carries, or, on a call signed for the platform, no caller and no
+ * `onBehalf`. A different token under a signed person line is refused here, before it is verified.
+ * Only ever asked with a verified envelope's lines; a call that carries none is judged as before.
+ */
+async function signedCallerMismatch(
+  signed: WireVerifiedCaller,
+  body: { readonly caller: VerticalCaller; readonly onBehalf?: { readonly token: string } },
+): Promise<string | null> {
+  if (signed.callerApp === null) return signed.actor === 'platform' && body.onBehalf === undefined ? null : 'actor';
+  if (body.caller.vertical !== signed.callerApp || body.caller.scope !== signed.callerScope) return 'caller';
+  const bound = body.onBehalf === undefined ? 'app' : await wirePersonActor(body.onBehalf.token);
+  return signed.actor === bound ? null : 'actor';
+}
+
 /** A deployment's sample world, as `/internal/seed-world` and `/internal/personas` serve it (#3108). */
 export interface SeedWorldHook<Env> {
   /** The personas a seeded preview offers: the home cast, never an outsider. */
@@ -2641,6 +2663,15 @@ export function mountPlatformSurface<Env extends object>(
     const body = verticalInvokeBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
     const node = { tenantId: body.tenantId, scopeId: body.scopeId };
+    // K-66: a version 2 envelope the platform entry verified signs who called and for whom. The body
+    // must say the same, or nothing runs. A call with no such envelope (version 1, the legacy
+    // credential alone, no entry) is judged exactly as before: nothing here reads a header instead.
+    const signed = wireVerifiedCallerOf(c.req.raw);
+    const mismatch = signed ? await signedCallerMismatch(signed, body) : null;
+    if (mismatch !== null) {
+      console.warn(JSON.stringify({ host: 'peer-signed-caller-refused', ...node, caller: body.caller.vertical, mismatch }));
+      throw substratError('forbidden', SIGNED_CALLER_REFUSED);
+    }
     if (body.operation === PEER_CLIENT_OPERATION) {
       const answer = deps.peerClient ? peerClientAnswer.parse(await deps.peerClient(c.env, node)) : { clientId: null };
       return externalJson(c, { result: answer });

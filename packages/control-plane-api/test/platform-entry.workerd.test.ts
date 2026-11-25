@@ -253,6 +253,7 @@ export default {
 const CHECKING = `
 import { readRoutedNode } from ${JSON.stringify(fileURLToPath(new URL('../../vertical-host/src/routed-node.ts', import.meta.url)))};
 import { assertPlatformCall } from ${JSON.stringify(fileURLToPath(new URL('../../contracts/src/wire-auth.ts', import.meta.url)))};
+import { wireVerifiedCallerOf } from ${JSON.stringify(fileURLToPath(new URL('../../contracts/src/wire-signing.ts', import.meta.url)))};
 export default {
   async fetch(request, env) {
     let node;
@@ -269,7 +270,8 @@ export default {
       }
     }
     const stamped = globalThis[Symbol.for('substrat.invocation-stamp')]?.get(request) !== undefined;
-    return Response.json({ node, stamped, body: await request.text() });
+    // The vertical's own copy of contracts, as a pushed vertical bundles it: the entry's record must reach it.
+    return Response.json({ node, stamped, caller: wireVerifiedCallerOf(request), body: await request.text() });
   },
 };`;
 
@@ -389,6 +391,26 @@ describe('the wire-signing verifier in the platform entry, on workerd (RFC wire-
     expect(res.status).toBe(200);
     expect(((await res.json()) as Answer).body).toBe(body);
     await expect.poll(() => d.wire()).toEqual([expect.objectContaining({ kind: 'call', outcome: 'signed-accepted', legacy: 'valid' })]);
+  });
+
+  it('K-66: a version 2 call the entry verified hands its caller to the vertical’s own copy of contracts; version 1 hands none', async () => {
+    const d = checked({ ...lists, [WIRE_STATE_VAR]: 'dual' });
+    // A peer invocation that reads (GET keeps no nonce), so it verifies in full with no store.
+    const url = 'https://vertical/internal/vertical-invoke';
+    const callerScope = '01JZ0000000000000000SCP003';
+    const call = async (v: 1 | 2) => {
+      const issued = await signWireEnvelope(router, {
+        v, iss: 'router', kind: 'call', aud: AUD, ...wireRequestBinding({ method: 'GET', url }), body: '',
+        tenantId: routed['x-substrat-tenant'], scopeId: routed['x-substrat-scope'], vertical: 'acme/widgets',
+        ...(v === 2 ? { callerApp: 'acme/notes', callerScope, actor: 'app' as const } : {}),
+      });
+      const res = await d.mf.dispatchFetch(url, { headers: { 'x-substrat-platform': CALL_VALUE, [WIRE_ENVELOPE_HEADER]: issued.header, [WIRE_SIGNATURE_HEADER]: issued.signature } });
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { caller: unknown }).caller;
+    };
+    expect(await call(2)).toEqual({ iss: 'router', callerApp: 'acme/notes', callerScope, actor: 'app' });
+    expect(await call(1)).toBeNull();
+    await expect.poll(() => d.wire().map((l) => [l['outcome'], l['envelope']])).toEqual([['signed-accepted', 2], ['signed-accepted', 1]]);
   });
 
   it('signed-only: a refusal is the fixed answer, the vertical never runs, and no credential is in any output', async () => {

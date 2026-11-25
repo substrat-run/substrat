@@ -11905,7 +11905,8 @@ export function scopeHostContractSuite(
           { ...good, deploymentRef: '' },
           { ...good, verticalSlug: '' },
           { ...good, recordedAt: 'yesterday' },
-          { ...good, record: { ...record(), envelope: 2 } },
+          // A version no entry verifies (`2` is version 2's, K-66).
+          { ...good, record: { ...record(), envelope: 3 } },
           { ...good, record: { ...record(), state: 'on' } },
           { ...good, record: { ...record(), withheld: 'because' } },
           // An envelope beside a reason the entry was left off, or neither.

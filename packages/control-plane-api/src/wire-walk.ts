@@ -51,7 +51,7 @@ import type { HostAdmin } from '@substrat-run/kernel';
 import type { FetchVerticalModulesFn } from './deploy.js';
 import { PLATFORM_ENTRY_MODULE } from './platform-entry.js';
 import { applyWireSettings, CONCURRENT_RETRIES, type WireSettingsApi, type WireSettingsOutcome } from './wire-settings.js';
-import { wireEntryOf, wireUploadGiven, type WireEntry, type WireUploadSettings } from './wire-upload.js';
+import { wireEntryEnvelopeOf, wireEntryOf, wireUploadGiven, type WireEntry, type WireUploadSettings } from './wire-upload.js';
 
 /** A pass walks this many scripts when it names no limit. */
 export const WIRE_WALK_LIMIT_DEFAULT = 25;
@@ -303,9 +303,12 @@ export async function runWireWalk(
     if (!manifestJson) return 'no-manifest';
     const manifest = storedDeployManifest.parse(JSON.parse(manifestJson));
     const modules = await deps.fetchModules(script.deploymentRef);
-    if (!modules.some((m) => m.name === PLATFORM_ENTRY_MODULE)) return 'no-entry';
+    const module = modules.find((m) => m.name === PLATFORM_ENTRY_MODULE);
+    if (!module) return 'no-entry';
     const entry = wireEntryOf({ entry: manifest.entry, modules });
-    return entry.envelope === null ? 'no-entry' : entry;
+    // The entry this script carries, which may predate the one an upload gives now: its version is read
+    // from its own text, never assumed (K-66).
+    return entry.envelope === null ? 'no-entry' : { ...entry, envelope: wireEntryEnvelopeOf(module.content) };
   };
 
   const walkOne = async (script: InventoryScript): Promise<WireWalkScript> => {
