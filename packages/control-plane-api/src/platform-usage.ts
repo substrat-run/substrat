@@ -27,6 +27,7 @@ import {
   priceCostRows,
   type CostAttribution,
   type MarkupRow,
+  type PlatformPrices,
   type PlatformQuantities,
   type PlatformUsageDimension,
   type PlatformUsageState,
@@ -87,6 +88,12 @@ function zeroQuantities(): PlatformQuantities {
 function addQuantity(into: PlatformQuantities, line: Pick<Line, 'dimension' | 'quantity'>): void {
   const key = QUANTITY_KEY[line.dimension];
   into[key] = addDecimal(into[key], line.quantity);
+}
+
+/** Adds a line's price to its dimension's figure. */
+function addPrice(into: PlatformPrices, line: Pick<Line, 'dimension'>, price: string): void {
+  const key = QUANTITY_KEY[line.dimension];
+  into[key] = addDecimal(into[key], price);
 }
 
 /** The window's days that the cost rollup has read, and the coverage the readings report. */
@@ -176,16 +183,19 @@ export function foldTenantPlatformUsage(inputs: PlatformUsageInputs, tenantId: s
     apps: [...apps.values()].sort(byCostDesc((a) => a.wouldCostUsd)),
     days: days.map((day) => {
       if (!reads.has(day)) {
-        return { day, read: false, wouldCostUsd: null, liveWouldCostUsd: null, previewWouldCostUsd: null, quantities: null, byApp: [] };
+        return { day, read: false, wouldCostUsd: null, liveWouldCostUsd: null, previewWouldCostUsd: null, quantities: null, wouldCostByDimension: null, byApp: [] };
       }
       const own = lines.filter((l) => l.day === day);
       const q = zeroQuantities();
-      const byApp = new Map<string, { vertical: string | null; kind: UsageKind; wouldCostUsd: string }>();
+      const prices = zeroQuantities();
+      const byApp = new Map<string, { vertical: string | null; kind: UsageKind; wouldCostUsd: string; wouldCostByDimension: PlatformPrices }>();
       for (const l of own) {
         addQuantity(q, l);
+        addPrice(prices, l, price(l));
         const key = JSON.stringify([l.vertical, l.kind]);
-        const app = byApp.get(key) ?? { vertical: l.vertical, kind: l.kind, wouldCostUsd: '0' };
+        const app = byApp.get(key) ?? { vertical: l.vertical, kind: l.kind, wouldCostUsd: '0', wouldCostByDimension: zeroQuantities() };
         app.wouldCostUsd = addDecimal(app.wouldCostUsd, price(l));
+        addPrice(app.wouldCostByDimension, l, price(l));
         byApp.set(key, app);
       }
       return {
@@ -195,6 +205,7 @@ export function foldTenantPlatformUsage(inputs: PlatformUsageInputs, tenantId: s
         liveWouldCostUsd: ofKind('live', own),
         previewWouldCostUsd: ofKind('preview', own),
         quantities: q,
+        wouldCostByDimension: prices,
         byApp: [...byApp.values()].sort(byCostDesc((a) => a.wouldCostUsd)),
       };
     }),

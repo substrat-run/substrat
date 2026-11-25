@@ -25855,6 +25855,69 @@
                               }
                             ]
                           },
+                          "wouldCostByDimension": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "rowsWritten": {
+                                    "type": "string"
+                                  },
+                                  "rowsRead": {
+                                    "type": "string"
+                                  },
+                                  "storage": {
+                                    "type": "string"
+                                  },
+                                  "requests": {
+                                    "type": "string"
+                                  },
+                                  "cpu": {
+                                    "type": "string"
+                                  },
+                                  "doRequests": {
+                                    "type": "string"
+                                  },
+                                  "duration": {
+                                    "type": "string"
+                                  },
+                                  "containerMemory": {
+                                    "default": "0",
+                                    "type": "string"
+                                  },
+                                  "containerCpu": {
+                                    "default": "0",
+                                    "type": "string"
+                                  },
+                                  "containerDisk": {
+                                    "default": "0",
+                                    "type": "string"
+                                  },
+                                  "containerEgress": {
+                                    "default": "0",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "rowsWritten",
+                                  "rowsRead",
+                                  "storage",
+                                  "requests",
+                                  "cpu",
+                                  "doRequests",
+                                  "duration",
+                                  "containerMemory",
+                                  "containerCpu",
+                                  "containerDisk",
+                                  "containerEgress"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "byApp": {
                             "type": "array",
                             "items": {
@@ -25875,6 +25938,62 @@
                                 },
                                 "wouldCostUsd": {
                                   "type": "string"
+                                },
+                                "wouldCostByDimension": {
+                                  "type": "object",
+                                  "properties": {
+                                    "rowsWritten": {
+                                      "type": "string"
+                                    },
+                                    "rowsRead": {
+                                      "type": "string"
+                                    },
+                                    "storage": {
+                                      "type": "string"
+                                    },
+                                    "requests": {
+                                      "type": "string"
+                                    },
+                                    "cpu": {
+                                      "type": "string"
+                                    },
+                                    "doRequests": {
+                                      "type": "string"
+                                    },
+                                    "duration": {
+                                      "type": "string"
+                                    },
+                                    "containerMemory": {
+                                      "default": "0",
+                                      "type": "string"
+                                    },
+                                    "containerCpu": {
+                                      "default": "0",
+                                      "type": "string"
+                                    },
+                                    "containerDisk": {
+                                      "default": "0",
+                                      "type": "string"
+                                    },
+                                    "containerEgress": {
+                                      "default": "0",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "rowsWritten",
+                                    "rowsRead",
+                                    "storage",
+                                    "requests",
+                                    "cpu",
+                                    "doRequests",
+                                    "duration",
+                                    "containerMemory",
+                                    "containerCpu",
+                                    "containerDisk",
+                                    "containerEgress"
+                                  ],
+                                  "additionalProperties": false
                                 }
                               },
                               "required": [
