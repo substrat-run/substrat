@@ -367,6 +367,16 @@ ${models
     app_tenant_id TEXT NOT NULL,
     client_id TEXT NOT NULL UNIQUE REFERENCES oauth_client(client_id) ON DELETE CASCADE,
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))\`,
+  // What has expired, found by its expiry (K-71, \`src/expiry-prune.ts\`): the prune walks
+  // each of these in bounded batches oldest first, and reads one \`min\` from each to arm its
+  // alarm. The verification one also turns Better Auth's own delete-every-expired-row, which
+  // it runs on every \`findVerificationValue\`, from a table scan into an index range.
+  \`CREATE INDEX IF NOT EXISTS session_expires_at_idx ON session (expires_at)\`,
+  \`CREATE INDEX IF NOT EXISTS verification_expires_at_idx ON verification (expires_at)\`,
+  \`CREATE INDEX IF NOT EXISTS oauth_access_token_expires_at_idx ON oauth_access_token (expires_at)\`,
+  \`CREATE INDEX IF NOT EXISTS oauth_refresh_token_expires_at_idx ON oauth_refresh_token (expires_at)\`,
+  \`CREATE INDEX IF NOT EXISTS oauth_refresh_token_rotation_replay_idx ON oauth_refresh_token (rotation_replay_expires_at)\`,
+  \`CREATE INDEX IF NOT EXISTS oauth_client_assertion_expires_at_idx ON oauth_client_assertion (expires_at)\`,
 ];
 `;
 
