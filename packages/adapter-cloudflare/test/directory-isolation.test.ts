@@ -55,6 +55,8 @@ const SHARED_SCOPES = [
   'SPINE_PARENT_SCOPE',
   'SPINE_SHADOW_SCOPE',
   'UNMETERED_SCOPE',
+  // K-69: scopes that wake themselves (scope-wake.test.ts) — the worker's own directory.
+  'WAKE_SCOPE',
   'WAKE_VERSION_SCOPE',
   'WIPED_COPY_SCOPE',
 ] as const;
