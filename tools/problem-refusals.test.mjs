@@ -50,9 +50,9 @@ test('its twin: a call that serves the problem media type is a helper, and is no
 test('JSX is parsed only where a file can hold it, and a file that cannot be parsed is named', () => {
   assert.deepEqual(refusalsIn("const n = <number>x;\nc.json({ error: 'x' }, 404);", 'apps/x/src/a.ts').map((f) => f.line), [2]);
   assert.deepEqual(refusalsIn('c.html(<p>closed</p>, 403);', 'apps/x/src/a.tsx').map((f) => f.line), [1]);
-  // Babel refuses this valid TypeScript (a typed arrow in a ternary branch): red, with the file named.
+  // What the parser cannot recover from is red, with the file named, and never read as "no refusals".
   const path = 'apps/x/src/b.ts';
-  const text = "const f = ok\n  ? async (h: string): Promise<void> => {}\n  : async (h: string): Promise<void> => {};\nc.json({ error: 'x' }, 404);";
+  const text = "const s = 'unterminated;\nc.json({ error: 'x' }, 404);";
   assert.match(judge([{ path, text }], []).offences[0], /^apps\/x\/src\/b\.ts: cannot be parsed/);
 });
 

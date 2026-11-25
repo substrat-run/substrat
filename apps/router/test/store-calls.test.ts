@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   scopeId,
@@ -13,7 +14,7 @@ const TENANT = tenantId.parse('01JTESTATTACHTENANT000000A');
 const SCOPE = scopeId.parse('01J00000000000000000000S01');
 const OTHER = scopeId.parse('01J00000000000000000000S02');
 const vector = JSON.parse(
-  readFileSync(new URL('../../../packages/contracts/test/vectors/scope-store-envelope.json', import.meta.url), 'utf8'),
+  readFileSync(fileURLToPath(new URL('../../../packages/contracts/test/vectors/scope-store-envelope.json', import.meta.url).href), 'utf8'),
 ) as { privateKeyPkcs8: string; publicKey: string };
 const KEY = vector.privateKeyPkcs8;
 
