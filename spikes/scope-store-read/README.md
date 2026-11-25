@@ -3,9 +3,10 @@
 Evidence for [#3370](https://github.com/substrat-run/substrat/issues/3370), the phase 1 spike of
 [the one-model RFC](../../docs/rfc/one-model-for-shipped-code.md) (§7.2) that may reopen
 [K-64](../../docs/decisions/K-064-a-scope-has-a-declared-type-and-may-have-a-parent-and-nothing-crosses-a-scope-s-boundary-inside-its-transaction.md)
-for reads, and for [#2258](https://github.com/substrat-run/substrat/issues/2258). Not a workspace
-member: nothing here is imported by a package, and the root `pnpm-lock.yaml` does not name it. The
-lockfile in this directory is its own.
+for reads, and for [#2258](https://github.com/substrat-run/substrat/issues/2258). Only the findings
+are kept here. The experiment code is not: it ran from commit `654461282` of
+[PR #3383](https://github.com/substrat-run/substrat/pull/3383), whose commits hold it, and
+[Method](#method) below says what it did.
 
 It asks three things:
 
@@ -22,29 +23,17 @@ that is workerd, not our queue. Every call behind a read waits for the store's w
 what the scope's other callers pay. **K-64 stands as written. No read exception is
 recommended.** Details under [What it means](#what-it-means).
 
-## Run
-
-From this directory, with Node and pnpm (the repo's `packageManager` is `pnpm@10.10.0`):
-
-```
-pnpm install --ignore-workspace
-node run.mjs            # 12 checks, then the measurements (about 2 minutes)
-node run.mjs --checks   # the checks only
-```
-
-A failed check sets a non-zero exit. pnpm may warn that it ignored workerd's build script; the
-binary comes as an optional dependency, and the run does not need the script.
-
 ## Method
 
-Four workers in one miniflare (4.20260730.0, workerd 1.20260730.1):
+Four workers in one miniflare (4.20260730.0, workerd 1.20260730.1), driven by a Node script that
+ran 12 checks and then the measurements:
 
-| Worker | Stands for | File |
-|---|---|---|
-| `router` | The router. It sets the caller (tenant, vertical, scope, declared stores) and dispatches. It exports `StoreCalls`, today's store entrypoint, and `StoreDoor`, the candidate door | `src/router.mjs` |
-| `egress` | The egress worker's store half. The vertical's global `fetch` goes here (`outboundService`), and a `store.substrat.internal` call is handed to `StoreCalls` | `src/egress.mjs` |
-| `vertical` | A vertical: a worker entrypoint (host code) and its `ScopeDO` | `src/vertical.mjs` |
-| `store` | A scope store object. `read` answers a payload of the asked size after the asked delay | `src/store.mjs` |
+| Worker | Stands for |
+|---|---|
+| `router` | The router. It sets the caller (tenant, vertical, scope, declared stores) and dispatches. It exports `StoreCalls`, today's store entrypoint, and `StoreDoor`, the candidate door |
+| `egress` | The egress worker's store half. The vertical's global `fetch` goes here (`outboundService`), and a `store.substrat.internal` call is handed to `StoreCalls` |
+| `vertical` | A vertical: a worker entrypoint (host code) and its `ScopeDO` |
+| `store` | A scope store object. `read` answers a payload of the asked size after the asked delay, or holds it until released |
 
 `ScopeDO` runs each operation as `packages/adapter-cloudflare/src/scope-do.ts` does: on a
 per-scope `OperationQueue` (copied from `serialization.ts`), inside
@@ -74,7 +63,7 @@ has no dispatch parameters. In local workerd the vertical's `outboundService` co
 Object too, so `inside-fetch` passes egress here. On Workers for Platforms it does not
 ([below](#1-a-policed-path-from-inside-the-object)). Everything runs in one process on one machine.
 
-**The gate probe** (`/gate` in `src/router.mjs`) is ordered by a handshake, not by time. The
+**The gate probe** (run in the router) is ordered by a handshake, not by time. The
 store holds the first call's read until the router releases it. The router waits until the store
 reports the read held, then sends the second call and gives it a second to finish. Then it
 releases the read through the store, a path independent of the scope. The results are whether the
@@ -96,7 +85,7 @@ local operations; run 5 times it separately.
 
 ### Checks
 
-All 12 pass. Each is a line in `run.mjs`.
+All 12 passed, in every run.
 
 | Check | Result |
 |---|---|
@@ -156,7 +145,7 @@ and `record` operations, never for the store (2–16 ms). The two loaded runs ha
 local operations waited 0.4–7.5 s behind reads inside the transaction and 0.01–0.6 s behind
 host-path reads.
 
-Large reads (10 × 1 MiB and 10 × 4 MiB, store delay 0) are in `run.mjs` too. In run 5 every path
+Large reads (10 × 1 MiB and 10 × 4 MiB, store delay 0) were measured too. In run 5 every path
 finished them within about 100 ms, and their order changed between runs. Locally a payload moves in
 about a millisecond, so a large read with a store that answers at once holds the object for very
 little. On the edge it holds it for the transfer as well.
