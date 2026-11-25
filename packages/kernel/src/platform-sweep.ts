@@ -463,6 +463,15 @@ export interface PlatformSweepOptions {
   /** Events drained per scope per pass. Default 200. */
   eventDrainBatch?: number;
   /**
+   * K-69 (no scheduled walk over tenants), step 4: the scopes ship their own events, each from its
+   * alarm (`scope-wake.ts` in adapter-cloudflare), and this phase only CHECKS that nothing was left.
+   * A scope whose oldest unshipped event is younger than `graceMs` is left to its own wake and
+   * counted `held`; one older than that is shipped here as before and counted `rescued`, because its
+   * wake did not come (a vertical on an older adapter, a lost alarm). UNSET: the phase ships every
+   * scope, as it always has. Pruning is unchanged either way.
+   */
+  eventDrainCheck?: { graceMs: number };
+  /**
    * Days a drained outbox row is kept before the drain phase prunes it (#1334). Default
    * `OUTBOX_RETENTION_DAYS` (90). Only with `eventSink`: a scope that never drains is never pruned.
    */
@@ -1302,6 +1311,13 @@ export interface EventDrainReport {
   notHeld?: { tenantId: TenantId; scopeId: ScopeId }[];
   /** Outbox rows the pass pruned once retention ran out (#1334). ABSENT when none were. */
   pruned?: number;
+  /**
+   * K-69: what the phase found in check mode (`eventDrainCheck`). `held`: scopes whose unshipped
+   * events were all younger than the grace, left to their own wake (`heldEvents` of them, at most a
+   * batch per scope). `rescued`: scopes with an older one, shipped here because their wake did not
+   * come. ABSENT outside check mode.
+   */
+  check?: { held: number; heldEvents: number; rescued: number };
   /**
    * Scopes whose deployment cannot prune yet: it predates the verb (#1334), so their drained rows
    * stay until it is redeployed. ABSENT when none. Not an error: nothing failed, and nothing is lost.
@@ -2300,13 +2316,22 @@ async function runPlatformSweepPass(
     const sweptAt = Date.now();
     const drainedBefore = new Date(sweptAt - retentionDays * 86_400_000).toISOString();
     const drainable = await listScopes({ status: 'active' });
+    // K-69: in check mode, an event younger than this is its scope's own wake's to ship.
+    const check = options.eventDrainCheck;
+    if (check) report.eventDrain.check = { held: 0, heldEvents: 0, rescued: 0 };
+    const holdFrom = check ? new Date(sweptAt - Math.max(0, check.graceMs)).toISOString() : undefined;
     await mapBounded(drainable, concurrency, async (s) => {
       try {
-        const { shipped, skipped } = await drainScopeEvents(host, options, sink, {
+        const { shipped, skipped, held } = await drainScopeEvents(host, options, sink, {
           tenantId: s.tenantId,
           scopeId: s.id,
           budget,
+          ...(holdFrom ? { holdFrom } : {}),
         });
+        if (held) {
+          report.eventDrain!.check!.held += 1;
+          report.eventDrain!.check!.heldEvents += held;
+        } else if (check && shipped > 0) report.eventDrain!.check!.rescued += 1;
         if (skipped) {
           (report.eventDrain!.skipped ??= []).push({ tenantId: s.tenantId, scopeId: s.id, ...skipped });
         }
@@ -3163,12 +3188,16 @@ export async function crossVerticalHealth(
  * new enough to hold it themselves. An event that fails is treated exactly as the read's
  * own skips are: not shipped, not stamped, and folded into `skipped`.
  */
-async function drainScopeEvents(
+export async function drainScopeEvents(
   host: ScopeHost,
-  options: PlatformSweepOptions,
+  options: Pick<PlatformSweepOptions, 'actor'>,
   sink: EventSink,
-  input: { tenantId: TenantId; scopeId: ScopeId; budget: number },
-): Promise<{ shipped: number; skipped?: UndrainedSkipped }> {
+  /**
+   * `holdFrom` (K-69 check mode): when the oldest event read is at or after this instant, nothing
+   * is shipped and the batch is reported `held`, its scope's own wake's to ship.
+   */
+  input: { tenantId: TenantId; scopeId: ScopeId; budget: number; holdFrom?: string },
+): Promise<{ shipped: number; skipped?: UndrainedSkipped; held?: number }> {
   const read = await host.admin.readUndrainedEvents(
     options.actor,
     input.tenantId,
@@ -3186,6 +3215,7 @@ async function drainScopeEvents(
   }
   const skipped = skippedOf(read.skipped, refused);
   if (events.length === 0) return { shipped: 0, skipped };
+  if (input.holdFrom !== undefined && events[0]!.occurredAt >= input.holdFrom) return { shipped: 0, skipped, held: events.length };
   await sink.ship({ tenantId: input.tenantId, scopeId: input.scopeId }, events);
   await host.admin.markEventsDrained(
     options.actor,

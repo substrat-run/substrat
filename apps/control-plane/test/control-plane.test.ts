@@ -24,6 +24,8 @@ import worker, { drainKickOf, kickCrossVertical, platformStoreClients, sameDeplo
 // A valid ULID platform actor; the dev stub (enabled via ALLOW_DEV_ACTOR in
 // vitest.config.ts) trusts this header verbatim.
 const ACTOR = ulid();
+/** K-69: every kick is answered who owns each phase; with `SCOPE_WAKE_PHASES` unset, the pass owns both. */
+const PASS_OWNS_BOTH = { platformRequests: 'pass', events: 'pass' };
 const authed = {
   [DEV_ACTOR_HEADER]: ACTOR,
   'content-type': 'application/json',
@@ -388,7 +390,7 @@ describe('router kick — /internal/drain-scope', () => {
     it("asks the producer's coalescer, and a second kick inside the window is deferred, not a second pass", async () => {
       const first = await kickRoute({}, exportsKick(producers[0]!));
       expect(first.status).toBe(200);
-      expect(await first.json()).toEqual({ drained: 0, done: 0, failed: 0, pending: 0, crossVertical: 'ran' });
+      expect(await first.json()).toEqual({ drained: 0, done: 0, failed: 0, pending: 0, wake: PASS_OWNS_BOTH, crossVertical: 'ran' });
       expect(await (await kickRoute({}, exportsKick(producers[0]!))).json()).toMatchObject({ crossVertical: 'deferred' });
       // Another producer is its own coalescer.
       expect(await (await kickRoute({}, exportsKick(producers[1]!))).json()).toMatchObject({ crossVertical: 'ran' });
@@ -417,7 +419,7 @@ describe('router kick — /internal/drain-scope', () => {
       const res = await kickRoute({}, intentsKick(producers[0]!));
       expect(res.status).toBe(200);
       // Run from the object's alarm, never in the router's `waitUntil` that this request lives in.
-      expect(await res.json()).toEqual({ drained: 0, done: 0, failed: 0, pending: 0, drain: 'deferred' });
+      expect(await res.json()).toEqual({ drained: 0, done: 0, failed: 0, pending: 0, drain: 'deferred', wake: PASS_OWNS_BOTH });
       const spy = spyNamespace();
       expect(await (await kickRoute({ PLATFORM_DRAIN_KICK: spy.ns }, intentsKick(ulid()))).json()).toMatchObject({ drain: 'not-on-record' });
       expect(spy.asked).toEqual([]);
@@ -460,11 +462,13 @@ describe('router kick — /internal/drain-scope', () => {
   });
 
   it('reads what the kick asks for: a legacy router means the intent drain, and only `true` runs edges', () => {
-    expect(drainKickOf({})).toEqual({ intents: true, exports: false });
-    expect(drainKickOf({ platformRequests: true, exports: false })).toEqual({ intents: true, exports: false });
-    expect(drainKickOf({ platformRequests: false, exports: true })).toEqual({ intents: false, exports: true });
-    expect(drainKickOf({ platformRequests: true, exports: true })).toEqual({ intents: true, exports: true });
-    expect(drainKickOf({ platformRequests: false, exports: 'yes' })).toEqual({ intents: false, exports: false });
+    expect(drainKickOf({})).toEqual({ intents: true, exports: false, events: false });
+    expect(drainKickOf({ platformRequests: true, exports: false })).toEqual({ intents: true, exports: false, events: false });
+    expect(drainKickOf({ platformRequests: false, exports: true })).toEqual({ intents: false, exports: true, events: false });
+    expect(drainKickOf({ platformRequests: true, exports: true })).toEqual({ intents: true, exports: true, events: false });
+    expect(drainKickOf({ platformRequests: false, exports: 'yes' })).toEqual({ intents: false, exports: false, events: false });
+    // K-69: a scope's own wake asking for its lake shipment alone is not a legacy kick.
+    expect(drainKickOf({ platformRequests: false, events: true })).toEqual({ intents: false, exports: false, events: true });
   });
 });
 
