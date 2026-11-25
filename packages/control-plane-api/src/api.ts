@@ -129,6 +129,8 @@ import {
   costContainersBackfill,
   costContainersBackfillResult,
   meterDaysReading,
+  staleScopeFindingKind,
+  staleScopesReading,
   verticalOwnersReading,
   utcDay,
   storageShape,
@@ -236,6 +238,8 @@ import {
   BILLING_ROLLUP_RETENTION_MONTHS,
   METER_DAYS_LIMIT_DEFAULT,
   METER_DAYS_LIMIT_MAX,
+  STALE_SCOPES_LIMIT_DEFAULT,
+  STALE_SCOPES_LIMIT_MAX,
   releaseRolesAskScopes,
   releaseRoleSetRefusal,
   withheldOpsFailure,
@@ -3653,6 +3657,41 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const days = await admin.listMeterDayTakes(actor, { since, until: q.until });
     return c.json(
       meterDaysReading.parse({ since, until: q.until, rows: rows.slice(0, q.limit), truncated: rows.length > q.limit, days }),
+    );
+  });
+
+  // The daily stale-scopes report (#3313): the scopes nothing will clean up, as the latest daily
+  // pass found them, each with how long it has been true. Staff-only like `/meters`, and a directory
+  // read: nothing is judged here. It moves no scope; a person archives through the scope's own door.
+  app.get('/stale-scopes', async (c) => {
+    const admin = c.var.admin;
+    if (!admin.listStaleScopes || !admin.listStaleScopeTakes) {
+      return refuseStatus(c, 501, 'this control plane keeps no stale-scopes report');
+    }
+    const q = z
+      .object({
+        tenantId: tenantIdSchema.optional(),
+        finding: staleScopeFindingKind.optional(),
+        limit: z.coerce.number().int().min(1).max(STALE_SCOPES_LIMIT_MAX - 1).default(STALE_SCOPES_LIMIT_DEFAULT),
+      })
+      .parse({
+        tenantId: c.req.query('tenantId') || undefined,
+        finding: c.req.query('finding') || undefined,
+        limit: c.req.query('limit') || undefined,
+      });
+    const actor = c.get('actor');
+    const rows = await admin.listStaleScopes(actor, {
+      ...(q.tenantId ? { tenantId: q.tenantId } : {}),
+      ...(q.finding ? { finding: q.finding } : {}),
+      limit: q.limit + 1,
+    });
+    const takes = await admin.listStaleScopeTakes(actor, { since: windowSince(new Date().toISOString().slice(0, 10)) });
+    return c.json(
+      staleScopesReading.parse({
+        findings: rows.slice(0, q.limit),
+        truncated: rows.length > q.limit,
+        latest: takes.at(-1) ?? null,
+      }),
     );
   });
 

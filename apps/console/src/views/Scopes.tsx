@@ -21,6 +21,7 @@ import {
 import { boundHostnames } from '../lib/portal';
 import { walkAll } from '../lib/api';
 import type { Api } from '../lib/api';
+import { StaleScopes } from './StaleScopes';
 
 export interface ScopesProps {
   api: Api;
@@ -497,6 +498,9 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onOpen, 
           </Button>
         </div>
       )}
+
+      {/* #3313 — the daily report of scopes nothing will clean up; a row opens the scope to act on it. */}
+      <StaleScopes api={api} tenants={tenants} onOpen={onOpen} />
 
       <Card padding={0}>
         <Table
