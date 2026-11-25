@@ -16,8 +16,9 @@ decision records, [K-68](../decisions/K-068-the-control-plane-directory-is-a-sma
 [D-78](../decisions/D-078-a-directory-object-recovers-by-point-in-time-restore-and-an-incremental-export-not-a-daily-whole-copy.md) and
 [D-79](../decisions/D-079-a-tenant-at-rest-costs-storage-only-and-every-platform-change-is-held-to-that.md),
 all `proposed`. They wait for the owner. The router's edge read model, which is step 1 of the
-migration order, is designed in its own pull request and record; this document cites it and does
-not design it again.
+migration order, is designed and built under
+[#3395](https://github.com/substrat-run/substrat/issues/3395), with its own record answering K-26's
+cache question; this document cites it and does not design it again.
 
 ## 1. The problem, measured
 
@@ -106,8 +107,8 @@ then cost per tenant**, then freshness inside the bound.
 
 | # | Choice | Request latency | Cost per tenant | Freshness | Verdict |
 |---|---|---|---|---|---|
-| 1 | Route and per-version policy from the router's memory, then the colo's cache, then KV (step 1) | none on a memory or cache hit; one KV read on a miss | storage ≈ 2 KB; KV reads only on misses, at most ≈ $0.04 per active tenant a month if every request missed | ≤ 5 min | **chosen**. Today's per-request directory RPC adds a Durable Object call to every request, costs $0.15 per million plus duration, and is the single object's 1,000/s limit. |
-| 2 | Suspension in the route entry: the router refuses a suspended route | none | one KV write per route per suspension | ≤ 5 min | **chosen** (D-77). A scope-local flag (§9) adds no request latency either but a fan-out of writes per scope; it is an option only if a tighter bound is ever wanted. A per-request status check is rejected. |
+| 1 | Route and per-version policy from an edge read model (step 1, [#3395](https://github.com/substrat-run/substrat/issues/3395): router memory, then KV; residency-pinned routes per K-36) | none on a hit; one KV read on a miss. #3395 measured today's directory read at p50 41–297 ms outside the object's colo | storage ≈ 2 KB; KV reads only on misses, at most ≈ $0.04 per active tenant a month if every request missed | ≤ 5 min | **chosen**. Today's per-request directory RPC adds a Durable Object call to every request, costs $0.15 per million plus duration, and is the single object's 1,000/s limit. |
+| 2 | Suspension through the edge read model, no per-request status read | none | a read-model write per route per suspension | ≤ 5 min | **chosen** (D-77; mechanism in #3395). The scopes' existing lifecycle refusal (#1713) stays as it is; a strongly consistent scope-side refusal is an option only if a tighter bound is ever wanted. A per-request status read is rejected. |
 | 3 | Entitlements projected into scopes (D-41, unchanged) | none | rows on change | at fan-out | kept |
 | 4 | Work on the owning object's alarm instead of a central pass (K-69) | none either way | idle: $0 instead of ≈ $0.38 a month | — | **chosen** |
 | 5 | Logs and meters shipped to the lake in batches, a window in the object (K-70) | none (a row in the same transaction, no RPC) | lake $0.015 per GB-month instead of DO $0.20, and far fewer rows written | ≤ 5 min to the lake | **chosen**; shipping batches at most every five minutes |
@@ -299,7 +300,7 @@ though the read model is the first step.
 
 | Object or service | Rows / bytes | Requests | Notes |
 |---|---|---|---|
-| Edge read model (KV + router memory) | ≈ 150 K hostname keys + one key per version, ≈ 150 MB | 289/s mean, 868/s peak, mostly from memory and the colo's cache | KV reads are $0.50 per million; even if every request missed (25 M a day) that is ≈ $375 a month, ≈ $0.04 per active tenant. The five-minute bound lets the router cache for minutes. Designed in step 1's own record. |
+| Edge read model (KV + router memory) | ≈ 150 K hostname keys + one key per version, ≈ 150 MB | 289/s mean, 868/s peak, mostly from memory | KV reads are $0.50 per million; even if every request missed (25 M a day) that is ≈ $375 a month, ≈ $0.04 per active tenant. The five-minute bound lets the router cache for minutes. Designed and measured in #3395. |
 | Global registry object | ≈ 100 K tenant rows, 150 K hostname rows, verticals, versions without manifests, ≈ 150 MB | writes on tenant create, hostname claim, push, promote: well under 1/s; staff reads | no request-path reads, no sweep reads |
 | Tenant directory object | ≈ 25 KB fixed + a 35-day window ≈ 100–150 KB | an active tenant's dashboard and drains: far under 1/s | one per tenant, 100,000 objects |
 | Cross-tenant index (D1) | 100 K rows × ≈ 0.5 KB = 50 MB | staff search, reports | at most five minutes behind; 10 GB cap far away |
@@ -378,8 +379,8 @@ Two facts in the table change the design.
 
 - **KV's one-write-per-second-per-key and 60-second visibility** mean a route key cannot be where
   a uniqueness decision is made, so the global registry, not KV, owns hostname uniqueness. They do
-  fit the owner's five-minute bound for routing and suspension (§2.1), which is why both are
-  enforced at the edge (D-77): KV's propagation plus a router cache of a few minutes stays inside it.
+  fit the owner's five-minute bound for routing and suspension (§2.1), which is why both are held
+  to it at the edge (D-77). K-36 keeps KV off residency-pinned routes; #3395 reads those another way.
 - **D1 has no interactive transaction.** A read-decide-write (a uniqueness check, a reserved-key
   refusal, a CAS) cannot be written as "read, decide in code, write" against D1. It has to be one
   statement, or a `batch()` whose statements decide in SQL, or it lives in a Durable Object. That
@@ -413,7 +414,7 @@ directory that concerns one tenant stays one transaction, because it stays in on
 
 **Scopes** are unchanged, and gain an alarm (K-69).
 
-Beside them, **the edge read model** (KV and the router's memory, step 1's record), **the lake**
+Beside them, **the edge read model** (KV and the router's memory, #3395), **the lake**
 (R2 and Iceberg, already fed by the outbox stream), **Analytics Engine** (the router's datapoints,
 already written), and **the cross-tenant index** (one D1 database, one row per tenant and one per
 hostname, projected).
@@ -587,32 +588,32 @@ records its outcome.
 
 ## 9. Suspension and other routing changes (D-77)
 
-The owner's bound (§2.1) settles this: a suspension may take up to five minutes. D-77 therefore
-enforces suspension **at the edge**, where it costs nothing per request. The tenant's directory
-object is authoritative for its status. A suspension writes the status and its admin row, and
-rewrites the tenant's route entries in the edge read model as suspended. The router answers a
-suspended route with the suspension response and never dispatches. Lifting it rewrites the
-entries back. Every other routing change (a hostname deleted or added, a scope moved, a promote's
-per-version policy) takes the same path and the same bound.
+The owner's bound (§2.1) settles this: a suspension and any other routing change (a hostname
+deleted or added, a scope moved, a promote's per-version policy) may take up to five minutes to
+take effect. D-77 states the bound and one principle: **suspension is enforced without a
+per-request read of any object.** The edge read model stops routing a suspended tenant within the
+bound, and nothing is added to a request to check a tenant's status more freshly than that.
 
-**How five minutes is met.** A route change reaches a request through KV's propagation ("60 seconds
-or more", §6), then the colo's cache and the router's memory. Proposed split: KV's default 60 s
-`cacheTtl`, about a minute of propagation, and at most **three minutes** in the router's memory and
-the colo's cache, so the sum stays inside five. "Or more" is KV's own caveat, so the bound is a
-target the read model is measured against, not a guarantee KV gives. A hostname the router has
-cached as unknown may take the same time to start resolving, which the bound also accepts.
+**The mechanism is #3395's.** How the router's cache is filled and invalidated, how the five
+minutes are split between its memory and KV, and how residency-pinned routes are read under K-36
+(which keeps KV off them) are designed and measured there. This document's numbers use a
+**provisional split, pending #3395's measurements**: KV's own propagation ("60 seconds or more",
+§6) and edge `cacheTtl`, plus a few minutes in the router's memory. "Or more" is KV's caveat, so
+the bound is a target measured against, not a guarantee KV gives. If #3395 measures other figures,
+they replace these.
 
-**What it costs.** Nothing per request: the route is read anyway. One KV write per route entry per
-suspension. No object is read on the request path, and no flag is fanned out to scopes.
+**What it costs.** Nothing per request: the route is read anyway. A write to the read model per
+route entry per suspension.
 
-**An option, not a requirement: a scope-local flag.** If a bound tighter than five minutes is ever
-wanted (a security incident), suspension can join the projection D-41 already fans out for
-entitlements: each scope refuses as soon as its flag arrives, in seconds. It adds no request
-latency but one write per scope per suspension and a delivery to track. It is not part of this
-design until such a need is named.
+**The scopes already refuse once a lifecycle change reaches them** (#1713, the CP-less host's
+lifecycle gate), delivered today by the pass's lifecycle heal and, under K-69, by the tenant
+object's alarm. D-77 does not depend on that delivery and does not remove it. A strongly
+consistent scope-side refusal is not a requirement of the bound; it is the option if a tighter
+bound is ever wanted.
 
-This settles K-26's "suspension latency" note and D-41's "settle once for both": the edge read
-model holds routing and suspension to five minutes; entitlements stay projected into scopes.
+This settles K-26's "suspension latency" note and D-41's "settle once for both" at the level of
+the bound: routing and suspension within five minutes at the edge; entitlements stay projected
+into scopes.
 
 ## 10. The auth server
 
@@ -702,9 +703,9 @@ of the design:
   history.
 *Revert:* each is a config value or a small change.
 
-**Step 1. The router's edge read model (in progress elsewhere).** KV plus memory, per-version
-policy keyed by version id, the directory dual-written into KV and compared before the router reads
-it. Its own record and pull request; this RFC adds only that the projection's source will move from
+**Step 1. The router's edge read model ([#3395](https://github.com/substrat-run/substrat/issues/3395),
+in progress).** Designed there, with a `compare` mode before the router reads it and its own
+record; this RFC adds only that the projection's source will move from
 the one directory to the registry and the tenant objects in step 3, so the projection writer should
 be one function both can call. *Revert:* the router reads the directory again.
 
@@ -782,13 +783,13 @@ All `proposed`. Each lists the owner's open choices.
 | [K-69](../decisions/K-069-nothing-iterates-over-every-tenant-on-a-schedule-work-starts-from-an-event-or-the-owning-object-s-alarm.md) | Nothing iterates over every tenant on a schedule; work starts from an event or the owning object's alarm; fleet-wide changes are lazy, warmed by a queue and counted | amends K-33 (the reconcile half of a promote); builds on scheduler.md's Design B; Queues and Workflows stay #3367 and #3369's | safety-net cadence; whether a version may be retired while idle scopes still run it; Queues for warm-up now or later |
 | [K-70](../decisions/K-070-data-that-grows-with-tenants-times-time-leaves-the-sqlite-objects-each-object-keeps-a-bounded-recent-window.md) | Data that grows with tenants × time leaves the SQLite objects; each keeps a bounded recent window; the admin log is written where the change is made and shipped | K-24 (access log), #1232, #2501, #3316 | window length (35 days proposed); whether the sweep's own reads write access-log rows (#3326); retention in the lake |
 | [K-71](../decisions/K-071-the-hosted-issuer-partitions-its-people-by-person-and-prunes-what-expires.md) | A shared issuer partitions its people by person and prunes what expires | D-72; K-63 | partition count and key; whether D-72's manager issuer is per provisioner or per managed tenant instead |
-| [D-77](../decisions/D-077-routing-changes-and-suspension-take-effect-within-five-minutes-through-the-edge-read-model.md) | Routing changes and suspension take effect within five minutes through the edge read model; read models are held to that bound and placed for latency and cost | amends D-41 and K-26 | the split of the five minutes between router memory and KV; whether a suspended owner may still export; whether an incident needs the scope-local flag |
+| [D-77](../decisions/D-077-routing-changes-and-suspension-take-effect-within-five-minutes-through-the-edge-read-model.md) | Routing changes and suspension take effect within five minutes through the edge read model; read models are held to that bound and placed for latency and cost; no per-request status read | amends D-41 and K-26; mechanism in #3395 | whether the scopes' existing lifecycle refusal stays a second lever; whether a suspended owner may still export |
 | [D-78](../decisions/D-078-a-directory-object-recovers-by-point-in-time-restore-and-an-incremental-export-not-a-daily-whole-copy.md) | A directory object recovers by PITR and an incremental export, not a daily whole copy | #40, #2870, #3325; K-33's bookmark | export cadence; whether the registry also keeps a daily full export; retention of exports |
 | [D-79](../decisions/D-079-a-tenant-at-rest-costs-storage-only-and-every-platform-change-is-held-to-that.md) | A tenant at rest costs storage only, and every platform change is held to that | prices a free tier | whether a free tier includes a custom domain (the 50,000 cap and $0.10 each); whether Enterprise is planned before 50,000 custom hostnames |
 
 **Relations to earlier records and to the one-model RFC.** K-26 stands: one router, verticals
 reachable only through it. Its open note on suspension latency is answered by D-77, and step 1's
-record answers its deferred cache, held to five minutes by D-77. D-41's entitlement projection
+record (#3395) answers its deferred cache, held to five minutes by D-77. D-41's entitlement projection
 stands; its "settle once for both" note is answered by putting routing and suspension at the edge
 (D-77). K-33's in-place
 serving and per-scope migrations stand; only the reconcile half of a promote moves from a batched
@@ -832,8 +833,13 @@ and event delivery build on, and K-69 decides nothing about Workflows.
 - **Durable Object storage billing** is documented as starting in January 2026; the page still says
   so, and whether the account is billed for it today was not checked against an invoice (billing
   reads need a token this work did not have).
-- **KV read cost on the request path** depends on the router's memory cache, which is step 1's
-  design and was not measured.
+- **KV read cost on the request path** depends on the router's memory cache, which is #3395's
+  design and was not measured here. The split of the five minutes between memory and KV is
+  provisional until #3395 measures it.
+- **Residency-pinned routes.** K-36 keeps KV off them, so under #3395 they are still read from the
+  directory. None exists in production today; at scale, a pinned tenant's route read is a
+  request-path read of a global object again, unless #3395's record gives pinned routes their own
+  read model.
 - **Active-tenant costs** are four tenants over 20 days. They are a range, not a distribution.
 - Nothing here was run. "Today" means the code on `main` at the time of writing and the production
   analytics read on 2026-11-24 and 2026-11-25.
