@@ -19,13 +19,13 @@ Durable Object can be restored to any point in the past 30 days, in place, and t
 undone. Each directory object takes a bookmark before its own schema changes, as a scope does before
 its migration pass under [K-33](./K-033-verticals-serve-in-place-from-one-stable-script-per-version-.md),
 and a rewind is an audited, time-boxed staff action like `rewindScope`. After the split
-([K-68](./K-068-the-control-plane-directory-is-a-small-global-registry-and-one-directory-object-per-tenant.md))
+([K-68 (directory split)](./K-068-the-control-plane-directory-is-a-small-global-registry-and-one-directory-object-per-tenant.md))
 a rewind is one tenant's, not everyone's.
 
 **An incremental export to R2 replaces the daily whole copy.** A tenant's directory object exports
 itself from its alarm when it has changed since its last export, at most once a day. The registry
 exports daily. Logs are in the lake already
-([K-70](./K-070-data-that-grows-with-tenants-times-time-leaves-the-sqlite-objects-each-object-keeps-a-bounded-recent-window.md)),
+([K-70 (tenants × time data leaves the objects)](./K-070-data-that-grows-with-tenants-times-time-leaves-the-sqlite-objects-each-object-keeps-a-bounded-recent-window.md)),
 so no export carries them. Restoring a tenant is an import into a fresh object under a new epoch, as
 `importDump` does today.
 

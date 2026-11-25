@@ -16,7 +16,7 @@ tracking: ["#3316"]
 
 **A tenant nobody uses costs the platform its stored bytes and nothing else.** No scheduled job wakes
 its objects, writes rows for it, or calls Cloudflare on its behalf
-([K-69](./K-069-nothing-iterates-over-every-tenant-on-a-schedule-work-starts-from-an-event-or-the-owning-object-s-alarm.md)).
+([K-69 (no scheduled walk over tenants)](./K-069-nothing-iterates-over-every-tenant-on-a-schedule-work-starts-from-an-event-or-the-owning-object-s-alarm.md)).
 A platform change that adds a per-tenant cost at rest says so in its pull request, with the cost at
 100,000 tenants, and needs the owner's approval.
 

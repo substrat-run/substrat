@@ -23,7 +23,7 @@ tenant's: its status and name, scopes, the binding half of its hostnames, roles,
 entitlements, identities, connections with their sealed secrets, keys, grants and connector state,
 connect links, impersonations, switches, fences, findings, tenant and blob store refs, subject keys,
 lifecycle receipts and revisions, and a bounded window of its logs and meters
-([K-70](./K-070-data-that-grows-with-tenants-times-time-leaves-the-sqlite-objects-each-object-keeps-a-bounded-recent-window.md)).
+([K-70 (tenants × time data leaves the objects)](./K-070-data-that-grows-with-tenants-times-time-leaves-the-sqlite-objects-each-object-keeps-a-bounded-recent-window.md)).
 
 **Every read-decide-write that concerns one tenant stays one transaction**, because it stays in one
 object: a scope transition, a role definition or seat with its reserved-key refusal, a membership
@@ -41,7 +41,7 @@ is released after a lease.
 **Cross-tenant reads read a projection, never the tenant objects.** Staff lists and search read one
 D1 database holding one row per tenant, one per hostname and one per (login, tenant), projected by
 each tenant object through an outbox, batched at most every five minutes (the freshness bound of
-[D-77](./D-077-routing-changes-and-suspension-take-effect-within-five-minutes-through-the-edge-read-model.md)).
+[D-77 (five-minute bound)](./D-077-routing-changes-and-suspension-take-effect-within-five-minutes-through-the-edge-read-model.md)).
 Every such list says when its rows were true. A staff action
 opens the tenant's own object, which is authoritative.
 
@@ -80,7 +80,7 @@ staff, which is what D1 is good at.
 
 - Whether the registry keeps a projected copy of tenant status for staff tools, or only the index
   does.
-- Whether the due index (K-69) lives in the registry or in the D1 index.
+- Whether the due index (K-69, no scheduled walk over tenants) lives in the registry or in the D1 index.
 - How long a tenant's reads stay on its object with the old directory dual-written as the fallback,
   before writes cut over (rfc §12, step 3e).
 - Whether #1343's dashboard directory is moved straight into the tenant objects (recommended) or

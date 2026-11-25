@@ -20,12 +20,12 @@ event that makes it due, and runs in the object that owns the state:
 
 - A scope that enqueues a platform request, an undelivered event or a lake shipment kicks its own
   drain on commit (the pattern of #3388) and keeps an alarm set while anything is pending.
-- A tenant's directory object ([K-68](./K-068-the-control-plane-directory-is-a-small-global-registry-and-one-directory-object-per-tenant.md))
+- A tenant's directory object ([K-68 (directory split)](./K-068-the-control-plane-directory-is-a-small-global-registry-and-one-directory-object-per-tenant.md))
   sets an alarm for each connection's next sweep, with per-connection back-off (#3331) and one sweep
   per connection rather than per scope (#3376), and for its reaps, copy claims, retries and lifecycle
   deliveries, each set by the event that makes it due.
 - An object with nothing due sets no alarm. An idle tenant costs storage only
-  ([D-79](./D-079-a-tenant-at-rest-costs-storage-only-and-every-platform-change-is-held-to-that.md)).
+  ([D-79 (idle tenant costs storage only)](./D-079-a-tenant-at-rest-costs-storage-only-and-every-platform-change-is-held-to-that.md)).
 
 **The central pass becomes a safety net over a due index.** An object writes a row (object, due
 time, kind) when it sets an alarm and clears it when the work is done. The safety net runs hourly,

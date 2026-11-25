@@ -8,13 +8,13 @@ description: "How the platform's own data scales to 100,000 tenants. Every data 
 
 **Status: proposed.** Design only. Nothing here is built, and no production data was changed to
 write it. Production was read through Cloudflare's GraphQL analytics only. It proposes seven
-decision records, [K-68](../decisions/K-068-the-control-plane-directory-is-a-small-global-registry-and-one-directory-object-per-tenant.md),
-[K-69](../decisions/K-069-nothing-iterates-over-every-tenant-on-a-schedule-work-starts-from-an-event-or-the-owning-object-s-alarm.md),
-[K-70](../decisions/K-070-data-that-grows-with-tenants-times-time-leaves-the-sqlite-objects-each-object-keeps-a-bounded-recent-window.md),
-[K-71](../decisions/K-071-the-hosted-issuer-partitions-its-people-by-person-and-prunes-what-expires.md),
-[D-77](../decisions/D-077-routing-changes-and-suspension-take-effect-within-five-minutes-through-the-edge-read-model.md),
-[D-78](../decisions/D-078-a-directory-object-recovers-by-point-in-time-restore-and-an-incremental-export-not-a-daily-whole-copy.md) and
-[D-79](../decisions/D-079-a-tenant-at-rest-costs-storage-only-and-every-platform-change-is-held-to-that.md),
+decision records, [K-68 (directory split)](../decisions/K-068-the-control-plane-directory-is-a-small-global-registry-and-one-directory-object-per-tenant.md),
+[K-69 (no scheduled walk over tenants)](../decisions/K-069-nothing-iterates-over-every-tenant-on-a-schedule-work-starts-from-an-event-or-the-owning-object-s-alarm.md),
+[K-70 (tenants × time data leaves the objects)](../decisions/K-070-data-that-grows-with-tenants-times-time-leaves-the-sqlite-objects-each-object-keeps-a-bounded-recent-window.md),
+[K-71 (shared issuer partitioned by person)](../decisions/K-071-the-hosted-issuer-partitions-its-people-by-person-and-prunes-what-expires.md),
+[D-77 (five-minute bound)](../decisions/D-077-routing-changes-and-suspension-take-effect-within-five-minutes-through-the-edge-read-model.md),
+[D-78 (PITR and incremental export)](../decisions/D-078-a-directory-object-recovers-by-point-in-time-restore-and-an-incremental-export-not-a-daily-whole-copy.md) and
+[D-79 (idle tenant costs storage only)](../decisions/D-079-a-tenant-at-rest-costs-storage-only-and-every-platform-change-is-held-to-that.md),
 all `proposed`. They wait for the owner. The router's edge read model, which is step 1 of the
 migration order, is designed and built under
 [#3395](https://github.com/substrat-run/substrat/issues/3395), with its own record answering K-26's
@@ -91,7 +91,7 @@ The proposed placement is also the owner's: a small global object; one directory
 tenant; logs and meters to the lake with a recent window kept per tenant; the admin log written in
 the object that makes the change and shipped onward; a small cross-tenant index for staff search.
 The conversation also proposed suspension as a scope-local flag projected like entitlements; the
-owner then set a five-minute freshness bound (§2.1), and suspension moves to the edge (D-77). Two
+owner then set a five-minute freshness bound (§2.1), and suspension moves to the edge (D-77, five-minute bound). Two
 refinements are argued below. **The tenant's own status and name move to its directory object**, and the global object
 keeps only what must be unique across tenants (§7.1). **The auth server needs the same treatment
 and has its own record** (§10), because D-72 puts every managed tenant's people at one issuer.
@@ -108,12 +108,12 @@ then cost per tenant**, then freshness inside the bound.
 | # | Choice | Request latency | Cost per tenant | Freshness | Verdict |
 |---|---|---|---|---|---|
 | 1 | Route and per-version policy from an edge read model (step 1, [#3395](https://github.com/substrat-run/substrat/issues/3395): router memory, then KV; residency-pinned routes per K-36) | none on a hit; one KV read on a miss. #3395 measured today's directory read at p50 41–297 ms outside the object's colo | storage ≈ 2 KB; KV reads only on misses, at most ≈ $0.04 per active tenant a month if every request missed | ≤ 5 min | **chosen**. Today's per-request directory RPC adds a Durable Object call to every request, costs $0.15 per million plus duration, and is the single object's 1,000/s limit. |
-| 2 | Suspension through the edge read model, no per-request status read | none | a read-model write per route per suspension | ≤ 5 min | **chosen** (D-77; mechanism in #3395). The scopes' existing lifecycle refusal (#1713) stays as it is; a strongly consistent scope-side refusal is an option only if a tighter bound is ever wanted. A per-request status read is rejected. |
+| 2 | Suspension through the edge read model, no per-request status read | none | a read-model write per route per suspension | ≤ 5 min | **chosen** (D-77, five-minute bound; mechanism in #3395). The scopes' existing lifecycle refusal (#1713) stays as it is; a strongly consistent scope-side refusal is an option only if a tighter bound is ever wanted. A per-request status read is rejected. |
 | 3 | Entitlements projected into scopes (D-41, unchanged) | none | rows on change | at fan-out | kept |
-| 4 | Work on the owning object's alarm instead of a central pass (K-69) | none either way | idle: $0 instead of ≈ $0.38 a month | — | **chosen** |
-| 5 | Logs and meters shipped to the lake in batches, a window in the object (K-70) | none (a row in the same transaction, no RPC) | lake $0.015 per GB-month instead of DO $0.20, and far fewer rows written | ≤ 5 min to the lake | **chosen**; shipping batches at most every five minutes |
+| 4 | Work on the owning object's alarm instead of a central pass (K-69, no scheduled walk over tenants) | none either way | idle: $0 instead of ≈ $0.38 a month | — | **chosen** |
+| 5 | Logs and meters shipped to the lake in batches, a window in the object (K-70, tenants × time data leaves the objects) | none (a row in the same transaction, no RPC) | lake $0.015 per GB-month instead of DO $0.20, and far fewer rows written | ≤ 5 min to the lake | **chosen**; shipping batches at most every five minutes |
 | 6 | Staff index (D1) projected in batches | none on the request path | one batched write per changed tenant per ≤ 5 min | ≤ 5 min | **chosen** over a projection per change |
-| 7 | Promote applied on each scope's next wake, active scopes warmed (K-69) | a cold scope's first request after a promote pays its migration pass, as it does today; warmed scopes pay nothing | only scopes that are used pay | — | **chosen** over a central batch |
+| 7 | Promote applied on each scope's next wake, active scopes warmed (K-69, no scheduled walk over tenants) | a cold scope's first request after a promote pays its migration pass, as it does today; warmed scopes pay nothing | only scopes that are used pay | — | **chosen** over a central batch |
 | 8 | Hostname uniqueness in the registry object | control path only | none per request | strong | **required**: uniqueness cannot be eventual, and the cost is on binds only |
 | 9 | Admin row in the deciding object's transaction | none on reads; one row on a change | rows written either way | strong locally | **required** to keep `writeAndAudit`'s guarantee |
 
@@ -156,7 +156,7 @@ read model); and **retention** today → proposed.
 | `_substrat_identities` | external login → principal | T × people | sign-in resolution, dashboard `/api/me` | `linkIdentity`, `unlinkIdentity` | **D**; the cross-tenant "which tenants does this person belong to" read to **X** (§8.6) | kept → kept |
 | `_substrat_access_log` | staff reads (K-24) | **T×t** (staff and sweep reads) | console | inserts on every audited read; `markAccessLogDrained`, `pruneAccessLog` | written in the object read (**D** or **G**), shipped to **L** | until drained (8 days behind, #3326) → hours |
 | `_substrat_subject_keys` | per-subject DEKs for erasure (#37) | S × subjects exported | export, shred | export and shred paths | **D** (never beside the scope's own data, per the table's rule) | tombstones kept → same |
-| `_substrat_admin_log` | the compliance witness of every change | **T×t** | console, dashboard Activity | `recordAdmin` inside `writeAndAudit` and the RDW sites | written in the object that changes (**D** or **G**), shipped to **L**; recent window kept in the object | never pruned → kept forever in L, a window in the object (K-70) |
+| `_substrat_admin_log` | the compliance witness of every change | **T×t** | console, dashboard Activity | `recordAdmin` inside `writeAndAudit` and the RDW sites | written in the object that changes (**D** or **G**), shipped to **L**; recent window kept in the object | never pruned → kept forever in L, a window in the object (K-70, tenants × time data leaves the objects) |
 | `_substrat_ops_failures` | what the platform could not do | **T×t** | console, failure digest | `recordOpsFailure` | **L** (+ recent window in **D**, platform-level rows in **G**) | 90 days → 90 days in L, 14 days in the object |
 | `_substrat_issues` | grouped failure classes (#1233) | failure classes | console | `setIssueStatus`, ingest | **G** (platform operations), fed from L | 180 days → same |
 | `_substrat_sweep_runs` | one row per unit outcome per pass | **T×t** (S × passes) | console Sweeps, cadence guards | `recordSweepRun` | the cadence guard's last row in **D**; history to **L** | 14 days → last outcome per unit in D, history in L |
@@ -197,24 +197,24 @@ They are listed because a placement decision for the directory must not move any
 |---|---|---|
 | `_substrat_outbox`, `_substrat_outbox_pruned` | 90 days after shipping to the lake (`OUTBOX_RETENTION_DAYS`) | the event log; the lake holds it for good |
 | `_substrat_tuples`, `_substrat_roles`, `_substrat_entitlements`, `_substrat_tenant_tuples` | per scope | the projections D-41 and scope-local permissions read |
-| `_substrat_platform_requests`, `_substrat_deliveries`, `_substrat_job_runs`, `_substrat_job_steps`, `_substrat_schedule_state` | per scope, pending work | the work a scope's alarm drains under K-69 |
+| `_substrat_platform_requests`, `_substrat_deliveries`, `_substrat_job_runs`, `_substrat_job_steps`, `_substrat_schedule_state` | per scope, pending work | the work a scope's alarm drains under K-69 (no scheduled walk over tenants) |
 | `_substrat_idempotency`, `_substrat_wire_nonces`, `_substrat_wire_nonce_count` | time-bounded | |
 | `_substrat_attachments` and the attachment sweep tables | per scope | bytes in R2 |
 | `_substrat_migrations`, `_substrat_migration_bookmarks` | per scope | K-33's PITR bookmark per upgrade |
 | `_substrat_meter_days`, `_substrat_request_days`, `_substrat_cost_days` copies | none | the same kernel DDL is created in a scope; the directory's rows are the ones that grow |
 
 What a scope does not have today is anything that wakes it when it has work and nobody calls it.
-That is the change K-69 makes.
+That is the change K-69 (no scheduled walk over tenants) makes.
 
 ## 4. Who reads what, on which path
 
 | Path | Reads today | Reads after |
 |---|---|---|
 | A request (router) | one `readRoute` RPC to the directory per request, uncached by K-26's deferral (`packages/adapter-cloudflare/src/route-resolver.ts`); a peer call adds `createPeerCallResolver` | the edge read model; no object |
-| A request (in the scope) | the scope's own projections | the same; a suspended route never reaches the scope (D-77) |
+| A request (in the scope) | the scope's own projections | the same; a suspended route never reaches the scope (D-77, five-minute bound) |
 | Dashboard and console | the directory, for everything | the tenant's directory object for a tenant's pages; the cross-tenant index for staff lists and search; the lake for history |
-| The `*/15` pass | every phase walks the directory's scopes: copy claims, platform-intent drain per scope, storage gauge, reconcile, lake drain, cross-vertical delivery, orphan attachments, request and cost rollups, meter snapshot, lifecycle heal, hostname reconcile, directory backup, retention prunes, connector sweep | a sparse safety net over a due index (K-69); the cost rollup and the stale-scopes report read external datasets and the index |
-| Push and promote | the directory, then 50 scopes per pass | the global registry; each scope on its next wake (K-69) |
+| The `*/15` pass | every phase walks the directory's scopes: copy claims, platform-intent drain per scope, storage gauge, reconcile, lake drain, cross-vertical delivery, orphan attachments, request and cost rollups, meter snapshot, lifecycle heal, hostname reconcile, directory backup, retention prunes, connector sweep | a sparse safety net over a due index (K-69, no scheduled walk over tenants); the cost rollup and the stale-scopes report read external datasets and the index |
+| Push and promote | the directory, then 50 scopes per pass | the global registry; each scope on its next wake (K-69, no scheduled walk over tenants) |
 
 ## 5. The numbers at 100, 10,000 and 100,000 tenants
 
@@ -293,7 +293,7 @@ In order of tenant count, today's design:
    It caps tenants with their own domain, not tenants.
 
 The order matters for the migration: the pass (2) breaks before the request path does, which is
-why per-tenant sweeps (K-69) are worth more than the router's read model at today's size, even
+why per-tenant sweeps (K-69, no scheduled walk over tenants) are worth more than the router's read model at today's size, even
 though the read model is the first step.
 
 ### 5.5 After the split, at 100,000 tenants
@@ -380,7 +380,7 @@ Two facts in the table change the design.
 - **KV's one-write-per-second-per-key and 60-second visibility** mean a route key cannot be where
   a uniqueness decision is made, so the global registry, not KV, owns hostname uniqueness. They do
   fit the owner's five-minute bound for routing and suspension (§2.1), which is why both are held
-  to it at the edge (D-77). K-36 keeps KV off residency-pinned routes; #3395 reads those another way.
+  to it at the edge (D-77, five-minute bound). K-36 keeps KV off residency-pinned routes; #3395 reads those another way.
 - **D1 has no interactive transaction.** A read-decide-write (a uniqueness check, a reserved-key
   refusal, a CAS) cannot be written as "read, decide in code, write" against D1. It has to be one
   statement, or a `batch()` whose statements decide in SQL, or it lives in a Durable Object. That
@@ -409,10 +409,10 @@ is the tenant's: its status and name, scopes, the binding half of its hostnames,
 orgs, entitlements, identities, connections and their sealed secrets, keys, grants and connector
 state, connect links, impersonations, switches, fences, findings, tenant and blob store refs,
 subject keys, lifecycle receipts and revisions, and a recent window of its admin log, access log,
-ops failures, sweep outcomes, usage and meters (K-70). Every read-decide-write in today's
+ops failures, sweep outcomes, usage and meters (K-70, tenants × time data leaves the objects). Every read-decide-write in today's
 directory that concerns one tenant stays one transaction, because it stays in one object.
 
-**Scopes** are unchanged, and gain an alarm (K-69).
+**Scopes** are unchanged, and gain an alarm (K-69, no scheduled walk over tenants).
 
 Beside them, **the edge read model** (KV and the router's memory, #3395), **the lake**
 (R2 and Iceberg, already fed by the outbox stream), **Analytics Engine** (the router's datapoints,
@@ -430,7 +430,7 @@ data.
 | Group | Sites | After |
 |---|---|---|
 | Schema and maintenance | `armVersionMigrationsBackfill`, `applyDirectorySchema` (2), `addColumn`, `rebuildAtomically`, `ensureAdminLogTenantNullable`, `ensureSweepRunsIntentKind`, `ensureDirectoryColumns` (8) | run in every directory object, each its own schema |
-| Backup and restore | `snapshotDirectory`, `importDump` (2) | retired for the whole directory; per object, D-78 |
+| Backup and restore | `snapshotDirectory`, `importDump` (2) | retired for the whole directory; per object, D-78 (PITR and incremental export) |
 | Store drivers | `recordStoreDriverRevokeWalk`, `storeDriverState`, `storeDriverDeclarations`, `storeDriverRolloutPending`, `storeDriverRolloutWalked`, `holdStoreDriver`, `claimStoreDriverRebuild`, `advanceStoreDriverRebuild` (8) | **G**, unchanged in shape |
 | A tenant's state | `transitionScopeOrRefusal`, `defineRoleOrRefusal`, `assignTenantRole`, `deleteScopeDirectory`, `backfillScopeScriptCopy`, `claimExpiredScopeScriptCopies`, `settleScopeScriptCopy`, `applyMembership`, `revokeAndFence`, `restoreConnectLink`, `grantConnectionInDirectory`, `revokeConnectionGrantInDirectory`, `writeSwitchIntent`, `restoreSwitchRecord`, `swapConnectorState`, `putConnectorStateFenced`, `settleUnrecordedOutcome`, `pruneFindings` (18) | **D**, still one transaction each. `claimExpiredScopeScriptCopies` stops being a fleet-wide claim and becomes the tenant's own |
 | Rollups and logs | `recordScopeStorage`, `recordRequestDay`, `pruneRequestDays`, `recordCostDay`, `recordCostContainers`, `pruneCostDays`, `recordScopeObject`, `recordMeterDay`, `pruneMeterDays`, `recordOpsFailure`, `recordSweepRun` (11) | a window in **D** and shipping to **L**; the cost rollup writes **L** directly |
@@ -445,7 +445,7 @@ creating a managed tenant (#412) is a seventh, from one tenant's object to anoth
 ### 7.3 Crossing two objects: the intent first
 
 K-64's rule is that nothing crosses a Durable Object's boundary inside a transaction. It was
-written for scopes and stores; K-68 applies it to the platform's own objects. Each crossing commits
+written for scopes and stores; K-68 (directory split) applies it to the platform's own objects. Each crossing commits
 its intent in the object that decides, then host code makes the second call, then the first
 object records the outcome. A crash between leaves an intent that a retry or the safety net
 finishes, never a half that nobody owns.
@@ -462,11 +462,12 @@ finishes, never a half that nobody owns.
 - **Tenant reap.** The tenant's object drives it: scopes reaped one by one by its own alarm,
   hostnames released in the registry, then the slug. The registry keeps a tombstone so an id is
   never reused.
-- **Tenant status.** Authoritative in the tenant's object, which fans out to its scopes (D-77) and
+- **Tenant status.** Authoritative in the tenant's object, which rewrites its routes in the edge read
+  model within the bound (D-77, five-minute bound) and
   projects to the registry and the index for lists. Neither the registry nor the index decides
   anything from it.
 
-### 7.4 Work without a pass (K-69)
+### 7.4 Work without a pass (K-69, no scheduled walk over tenants)
 
 | Work | Today | After |
 |---|---|---|
@@ -477,7 +478,7 @@ finishes, never a half that nobody owns.
 | Storage gauge | read for every scope the drain woke | read by the scope when it is awake for other reasons, at most daily, shipped to the lake |
 | Meter snapshot | one row per tenant per day in the directory, for every tenant | written by the tenant's object on its first wake of a UTC day; a day with no wake has no usage, and the meter reads that as zero |
 | Request and cost rollups | read once a day centrally, written to the directory | read once a day centrally, written to the lake |
-| Directory backup | daily whole copy | D-78 |
+| Directory backup | daily whole copy | D-78 (PITR and incremental export) |
 | Promote reconcile | 50 scopes a pass | each scope on its next wake; a queue warms active scopes; progress counted per (vertical, version) |
 
 **The due index.** A table in the registry (or in D1, owner's choice) with one row per object that
@@ -487,13 +488,13 @@ ago, and kicks those objects. It costs one small query when everything is health
 number of tenants. It is the "sparse" in the owner's rule 2, made measurable: the safety net's work
 is the number of objects whose alarm failed, not the number of tenants.
 
-### 7.5 Fleet-wide changes, lazy (K-69)
+### 7.5 Fleet-wide changes, lazy (K-69, no scheduled walk over tenants)
 
 A promote of a listed vertical already uploads the new bundle once onto the stable script (K-33),
 and every scope already runs its pending migrations the first time it is called after the upload
 ("the first operation after a promote runs the whole pass",
 `packages/adapter-cloudflare/src/scope-do.ts`, `ensureMigrations`).
-What remains central is the provision-hook reconcile (#1172, #1653). Under K-69:
+What remains central is the provision-hook reconcile (#1172, #1653). Under K-69 (no scheduled walk over tenants):
 
 - The promote records the new serving version in the registry. Nothing else is written per scope.
 - Each scope compares its applied version with the serving one on its next wake, and runs its
@@ -554,7 +555,7 @@ The staff access log (K-24) follows the same rule, and #3326's policy question b
 answer: an access-log row records a person reading a tenant's data, written in that tenant's
 object. The platform's own bookkeeping reads, which are 95 % of today's inflow, are reads of a
 tenant's directory object by the tenant's own alarm, and the proposal is to stop logging them as
-staff access (an open choice in K-70).
+staff access (an open choice in K-70 (tenants × time data leaves the objects)).
 
 ### 8.5 Hostname uniqueness
 
@@ -566,7 +567,7 @@ certificate do not count against it.
 
 Promote: §7.5. Install: reads the vertical from the registry, writes only the installing tenant's
 objects. The verified figure today is 50 scopes per pass (`PROVISION_RECONCILE_BATCH`, default,
-not overridden), which K-69 replaces.
+not overridden), which K-69 (no scheduled walk over tenants) replaces.
 
 ### 8.7 People across apps (K-63)
 
@@ -586,11 +587,11 @@ connection once and lands the results in each bound scope. A connector's network
 outside any object (D-73, K-62); the tenant object's alarm only decides that a sweep is due and
 records its outcome.
 
-## 9. Suspension and other routing changes (D-77)
+## 9. Suspension and other routing changes (D-77, five-minute bound)
 
 The owner's bound (§2.1) settles this: a suspension and any other routing change (a hostname
 deleted or added, a scope moved, a promote's per-version policy) may take up to five minutes to
-take effect. D-77 states the bound and one principle: **suspension is enforced without a
+take effect. D-77 (five-minute bound) states the bound and one principle: **suspension is enforced without a
 per-request read of any object.** The edge read model stops routing a suspended tenant within the
 bound, and nothing is added to a request to check a tenant's status more freshly than that.
 
@@ -606,8 +607,8 @@ they replace these.
 route entry per suspension.
 
 **The scopes already refuse once a lifecycle change reaches them** (#1713, the CP-less host's
-lifecycle gate), delivered today by the pass's lifecycle heal and, under K-69, by the tenant
-object's alarm. D-77 does not depend on that delivery and does not remove it. A strongly
+lifecycle gate), delivered today by the pass's lifecycle heal and, under K-69 (no scheduled walk over tenants), by the tenant
+object's alarm. D-77 (five-minute bound) does not depend on that delivery and does not remove it. A strongly
 consistent scope-side refusal is not a requirement of the bound; it is the option if a tighter
 bound is ever wanted.
 
@@ -636,7 +637,7 @@ tokens alone, before users and places. Sign-in rate is the second limit: tens of
 on average and hundreds at peak, every one in the same object, which also serves token refresh and
 the account page.
 
-**K-71.** The issuer partitions its people. A small configuration object keeps clients, resources,
+**K-71 (shared issuer partitioned by person).** The issuer partitions its people. A small configuration object keeps clients, resources,
 keys, providers, branding and places' definitions, and is read-mostly and cacheable. People live in
 a fixed set of partition objects keyed by a hash of the normalized email or subject (for example 256
 partitions to start, re-split by doubling), each holding its users, accounts, sessions, tokens,
@@ -647,7 +648,7 @@ reads and writes to the right partition is the work; whether Better Auth's queri
 partitionable column is the first thing to verify.
 
 A per-tenant issuer (one auth-server install per tenant, the default without D-72's manager) scales
-already, because each tenant's people are in that tenant's issuer object. K-71 is for the shared
+already, because each tenant's people are in that tenant's issuer object. K-71 (shared issuer partitioned by person) is for the shared
 issuers: the platform's own sign-in and a provisioner's team issuer.
 
 ## 11. Self-host: adapter-sqlite keeps one database
@@ -695,8 +696,8 @@ dual-write and verify phase before the cut-over.
 **Step 0. Stop the bleeding (in flight or small).** These are each a separate issue and need none
 of the design:
 - #3326: drain the access log in more than one batch a pass, and decide whether the sweep's own
-  bookkeeping reads are logged (K-70's open choice).
-- #3325: stop copying the whole directory into itself every day (D-78's first half: copy
+  bookkeeping reads are logged (the open choice in K-70 (tenants × time data leaves the objects)).
+- #3325: stop copying the whole directory into itself every day (the first half of D-78 (PITR and incremental export): copy
   append-only tables by reference, or exclude the logs from the copy).
 - #3313: forks get an expiry, so scope count tracks tenants (#3393 reports them already).
 - Bound the three billing rollups (`BILLING_ROLLUP_RETENTION_MONTHS`) once the lake holds their
@@ -714,7 +715,7 @@ build usage, cost, request and meter days ship to the lake through an outbox in 
 same shipping the scope outbox uses), and the directory keeps a 35-day window. Reads beyond the
 window move to the lake first, then the prune is switched on. This is where most of the directory's
 bytes and most of its rows written go. *Revert:* switch the prune off; the rows are still there.
-Includes D-78's export (§13) for the registry part.
+Includes the export of D-78 (§13) for the registry part.
 
 **Step 3. Per-tenant directory objects (dual-write, verify, cut over).**
 - 3a. Create the registry and the tenant object classes beside `ControlPlaneDO`, empty.
@@ -747,10 +748,10 @@ checking that it found nothing left; then the pass's phase is replaced by the sa
 with the progress count in the console, then `PROVISION_RECONCILE_BATCH` and its phase are removed.
 *Revert:* the batch phase is still there until the count has been watched through several promotes.
 
-**Beside them: the auth server (K-71)**, its own track. Token and session pruning first (small, and
+**Beside them: the auth server (K-71, shared issuer partitioned by person)**, its own track. Token and session pruning first (small, and
 needed at any size); partitioning when a shared issuer is measured approaching either limit.
 
-## 13. Recovery (D-78)
+## 13. Recovery (D-78, PITR and incremental export)
 
 The daily whole-directory copy (#40, #2870) is 44 % of the directory's rows written (#3325) and
 doubles its stored bytes while it runs. **Can Durable Object point-in-time recovery replace it?**
@@ -766,7 +767,7 @@ For most of what it is for, yes; for some, no.
   object is documented, so inspecting yesterday's rows means rewinding the live object and undoing
   it, which is not a recovery tool.
 
-D-78 therefore: PITR is the first recovery tool for every directory object; an **incremental export
+D-78 (PITR and incremental export) therefore: PITR is the first recovery tool for every directory object; an **incremental export
 to R2** replaces the daily whole copy. A tenant object exports itself when it has changed since its
 last export, at most daily, from its alarm, and a registry export runs daily (about 150 MB at
 100,000 tenants). The logs are in the lake already. Restore of one tenant is an import into a fresh
@@ -777,29 +778,36 @@ interim.
 
 All `proposed`. Each lists the owner's open choices.
 
+**The numbers may change.** The router read model's record (#3395) also takes K-68 on today's
+`main`, and `lint:decisions` refuses a gap, so whichever pull request merges second renumbers its
+records. Every reference in this document and in these records therefore carries a short name
+beside the number: directory split, no scheduled walk over tenants, tenants × time data leaves the
+objects, shared issuer partitioned by person, five-minute bound, PITR and incremental export, idle
+tenant costs storage only. A renumber changes the number and the file name and leaves the name.
+
 | Record | Says | Relates to | Open choices |
 |---|---|---|---|
-| [K-68](../decisions/K-068-the-control-plane-directory-is-a-small-global-registry-and-one-directory-object-per-tenant.md) | The directory is a small global registry and one directory object per tenant; a change across them commits its intent first | applies K-64's boundary rule to the platform's objects; keeps D-75's words; K-26's router reads neither | registry holds tenant status or only a projection; due index in the registry or D1; per-tenant flag cut-over period |
-| [K-69](../decisions/K-069-nothing-iterates-over-every-tenant-on-a-schedule-work-starts-from-an-event-or-the-owning-object-s-alarm.md) | Nothing iterates over every tenant on a schedule; work starts from an event or the owning object's alarm; fleet-wide changes are lazy, warmed by a queue and counted | amends K-33 (the reconcile half of a promote); builds on scheduler.md's Design B; Queues and Workflows stay #3367 and #3369's | safety-net cadence; whether a version may be retired while idle scopes still run it; Queues for warm-up now or later |
-| [K-70](../decisions/K-070-data-that-grows-with-tenants-times-time-leaves-the-sqlite-objects-each-object-keeps-a-bounded-recent-window.md) | Data that grows with tenants × time leaves the SQLite objects; each keeps a bounded recent window; the admin log is written where the change is made and shipped | K-24 (access log), #1232, #2501, #3316 | window length (35 days proposed); whether the sweep's own reads write access-log rows (#3326); retention in the lake |
-| [K-71](../decisions/K-071-the-hosted-issuer-partitions-its-people-by-person-and-prunes-what-expires.md) | A shared issuer partitions its people by person and prunes what expires | D-72; K-63 | partition count and key; whether D-72's manager issuer is per provisioner or per managed tenant instead |
-| [D-77](../decisions/D-077-routing-changes-and-suspension-take-effect-within-five-minutes-through-the-edge-read-model.md) | Routing changes and suspension take effect within five minutes through the edge read model; read models are held to that bound and placed for latency and cost; no per-request status read | amends D-41 and K-26; mechanism in #3395 | whether the scopes' existing lifecycle refusal stays a second lever; whether a suspended owner may still export |
-| [D-78](../decisions/D-078-a-directory-object-recovers-by-point-in-time-restore-and-an-incremental-export-not-a-daily-whole-copy.md) | A directory object recovers by PITR and an incremental export, not a daily whole copy | #40, #2870, #3325; K-33's bookmark | export cadence; whether the registry also keeps a daily full export; retention of exports |
-| [D-79](../decisions/D-079-a-tenant-at-rest-costs-storage-only-and-every-platform-change-is-held-to-that.md) | A tenant at rest costs storage only, and every platform change is held to that | prices a free tier | whether a free tier includes a custom domain (the 50,000 cap and $0.10 each); whether Enterprise is planned before 50,000 custom hostnames |
+| [K-68 (directory split)](../decisions/K-068-the-control-plane-directory-is-a-small-global-registry-and-one-directory-object-per-tenant.md) | The directory is a small global registry and one directory object per tenant; a change across them commits its intent first | applies K-64's boundary rule to the platform's objects; keeps D-75's words; K-26's router reads neither | registry holds tenant status or only a projection; due index in the registry or D1; per-tenant flag cut-over period |
+| [K-69 (no scheduled walk over tenants)](../decisions/K-069-nothing-iterates-over-every-tenant-on-a-schedule-work-starts-from-an-event-or-the-owning-object-s-alarm.md) | Nothing iterates over every tenant on a schedule; work starts from an event or the owning object's alarm; fleet-wide changes are lazy, warmed by a queue and counted | amends K-33 (the reconcile half of a promote); builds on scheduler.md's Design B; Queues and Workflows stay #3367 and #3369's | safety-net cadence; whether a version may be retired while idle scopes still run it; Queues for warm-up now or later |
+| [K-70 (tenants × time data leaves the objects)](../decisions/K-070-data-that-grows-with-tenants-times-time-leaves-the-sqlite-objects-each-object-keeps-a-bounded-recent-window.md) | Data that grows with tenants × time leaves the SQLite objects; each keeps a bounded recent window; the admin log is written where the change is made and shipped | K-24 (access log), #1232, #2501, #3316 | window length (35 days proposed); whether the sweep's own reads write access-log rows (#3326); retention in the lake |
+| [K-71 (shared issuer partitioned by person)](../decisions/K-071-the-hosted-issuer-partitions-its-people-by-person-and-prunes-what-expires.md) | A shared issuer partitions its people by person and prunes what expires | D-72; K-63 | partition count and key; whether D-72's manager issuer is per provisioner or per managed tenant instead |
+| [D-77 (five-minute bound)](../decisions/D-077-routing-changes-and-suspension-take-effect-within-five-minutes-through-the-edge-read-model.md) | Routing changes and suspension take effect within five minutes through the edge read model; read models are held to that bound and placed for latency and cost; no per-request status read | amends D-41 and K-26; mechanism in #3395 | whether the scopes' existing lifecycle refusal stays a second lever; whether a suspended owner may still export |
+| [D-78 (PITR and incremental export)](../decisions/D-078-a-directory-object-recovers-by-point-in-time-restore-and-an-incremental-export-not-a-daily-whole-copy.md) | A directory object recovers by PITR and an incremental export, not a daily whole copy | #40, #2870, #3325; K-33's bookmark | export cadence; whether the registry also keeps a daily full export; retention of exports |
+| [D-79 (idle tenant costs storage only)](../decisions/D-079-a-tenant-at-rest-costs-storage-only-and-every-platform-change-is-held-to-that.md) | A tenant at rest costs storage only, and every platform change is held to that | prices a free tier | whether a free tier includes a custom domain (the 50,000 cap and $0.10 each); whether Enterprise is planned before 50,000 custom hostnames |
 
 **Relations to earlier records and to the one-model RFC.** K-26 stands: one router, verticals
-reachable only through it. Its open note on suspension latency is answered by D-77, and step 1's
-record (#3395) answers its deferred cache, held to five minutes by D-77. D-41's entitlement projection
+reachable only through it. Its open note on suspension latency is answered by D-77 (five-minute bound), and step 1's
+record (#3395) answers its deferred cache, held to five minutes by D-77 (five-minute bound). D-41's entitlement projection
 stands; its "settle once for both" note is answered by putting routing and suspension at the edge
-(D-77). K-33's in-place
+(D-77, five-minute bound). K-33's in-place
 serving and per-scope migrations stand; only the reconcile half of a promote moves from a batched
-pass to each scope's next wake (K-69). K-64's rule, nothing crosses an object's boundary inside a
+pass to each scope's next wake (K-69, no scheduled walk over tenants). K-64's rule, nothing crosses an object's boundary inside a
 transaction, is the rule §7.3 applies. D-75's words are kept: the tenant directory object is
 platform data, not an app's home scope. [one-model-for-shipped-code.md](./one-model-for-shipped-code.md)
 puts "storage per tenant removed" after the home scope is measured (§8, storage track); this
 document is about the platform's directory, not app storage, and removes nothing there. Its phase-1
-work, a sweep role per connection (#3376) and the Workflows spike (#3369), is what K-69's connector
-and event delivery build on, and K-69 decides nothing about Workflows.
+work, a sweep role per connection (#3376) and the Workflows spike (#3369), is what the connector
+and event delivery build on, and K-69 (no scheduled walk over tenants) decides nothing about Workflows.
 
 ## 15. What gets worse
 
