@@ -1404,8 +1404,6 @@ export {
 
 // K-68 (directory split), step 3a: a change across two directory objects commits its intent first.
 export {
-  CLAIM_NAMESPACES,
-  DEFAULT_CLAIM_LEASE_MS,
   DIRECTORY_CLAIMS_DDL,
   DIRECTORY_CROSSINGS_DDL,
   REGISTRY_OWNER,
@@ -1419,7 +1417,6 @@ export {
   recordCrossingIn,
   releaseClaimIn,
   runCrossing,
-  runCrossingSync,
   settleCrossingIn,
   tenantOwnerOf,
   type ClaimInput,
