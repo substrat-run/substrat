@@ -109,7 +109,10 @@ export const DIRECTORY_TRANSACTION_SITES: readonly SiteRow[] = [
   row('writeAndAudit', '`writeAndAudit`', 'both', 'none', 'Split by caller: `WRITE_AND_AUDIT_CALLERS`.'),
 ];
 
-/** The 46 members that call `writeAndAudit`, split as rfc §7.2 splits them: 19 G, 21 D, 2 L, 4 crossing. */
+/**
+ * The members that call `writeAndAudit`: the 46 rfc §7.2 splits (19 G, 21 D, 2 L, 4 crossing), and the three
+ * #3403 added afterwards for the directory's outbox to the lake, which each object runs over its own outbox.
+ */
 export const WRITE_AND_AUDIT_CALLERS: readonly SiteRow[] = [
   ...['recordStoreDriverRelease', 'approveStoreDriverReleaseAndAudit', 'revokeStoreDriverReleaseAndAudit', 'beginStoreDriverRollout',
     'finishStoreDriverRollout', 'insertVertical', 'updateVertical', 'deleteVertical', 'insertVersion', 'setVerticalServing',
@@ -121,6 +124,8 @@ export const WRITE_AND_AUDIT_CALLERS: readonly SiteRow[] = [
     'grantEntitlement', 'revokeEntitlement', 'insertConnection', 'updateConnectionSecret', 'revokeConnection', 'linkIdentity',
     'unlinkIdentity', 'writeImpersonation', 'endImpersonation'].map((m) => row(m, 'writeAndAudit → D', 'tenant')),
   row('markAccessLogDrained', 'writeAndAudit → L', 'lake', 'none', 'Log housekeeping: the access log ships to L (K-70).'),
+  ...['ackDirectoryOutbox', 'advanceDirectoryLakeBackfill', 'setDirectoryLakeCapture'].map((m) =>
+    row(m, 'writeAndAudit → each object’s outbox (#3403)', 'both', 'none', 'K-70 shipping: every object ships its own outbox, so it runs in whichever holds it.')),
   row('pruneAccessLog', 'writeAndAudit → L', 'lake', 'none', 'Log housekeeping.'),
   row('createTenant', 'writeAndAudit → crossing', 'both', 'intent-first',
     'Claim id and slug in G, create the tenant object with its record, owner seat and admin row, confirm in G. ' +

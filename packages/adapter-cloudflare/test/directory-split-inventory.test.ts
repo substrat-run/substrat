@@ -50,8 +50,8 @@ describe('the directory split inventory (K-68)', () => {
     expect(sorted(inventoried(AUDITED_CALLERS))).toEqual(sorted(sitesBy(/this\.(audited|auditedConnectLink)\(/)));
   });
 
-  it('splits writeAndAudit’s callers as rfc §7.2 does: 19 to the registry, 21 to the tenant, 2 to the lake, 4 crossing', () => {
+  it('splits writeAndAudit’s callers as rfc §7.2 does (19 registry, 21 tenant, 2 lake, 4 crossing), plus #3403’s 3 per-object shipping callers', () => {
     const by = (lands: string, crossing = 'none') => WRITE_AND_AUDIT_CALLERS.filter((r) => r.lands === lands && r.crossing === crossing).length;
-    expect([by('registry'), by('tenant'), by('lake'), WRITE_AND_AUDIT_CALLERS.filter((r) => r.crossing !== 'none').length]).toEqual([19, 21, 2, 4]);
+    expect([by('registry'), by('tenant'), by('lake'), WRITE_AND_AUDIT_CALLERS.filter((r) => r.crossing !== 'none').length, by('both')]).toEqual([19, 21, 2, 4, 3]);
   });
 });

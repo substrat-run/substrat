@@ -171,6 +171,20 @@ export const DIRECTORY_PLACEMENT: Readonly<Record<string, TablePlacement>> = {
     ambiguous: 'Added by #3393 after §3 was written; placed by §7.2.',
   },
   _substrat_vertical_owners: { to: 'registry', rfc: 'G' },
+
+  // ── #3403 (K-70 step 2), added after §3 was written ────────────────────────────────────────
+  _substrat_directory_outbox: {
+    to: 'both',
+    rfc: '§12 step 2: "ship to the lake through an outbox in the directory"',
+    ambiguous:
+      'Added by #3403 after §3 was written. The data sets it ships (admin log, access log, ops failures) are written ' +
+      'in both objects, and K-70 has each object ship its own; assumed every object keeps its own outbox.',
+  },
+  _substrat_directory_capture: {
+    to: 'both',
+    rfc: '(not named; #3403’s per-data-set capture switch)',
+    ambiguous: 'Added by #3403. Goes with the outbox it switches: assumed one switch per object, set per object.',
+  },
 };
 
 const placedIn = (object: DirectoryObjectKind) => (table: string): boolean => {
