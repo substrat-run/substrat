@@ -1,0 +1,97 @@
+import { describe, expect, it } from 'vitest';
+import { platformActorId, tenantId, type PlatformActorId, type TenantId } from '@substrat-run/contracts';
+import { ulid, type DirectoryLakeRow, type ScopeHost } from '@substrat-run/kernel';
+
+/** K-70: what the directory-outbox suite needs of an adapter. */
+export interface DirectoryLakeFixture {
+  host: ScopeHost;
+  cleanup(): Promise<void>;
+}
+
+const newTenant = async (host: ScopeHost, staff: PlatformActorId): Promise<TenantId> => {
+  const t = tenantId.parse(ulid());
+  await host.admin.createTenant(staff, { id: t, slug: `lake-${t.toLowerCase()}`, name: 'Directory lake test' });
+  return t;
+};
+
+/** Every queued row, oldest first. The directory may be shared with other files, so cases filter. */
+const queued = async (host: ScopeHost, staff: PlatformActorId): Promise<DirectoryLakeRow[]> =>
+  host.admin.directoryOutbox!(staff, 10_000);
+
+/**
+ * K-70 (tenants × time data leaves the objects): the directory's outbox to the lake holds on both
+ * adapters. Capture is off until switched on, a captured row is queued in the same transaction as
+ * the change that wrote it, and only rows the caller confirms leave the outbox. Every case switches
+ * capture off again, because a hosted directory is shared by the files of one run.
+ */
+export function directoryLakeContractSuite(adapterName: string, makeFixture: () => Promise<DirectoryLakeFixture>): void {
+  describe(`directory outbox to the lake (K-70) [${adapterName}]`, () => {
+    it('queues nothing while off; switched on, queues each admin row with its change, and acks only what it is told', async () => {
+      const { host, cleanup } = await makeFixture();
+      const staff = platformActorId.parse(ulid());
+      try {
+        const before = await newTenant(host, staff);
+        expect((await queued(host, staff)).filter((r) => r.tenantId === before)).toEqual([]);
+
+        const on = await host.admin.setDirectoryLakeCapture!(staff, ['admin_log']);
+        expect(on.enabled).toEqual(['admin_log']);
+        expect(on.current.map((c) => c.dataset)).toEqual(['admin_log']);
+        const t = await newTenant(host, staff);
+
+        const [created] = await host.admin.auditLog(staff, { tenantId: t, action: 'createTenant' });
+        const rows = await queued(host, staff);
+        const mine = rows.filter((r) => r.tenantId === t);
+        expect(mine.map((r) => [r.dataset, r.rowKey, r.kind])).toEqual([['admin_log', created!.id, 'createTenant']]);
+        expect(JSON.parse(mine[0]!.row)).toMatchObject({ id: created!.id, action: 'createTenant', tenant_id: t });
+        // The switch's own admin row is written after its triggers, in the same transaction.
+        expect(rows.some((r) => r.kind === 'setDirectoryLakeCapture')).toBe(true);
+
+        const upTo = mine[0]!.seq!;
+        const acked = await host.admin.ackDirectoryOutbox!(staff, upTo, 'test:batch');
+        expect(acked).toBeGreaterThanOrEqual(1);
+        expect((await queued(host, staff)).filter((r) => r.seq! <= upTo)).toEqual([]);
+        const [receipt] = await host.admin.auditLog(staff, { action: 'drainDirectoryOutbox', actor: staff });
+        expect(receipt?.after).toMatchObject({ acked, upToSeq: upTo, ref: 'test:batch' });
+
+        expect((await host.admin.setDirectoryLakeCapture!(staff, [])).disabled).toEqual(['admin_log']);
+        const after = await newTenant(host, staff);
+        expect((await queued(host, staff)).filter((r) => r.tenantId === after)).toEqual([]);
+      } finally {
+        await host.admin.setDirectoryLakeCapture!(staff, []);
+        await cleanup();
+      }
+    });
+
+    it('backfills rows written before capture, and records a backfill only while capturing and without a gap', async () => {
+      const { host, cleanup } = await makeFixture();
+      const staff = platformActorId.parse(ulid());
+      try {
+        const t = await newTenant(host, staff);
+        const [created] = await host.admin.auditLog(staff, { tenantId: t, action: 'createTenant' });
+        let found: DirectoryLakeRow | undefined;
+        for (let after = 0; ;) {
+          const page = await host.admin.directoryLakeBackfill!(staff, 'admin_log', after, 500);
+          found ??= page.rows.find((r) => r.rowKey === created!.id);
+          if (page.done || page.next === null) break;
+          after = page.next;
+        }
+        expect(found).toMatchObject({ seq: null, dataset: 'admin_log', tenantId: t, kind: 'createTenant' });
+        expect((await queued(host, staff)).filter((r) => r.tenantId === t)).toEqual([]);
+
+        const page = { after: 0, next: 1, done: false };
+        await expect(() => host.admin.advanceDirectoryLakeBackfill!(staff, 'admin_log', page)).rejects.toThrow(/not capturing/);
+        await host.admin.setDirectoryLakeCapture!(staff, ['admin_log']);
+        await expect(() => host.admin.advanceDirectoryLakeBackfill!(staff, 'admin_log', { after: 1, next: 2, done: true }))
+          .rejects.toThrow(/resumes after rowid 0, not 1/);
+        await host.admin.advanceDirectoryLakeBackfill!(staff, 'admin_log', page);
+        expect(await host.admin.advanceDirectoryLakeBackfill!(staff, 'admin_log', { after: 1, next: 2, done: true }))
+          .toMatchObject({ dataset: 'admin_log', backfillAfter: 2, backfilledAt: expect.any(String) });
+        const receipts = await host.admin.auditLog(staff, { action: 'backfillDirectoryLake', actor: staff });
+        expect(receipts.map((r) => r.after)).toEqual(expect.arrayContaining([expect.objectContaining({ dataset: 'admin_log', after: 1, next: 2, done: true })]));
+      } finally {
+        await host.admin.setDirectoryLakeCapture!(staff, []);
+        await cleanup();
+      }
+    });
+  });
+}

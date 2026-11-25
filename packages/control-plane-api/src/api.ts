@@ -202,6 +202,7 @@ import { upstreamHandleIn, upstreamReferenceOf, withUpstreamReference } from '@s
 import { mailInAddressAct, mailInStanding, type MailInAddress, type MailInAddressAct, type MailInStanding } from '@substrat-run/contracts';
 import { ENGINE_ENTITLEMENT_KEYS, bareSlug, declarableEntitlementKey, entitlementNamespaceRefusal, grantableEntitlements } from '@substrat-run/contracts';
 import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, MailSender, OpsFailureInput, ProvisionScopeInput, RoleState, ScopeHost } from '@substrat-run/kernel';
+import { DIRECTORY_LAKE_DATASET_NAMES, type DirectoryLakeSink } from '@substrat-run/kernel';
 import { SCOPE_COPY_LEASE_MS, copyRestoreFence, publishedMigrationDigest, replayStoreErasures, storesFencedRefusal, type StoreErasureReplay } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
 import { auditedChange, withAuditedOutcomes, type AuditedChange } from './audited-change.js';
@@ -263,6 +264,7 @@ import { STORE_REBUILD_REQUEST_SUBREQUESTS, runStoreFleetRebuild, storeRebuildBu
 import { PUSH_HOLD_TTL_MS, STORE_RELEASE_STORED_MAX_BYTES, approveStoredDriverRelease, readStoreDriverApprovals, runStoreDriverRevoke, runStoreDriverRollout, storeDriverRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
 import { assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, listAllScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
+import { DIRECTORY_LAKE_BACKFILL_PAGE_MAX, DirectoryLakeBackfillRefused, backfillDirectoryLake } from './directory-lake-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
 import type { PersonaIssuerSeam } from './persona-issuer.js';
 import type { PreviewAuth, SeededPersona } from '@substrat-run/contracts';
@@ -614,6 +616,11 @@ export interface ControlPlaneApiOptions {
    * resolvers, which is only correct before any scope has adopted the serving script.
    */
   resolveVerticalRef?: (deploymentRef: string) => Promise<VerticalClient | undefined>;
+  /**
+   * K-70: the lake stream the directory's backfill ships to (`directory-lake-backfill.ts`). Absent
+   * ⇒ a real backfill answers 501; a dry run still reads.
+   */
+  directoryLakeSink?: DirectoryLakeSink;
   /**
    * #2450 step 2: where a preview's copy runs when it outlasts the request that started it (a
    * Durable Object per job in the hosted control plane). Without it, or without
@@ -9592,6 +9599,28 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       { admin: c.var.admin, actor: c.get('actor'), resolveRef: options.resolveVerticalRef },
       body,
     ));
+  });
+
+  // -- directory lake backfill (K-70) ---------------------------------------------------------
+  // Ships the rows a directory data set held before its capture was switched on, one page per
+  // call, recorded in the directory so a real walk has no gap (`directory-lake-backfill.ts`). A dry
+  // run unless the body says otherwise. Staff only, by default-deny: on neither BUILDER_ROUTES nor
+  // TENANT_ROUTES.
+  const directoryLakeBackfillBody = z.object({
+    dataset: z.enum(DIRECTORY_LAKE_DATASET_NAMES),
+    dryRun: z.boolean().default(true),
+    after: z.number().int().min(0).default(0),
+    limit: z.number().int().min(1).max(DIRECTORY_LAKE_BACKFILL_PAGE_MAX).default(500),
+  }).strict();
+  app.post('/directory-lake/backfill', async (c) => {
+    const body = await readJsonBody(c, directoryLakeBackfillBody);
+    try {
+      return c.json(await backfillDirectoryLake({ admin: c.var.admin, actor: c.get('actor'), sink: options.directoryLakeSink }, body));
+    } catch (err) {
+      if (!(err instanceof DirectoryLakeBackfillRefused)) throw err;
+      if (err.reason === 'unsupported' || err.reason === 'no-sink') throw new ControlPlaneError(501, err.message);
+      return refuse(c, 'conflict', err.message);
+    }
   });
 
   // -- instances (K-31) -------------------------------------------------------

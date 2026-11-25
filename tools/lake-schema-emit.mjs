@@ -21,24 +21,28 @@
  * naming no column fails (the table has drifted from the outbox). `required` is the
  * column's NOT NULL, which is the one fact the DDL does hold.
  *
- *   node tools/lake-schema-emit.mjs           # (re)write the file
- *   node tools/lake-schema-emit.mjs --check   # CI: fail if the file is not what this emits
+ * K-70 (tenants × time data leaves the objects) adds a second stream, the directory's own:
+ * `scripts/lake/directory-stream-schema.generated.json`, derived the same way from
+ * `_substrat_directory_outbox` as the pure adapter's directory builds it
+ * (`packages/kernel/src/directory-lake.ts`). Each stream is the table below plus its own
+ * STREAM_TYPE / NOT_SHIPPED / SINK_COMPUTED, held by the same closed-list checks.
+ *
+ *   node tools/lake-schema-emit.mjs           # (re)write both files
+ *   node tools/lake-schema-emit.mjs --check   # CI: fail if either file is not what this emits
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { scopeTableColumns } from './spine-ddl-drift.mjs';
+import { directoryTableColumns, scopeTableColumns } from './spine-ddl-drift.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const OUT = 'scripts/lake/outbox-stream-schema.generated.json';
-const TABLE = '_substrat_outbox';
 const CHECK = process.argv.includes('--check');
 
 /**
  * Stream field type per outbox column. `timestamp` carries `unit: 'millisecond'`, the
  * precision the ISO text the kernel writes actually has.
  */
-const STREAM_TYPE = {
+const OUTBOX_STREAM_TYPE = {
   id: 'string',
   type: 'string',
   schema_version: 'int64',
@@ -65,7 +69,7 @@ const STREAM_TYPE = {
  * shipper took the row; the lake is what it took the row TO, so the column would be a
  * fact about the copy, not the event.
  */
-const NOT_SHIPPED = new Set(['drained_at']);
+const OUTBOX_NOT_SHIPPED = new Set(['drained_at']);
 
 /**
  * Columns the SINK computes, which exist in no DDL and so cannot be derived.
@@ -92,15 +96,62 @@ const NOT_SHIPPED = new Set(['drained_at']);
  * the --check message. Adding one after data exists means a NEW TABLE, because a sink
  * refuses to write to an existing one.
  */
-const SINK_COMPUTED = [
+const OUTBOX_SINK_COMPUTED = [
   { name: 'bytes', type: 'int64', required: true },
+];
+
+/**
+ * K-70: the directory outbox's columns as stream fields. `row` is the source row as a JSON object
+ * of its columns (`directory-lake.ts`), so a column a source table grows travels inside it with no
+ * stream change; the envelope beside it is what a lake read filters on.
+ */
+const DIRECTORY_STREAM_TYPE = {
+  seq: 'int64',
+  dataset: 'string',
+  row_key: 'string',
+  tenant_id: 'string',
+  scope_id: 'string',
+  at: 'timestamp',
+  kind: 'string',
+  actor: 'string',
+  captured_at: 'timestamp',
+  row: 'json',
+};
+
+/**
+ * Columns required in the outbox that the stream must still accept as null, each with why. A
+ * backfilled row (`readDirectoryLakeBackfill`) is shipped straight from its table and never
+ * queued, so it has no `seq`.
+ */
+const DIRECTORY_NULLABLE = { seq: 'a backfilled row is shipped without queueing, so it has no seq' };
+
+const STREAMS = [
+  {
+    out: 'scripts/lake/outbox-stream-schema.generated.json',
+    table: '_substrat_outbox',
+    columns: scopeTableColumns,
+    streamType: OUTBOX_STREAM_TYPE,
+    notShipped: OUTBOX_NOT_SHIPPED,
+    sinkComputed: OUTBOX_SINK_COMPUTED,
+    nullable: {},
+  },
+  {
+    out: 'scripts/lake/directory-stream-schema.generated.json',
+    table: '_substrat_directory_outbox',
+    columns: directoryTableColumns,
+    streamType: DIRECTORY_STREAM_TYPE,
+    notShipped: new Set(),
+    // The same per-row size, for the same reason: the directory's rows share one table too.
+    sinkComputed: OUTBOX_SINK_COMPUTED,
+    nullable: DIRECTORY_NULLABLE,
+  },
 ];
 
 /** A stream type's SQL storage class, so the table above cannot mis-declare a column. */
 const STORAGE_OF = { string: 'TEXT', json: 'TEXT', timestamp: 'TEXT', int64: 'INTEGER' };
 
-function emit() {
-  const columns = scopeTableColumns(TABLE);
+function emit({ table: TABLE, columns: columnsOf, streamType: STREAM_TYPE, notShipped: NOT_SHIPPED, sinkComputed: SINK_COMPUTED, nullable }) {
+  const columns = columnsOf(TABLE);
   const problems = [];
   const fields = [];
   for (const col of columns) {
@@ -119,7 +170,7 @@ function emit() {
     fields.push({
       name: col.name,
       type,
-      required: Boolean(col.notnull || col.pk),
+      required: Boolean(col.notnull || col.pk) && !(col.name in nullable),
       ...(type === 'timestamp' ? { unit: 'millisecond' } : {}),
     });
   }
@@ -131,8 +182,8 @@ function emit() {
     fields.push({ name: f.name, type: f.type, required: f.required });
   }
   const seen = new Set(columns.map((c) => c.name));
-  for (const name of [...Object.keys(STREAM_TYPE), ...NOT_SHIPPED]) {
-    if (!seen.has(name)) problems.push(`STREAM_TYPE/NOT_SHIPPED names ${name}, which ${TABLE} no longer has`);
+  for (const name of [...Object.keys(STREAM_TYPE), ...NOT_SHIPPED, ...Object.keys(nullable)]) {
+    if (!seen.has(name)) problems.push(`STREAM_TYPE/NOT_SHIPPED/nullable names ${name}, which ${TABLE} no longer has`);
   }
   if (problems.length > 0) {
     console.error(`✗ lake schema cannot be derived:\n${problems.map((p) => `  - ${p}`).join('\n')}`);
@@ -141,22 +192,27 @@ function emit() {
   return `${JSON.stringify({ fields }, null, 2)}\n`;
 }
 
-const next = emit();
-const file = path.join(ROOT, OUT);
-const current = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
-
-if (CHECK) {
-  if (current !== next) {
-    console.error(
-      `✗ ${OUT} is not what tools/lake-schema-emit.mjs emits from ${TABLE}.\n` +
-        `  Run \`pnpm lint:lake-schema\` and commit the result. A stream already created from the\n` +
-        `  old file is NOT updated by that — the live table needs an Iceberg schema evolution.`,
-    );
-    process.exit(1);
+let drift = false;
+for (const stream of STREAMS) {
+  const { out: OUT, table: TABLE } = stream;
+  const next = emit(stream);
+  const file = path.join(ROOT, OUT);
+  const current = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  if (CHECK) {
+    if (current !== next) {
+      console.error(
+        `✗ ${OUT} is not what tools/lake-schema-emit.mjs emits from ${TABLE}.\n` +
+          `  Run \`pnpm lint:lake-schema\` and commit the result. A stream already created from the\n` +
+          `  old file is NOT updated by that — the live table needs an Iceberg schema evolution.`,
+      );
+      drift = true;
+    } else {
+      console.log(`lake schema: ${OUT} matches ${TABLE}`);
+    }
+  } else {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, next);
+    console.log(`${current === next ? 'unchanged' : 'wrote'} ${OUT}`);
   }
-  console.log(`lake schema: ${OUT} matches ${TABLE}`);
-} else {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, next);
-  console.log(`${current === next ? 'unchanged' : 'wrote'} ${OUT}`);
 }
+if (drift) process.exit(1);

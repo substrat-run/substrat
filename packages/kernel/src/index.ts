@@ -1378,3 +1378,26 @@ export {
   RAISE_MEMBERSHIP_FENCE_SQL,
   membershipFencesTableExists,
 } from './membership-fence.js';
+// K-70 (tenants × time data leaves the objects): the directory's outbox to the lake. Values only
+// where another package imports them: the adapters, the control-plane API and its worker.
+export {
+  DIRECTORY_LAKE_DATASET_NAMES,
+  DIRECTORY_LAKE_DDL,
+  ackDirectoryOutbox,
+  ensureDirectoryLakeTriggers,
+  advanceDirectoryLakeBackfill,
+  parseDirectoryLakeCapture,
+  readDirectoryLakeBackfill,
+  readDirectoryLakeCapture,
+  readDirectoryOutbox,
+  setDirectoryLakeCapture,
+  type DirectoryLakeBackfillPage,
+  type DirectoryLakeCaptureResult,
+  type DirectoryLakeCaptureState,
+  type DirectoryLakeDataset,
+  type DirectoryLakeDatasetSpec,
+  type DirectoryLakeRow,
+  type DirectoryLakeSink,
+  type DirectoryLakeSweepOptions,
+  type DirectoryLakeSweepReport,
+} from './directory-lake.js';

@@ -328,6 +328,13 @@ import {
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import { prePromoteSnapshotExpiresAt } from '@substrat-run/kernel';
+import type {
+  DirectoryLakeBackfillPage,
+  DirectoryLakeCaptureResult,
+  DirectoryLakeCaptureState,
+  DirectoryLakeDataset,
+  DirectoryLakeRow,
+} from '@substrat-run/kernel';
 import {
   CONNECTOR_DISPATCH_REQUESTED_BY,
   markupRecordValues,
@@ -1390,6 +1397,13 @@ interface ControlPlaneStub {
   } & ListPage): Promise<AccessLogRow[]>;
   markAccessLogDrained(upToId: string, drainedAt: string, audit?: AdminEntry): Promise<number>;
   pruneAccessLog(limit: number, audit?: AdminEntry): Promise<number>;
+  // K-70: the directory's outbox to the lake. The writers' admin entry is required.
+  setDirectoryLakeCapture(datasets: readonly DirectoryLakeDataset[], audit: AdminEntry): Promise<DirectoryLakeCaptureResult>;
+  directoryLakeCapture(): Promise<DirectoryLakeCaptureState[]>;
+  directoryOutbox(limit: number): Promise<DirectoryLakeRow[]>;
+  ackDirectoryOutbox(upToSeq: number, ref: string, audit: AdminEntry): Promise<number>;
+  directoryLakeBackfill(dataset: DirectoryLakeDataset, after: number, limit: number): Promise<DirectoryLakeBackfillPage>;
+  advanceDirectoryLakeBackfill(dataset: DirectoryLakeDataset, page: { after: number; next: number | null; done: boolean }, audit: AdminEntry): Promise<DirectoryLakeCaptureState>;
   // #37 — the per-subject key store. Storage only; the crypto is the kernel's.
   readSubjectKey(
     scopeId: string,
@@ -11325,6 +11339,32 @@ export class CloudflareScopeHost implements ScopeHost {
         return this.directory('pruneAccessLogAndAudit', assertRowLimit('limit', limit),
           this.adminEntry(actor, 'pruneAccessLog', { tenantId: null }, null, null));
       },
+      // K-70: the directory's outbox to the lake. Reads record their access row here, as every staff
+      // read on this host does; the writers' admin rows are written in the directory's transaction.
+      setDirectoryLakeCapture: async (actor, datasets) =>
+        this.directory('setDirectoryLakeCapture', [...datasets],
+          this.adminEntry(actor, 'setDirectoryLakeCapture', { tenantId: null }, null, null)),
+      directoryLakeCapture: async (actor) => {
+        const state = await this.cp.directoryLakeCapture();
+        await this.recordAccess(actor, 'directoryLakeCapture', { tenantId: null }, null, state.length);
+        return state;
+      },
+      directoryOutbox: async (actor, limit) => {
+        const rows = await this.cp.directoryOutbox(assertRowLimit('limit', limit));
+        await this.recordAccess(actor, 'directoryOutbox', { tenantId: null }, { limit }, rows.length);
+        return rows;
+      },
+      ackDirectoryOutbox: async (actor, upToSeq, ref) =>
+        this.directory('ackDirectoryOutbox', upToSeq, ref,
+          this.adminEntry(actor, 'drainDirectoryOutbox', { tenantId: null }, null, null)),
+      directoryLakeBackfill: async (actor, dataset, after, limit) => {
+        const page = await this.cp.directoryLakeBackfill(dataset, after, assertRowLimit('limit', limit));
+        await this.recordAccess(actor, 'directoryLakeBackfill', { tenantId: null }, { dataset, after, limit }, page.rows.length);
+        return page;
+      },
+      advanceDirectoryLakeBackfill: async (actor, dataset, page) =>
+        this.directory('advanceDirectoryLakeBackfill', dataset, page,
+          this.adminEntry(actor, 'backfillDirectoryLake', { tenantId: null }, null, null)),
       auditLog: async (actor, filter?: AuditLogFilter): Promise<AdminLogEntry[]> => {
         const rows = await this.cp.auditLog({
           tenantId: filter?.tenantId,

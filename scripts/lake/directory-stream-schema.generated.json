@@ -1,0 +1,61 @@
+{
+  "fields": [
+    {
+      "name": "seq",
+      "type": "int64",
+      "required": false
+    },
+    {
+      "name": "dataset",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "row_key",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "tenant_id",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "scope_id",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "at",
+      "type": "timestamp",
+      "required": true,
+      "unit": "millisecond"
+    },
+    {
+      "name": "kind",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "actor",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "captured_at",
+      "type": "timestamp",
+      "required": true,
+      "unit": "millisecond"
+    },
+    {
+      "name": "row",
+      "type": "json",
+      "required": true
+    },
+    {
+      "name": "bytes",
+      "type": "int64",
+      "required": true
+    }
+  ]
+}

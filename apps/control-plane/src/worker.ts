@@ -83,6 +83,8 @@ import {
   type MeterSnapshotSweepReport,
   type StaleScopeSweepReport,
   type FailingRun,
+  parseDirectoryLakeCapture,
+  type DirectoryLakeDataset,
 } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
@@ -134,6 +136,7 @@ import {
   createCfDoNamespaceReader,
   createR2AccessLogSink,
   createPipelinesEventSink,
+  createPipelinesDirectoryLakeSink,
   createR2SqlEngine,
   type LakeQueryEngine,
   createR2BackupStore,
@@ -493,6 +496,19 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * above, and the reason a deployment that ships nowhere is a supported one.
    */
   SUBSTRAT_OUTBOX_STREAM?: { send(records: readonly Record<string, unknown>[]): Promise<unknown> };
+  /**
+   * K-70 (tenants × time data leaves the objects): the stream that feeds the lake's directory
+   * table (`scripts/lake/directory-stream-schema.generated.json`). Not bound anywhere yet: binding
+   * it needs the stream provisioned first. Absent ⇒ the directory-lake phase and a real backfill
+   * are off, and capture is never switched on.
+   */
+  DIRECTORY_LAKE_STREAM?: { send(records: readonly Record<string, unknown>[]): Promise<unknown> };
+  /**
+   * K-70: which directory data sets capture into the outbox, only with `DIRECTORY_LAKE_STREAM`.
+   * Unset, empty or `off` (the default) captures nothing; `all`, or a comma list of
+   * `DIRECTORY_LAKE_DATASET_NAMES`. A list with an unknown name is logged and read as `off`.
+   */
+  DIRECTORY_LAKE_CAPTURE?: string;
   /**
    * Reads the Tier-2 lake with R2 SQL (#1334), pushed by `scripts/secrets.mjs`. Provisioned as
    * an R2 "Admin Read only" token scoped to the lake bucket; whether that permission set is
@@ -1839,6 +1855,20 @@ function capabilityDelegationFor(env: Env): CapabilityDelegation | undefined {
   return capabilityDelegationOver(async (actor, scope) => (await scopeDeployment(ladder, actor, scope))?.client);
 }
 
+/**
+ * K-70: the capture switch as the environment spells it. A value the kernel refuses is logged and
+ * read as off rather than thrown: a typo must not stop the whole pass, and off is the state every
+ * directory was in before the switch existed.
+ */
+function directoryLakeCaptureOf(env: Env): DirectoryLakeDataset[] {
+  try {
+    return parseDirectoryLakeCapture(env.DIRECTORY_LAKE_CAPTURE);
+  } catch (err) {
+    console.error('directory-lake: DIRECTORY_LAKE_CAPTURE refused, capture stays off:', (err as Error).message);
+    return [];
+  }
+}
+
 /** The control-plane API's ladder from a scope to its running deployment, outside a request. */
 function scopeDeploymentLadderFor(env: Env): ScopeDeploymentLadder {
   return {
@@ -3162,6 +3192,12 @@ export default {
       ...(env.SUBSTRAT_OUTBOX_STREAM && eventDrainDelegationFor(env)
         ? { eventSink: createPipelinesEventSink(env.SUBSTRAT_OUTBOX_STREAM) }
         : {}),
+      // K-70: the directory's own logs and meters, shipped through its outbox. Bound ⇒ the phase
+      // reconciles capture to DIRECTORY_LAKE_CAPTURE every pass (off by default, so it drops any
+      // trigger left on) and drains what is queued. Unbound ⇒ skipped.
+      ...(env.DIRECTORY_LAKE_STREAM
+        ? { directoryLake: { sink: createPipelinesDirectoryLakeSink(env.DIRECTORY_LAKE_STREAM), capture: directoryLakeCaptureOf(env) } }
+        : {}),
       // #1705 PR 2: cross-vertical events, for every hosted edge. The phase narrows to the
       // scopes whose running version imports something before it calls any, so a fleet with no
       // importer costs the directory reads and nothing else. The router kick runs one
@@ -4253,6 +4289,7 @@ export default {
         resolveVerticalVersion: resolveVerticalVersionFor(env),
         resolveVerticalRef: resolveVerticalRefFor(env),
         ...(env.COPY_JOBS ? { copyJobs: durableCopyJobs(env.COPY_JOBS) } : {}),
+        ...(env.DIRECTORY_LAKE_STREAM ? { directoryLakeSink: createPipelinesDirectoryLakeSink(env.DIRECTORY_LAKE_STREAM) } : {}),
         platformScopeStores: platformStoresFor(env),
         deployVertical: deployVerticalFor(env),
         sourceBuilds: sourceBuildService(env.SOURCE_BUILDER, env.SERVICE_TOKEN),

@@ -77,6 +77,10 @@ export const INDEX_VALUE_EXPORTS = [
   'DENIAL_WINDOW_QUERY',
   // RFC wire-signing §7: the capability record's directory table and its statements, shared by both adapters.
   'DEPLOYMENT_WIRE_AUTH_DDL',
+  // K-70: the backfill route's data set enum and the control plane's switch.
+  'DIRECTORY_LAKE_DATASET_NAMES',
+  // K-70: both adapters' directory DDL.
+  'DIRECTORY_LAKE_DDL',
   // #3139: download links, the table both adapters build and the lookup they redeem through.
   'DOWNLOAD_LINK_DDL',
   'DOWNLOAD_LINK_GONE',
@@ -276,6 +280,10 @@ export const INDEX_VALUE_EXPORTS = [
   'WITHHELD_SECRET',
   'WRITE_REVISION_KEY',
   'WatermarkPruned',
+  // K-70: the directory outbox's statements, run by both adapters; so are advanceDirectoryLakeBackfill,
+  // ensureDirectoryLakeTriggers, readDirectoryLakeBackfill, readDirectoryLakeCapture, readDirectoryOutbox
+  // and setDirectoryLakeCapture.
+  'ackDirectoryOutbox',
   'actorOf',
   'addStatePlans',
   // #2166: the host's hold on the updated stamps — both adapters call it, nothing else does.
@@ -283,6 +291,7 @@ export const INDEX_VALUE_EXPORTS = [
   'admissionBackoffMs',
   'admissionMissOutcome',
   'admitPeer',
+  'advanceDirectoryLakeBackfill',
   'advanceStoreDriverRebuildIn',
   'afterMigration',
   'afterRuntimeDdl',
@@ -443,6 +452,7 @@ export const INDEX_VALUE_EXPORTS = [
   'emittedSinceQuery',
   'emptyImportResult',
   'enqueueAttachmentText',
+  'ensureDirectoryLakeTriggers',
   'entitlementDenial',
   'entitlementDenialLine',
   'entityStateMigrations',
@@ -643,6 +653,8 @@ export const INDEX_VALUE_EXPORTS = [
   'orphanSweepVersionRefusal',
   'outboxSubscribersOf',
   'outsideCeiling',
+  // K-70: the control plane's capture switch.
+  'parseDirectoryLakeCapture',
   'parseScopeDelegation',
   'parseValidationRecords',
   // #2252: the peer rule the adapters' doors, the platform's resolvers and the dashboard share.
@@ -699,6 +711,9 @@ export const INDEX_VALUE_EXPORTS = [
   'readConnectLink',
   'readCostDirectory',
   'readDeadLetters',
+  'readDirectoryLakeBackfill',
+  'readDirectoryLakeCapture',
+  'readDirectoryOutbox',
   'readExecutorDelivery',
   'readHistory',
   'readInvocation',
@@ -852,6 +867,7 @@ export const INDEX_VALUE_EXPORTS = [
   'servesAsFrom',
   'servesNowParams',
   'servingRaceRefusal',
+  'setDirectoryLakeCapture',
   'setFindingStatus',
   'settleConnectionUse',
   'settleCopiedWork',
