@@ -18,7 +18,12 @@
  * deploys and restarts to do the same job worse.
  */
 
-import type { DirectoryBackup, PlatformActorId } from '@substrat-run/contracts';
+import type {
+  DirectoryBackup,
+  DirectoryCopyByReference,
+  DirectoryCopyReferenceCheck,
+  PlatformActorId,
+} from '@substrat-run/contracts';
 import type { HostAdmin } from '@substrat-run/kernel';
 import type { DirectoryBackupStore } from './backups.js';
 
@@ -49,6 +54,13 @@ export interface DirectoryBackupOptions {
   retryHours?: number;
   /** Take a copy regardless of cadence — what the manual "back up now" route passes. */
   force?: boolean;
+  /**
+   * How the copy carries the tables the host can read by reference instead of copying them into a
+   * snapshot first (#3325): `off` (the default) copies everything, `verify` copies everything and
+   * reports what a by-reference copy would have held, `on` reads them by reference. A host without
+   * paged export ignores it.
+   */
+  byReference?: DirectoryCopyByReference;
   /** Injected clock, for tests. */
   now?: () => Date;
 }
@@ -62,6 +74,8 @@ export interface DirectoryBackupResult {
   waitingOutAttempt: string | null;
   /** Copies deleted by the retention window this pass. */
   pruned: number;
+  /** A `verify` copy's comparison of each by-reference table (#3325); absent otherwise. */
+  referenceCheck?: DirectoryCopyReferenceCheck[];
 }
 
 /**
@@ -110,16 +124,21 @@ export async function backupDirectoryIfDue(
   // that stops part-way is discarded here; one whose invocation is cut off leaves pages that a
   // later commit sweeps (the store's `commit`).
   let taken: DirectoryBackup;
+  let referenceCheck: DirectoryCopyReferenceCheck[] | undefined;
   if (admin.exportDirectoryPage) {
-    let page = await admin.exportDirectoryPage(actor, null);
-    const copy = store.begin({ capturedAt: page.capturedAt });
+    let page = await admin.exportDirectoryPage(actor, null, { byReference: options.byReference ?? 'off' });
+    // The PITR bookmark at the copy's instant (#3325), stored with it so a rewind can name the same point.
+    const copy = store.begin({ capturedAt: page.capturedAt, ...(page.bookmark ? { bookmark: page.bookmark } : {}) });
     const tables = new Set<string>();
     let entries = 0;
     try {
       for (;;) {
         await copy.put(entries++, page.tables);
         for (const t of page.tables) tables.add(t.name);
-        if (page.next === null) break;
+        if (page.next === null) {
+          referenceCheck = page.referenceCheck;
+          break;
+        }
         page = await admin.exportDirectoryPage(actor, page.next);
       }
       taken = await copy.commit({ entries, tables: tables.size });
@@ -149,5 +168,30 @@ export async function backupDirectoryIfDue(
       pruned += 1;
     }
   }
-  return { taken, skippedFor: null, waitingOutAttempt: null, pruned };
+  return { taken, skippedFor: null, waitingOutAttempt: null, pruned, ...(referenceCheck ? { referenceCheck } : {}) };
+}
+
+/**
+ * The `DIRECTORY_BACKUP_BY_REFERENCE` setting (#3325): `off`, `verify` or `on`, unset meaning `off`.
+ * Anything else is refused as `off` with a reason, so a typo never cuts a copy over unasked.
+ */
+export function parseDirectoryCopyByReference(raw: string | undefined): {
+  mode: DirectoryCopyByReference;
+  invalid?: string;
+} {
+  const value = raw?.trim().toLowerCase() ?? '';
+  if (value === '' || value === 'off') return { mode: 'off' };
+  if (value === 'verify' || value === 'on') return { mode: value };
+  return { mode: 'off', invalid: `DIRECTORY_BACKUP_BY_REFERENCE is ${JSON.stringify(raw)}; expected off, verify or on` };
+}
+
+/**
+ * The tables of a `verify` copy where a by-reference copy would have differed from the snapshot,
+ * when the table is append-only (#3325): any difference there is a fault in that claim, and the
+ * switch must not be turned on until it is explained. A `log` table's differences are expected.
+ */
+export function referenceFaults(checks: readonly DirectoryCopyReferenceCheck[] | undefined): DirectoryCopyReferenceCheck[] {
+  return (checks ?? []).filter(
+    (c) => c.kind === 'append-only' && (c.ddlChanged || c.missing > 0 || c.changed > 0 || c.extra > 0),
+  );
 }

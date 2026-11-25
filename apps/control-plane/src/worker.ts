@@ -139,6 +139,8 @@ import {
   createR2BackupStore,
   createR2DirectoryBackupStore,
   backupDirectoryIfDue,
+  parseDirectoryCopyByReference,
+  referenceFaults,
   pruneAccessLogBatches,
   pruneScopeBackups,
   createCustomHostnameProvisioner,
@@ -474,6 +476,13 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * answer 501, which is the loud version of "this deployment keeps no platform copy".
    */
   DIRECTORY_BACKUPS?: R2Bucket;
+  /**
+   * #3325: how the daily directory copy carries the tables it can read by reference instead of
+   * copying them into a snapshot inside the directory first. `off` (unset: the copy is taken as
+   * before), `verify` (taken as before, and the log line says what a by-reference copy would have
+   * held), `on` (read by reference: most of the copy's rows written go). Any other value is `off`.
+   */
+  DIRECTORY_BACKUP_BY_REFERENCE?: string;
   /**
    * The Tier-2 event stream (#1334, kernel-design §5.3) — where the sweep's drain ships
    * each scope's outbox on its way to Iceberg. Bound in wrangler.jsonc, PROD ONLY: a
@@ -3375,12 +3384,21 @@ export default {
     // belief. `GET /api/directory/backups` is where that belief gets checked.
     if (env.DIRECTORY_BACKUPS) {
       try {
+        const byReference = parseDirectoryCopyByReference(env.DIRECTORY_BACKUP_BY_REFERENCE);
+        if (byReference.invalid) console.error('directory-backup:', byReference.invalid, '- taking the copy as off');
         const backup = await backupDirectoryIfDue({
           admin: host.admin,
           store: createR2DirectoryBackupStore(env.DIRECTORY_BACKUPS),
           actor: SWEEP_ACTOR,
+          byReference: byReference.mode,
         });
         if (backup.taken || backup.pruned) console.log('directory-backup', backup);
+        // #3325: a `verify` copy found an append-only table changing under a copy. The switch must
+        // stay off until that is explained, so it is said where a failing backup is said.
+        const faults = referenceFaults(backup.referenceCheck);
+        if (faults.length) {
+          console.error('directory-backup: a by-reference copy would have differed in append-only tables', faults);
+        }
         // #2868: a copy that started and never finished is waited out, not retried; every pass
         // that waits says so, so a backup failing that way is as loud as one that throws.
         if (backup.waitingOutAttempt) {
@@ -4307,7 +4325,10 @@ export default {
         // store above: a control plane running with no directory backup should say so
         // when asked, not answer an empty list that reads like "nothing to restore".
         ...(env.DIRECTORY_BACKUPS
-          ? { directoryBackups: createR2DirectoryBackupStore(env.DIRECTORY_BACKUPS) }
+          ? {
+              directoryBackups: createR2DirectoryBackupStore(env.DIRECTORY_BACKUPS),
+              directoryBackupByReference: parseDirectoryCopyByReference(env.DIRECTORY_BACKUP_BY_REFERENCE).mode,
+            }
           : {}),
         // #305 §4.7 — a custom-domain bind drives Cloudflare-for-SaaS issuance; a
         // platform mint under one of these base domains rides the wildcard.

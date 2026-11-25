@@ -805,6 +805,8 @@ describe('the scheduled pass runs the steps after a failed hostname reconcile', 
         CF_API_TOKEN: 'test-token',
         CF_SAAS_ZONE_ID: 'test-zone',
         DIRECTORY_BACKUPS: recordingBucket(puts),
+        // #3325: the copy reads its append-only and log tables by reference, through the cron's switch.
+        DIRECTORY_BACKUP_BY_REFERENCE: 'on',
       } as never);
       expect(errors).toHaveBeenCalledWith('hostname-reconcile failed', expect.any(String));
       // The directory copy, written after the hostname step (the bucket also takes other objects):

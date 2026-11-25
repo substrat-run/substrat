@@ -287,6 +287,7 @@ const directoryManifest = z.object({
   stageId: z.string().min(1),
   entries: z.number().int().positive(),
   tables: z.number().int().nonnegative(),
+  bookmark: z.string().min(1).optional(),
 });
 
 const directoryPage = z.object({ tables: z.array(scopeDumpTable) });
@@ -326,7 +327,7 @@ async function sweepAbandonedPages(r2: R2BucketLike, before: string): Promise<vo
 export function createR2DirectoryBackupStore(bucket: unknown): DirectoryBackupStore {
   const r2 = bucket as R2BucketLike;
   return {
-    begin({ capturedAt }) {
+    begin({ capturedAt, bookmark }) {
       const stageId = crypto.randomUUID();
       const sizes: number[] = [];
       return {
@@ -348,13 +349,13 @@ export function createR2DirectoryBackupStore(bucket: unknown): DirectoryBackupSt
           for (let seq = 0; seq < entries; seq++) {
             if (sizes[seq] === undefined) throw new Error(`directory backup page ${seq} of ${entries} was never written`);
           }
-          const body = JSON.stringify({ capturedAt, format: 'paged', stageId, entries, tables });
+          const body = JSON.stringify({ capturedAt, format: 'paged', stageId, entries, tables, ...(bookmark ? { bookmark } : {}) });
           const size = byteLength(body) + sizes.slice(0, entries).reduce((a, b) => a + b, 0);
           await r2.put(directoryKey(capturedAt), body, {
             httpMetadata: { contentType: 'application/json' },
             // Mirrored into custom metadata so `list` answers without fetching every manifest.
             // `size` too: the manifest is the smallest part of the copy.
-            customMetadata: { capturedAt, tables: String(tables), size: String(size) },
+            customMetadata: { capturedAt, tables: String(tables), size: String(size), ...(bookmark ? { bookmark } : {}) },
           });
           // Best-effort, and after the manifest: the copy is committed now, and a failed sweep
           // must not reject the commit, or the caller's `discard` would delete a listed copy's pages.
@@ -363,7 +364,7 @@ export function createR2DirectoryBackupStore(bucket: unknown): DirectoryBackupSt
           } catch (err) {
             console.error('directory-backup: sweeping abandoned pages failed; the next commit tries again', err instanceof Error ? err.message : String(err));
           }
-          return { capturedAt, size, tables };
+          return { capturedAt, size, tables, ...(bookmark ? { bookmark } : {}) };
         },
       };
     },
@@ -389,6 +390,7 @@ export function createR2DirectoryBackupStore(bucket: unknown): DirectoryBackupSt
             capturedAt,
             size: meta.size ? Number(meta.size) : o.size,
             tables: meta.tables ? Number(meta.tables) : 0,
+            ...(meta.bookmark ? { bookmark: meta.bookmark } : {}),
           });
         }
         cursor = page.truncated ? page.cursor : undefined;

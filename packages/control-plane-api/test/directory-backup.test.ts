@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { DirectoryDump, DirectoryDumpPage, PlatformActorId, ScopeDumpTable } from '@substrat-run/contracts';
 import type { HostAdmin } from '@substrat-run/kernel';
-import { backupDirectoryIfDue } from '../src/directory-backup.js';
+import { backupDirectoryIfDue, parseDirectoryCopyByReference, referenceFaults } from '../src/directory-backup.js';
 import { createR2DirectoryBackupStore } from '../src/r2-backups.js';
 import type { DirectoryBackupStore } from '../src/backups.js';
 import { fakeBucket } from './fake-r2-bucket.js';
@@ -50,8 +50,15 @@ function fakeAdmin(clock: () => Date, onExport?: () => void): HostAdmin {
   } as unknown as HostAdmin;
 }
 
-/** A `HostAdmin` that exports in pages: `tenants` spread over the first two, `verticals` in the third. */
-function pagedAdmin(clock: () => Date): HostAdmin {
+/**
+ * A `HostAdmin` that exports in pages: `tenants` spread over the first two, `verticals` in the third.
+ * `extra` decorates a page by its sequence number, and every call's options are kept in `calls`.
+ */
+function pagedAdmin(
+  clock: () => Date,
+  extra?: (seq: number) => Partial<DirectoryDumpPage>,
+  calls: unknown[] = [],
+): HostAdmin {
   const pages: ScopeDumpTable[][] = [
     [{ ...TENANTS, rows: [['t1'], ['t2']] }],
     [{ ...TENANTS, rows: [['t3']] }],
@@ -59,10 +66,11 @@ function pagedAdmin(clock: () => Date): HostAdmin {
   ];
   let capturedAt = '';
   return {
-    exportDirectoryPage: async (_actor: PlatformActorId, cursor: string | null): Promise<DirectoryDumpPage> => {
+    exportDirectoryPage: async (_actor: PlatformActorId, cursor: string | null, opts?: unknown): Promise<DirectoryDumpPage> => {
+      calls.push(opts);
       const seq = cursor === null ? 0 : Number(cursor);
       if (seq === 0) capturedAt = clock().toISOString();
-      return { capturedAt, tables: pages[seq]!, next: seq + 1 < pages.length ? String(seq + 1) : null };
+      return { capturedAt, tables: pages[seq]!, next: seq + 1 < pages.length ? String(seq + 1) : null, ...extra?.(seq) };
     },
   } as unknown as HostAdmin;
 }
@@ -233,6 +241,32 @@ describe('scheduled directory backup (#40)', () => {
     // Pruning a copy takes its pages with it.
     await store.delete({ capturedAt: '2026-08-06T00:00:00.000Z' });
     expect([...objects.keys()].filter((k) => k.startsWith('directory/'))).toEqual([]);
+  });
+
+  it('asks for the by-reference mode on the first page, keeps its PITR bookmark, and returns a verify report (#3325)', async () => {
+    const { store } = fakeStore();
+    const now = new Date('2026-11-25T00:00:00.000Z');
+    const check = {
+      table: '_substrat_admin_log', kind: 'append-only' as const, snapshotRows: 6, missing: 0, changed: 1,
+      changedColumns: { after: 1 }, extra: 0, ddlChanged: false,
+    };
+    const calls: unknown[] = [];
+    const admin = pagedAdmin(() => now, (seq) => (seq === 0 ? { bookmark: 'bm-1' } : seq === 2 ? { referenceCheck: [check] } : {}), calls);
+    const result = await backupDirectoryIfDue({ admin, store, actor: ACTOR, byReference: 'verify', now: () => now });
+
+    expect(calls).toEqual([{ byReference: 'verify' }, undefined, undefined]);
+    expect(result.taken).toMatchObject({ capturedAt: now.toISOString(), bookmark: 'bm-1' });
+    expect(await store.list()).toEqual([expect.objectContaining({ capturedAt: now.toISOString(), bookmark: 'bm-1' })]);
+    expect(result.referenceCheck).toEqual([check]);
+    // An append-only table that would have differed is a fault; a log table's drift is not.
+    expect(referenceFaults([check, { ...check, table: '_substrat_access_log', kind: 'log' }])).toEqual([check]);
+  });
+
+  it('reads the by-reference switch as off unless it says verify or on (#3325)', () => {
+    expect([undefined, '', 'off', ' Verify ', 'on'].map((v) => parseDirectoryCopyByReference(v).mode)).toEqual([
+      'off', 'off', 'off', 'verify', 'on',
+    ]);
+    expect(parseDirectoryCopyByReference('yes')).toMatchObject({ mode: 'off', invalid: expect.stringContaining('"yes"') });
   });
 
   it('keeps a committed copy when the sweep after its manifest fails', async () => {

@@ -554,6 +554,42 @@ export const directoryDump = z.object({
 export type DirectoryDump = z.infer<typeof directoryDump>;
 
 /**
+ * How a directory copy carries the tables it can read by reference (#3325, D-78's interim). The
+ * daily copy used to copy every table into a snapshot inside the directory first, one row written
+ * per directory row whatever had changed. A table whose rows are only ever added (and at most
+ * removed or redacted, never rewritten into something else) can instead be read live, up to the
+ * rowid it held when the copy began:
+ *
+ * - `off` (the default): every table is copied into the snapshot, as before.
+ * - `verify`: every table is still copied, and the last page compares each by-reference table's
+ *   snapshot with what a by-reference read would hold now (`referenceCheck`). Nothing changes in
+ *   the copy; this is the phase before the cut-over.
+ * - `on`: the by-reference tables are not copied; their pages read the live table up to the
+ *   horizon. A copy whose append-only table lost a row under the horizon is refused, not stored.
+ */
+export const directoryCopyByReference = z.enum(['off', 'verify', 'on']);
+export type DirectoryCopyByReference = z.infer<typeof directoryCopyByReference>;
+
+/** One by-reference table, as a `verify` copy found it on its last page (#3325). */
+export const directoryCopyReferenceCheck = z.object({
+  table: z.string().min(1),
+  /** `append-only`: any difference is a fault. `log`: rows may leave by retention or drain, or be redacted. */
+  kind: z.enum(['append-only', 'log']),
+  /** Rows the snapshot holds. */
+  snapshotRows: z.number().int().nonnegative(),
+  /** Snapshot rows the live table no longer has. */
+  missing: z.number().int().nonnegative(),
+  /** Snapshot rows the live table holds with different cells, and how many per column. */
+  changed: z.number().int().nonnegative(),
+  changedColumns: z.record(z.string(), z.number().int().nonnegative()),
+  /** Live rows at or under the horizon the snapshot does not have. */
+  extra: z.number().int().nonnegative(),
+  /** The table was rebuilt or altered since the snapshot, so nothing was compared. */
+  ddlChanged: z.boolean(),
+});
+export type DirectoryCopyReferenceCheck = z.infer<typeof directoryCopyReferenceCheck>;
+
+/**
  * One page of the directory's dump (#2868). A whole dump is every row of every table in one
  * value, which outgrew the directory's 128 MB isolate: a page holds about
  * `SCOPE_DUMP_PAGE_MAX_BYTES` of cells, in the same fragment shape as `scopeDumpPage` (a table's
@@ -568,6 +604,14 @@ export const directoryDumpPage = z.object({
   capturedAt: z.string().min(1),
   tables: z.array(scopeDumpTable),
   next: z.string().min(1).nullable(),
+  /**
+   * #3325: the first page's point-in-time-recovery bookmark, taken right after the copy's snapshot
+   * committed, so the copy and a PITR rewind name the same instant. Null where the storage offers no
+   * PITR (local dev, tests); absent on every page but the first, and from a host that predates it.
+   */
+  bookmark: z.string().min(1).nullable().optional(),
+  /** #3325: on the last page of a `verify` copy, what a by-reference copy would have held instead. */
+  referenceCheck: z.array(directoryCopyReferenceCheck).optional(),
 });
 export type DirectoryDumpPage = z.infer<typeof directoryDumpPage>;
 
@@ -584,6 +628,11 @@ export const directoryBackup = z.object({
   size: z.number().int().nonnegative(),
   /** Tables carried; zero means the copy is not restorable. */
   tables: z.number().int().nonnegative(),
+  /**
+   * #3325: the directory's PITR bookmark at the copy's instant, for a rewind of the live object
+   * within Cloudflare's 30 days instead of a restore. Absent on a copy taken without PITR or before it.
+   */
+  bookmark: z.string().min(1).optional(),
 });
 export type DirectoryBackup = z.infer<typeof directoryBackup>;
 

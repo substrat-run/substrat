@@ -133,6 +133,7 @@ import type {
   DeploymentWireAuth,
   RouteTarget,
   DirectoryDump,
+  DirectoryCopyByReference,
   DirectoryDumpPage,
   IdentityMembership,
   PrincipalId,
@@ -3833,8 +3834,14 @@ export interface HostAdmin {
    * `exportDirectory` a page at a time (#2868), for a directory too large to hold as one value:
    * hand `next` back for the following page, `null` starts a copy. Audited once per copy, on its
    * first page. A host without it is read whole; the scheduled backup takes whichever it has.
+   * `byReference` (#3325) is read on the first page only, and decides how the whole copy carries the
+   * tables a host can read by reference instead of copying (`directoryCopyByReference`).
    */
-  exportDirectoryPage?(actor: PlatformActorId, cursor: string | null, opts?: { maxBytes?: number }): Promise<DirectoryDumpPage>;
+  exportDirectoryPage?(
+    actor: PlatformActorId,
+    cursor: string | null,
+    opts?: { maxBytes?: number; byReference?: DirectoryCopyByReference },
+  ): Promise<DirectoryDumpPage>;
 
   /**
    * Replace the directory with a dump — break-glass, and the only write in `HostAdmin`

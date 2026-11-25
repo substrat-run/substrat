@@ -244,6 +244,13 @@ import {
 import { replyOf, type DoReply } from './do-reply.js';
 import { rowBytes, switchSqlOver } from './scope-do.js';
 import {
+  DIRECTORY_COPY_BY_REFERENCE,
+  quoteIdent,
+  referenceCompareSql,
+  referenceExtraSql,
+  type DirectoryReferenceKind,
+} from './directory-copy-reference.js';
+import {
   blankSqlComments,
   boundShapesColumn,
   executableSqlStatements,
@@ -270,6 +277,8 @@ import type {
   OpsFailureEntry,
   SweepRunEntry,
   RoleDefinition,
+  DirectoryCopyByReference,
+  DirectoryCopyReferenceCheck,
   DirectoryDumpPage,
   ScopeDumpTable,
   ScopeId,
@@ -1786,6 +1795,17 @@ interface DirectoryDumpCursor {
   after: number;
 }
 
+/** A row of `_directory_copy_tables` (#2868); the reference columns are #3325's, null on a copy before them. */
+interface CopiedTableDef {
+  ord: number;
+  name: string;
+  ddl: string;
+  columns: string;
+  reference?: DirectoryReferenceKind | null;
+  horizon?: number | null;
+  row_count?: number | null;
+}
+
 function decodeDirectoryDumpCursor(cursor: string): DirectoryDumpCursor {
   let parsed: unknown;
   try {
@@ -2248,35 +2268,54 @@ export class ControlPlaneDO extends DurableObject {
    * or removed while the pages are read, or a column added by a deploy in between, is not seen by
    * any of them. The last page drops the snapshot. `copiedTables` (first page only) is how many
    * tables the copy holds, for the access log.
+   *
+   * #3325: with `byReference: 'on'` the tables of `DIRECTORY_COPY_BY_REFERENCE` are not copied but
+   * read live up to the rowid each held at the first page, which is most of what the snapshot
+   * wrote; with `'verify'` they are copied as before and the last page reports what a by-reference
+   * read would have held (`referenceCheck`). The first page also returns the directory's PITR
+   * bookmark at the copy's instant (`bookmark`), whatever the mode.
    */
-  exportDumpPage(cursor: string | null, opts: { maxBytes?: number } = {}): DirectoryDumpPage & { copiedTables?: number } {
+  async exportDumpPage(
+    cursor: string | null,
+    opts: { maxBytes?: number; byReference?: DirectoryCopyByReference } = {},
+  ): Promise<DirectoryDumpPage & { copiedTables?: number }> {
     const maxBytes = opts.maxBytes ?? SCOPE_DUMP_PAGE_MAX_BYTES;
-    const taken = cursor === null ? this.snapshotDirectory() : null;
+    const taken = cursor === null ? this.snapshotDirectory(opts.byReference ?? 'off') : null;
+    // Right after the snapshot's transaction: the storage call holds this object's input gate, so
+    // no write lands between the copy's instant and the bookmark's.
+    const bookmark = taken ? await this.currentBookmark() : undefined;
     const at = taken?.cursor ?? decodeDirectoryDumpCursor(cursor!);
     const copy = this.hasCopyTable()
-      ? (this.sql.exec(`SELECT copy_id AS copyId, captured_at AS capturedAt FROM ${COPY_TABLE}`).toArray()[0] as
-          | { copyId: string; capturedAt: string }
+      ? (this.sql.exec(`SELECT * FROM ${COPY_TABLE}`).toArray()[0] as
+          | { copy_id: string; captured_at: string; mode?: DirectoryCopyByReference | null }
           | undefined)
       : undefined;
-    if (!copy || copy.copyId !== at.copyId) {
+    if (!copy || copy.copy_id !== at.copyId) {
       throw substratError('conflict', 'this directory copy is gone: a later copy replaced it, or a restore cleared it; start again');
     }
-    const defs = this.sql
-      .exec(`SELECT ord, name, ddl, columns FROM ${COPY_TABLES_TABLE} WHERE ord >= ? ORDER BY ord`, at.ord)
-      .toArray() as unknown as { ord: number; name: string; ddl: string; columns: string }[];
+    const mode = copy.mode ?? 'off';
+    // `SELECT *`: a copy begun by the code before #3325 has no reference columns, and reads as `off`.
+    const defs = (this.sql
+      .exec(`SELECT * FROM ${COPY_TABLES_TABLE} WHERE ord >= ? ORDER BY ord`, at.ord)
+      .toArray() as unknown as CopiedTableDef[]);
     const tables: ScopeDumpTable[] = [];
     let bytes = 0;
     let next: string | null = null;
-    for (const { ord, name, ddl, columns } of defs) {
+    for (const def of defs) {
+      const { ord, name, ddl } = def;
+      const columns = JSON.parse(def.columns) as string[];
+      const live = mode === 'on' && def.reference != null;
+      if (live) this.assertReferenceUnaltered(def);
+      const readSql = live
+        ? `SELECT rowid, ${columns.map(quoteIdent).join(', ')} FROM ${quoteIdent(name)}
+            WHERE rowid > ? AND rowid <= ${Number(def.horizon)} AND (${directoryDumpWhere(name)}) ORDER BY rowid LIMIT ?`
+        : `SELECT rowid, * FROM "${copyRowsTable(ord)}" WHERE rowid > ? ORDER BY rowid LIMIT ?`;
       let last = ord === at.ord ? at.after : 0;
       const rows: unknown[][] = [];
       let full = false;
       for (;;) {
         // In batches, each read to its end: a part-read cursor keeps its table locked.
-        const read = Array.from(
-          this.sql.exec(`SELECT rowid, * FROM "${copyRowsTable(ord)}" WHERE rowid > ? ORDER BY rowid LIMIT ?`, last, DIRECTORY_READ_BATCH).raw(),
-          (raw) => raw as unknown[],
-        );
+        const read = Array.from(this.sql.exec(readSql, last, DIRECTORY_READ_BATCH).raw(), (raw) => raw as unknown[]);
         for (const cells of read) {
           const row = cells.slice(1);
           rows.push(row);
@@ -2289,7 +2328,9 @@ export class ControlPlaneDO extends DurableObject {
         }
         if (full || read.length < DIRECTORY_READ_BATCH) break;
       }
-      tables.push({ name, ddl, columns: JSON.parse(columns) as string[], rows });
+      // Read to its end: an append-only table must still hold every row it held at the copy's instant.
+      if (live && !full && def.reference === 'append-only') this.assertReferenceComplete(def);
+      tables.push({ name, ddl, columns, rows });
       if (full) {
         next = JSON.stringify({ copyId: at.copyId, ord, after: last } satisfies DirectoryDumpCursor);
         break;
@@ -2297,8 +2338,84 @@ export class ControlPlaneDO extends DurableObject {
     }
     // A full page that ended on the last row of the last table still says `next`; the page after
     // it is empty, and is the one that drops the snapshot.
-    if (next === null) this.dropDirectorySnapshot();
-    return { capturedAt: copy.capturedAt, tables, next, ...(taken ? { copiedTables: taken.tables } : {}) };
+    let referenceCheck: DirectoryCopyReferenceCheck[] | undefined;
+    if (next === null) {
+      if (mode === 'verify') referenceCheck = this.checkReferences();
+      this.dropDirectorySnapshot();
+    }
+    return {
+      capturedAt: copy.captured_at,
+      tables,
+      next,
+      ...(taken ? { copiedTables: taken.tables, bookmark } : {}),
+      ...(referenceCheck ? { referenceCheck } : {}),
+    };
+  }
+
+  /** The storage's PITR bookmark now, or null where there is no PITR (local dev, tests) or it failed. */
+  private async currentBookmark(): Promise<string | null> {
+    const storage = this.ctx.storage as unknown as { getCurrentBookmark?: () => Promise<string> };
+    if (typeof storage.getCurrentBookmark !== 'function') return null;
+    try {
+      return await storage.getCurrentBookmark();
+    } catch {
+      return null;
+    }
+  }
+
+  /** #3325: a by-reference table is read across pages only while no deploy has altered or rebuilt it. */
+  private assertReferenceUnaltered(def: CopiedTableDef): void {
+    const now = this.sql.exec(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, def.name).toArray()[0] as
+      | { sql: string }
+      | undefined;
+    if (now?.sql !== def.ddl) {
+      throw substratError('conflict', `directory table ${def.name} was altered while this copy was read; start again`);
+    }
+  }
+
+  /** #3325: an append-only table read by reference lost no row under its horizon while it was read. */
+  private assertReferenceComplete(def: CopiedTableDef): void {
+    const { n } = this.sql
+      .exec(`SELECT count(*) AS n FROM ${quoteIdent(def.name)} WHERE rowid <= ? AND (${directoryDumpWhere(def.name)})`, Number(def.horizon))
+      .one() as { n: number };
+    if (n !== Number(def.row_count)) {
+      throw substratError(
+        'conflict',
+        `directory table ${def.name} lost ${Number(def.row_count) - n} row(s) while this copy was read; start again`,
+      );
+    }
+  }
+
+  /**
+   * #3325, `verify`: each by-reference table's snapshot, keyed by the source rowid, against the live
+   * table now, the latest any by-reference page could have read it. Run on the last page, before the
+   * snapshot is dropped.
+   */
+  private checkReferences(): DirectoryCopyReferenceCheck[] {
+    const defs = this.sql
+      .exec(`SELECT * FROM ${COPY_TABLES_TABLE} WHERE reference IS NOT NULL ORDER BY ord`)
+      .toArray() as unknown as CopiedTableDef[];
+    return defs.map((def) => {
+      const columns = JSON.parse(def.columns) as string[];
+      const kind = def.reference!;
+      const now = this.sql.exec(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, def.name).toArray()[0] as
+        | { sql: string }
+        | undefined;
+      if (now?.sql !== def.ddl) {
+        return { table: def.name, kind, snapshotRows: Number(def.row_count), missing: 0, changed: 0, changedColumns: {}, extra: 0, ddlChanged: true };
+      }
+      const copy = copyRowsTable(def.ord);
+      const r = this.sql.exec(referenceCompareSql(copy, def.name, columns)).one() as Record<string, number>;
+      const changedColumns: Record<string, number> = {};
+      columns.forEach((col, i) => {
+        if (Number(r[`d${i}`]) > 0) changedColumns[col] = Number(r[`d${i}`]);
+      });
+      const extra = (this.sql.exec(referenceExtraSql(copy, def.name), Number(def.horizon)).one() as { n: number }).n;
+      return {
+        table: def.name, kind, snapshotRows: Number(r.snapshotRows), missing: Number(r.missing),
+        changed: Number(r.changed), changedColumns, extra: Number(extra), ddlChanged: false,
+      };
+    });
   }
 
   private hasCopyTable(): boolean {
@@ -2309,25 +2426,53 @@ export class ControlPlaneDO extends DurableObject {
    * Copy every dumped table into a fresh snapshot (#2868), replacing any a copy left unfinished,
    * and return the cursor of its first page and how many tables it holds. One synchronous
    * transaction, so no write lands between two tables' reads.
+   *
+   * #3325: under `on`, a by-reference table is not copied; its horizon (largest rowid) and row
+   * count are recorded instead, which costs no row written. Under `verify` it is copied as before,
+   * each row at its source rowid, so the last page can compare it with the live table.
    */
-  private snapshotDirectory(): { cursor: DirectoryDumpCursor; tables: number } {
+  private snapshotDirectory(mode: DirectoryCopyByReference): { cursor: DirectoryDumpCursor; tables: number } {
     const copyId = crypto.randomUUID();
     const capturedAt = new Date().toISOString();
     return this.ctx.storage.transactionSync(() => {
       this.dropDirectorySnapshot();
-      this.sql.exec(`CREATE TABLE ${COPY_TABLE} (copy_id TEXT NOT NULL, captured_at TEXT NOT NULL)`);
-      this.sql.exec(`INSERT INTO _directory_copy (copy_id, captured_at) VALUES (?, ?)`, copyId, capturedAt);
-      this.sql.exec(`CREATE TABLE ${COPY_TABLES_TABLE} (ord INTEGER PRIMARY KEY, name TEXT NOT NULL, ddl TEXT NOT NULL, columns TEXT NOT NULL)`);
+      this.sql.exec(`CREATE TABLE ${COPY_TABLE} (copy_id TEXT NOT NULL, captured_at TEXT NOT NULL, mode TEXT NOT NULL)`);
+      this.sql.exec(`INSERT INTO _directory_copy (copy_id, captured_at, mode) VALUES (?, ?, ?)`, copyId, capturedAt, mode);
+      this.sql.exec(
+        `CREATE TABLE ${COPY_TABLES_TABLE} (ord INTEGER PRIMARY KEY, name TEXT NOT NULL, ddl TEXT NOT NULL, columns TEXT NOT NULL,
+           reference TEXT, horizon INTEGER, row_count INTEGER)`,
+      );
       const defs = this.dumpTableDefs();
       defs.forEach(({ name, sql }, ord) => {
         const probe = this.sql.exec(`SELECT * FROM "${name}" WHERE 0`);
         probe.toArray();
         const columns = probe.columnNames;
-        // Untyped columns: no affinity, so every value is copied exactly as the table holds it.
-        const neutral = columns.map((_, i) => `c${i}`).join(', ');
-        this.sql.exec(`CREATE TABLE "${copyRowsTable(ord)}" (${neutral})`);
-        this.sql.exec(`INSERT INTO "${copyRowsTable(ord)}" SELECT * FROM "${name}" WHERE ${directoryDumpWhere(name)}`);
-        this.sql.exec(`INSERT INTO _directory_copy_tables (ord, name, ddl, columns) VALUES (?, ?, ?, ?)`, ord, name, sql, JSON.stringify(columns));
+        const where = directoryDumpWhere(name);
+        const reference = mode === 'off' ? undefined : DIRECTORY_COPY_BY_REFERENCE[name]?.kind;
+        let horizon: number | null = null;
+        let rowCount: number | null = null;
+        if (reference) {
+          const r = this.sql.exec(`SELECT coalesce(max(rowid), 0) AS h, count(*) AS n FROM "${name}" WHERE ${where}`).one() as {
+            h: number;
+            n: number;
+          };
+          horizon = Number(r.h);
+          rowCount = Number(r.n);
+        }
+        if (!reference || mode === 'verify') {
+          // Untyped columns: no affinity, so every value is copied exactly as the table holds it.
+          const neutral = columns.map((_, i) => `c${i}`).join(', ');
+          this.sql.exec(`CREATE TABLE "${copyRowsTable(ord)}" (${neutral})`);
+          if (reference) {
+            this.sql.exec(`INSERT INTO "${copyRowsTable(ord)}" (rowid, ${neutral}) SELECT rowid, * FROM "${name}" WHERE ${where}`);
+          } else {
+            this.sql.exec(`INSERT INTO "${copyRowsTable(ord)}" SELECT * FROM "${name}" WHERE ${where}`);
+          }
+        }
+        this.sql.exec(
+          `INSERT INTO _directory_copy_tables (ord, name, ddl, columns, reference, horizon, row_count) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          ord, name, sql, JSON.stringify(columns), reference ?? null, horizon, rowCount,
+        );
       });
       return { cursor: { copyId, ord: 0, after: 0 }, tables: defs.length };
     });

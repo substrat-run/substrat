@@ -140,8 +140,9 @@ export interface DirectoryBackupStore {
    * Start writing one copy a page at a time (#2868): the directory outgrew being held as one
    * value. Pages go in order from 0, and `commit` makes the copy listed and readable, durable
    * before it returns. A copy that is never committed is never listed; `discard` drops its pages.
+   * `bookmark` (#3325) is the directory's PITR bookmark at the copy's instant, listed with it.
    */
-  begin(input: { capturedAt: string }): DirectoryBackupWriter;
+  begin(input: { capturedAt: string; bookmark?: string }): DirectoryBackupWriter;
   /** Every directory copy held, newest first. */
   list(): Promise<DirectoryBackup[]>;
   /** One copy's dump, by its capture time, its pages joined. Null when no such copy is held. */
