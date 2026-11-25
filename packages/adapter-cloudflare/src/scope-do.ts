@@ -521,6 +521,7 @@ import type {
 import { createDoTupleChecker, createLocalControlPlaneReader, scopeTupleReader, type ControlPlaneReader } from './checker.js';
 import { settlePlatformRequestIn, type PlatformRequestSettle } from '@substrat-run/kernel';
 import { loadDropsRowsOf, SCOPE_COPY_LEASE_MS, ulidTime } from '@substrat-run/kernel';
+import { SCOPE_WAKE_KEY, kickControlPlane, runWake, wakeAfterCommit, wakeDueAt, type CommitWork, type ScopeWakeState, type WakeWork } from './scope-wake.js';
 import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertSpineTablesBuilt, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, CLEAN_ROOM_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 import { GRANT_CHILDREN_INDEX_DDL, SHAPE_MARKER_INDEX_DDL, grantedEntitiesForContext, type ShapeCursor } from '@substrat-run/kernel';
 
@@ -572,6 +573,14 @@ export interface ScopeDoEnv {
   SUBSTRAT_VERTICAL?: string;
   /** #3316: `live` on the serving script, `preview` on a version's own script, as the upload says. */
   SUBSTRAT_SCRIPT_KIND?: string;
+  /**
+   * K-69: the control plane's origin and the platform secret, injected into every pushed vertical.
+   * With both, a scope that commits work for the platform (a pending intent, an unshipped event)
+   * arms its alarm and asks for its own drain (`scope-wake.ts`). Without them nothing is armed: a
+   * self-host or a test worker leaves the work to its sweep, as before.
+   */
+  CONTROL_PLANE_URL?: string;
+  PLATFORM_SECRET?: string;
 }
 
 interface RegisteredModule {
@@ -4181,14 +4190,94 @@ export function defineScopeDO(
         if (s.expiresAt !== undefined && (earliest === undefined || s.expiresAt < earliest)) earliest = s.expiresAt;
       }
       if (earliest === undefined) return;
-      const at = Date.parse(earliest);
+      await this.armAlarmBy(Date.parse(earliest));
+    }
+
+    /** The one alarm, moved only earlier: every user of it arms through here (#938, K-69). */
+    private async armAlarmBy(at: number): Promise<void> {
       const current = await this.ctx.storage.getAlarm();
       if (current === null || current > at) await this.ctx.storage.setAlarm(at);
     }
 
-    /** The live reaper's alarm (#938): close what has expired, then arm for what is next. */
+    /**
+     * The scope's alarm, shared by its two users: the live reaper (#938) closes what has expired, and
+     * the scope's wake (K-69, `scope-wake.ts`) asks for the drains its pending work is waiting on.
+     * Each re-arms for what it has next, earliest wins.
+     */
     async alarm(): Promise<void> {
       await this.armLiveExpiry();
+      await this.runScopeWake();
+    }
+
+    /** K-69: a scope with the control plane's origin and secret asks for its own drains. */
+    private wakeTransport(): { controlPlaneUrl: string; secret: string } | null {
+      const url = this.env.CONTROL_PLANE_URL;
+      const secret = this.env.PLATFORM_SECRET;
+      return url && secret ? { controlPlaneUrl: url, secret } : null;
+    }
+
+    /**
+     * K-69: what a commit left for the platform, read by index (`CommitWork`): the newest intent by
+     * primary key, and whether an emitted event waits unshipped, by `_substrat_outbox_drained`.
+     */
+    private commitWork(): CommitWork {
+      const newest = this.sql
+        .exec('SELECT id FROM _substrat_platform_requests ORDER BY id DESC LIMIT 1')
+        .toArray()[0] as { id: string } | undefined;
+      const undrained = this.sql
+        .exec(`SELECT 1 AS one FROM _substrat_outbox WHERE drained_at IS NULL AND ${emittedHere()} LIMIT 1`)
+        .toArray();
+      return { newestIntent: newest?.id ?? null, undrainedEvents: undrained.length > 0 };
+    }
+
+    /** K-69: at the alarm, also whether any intent is still pending — the drain's own listing scans the same rows. */
+    private wakeWork(): WakeWork {
+      const pending = this.sql
+        .exec(`SELECT 1 AS one FROM _substrat_platform_requests WHERE status = 'pending' LIMIT 1`)
+        .toArray();
+      return { ...this.commitWork(), pendingIntents: pending.length > 0 };
+    }
+
+    /**
+     * K-69: after a commit, arm the scope's wake for the work it left. Never fails the commit it
+     * follows: a wake not armed costs latency, and the pass (or its check) is the backstop.
+     */
+    private async noteScopeWake(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+      if (!this.wakeTransport()) return;
+      try {
+        const prior = (await this.ctx.storage.get<ScopeWakeState>(SCOPE_WAKE_KEY)) ?? null;
+        const next = wakeAfterCommit(prior, { tenantId, scopeId }, this.commitWork(), Date.now());
+        if (!next) return;
+        await this.ctx.storage.put(SCOPE_WAKE_KEY, next);
+        const at = wakeDueAt(next);
+        if (at !== null) await this.armAlarmBy(at);
+      } catch (err) {
+        console.error('substrat: scope wake not armed after commit; the pass is the backstop', err);
+      }
+    }
+
+    /** K-69: the wake's half of the alarm. Never throws: a thrown alarm is retried by the runtime. */
+    private async runScopeWake(): Promise<void> {
+      const transport = this.wakeTransport();
+      try {
+        const state = (await this.ctx.storage.get<ScopeWakeState>(SCOPE_WAKE_KEY)) ?? null;
+        if (!state) return;
+        if (!transport) {
+          // The binding went away (a re-upload without it): nothing can be asked, so nothing is kept.
+          await this.ctx.storage.delete(SCOPE_WAKE_KEY);
+          return;
+        }
+        const next = await runWake(state, Date.now(), () => this.wakeWork(), (body) => kickControlPlane(transport, body));
+        if (!next) {
+          await this.ctx.storage.delete(SCOPE_WAKE_KEY);
+          return;
+        }
+        await this.ctx.storage.put(SCOPE_WAKE_KEY, next);
+        const at = wakeDueAt(next);
+        if (at !== null) await this.armAlarmBy(at);
+      } catch (err) {
+        console.error('substrat: scope wake failed; the pass is the backstop', err);
+      }
     }
 
     /** The context a live subscriber's checks run in: its own principal, under `live.subscribe`. */
@@ -4327,6 +4416,8 @@ export function defineScopeDO(
       invocationId: string | null,
     ): Promise<void> {
       await this.dispatch(tenantId, scopeId, invocationId);
+      // K-69: after the consumers, whose own emits and intents count too.
+      await this.noteScopeWake(tenantId, scopeId);
       if (liveSince === null) return;
       try {
         await this.fanOutLive(liveSince, tenantId, scopeId);

@@ -79,6 +79,8 @@ declare namespace Cloudflare {
     WAKE_VERSION_SCOPE: DurableObjectNamespace;
     METERED_SCOPE: DurableObjectNamespace;
     UNMETERED_SCOPE: DurableObjectNamespace;
+    /** K-69: scopes that wake themselves for their pending work — scope-wake.test.ts. */
+    WAKE_SCOPE: DurableObjectNamespace;
     /** #2498: a real R2 bucket for the streamed upload — attachment-stream.test.ts. */
     STREAM_BUCKET: R2Bucket;
   }

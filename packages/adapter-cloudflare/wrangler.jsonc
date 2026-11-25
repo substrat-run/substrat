@@ -95,6 +95,8 @@
       { "name": "WAKE_VERSION_SCOPE", "class_name": "WakeVersionScopeDO" },
       { "name": "METERED_SCOPE", "class_name": "MeteredScopeDO" },
       { "name": "UNMETERED_SCOPE", "class_name": "UnmeteredScopeDO" },
+      // K-69: scopes that wake themselves for their pending work — scope-wake.test.ts.
+      { "name": "WAKE_SCOPE", "class_name": "WakeScopeDO" },
       // #2209: the scope-store door's same-script counter. The cross-script binding is the spike's.
       { "name": "SUBSTRAT_STORE_GRAPH", "class_name": "ScopeStoreCounterDO" },
       // #1686: vertical-auth's real identity directory, for the owner claim link suite — the
@@ -214,6 +216,10 @@
     {
       "tag": "v26",
       "new_sqlite_classes": ["WakeVersionScopeDO"]
+    },
+    {
+      "tag": "v27",
+      "new_sqlite_classes": ["WakeScopeDO"]
     }
   ],
   // #3395: the routing read model's namespace, seen by RoutesControlPlaneDO alone (as `ROUTES`).

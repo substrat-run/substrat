@@ -385,6 +385,19 @@ export class MeteredScopeDO extends MeteredBase {
 }
 export const UnmeteredScopeDO = defineScopeDO(contractTestModules, contractTestBareOps);
 
+/**
+ * K-69: a scope given the control plane's origin and the platform secret, as an upload gives every
+ * pushed vertical, so it wakes itself for its pending work (scope-wake.test.ts). The origin is never
+ * reached: the suite answers `fetch` itself.
+ */
+export const WAKE_CONTROL_PLANE_URL = 'https://control-plane.wake.test';
+const WakeBase = defineScopeDO(contractTestModules, contractTestBareOps);
+export class WakeScopeDO extends WakeBase {
+  constructor(ctx: DurableObjectState, env: ScopeDoEnv) {
+    super(ctx, { ...env, CONTROL_PLANE_URL: WAKE_CONTROL_PLANE_URL, PLATFORM_SECRET: 'wake-test-secret' });
+  }
+}
+
 export const NarrowedPeerScopeDO = defineScopeDO([peerModNarrowed], {});
 export const RemovedPeerScopeDO = defineScopeDO([peerModWithoutCaller], {});
 
