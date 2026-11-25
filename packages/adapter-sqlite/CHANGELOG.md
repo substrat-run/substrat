@@ -1,5 +1,23 @@
 # @substrat-run/adapter-sqlite
 
+## 0.211.0
+
+### Minor Changes
+
+- 48f81c6: A hosted vertical's connector deliveries now go out within seconds of the commit, and a large backlog drains instead of being dead-lettered (#3365). Routed connector deliveries have a room of their own (`MAX_PENDING_CONNECTOR_DISPATCHES`), so module intents and sweep reports no longer take their slots. A delivery that finds the room full is no longer counted as an attempt. It stays due, and the scope asks for a drain. The control plane runs a kicked drain in a per-scope object (`PlatformDrainKickDO`) rather than the router's `waitUntil`. The drain re-lists and refills until the backlog is gone, and runs again while more remains. The scope's sweeper pass and a connection being connected or rotated each ask for a drain. Staff can re-drive a failed connector intent or a dead-lettered executor delivery with `POST /tenants/:t/scopes/:s/redrive`, audited as `redriveDelivery`.
+- d909214: A daily stale-scopes report finds the scopes nothing will clean up. Once a UTC day the platform sweep lists, from the directory alone: live scopes whose tenant is not active or whose vertical is gone, active primary scopes no hostname or peer binding reaches, scopes stuck provisioning, forks and previews with no expiry or past an expiry the GC has not reaped, and archived scopes with no archive date. It also lists active primary scopes with no routed request in 30 days, judged from the daily request rollup and only once the rollup covers the window. Each finding keeps when it was first and last seen. Staff read them at `GET /stale-scopes`, and the console lists them on the Scopes page. The report moves nothing. Contracts adds `staleScope`, `staleScopeTake`, `staleScopesReading` and `staleScopeFindingKind`. The kernel adds the `staleScopes` sweep option and the optional `HostAdmin.recordStaleScopes`, `listStaleScopes` and `listStaleScopeTakes`, which both adapters implement.
+
+### Patch Changes
+
+- Updated dependencies [48f81c6]
+- Updated dependencies [f2df1c8]
+- Updated dependencies [d909214]
+- Updated dependencies [ae9dfd2]
+- Updated dependencies [e50545c]
+- Updated dependencies [d4b2c07]
+  - @substrat-run/contracts@0.211.0
+  - @substrat-run/kernel@0.211.0
+
 ## 0.210.0
 
 ### Minor Changes

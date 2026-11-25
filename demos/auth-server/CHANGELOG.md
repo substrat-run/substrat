@@ -1,5 +1,24 @@
 # @substrat-run/demo-auth-server
 
+## 0.22.0
+
+### Minor Changes
+
+- 47d9057: An issuer can delete what has expired: sessions, OAuth access and refresh tokens, sign-in challenges and client-assertion markers, once each is past its expiry plus a grace (`PRUNE_GRACE_HOURS`, 24 by default). Off unless `PRUNE_EXPIRED` is set: `count` logs what would be deleted and deletes nothing, `on` deletes in small batches from the issuer's own timer. A session is kept while any token still names it, and a refresh token while an access token or its rotation window does. Adds `expires_at` indexes to those tables, built once on the first start after the deploy.
+
+### Patch Changes
+
+- Updated dependencies [f059ec8]
+- Updated dependencies [48f81c6]
+- Updated dependencies [f2df1c8]
+- Updated dependencies [d909214]
+- Updated dependencies [ae9dfd2]
+- Updated dependencies [e50545c]
+- Updated dependencies [d4b2c07]
+  - @substrat-run/vertical-host@0.211.0
+  - @substrat-run/contracts@0.211.0
+  - @substrat-run/kernel@0.211.0
+
 ## 0.21.0
 
 ### Minor Changes

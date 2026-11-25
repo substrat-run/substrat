@@ -1,5 +1,29 @@
 # @substrat-run/dashboard
 
+## 0.49.29
+
+### Patch Changes
+
+- 48f81c6: A hosted vertical's connector deliveries now go out within seconds of the commit, and a large backlog drains instead of being dead-lettered (#3365). Routed connector deliveries have a room of their own (`MAX_PENDING_CONNECTOR_DISPATCHES`), so module intents and sweep reports no longer take their slots. A delivery that finds the room full is no longer counted as an attempt. It stays due, and the scope asks for a drain. The control plane runs a kicked drain in a per-scope object (`PlatformDrainKickDO`) rather than the router's `waitUntil`. The drain re-lists and refills until the backlog is gone, and runs again while more remains. The scope's sweeper pass and a connection being connected or rotated each ask for a drain. Staff can re-drive a failed connector intent or a dead-lettered executor delivery with `POST /tenants/:t/scopes/:s/redrive`, audited as `redriveDelivery`.
+- Updated dependencies [f059ec8]
+- Updated dependencies [48f81c6]
+- Updated dependencies [f2df1c8]
+- Updated dependencies [7c0acd7]
+- Updated dependencies [d909214]
+- Updated dependencies [ae9dfd2]
+- Updated dependencies [e50545c]
+- Updated dependencies [d4b2c07]
+  - @substrat-run/vertical-host@0.211.0
+  - @substrat-run/contracts@0.211.0
+  - @substrat-run/kernel@0.211.0
+  - @substrat-run/adapter-cloudflare@0.211.0
+  - @substrat-run/control-plane-api@0.211.0
+  - @substrat-run/connector-fortnox@0.9.3
+  - @substrat-run/engine-invites@0.9.88
+  - @substrat-run/engine-protocol@0.14.11
+  - @substrat-run/control-plane-client@0.9.11
+  - @substrat-run/model-providers@0.5.101
+
 ## 0.49.28
 
 ### Patch Changes

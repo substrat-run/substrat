@@ -1,5 +1,42 @@
 # @substrat-run/control-plane
 
+## 0.19.13
+
+### Patch Changes
+
+- 48f81c6: A hosted vertical's connector deliveries now go out within seconds of the commit, and a large backlog drains instead of being dead-lettered (#3365). Routed connector deliveries have a room of their own (`MAX_PENDING_CONNECTOR_DISPATCHES`), so module intents and sweep reports no longer take their slots. A delivery that finds the room full is no longer counted as an attempt. It stays due, and the scope asks for a drain. The control plane runs a kicked drain in a per-scope object (`PlatformDrainKickDO`) rather than the router's `waitUntil`. The drain re-lists and refills until the backlog is gone, and runs again while more remains. The scope's sweeper pass and a connection being connected or rotated each ask for a drain. Staff can re-drive a failed connector intent or a dead-lettered executor delivery with `POST /tenants/:t/scopes/:s/redrive`, audited as `redriveDelivery`.
+- f2df1c8: The daily directory copy can read its append-only and log tables by reference instead of copying them into a snapshot first (`DIRECTORY_BACKUP_BY_REFERENCE`: `off` by default, `verify`, `on`), and every copy now records the directory's point-in-time-recovery bookmark.
+- 7c0acd7: The Pipelines lake sink now sends each event's `delegation` (the app that acted for the person, or null). The live stream must be recreated from the current stream schema before this is deployed.
+- d909214: A daily stale-scopes report finds the scopes nothing will clean up. Once a UTC day the platform sweep lists, from the directory alone: live scopes whose tenant is not active or whose vertical is gone, active primary scopes no hostname or peer binding reaches, scopes stuck provisioning, forks and previews with no expiry or past an expiry the GC has not reaped, and archived scopes with no archive date. It also lists active primary scopes with no routed request in 30 days, judged from the daily request rollup and only once the rollup covers the window. Each finding keeps when it was first and last seen. Staff read them at `GET /stale-scopes`, and the console lists them on the Scopes page. The report moves nothing. Contracts adds `staleScope`, `staleScopeTake`, `staleScopesReading` and `staleScopeFindingKind`. The kernel adds the `staleScopes` sweep option and the optional `HostAdmin.recordStaleScopes`, `listStaleScopes` and `listStaleScopeTakes`, which both adapters implement.
+- d4b2c07: contracts: the wire envelope's version 2 (`substrat-wire/2`, K-66) adds the caller app, caller scope and actor lines. `verifyWireEnvelope` accepts both versions and refuses a version 2 caller row that does not fit its target (`caller`); signers still send version 1 unless told otherwise. `wireVerifiedCallerOf` reads what a verified version 2 call signed, and `wirePersonActor` binds an `onBehalf` token. The capability record's `envelope` may now be `2`.
+  control-plane-api: the platform entry verifies both versions, hands a verified version 2 call's caller and actor to the vertical in the isolate (never a header), and writes the envelope version on its wire line. An upload records `envelope: 2`; the fleet walk reads an unrecorded script's version from its own entry.
+  vertical-host: `/internal/vertical-invoke` refuses a call whose body disagrees with the caller and actor its verified version 2 envelope signs, a different `onBehalf` token included.
+  control-plane: ships the uploader that gives every pushed version the entry that verifies both envelope versions.
+  contract-tests: the capability record suite accepts `envelope: 2` and refuses a version no entry verifies.
+- Updated dependencies [f059ec8]
+- Updated dependencies [48f81c6]
+- Updated dependencies [f2df1c8]
+- Updated dependencies [7c0acd7]
+- Updated dependencies [d909214]
+- Updated dependencies [ae9dfd2]
+- Updated dependencies [e50545c]
+- Updated dependencies [d4b2c07]
+  - @substrat-run/vertical-host@0.211.0
+  - @substrat-run/contracts@0.211.0
+  - @substrat-run/kernel@0.211.0
+  - @substrat-run/adapter-cloudflare@0.211.0
+  - @substrat-run/control-plane-api@0.211.0
+  - @substrat-run/connector-bolagsverket@0.1.7
+  - @substrat-run/connector-fortnox@0.9.3
+  - @substrat-run/connector-mail-in@0.1.48
+  - @substrat-run/connector-microsoft365@0.0.72
+  - @substrat-run/connector-planima@0.2.108
+  - @substrat-run/connector-scrive@0.15.13
+  - @substrat-run/connector-shopify@0.0.7
+  - @substrat-run/connector-stripe@0.0.13
+  - @substrat-run/connector-woocommerce@0.0.17
+  - @substrat-run/model-providers@0.5.101
+
 ## 0.19.12
 
 ### Patch Changes
