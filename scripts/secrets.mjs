@@ -168,8 +168,8 @@ const MANIFEST = {
       // different halves of a rotation, and only one of them would work.
       // Optional: unset ⇒ neither app carries a support bubble.
       SUPPORT_WIDGET_SECRET: 'SUPPORT_WIDGET_SECRET',
-      // Reads the Tier-2 Iceberg lake with R2 SQL — an R2 "Admin Read only" token,
-      // scoped to substrat-lake. Optional: unset, the plane simply serves no lake
+      // Reads the Tier-2 Iceberg lake with R2 SQL — a read-only token scoped to substrat-lake,
+      // minted by scripts/env-provision.mjs as substrat-<env>-lake-sql. Optional: unset, the plane simply serves no lake
       // query. Set, it is still not enough on its own: the gateway (#1334) also needs the
       // worker's LAKE_BUCKET var, which stays unset until its R2 SQL client is smoke-tested.
       // Read-only on purpose. The catalog's write token is NOT interchangeable with
@@ -358,7 +358,7 @@ const WIRE_KEY_UPLOADER = 'control-plane';
  * as not travelling (secrets/README.md, #862).
  */
 const STORE_ONLY = {
-  R2_LAKE_CATALOG_TOKEN: 'handed to `wrangler pipelines setup` — lives in the pipeline config',
+  R2_LAKE_CATALOG_TOKEN: 'minted by scripts/env-provision.mjs, handed to each lake sink by scripts/lake-provision.mjs — lives in the sink config',
   R2_LAKE_SEND_TOKEN: 'only for a sender outside Workers; the shipper uses a [[pipelines]] binding',
   CF_DEPLOY_TOKEN: 'minted by scripts/env-provision.mjs — what wrangler deploys with, here and in CI',
 };
