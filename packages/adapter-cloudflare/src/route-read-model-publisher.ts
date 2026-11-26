@@ -28,15 +28,19 @@
 import { ROUTE_SCOPE_HOSTNAMES_MAX } from '@substrat-run/contracts';
 import { isPrimaryScopeRow } from '@substrat-run/kernel';
 import {
+  peerCallKeyPart,
   ROUTE_READ_MODEL_VERSION,
   routeKvKey,
   servingPolicyKvKey,
+  type PeerCallEntry,
+  type PeerCallKey,
   type RefusedRouteEntry,
   type RouteEntry,
   type ServingPolicyEntry,
 } from './route-read-model.js';
+import { readPeerCallTarget, type PeerCallTargetRow, type PeerCallTargetSource } from './peer-call-target.js';
 
-type Entry = RouteEntry | RefusedRouteEntry | ServingPolicyEntry;
+type Entry = RouteEntry | RefusedRouteEntry | ServingPolicyEntry | PeerCallEntry;
 
 /** The tables this owns. Excluded from a directory dump, and from a restore's drop. */
 export const ROUTE_READ_MODEL_TABLE_GLOB = 'route_read_model_*';
@@ -133,7 +137,62 @@ const TRIGGERS: Array<[name: string, ddl: string]> = [
   ['rrm_versions_ad', `AFTER DELETE ON vertical_versions BEGIN ${dependentsOfVersion('OLD')} END`],
 ];
 
-export const ROUTE_READ_MODEL_TRIGGERS = TRIGGERS.map(([name]) => name);
+/**
+ * Peer-call answers (`c:<tenant>/…`, #3395 follow-up) are published only once a router asked for
+ * one, so their capture re-dirties only the answers of the changed tenant that are published or
+ * queued: a range of keys, since the tenant leads the key. With no peer answer requested (every
+ * router's `PEER_READ_MODEL` off) these find nothing and append nothing. A queued key counts as well
+ * as a published one, because a flush computes a key, awaits, and only then records it in the
+ * ledger: a change landing in between still finds the key's outbox row and queues it again.
+ *
+ * A peer call is answered inside one tenant (the caller's), so every input of the answer is a row
+ * of that tenant: its scopes (the caller and every candidate), the tenant itself (status, and the
+ * slug the pinned spellings read), its peer bindings, and its scopes' hostnames (residency). The
+ * one input outside a tenant row is a legacy target's own version; its trigger finds the tenants
+ * bound to it. A promote moves the serving policy (`v:`), which no peer entry holds.
+ */
+const peersOfTenantsIn = (tenants: string) => {
+  const range = (t: string, k: string) => `${k}.key >= 'c:' || ${t}.tenant_id || '/' AND ${k}.key < 'c:' || ${t}.tenant_id || '0'`;
+  return append(
+    `SELECT p.key FROM (${tenants}) t JOIN route_read_model_published p ON ${range('t', 'p')}
+     UNION SELECT o.key FROM (${tenants}) t JOIN route_read_model_outbox o ON ${range('t', 'o')}`,
+  );
+};
+const peersOfTenant = (tenant: string) => peersOfTenantsIn(`SELECT ${tenant} AS tenant_id`);
+const peersOfVersion = (row: 'NEW' | 'OLD') =>
+  peersOfTenantsIn(`SELECT DISTINCT tenant_id FROM scopes WHERE vertical_version_id = ${row}.id AND serving_ref IS NULL`);
+
+/** New names, never an edit of a route trigger: `install` creates a trigger only when its name is missing. */
+const PEER_TRIGGERS: Array<[name: string, ddl: string]> = [
+  ['rrm_peer_scopes_ai', `AFTER INSERT ON scopes BEGIN ${peersOfTenant('NEW.tenant_id')} END`],
+  [
+    'rrm_peer_scopes_au',
+    `AFTER UPDATE OF tenant_id, status, serving_ref, vertical_version_id, vertical, kind, forked_from, jurisdiction ON scopes
+     BEGIN ${peersOfTenant('OLD.tenant_id')} ${peersOfTenant('NEW.tenant_id')} END`,
+  ],
+  ['rrm_peer_scopes_ad', `AFTER DELETE ON scopes BEGIN ${peersOfTenant('OLD.tenant_id')} END`],
+  ['rrm_peer_tenants_ai', `AFTER INSERT ON tenants BEGIN ${peersOfTenant('NEW.tenant_id')} END`],
+  ['rrm_peer_tenants_au', `AFTER UPDATE OF status, slug ON tenants BEGIN ${peersOfTenant('NEW.tenant_id')} END`],
+  ['rrm_peer_tenants_ad', `AFTER DELETE ON tenants BEGIN ${peersOfTenant('OLD.tenant_id')} END`],
+  ['rrm_peer_bindings_ai', `AFTER INSERT ON peer_bindings BEGIN ${peersOfTenant('NEW.tenant_id')} END`],
+  ['rrm_peer_bindings_au', `AFTER UPDATE ON peer_bindings BEGIN ${peersOfTenant('OLD.tenant_id')} ${peersOfTenant('NEW.tenant_id')} END`],
+  ['rrm_peer_bindings_ad', `AFTER DELETE ON peer_bindings BEGIN ${peersOfTenant('OLD.tenant_id')} END`],
+  ['rrm_peer_hostnames_ai', `AFTER INSERT ON hostnames BEGIN ${peersOfTenant('NEW.tenant_id')} END`],
+  [
+    'rrm_peer_hostnames_au',
+    `AFTER UPDATE OF tenant_id, scope_id, region, status ON hostnames
+     BEGIN ${peersOfTenant('OLD.tenant_id')} ${peersOfTenant('NEW.tenant_id')} END`,
+  ],
+  ['rrm_peer_hostnames_ad', `AFTER DELETE ON hostnames BEGIN ${peersOfTenant('OLD.tenant_id')} END`],
+  ['rrm_peer_versions_ai', `AFTER INSERT ON vertical_versions BEGIN ${peersOfVersion('NEW')} END`],
+  ['rrm_peer_versions_au', `AFTER UPDATE OF id, deployment_ref, manifest_json ON vertical_versions BEGIN ${peersOfVersion('OLD')} ${peersOfVersion('NEW')} END`],
+  ['rrm_peer_versions_ad', `AFTER DELETE ON vertical_versions BEGIN ${peersOfVersion('OLD')} END`],
+];
+
+/** Every published or queued peer-call key: `c:` up to the next character, `;`. */
+const ALL_PEER_KEYS = `key >= 'c:' AND key < 'c;'`;
+
+export const ROUTE_READ_MODEL_TRIGGERS = [...TRIGGERS, ...PEER_TRIGGERS].map(([name]) => name);
 
 /** The route read, as the read model stores it: the same joins and gates as `READ_ROUTE_SQL`. */
 const ROUTE_ENTRY_SQL = `SELECT h.tenant_id, h.scope_id, h.vertical_slug, h.surface, h.region, s.jurisdiction,
@@ -184,8 +243,28 @@ const REFUSED_ROUTE_SQL = `SELECT h.region, s.jurisdiction FROM hostnames h
 // does not know the source moved.
 // ---------------------------------------------------------------------------
 
-/** The read model's own key for an entry: `h:<hostname>` for a route, `v:<slug>` for a policy. */
-export type RouteReadModelKey = `h:${string}` | `v:${string}`;
+/**
+ * The read model's own key for an entry: `h:<hostname>` for a route, `v:<slug>` for a policy,
+ * `c:<tenant>/<caller scope>/<caller vertical>/<target>` for a peer-call answer.
+ */
+export type RouteReadModelKey = `h:${string}` | `v:${string}` | `c:${string}`;
+export const peerCallEntryKey = (k: PeerCallKey): RouteReadModelKey => `c:${peerCallKeyPart(k)}`;
+
+/** A `c:` key back into what it is keyed by; undefined for one this code did not write. */
+function peerCallKeyOf(key: string): PeerCallKey | undefined {
+  const parts = key.slice(2).split('/');
+  if (parts.length !== 4 || parts.some((p) => p === '')) return undefined;
+  try {
+    return {
+      tenantId: parts[0]!,
+      callerScopeId: parts[1]!,
+      callerVertical: decodeURIComponent(parts[2]!),
+      vertical: decodeURIComponent(parts[3]!),
+    };
+  } catch {
+    return undefined;
+  }
+}
 export const routeEntryKey = (hostname: string): RouteReadModelKey => `h:${hostname}`;
 export const servingPolicyEntryKey = (slug: string): RouteReadModelKey => `v:${slug}`;
 
@@ -258,6 +337,32 @@ export function servingPolicyEntryOf(f: { serving_ref: string | null } & PolicyF
     outbound_json: f.outbound_json,
     calls_json: f.calls_json,
     scope_stores_json: f.scope_stores_json,
+  };
+}
+
+/**
+ * A peer-call answer's entry, from the directory's own answer (`readPeerCallTarget`): published only
+ * when the router would DISPATCH it, and never when either scope is residency-pinned (K-36). Null
+ * otherwise, so every refusal and every pinned call is answered by the source.
+ */
+export function peerCallEntryOf(
+  key: PeerCallKey,
+  read: { row: PeerCallTargetRow; source: PeerCallTargetSource },
+): PeerCallEntry | null {
+  const { row, source } = read;
+  const t = row.target;
+  if (source.pinned || row.caller.state !== 'ok' || row.outcome !== 'resolved') return null;
+  if (!t || !source.target || t.vertical === null || !t.deployment_ref) return null;
+  // The router refuses a self-call (#2252), so it is no dispatch to publish.
+  if (t.scope_id === key.callerScopeId) return null;
+  const dispatch: PeerCallEntry['target']['dispatch'] = source.target.serving_ref !== null
+    ? { kind: 'serving', ref: source.target.serving_ref }
+    : { kind: 'version', ref: t.deployment_ref, outbound_json: t.outbound_json, calls_json: t.calls_json };
+  return {
+    v: ROUTE_READ_MODEL_VERSION,
+    peer: true,
+    caller_tenant_slug: row.caller.tenantSlug,
+    target: { scope_id: t.scope_id, tenant_id: t.tenant_id, vertical: t.vertical, dispatch },
   };
 }
 
@@ -371,6 +476,11 @@ export function computeRouteReadModelEntry(sql: Sql, key: string): Entry | null 
       scopeHasPinnedHostname: Number(r['scope_has_pinned']) === 1,
     });
   }
+  if (key.startsWith('c:')) {
+    const peer = peerCallKeyOf(key);
+    if (!peer) return null;
+    return peerCallEntryOf(peer, readPeerCallTarget(sql, peer.tenantId, peer.callerScopeId, peer.callerVertical, peer.vertical));
+  }
   if (key.startsWith('v:')) {
     const r = sql.exec(SERVING_POLICY_SQL, key.slice(2)).toArray()[0] as Record<string, unknown> | undefined;
     if (!r) return null;
@@ -384,7 +494,12 @@ export function computeRouteReadModelEntry(sql: Sql, key: string): Entry | null 
   return null;
 }
 
-const kvKeyOf = (key: string): string => (key.startsWith('h:') ? routeKvKey(key.slice(2)) : servingPolicyKvKey(key.slice(2)));
+const kvKeyOf = (key: string): string =>
+  key.startsWith('h:')
+    ? routeKvKey(key.slice(2))
+    : key.startsWith('c:')
+      ? `route/v${ROUTE_READ_MODEL_VERSION}/c/${key.slice(2)}`
+      : servingPolicyKvKey(key.slice(2));
 
 async function digestOf(text: string): Promise<string> {
   const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
@@ -415,6 +530,8 @@ export interface RouteReadModelStatus {
   /** Active hostnames it holds nothing for, left to the directory: pinned, or naming a pinned sibling (K-36). */
   pinned: number;
   verticals: number;
+  /** Peer-call answers published (published only on a router's request). */
+  peerCalls: number;
 }
 
 const FLUSH_BATCH = 100;
@@ -446,6 +563,16 @@ export class RouteReadModelPublisher {
       this.sql.exec(`CREATE TRIGGER IF NOT EXISTS ${name} ${ddl}`);
       fresh = true;
     }
+    // The peer triggers arrived after the route ones. Adding them to a directory whose routes are
+    // already published must not re-mark every route: only the peer answers (none, the first time)
+    // could have missed a change while they were absent.
+    let peerFresh = false;
+    for (const [name, ddl] of PEER_TRIGGERS) {
+      if (present.has(name)) continue;
+      this.sql.exec(`CREATE TRIGGER IF NOT EXISTS ${name} ${ddl}`);
+      peerFresh = true;
+    }
+    if (peerFresh && !fresh) this.sql.exec(append(`SELECT key FROM route_read_model_published WHERE ${ALL_PEER_KEYS}`));
     return fresh;
   }
 
@@ -478,6 +605,22 @@ export class RouteReadModelPublisher {
     for (const key of keys) {
       const known = this.sql.exec('SELECT 1 FROM route_read_model_published WHERE key = ?', key).toArray().length > 0;
       if (!known) this.sql.exec('INSERT INTO route_read_model_outbox (key) VALUES (?)', key);
+    }
+  }
+
+  /**
+   * The router's peer-call miss (`peerCallTarget(…, { publish: true })`): queue the answer, and its
+   * target's serving policy, when the answer dispatches and is not published already. A refusal or a
+   * pinned call has no entry to publish, so queueing it would buy nothing.
+   */
+  requestPeerPublish(key: PeerCallKey, read: { row: PeerCallTargetRow; source: PeerCallTargetSource }): void {
+    const entry = peerCallEntryOf(key, read);
+    if (!entry) return;
+    const keys: string[] = [peerCallEntryKey(key)];
+    if (entry.target.dispatch.kind === 'serving') keys.push(servingPolicyEntryKey(entry.target.vertical));
+    for (const k of keys) {
+      const known = this.sql.exec('SELECT 1 FROM route_read_model_published WHERE key = ?', k).toArray().length > 0;
+      if (!known) this.sql.exec('INSERT INTO route_read_model_outbox (key) VALUES (?)', k);
     }
   }
 
@@ -647,6 +790,7 @@ export class RouteReadModelPublisher {
       refused,
       pinned: n(`SELECT COUNT(*) AS n FROM hostnames WHERE status = 'active'`) - routable - refused,
       verticals: n('SELECT COUNT(*) AS n FROM verticals'),
+      peerCalls: n(`SELECT COUNT(*) AS n FROM route_read_model_published WHERE ${ALL_PEER_KEYS}`),
     };
   }
 }

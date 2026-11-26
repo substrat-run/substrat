@@ -106,6 +106,36 @@ the cost from growing with a hot tenant. Publishing writes only on change ($5 pe
 directory, log every disagreement and miss) or `on`. The control plane's binding and the backfill
 ship before the router reads.
 
+**Peer-call answers (follow-up, behind their own switch).** A peer call's directory read
+(`peerCallTarget`: may this caller call that vertical, and which instance answers) is published
+too, as `route/v1/c/<tenant>/<caller scope>/<caller vertical>/<target>`, by the same writer and
+ledger. Only an answer the router would **dispatch** is published. Every refusal has no entry and is
+the directory's, read at the call: a caller that is not live, not primary or not that vertical, a
+target that is not installed, ambiguous, bound to a gone instance, undeployed, or the caller itself.
+A target on a stable serving script takes its outbound hosts and calls from `v/<slug>`, so a
+promote moves no peer entry. An answer is published only after a router asked for it, so there is
+no backfill, and the triggers on the tenant's rows re-dirty only that tenant's published or queued
+answers: with no router asking, they append nothing. Neither scope may be residency-pinned (K-36):
+a caller or target whose jurisdiction pins storage, or which holds a pinned hostname, is answered
+by the directory.
+
+The bound is the routes' split. A **revocation** (the caller or its tenant suspended, the target
+suspended, the binding moved, a second instance installed) reaches a router that read the answer
+in about four minutes, inside D-77's five. The gates that read only the dispatch parameters (the
+chain's depth and the caller's declared `calls`) never read the read model, and neither does the
+target's door (#1714), which decides what the peer may do. Where the vertical's kernel has #1713, a
+suspended scope refuses at its own door first, whichever side of the call it is on. Where it does
+not, the router's check is the line, and it holds within the same four minutes. No check on this
+path needs a tighter bound than D-77's, so none was kept on the directory. A grant of new reach (a suspension lifted, a target installed) is never held up by
+the edge, since no refusal is published; the directory answers it, and an isolate keeps a refused
+answer 60 s. Store calls need nothing: the stores a call may reach come from the dispatch
+parameters the route set, so they already follow `ROUTE_READ_MODEL`.
+
+The router reads peer answers only under `PEER_READ_MODEL` (`off` by default, `compare`, `on`),
+not `ROUTE_READ_MODEL`, because routes already read the read model in production and sharing their
+switch would move every peer call at deploy. In `compare` the directory serves and is asked to
+publish, since an answer exists only once asked for.
+
 ## Why
 
 **The object cannot be on every request at the target scale.** One single-threaded object, in one
@@ -158,7 +188,8 @@ has, which a ledger restored from the dump would have hidden.
   all, inside D-77's five. Shorter costs more KV reads (the table above). The constants are
   `ROUTE_MEMORY_TTL_MS`, `ROUTE_NEGATIVE_TTL_MS` and `ROUTE_KV_CACHE_TTL_S`
   (`packages/adapter-cloudflare/src/route-read-model.ts`).
-- **Peer-call and store-call targets** still read the directory on every call (~5,000 a week
-  today). The same read model can serve them in a follow-up.
+- **Peer-call answers** read the directory on every call (~5,000 a week) until
+  `PEER_READ_MODEL` is turned on: `compare` in test, then prod, then `on`. Store calls follow
+  `ROUTE_READ_MODEL` already.
 - **When to turn it on:** `compare` in test, then prod, then `on`, after the backfill reports an
   empty outbox.

@@ -22,6 +22,7 @@ import {
   createRouteResolver,
   RouteMemoryCache,
   routeReadModelModeOf,
+  type PeerReadModelOptions,
   type RouteResolver,
 } from '@substrat-run/adapter-cloudflare/routing';
 import {
@@ -84,6 +85,12 @@ export interface Env {
    * reads memory → KV → the directory. A deployment var, so it changes without a code deploy.
    */
   ROUTE_READ_MODEL?: string;
+  /**
+   * How peer-call answers are read (#3395 follow-up, K-72): the same three values as
+   * `ROUTE_READ_MODEL`, and off unless set. Its own switch because routes already read the read
+   * model in production: sharing theirs would move every peer call the moment this deployed.
+   */
+  PEER_READ_MODEL?: string;
   /**
    * Shared secret presented to every vertical as `x-substrat-router`.
    *
@@ -390,6 +397,21 @@ const resolverFor = (env: Env, ctx?: ExecutionContext): RouteResolver => {
     mode,
     ...(ctx ? { waitUntil: (p: Promise<unknown>) => ctx.waitUntil(p) } : {}),
   });
+};
+
+/**
+ * The peer resolver's read-model options, or none when `PEER_READ_MODEL` is off (#3395 follow-up).
+ * Shares the routes' memory: a vertical's serving policy read for a route serves its peer calls too.
+ */
+const peerReadModelOf = (env: Env, ctx?: { waitUntil(promise: Promise<unknown>): void }): PeerReadModelOptions | undefined => {
+  const mode = routeReadModelModeOf(env.PEER_READ_MODEL);
+  if (mode === 'off' || !env.ROUTES) return undefined;
+  return {
+    kv: env.ROUTES,
+    cache: routeMemory,
+    mode,
+    ...(ctx ? { waitUntil: (p: Promise<unknown>) => ctx.waitUntil(p) } : {}),
+  };
 };
 
 /**
@@ -821,6 +843,8 @@ export async function handlePeerCall(
    * it decides nothing here. #3368: and the calling request's `traceparent`, continued below.
    */
   rawContext?: unknown,
+  /** The entrypoint's execution context: `PEER_READ_MODEL=compare` reads the read model in its `waitUntil`. */
+  ctx?: { waitUntil(promise: Promise<unknown>): void },
 ): Promise<PeerCallOutcome> {
   const secret = env.PLATFORM_SECRET;
   if (!secret) {
@@ -832,7 +856,7 @@ export async function handlePeerCall(
   }
   const caller: PeerCaller = peerCaller.parse(rawCaller);
   const request = peerCallRequest.parse(rawRequest);
-  const decision = await createPeerCallResolver(env.CONTROL_PLANE)(caller, request.vertical);
+  const decision = await createPeerCallResolver(env.CONTROL_PLANE, peerReadModelOf(env, ctx))(caller, request.vertical);
   if (decision.outcome === 'refused') {
     return {
       ok: false,

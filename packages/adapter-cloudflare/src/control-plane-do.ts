@@ -292,6 +292,7 @@ import {
   type RouteReadModelFlush,
   type RouteReadModelStatus,
 } from './route-read-model-publisher.js';
+import { readPeerCallTarget, type PeerCallTargetRow } from './peer-call-target.js';
 import type {
   AdminLogEntry,
   OnBehalfOf,
@@ -538,31 +539,8 @@ export const READ_ROUTE_SQL = `SELECT h.tenant_id, h.scope_id, h.vertical_slug, 
           WHERE h.hostname = ? AND h.status = 'active'
             AND s.status = 'active' AND t.status = 'active'`;
 
-/** One candidate instance of a vertical in a tenant (#1706), with what it dispatches as. */
-export interface PeerCandidateRow {
-  scope_id: string;
-  tenant_id: string;
-  vertical: string | null;
-  status: string;
-  kind: string | null;
-  forked_from: string | null;
-  deployment_ref: string | null;
-  outbound_json: string | null;
-  calls_json: string | null;
-}
-
-/** Where the CALLER stands: usable, or the one reason it is not (#1706). */
-export type PeerCallerState = 'ok' | 'unknown' | 'not-primary' | 'inactive';
-
-/** What `peerCallTarget` answers: the caller's standing, and the resolved target (or why not). */
-export interface PeerCallTargetRow {
-  /** `tenantSlug`: the directory's slug for the caller's tenant (#2252), for the target's door. */
-  caller: { state: PeerCallerState; status: string | null; tenantSlug: string | null };
-  outcome: 'resolved' | 'not-installed' | 'ambiguous' | 'bound-unavailable';
-  /** How many live instances, when `ambiguous`. Zero otherwise. */
-  count: number;
-  target: PeerCandidateRow | null;
-}
+// #1706: the peer-call read lives beside the read model that publishes from it (#3395).
+export type { PeerCallTargetRow, PeerCallerState, PeerCandidateRow } from './peer-call-target.js';
 
 export interface VerticalRow {
   slug: string;
@@ -4093,101 +4071,33 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /**
-   * Everything the router needs to place ONE peer call (#1706), in one round trip: the
-   * CALLER's own scope record, and the target instance of `vertical` in that tenant with the
-   * script and dispatch parameters that instance runs under.
+   * Everything the router needs to place ONE peer call (#1706), in one round trip: the CALLER's
+   * own scope record, and the target instance of `vertical` in that tenant with the script and
+   * dispatch parameters that instance runs under (`readPeerCallTarget`, which the routing read
+   * model publishes from too).
    *
-   * One directory RPC and two SQL reads, because this sits on a request path. The binding
-   * and the tenant's slug join the caller read, so even an unbound singleton adds no round
-   * trip. The caller's record is what decides whether it may call at all — live, primary, and
-   * the vertical it claims — and it is read HERE rather than inferred from routing, so this
-   * path does not inherit #1713.
-   * The target side applies the kernel's one rule (`resolvePeerInstanceFrom`), the same
-   * rule the pure host and the local broker apply.
+   * `publish` (#3395, K-72) is the router's read-model miss: a dispatchable answer is queued for
+   * publishing unless it is published already. A directory that predates it ignores the argument.
+   * The answer is the same either way.
    */
   peerCallTarget(
     tenantId: string,
     callerScopeId: string,
     callerVertical: string,
     vertical: string,
+    opts?: { publish?: boolean },
   ): PeerCallTargetRow {
-    const caller = this.sql
-      .exec(
-        `SELECT s.tenant_id, s.vertical, s.status, s.kind, s.forked_from,
-                t.status AS tenant_status, pb.target_scope_id AS bound_target_scope_id,
-                pb.invalidated AS binding_invalidated,
-                (SELECT slug FROM tenants WHERE tenant_id = ?) AS peer_tenant_slug
-           FROM scopes s
-           LEFT JOIN tenants t ON t.tenant_id = s.tenant_id
-           LEFT JOIN peer_bindings pb ON pb.tenant_id = s.tenant_id
-             AND pb.caller_scope_id = s.scope_id AND pb.vertical = ?
-          WHERE s.scope_id = ?`,
-        tenantId,
-        vertical,
-        callerScopeId,
-      )
-      .toArray()[0] as
-      | { tenant_id: string; vertical: string | null; status: string; tenant_status: string | null; kind: string | null; forked_from: string | null; bound_target_scope_id: string | null; binding_invalidated: number | null; peer_tenant_slug: string | null }
-      | undefined;
-    // No caller row is refused below ('unknown'); its candidates are then read exactly.
-    const tenant: PeerTenant = { id: tenantId as TenantId, slug: caller?.peer_tenant_slug ?? null };
-    const candidates = this.sql
-      .exec(
-        `SELECT s.scope_id, s.tenant_id, s.vertical, s.status, s.kind, s.forked_from,
-                COALESCE(s.serving_ref, vv.deployment_ref) AS deployment_ref,
-                CASE WHEN s.serving_ref IS NOT NULL
-                     THEN json_extract(sv.manifest_json, '$.outbound')
-                     ELSE json_extract(vv.manifest_json, '$.outbound') END AS outbound_json,
-                CASE WHEN s.serving_ref IS NOT NULL
-                     THEN json_extract(sv.manifest_json, '$.calls')
-                     ELSE json_extract(vv.manifest_json, '$.calls') END AS calls_json
-           FROM scopes s
-           LEFT JOIN vertical_versions vv ON vv.id = s.vertical_version_id
-           LEFT JOIN verticals vr ON vr.slug = s.vertical
-           LEFT JOIN vertical_versions sv ON sv.id = vr.serving_version_id
-          WHERE s.tenant_id = ? AND s.vertical IN (SELECT value FROM json_each(?))`,
-        tenantId,
-        JSON.stringify(peerVerticalSpellings(vertical, tenant.slug)),
-      )
-      .toArray() as unknown as PeerCandidateRow[];
-    const resolution = resolvePeerInstanceFrom(
-      candidates.map((r) => ({
-        id: r.scope_id as ScopeId,
-        tenantId: r.tenant_id as TenantId,
-        vertical: r.vertical,
-        status: r.status as ScopeStatus,
-        kind: r.kind ?? '',
-        forkedFrom: (r.forked_from as ScopeId | null) ?? null,
-      })),
-      tenant,
-      vertical,
-      (caller?.bound_target_scope_id as ScopeId | undefined) ?? null,
-      caller?.binding_invalidated === 1,
-    );
-    const target =
-      resolution.outcome === 'resolved'
-        ? (candidates.find((r) => r.scope_id === resolution.instance.scopeId) ?? null)
-        : null;
-    // The caller's own state, decided HERE — this DO already applies the kernel's one rule
-    // for the target, and the router must not carry a second copy of "what is primary".
-    const callerState: PeerCallerState = !caller || caller.tenant_id !== tenantId || !samePeerVertical(caller.vertical, callerVertical, tenant.slug)
-      ? 'unknown'
-      : !isPrimaryScopeRow(caller)
-        ? 'not-primary'
-        : caller.status !== 'active' || caller.tenant_status !== 'active'
-          ? 'inactive'
-          : 'ok';
-    return {
-      caller: {
-        state: callerState,
-        status: caller?.tenant_status !== 'active' ? `tenant ${caller?.tenant_status ?? 'unknown'}` : caller.status,
-        // The directory's own, for the tenant this call was authenticated in.
-        tenantSlug: tenant.slug,
-      },
-      outcome: resolution.outcome,
-      count: resolution.outcome === 'ambiguous' ? resolution.count : 0,
-      target,
-    };
+    const read = readPeerCallTarget(this.sql, tenantId, callerScopeId, callerVertical, vertical);
+    if (opts?.publish === true && this.routePublisher) {
+      // Optional, as `readRoute`'s: a fill that cannot be queued must not fail a read that succeeded.
+      // This method's own return starts the flush (`kickRouteReadModelAfterEveryCall`).
+      try {
+        this.routePublisher.requestPeerPublish({ tenantId, callerScopeId, callerVertical, vertical }, read);
+      } catch (err) {
+        console.error('route read model: could not queue a peer-call miss for publishing', err);
+      }
+    }
+    return read.row;
   }
 
   /**

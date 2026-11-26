@@ -44,7 +44,7 @@ import { defineKickCoalescerDO } from '../src/kick-coalescer-do.js';
 import { defineConnectionSweepDO } from '../src/connection-sweep-do.js';
 import { defineCopyJobDO, type CopyJobDoRecord, type CopyJobStep } from '../src/copy-job-do.js';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
-import { createReadModelRouteResolver, RouteMemoryCache } from '../src/route-resolver.js';
+import { createPeerCallResolver, createReadModelRouteResolver, RouteMemoryCache } from '../src/route-resolver.js';
 import { DurableObject } from 'cloudflare:workers';
 import { wipedCopyMod } from './wiped-copy-module.js';
 
@@ -812,6 +812,17 @@ export default {
         mode: 'on',
       });
       return Response.json((await resolve(url.searchParams.get('host') ?? '')) ?? null);
+    }
+    // #3395 follow-up: the router's peer resolver on the read model, driven by real requests
+    // (peer-read-model.test.ts). The caller is the query's JSON, as egress would hand it.
+    if (url.pathname === '/peer-read-model') {
+      const caller = JSON.parse(url.searchParams.get('caller') ?? '{}') as Parameters<ReturnType<typeof createPeerCallResolver>>[0];
+      const resolve = createPeerCallResolver(env['ROUTES_CONTROL_PLANE'] as DurableObjectNamespace, {
+        kv: env['TEST_ROUTES'] as KVNamespace,
+        cache: routeMemory,
+        mode: 'on',
+      });
+      return Response.json(await resolve(caller, url.searchParams.get('target') ?? ''));
     }
     // A response whose headers arrive and whose body then never does: what a stalled provider looks
     // like to `deadlineFetch` (#2518), over workerd's own `fetch` and its own abort.
