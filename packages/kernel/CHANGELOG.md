@@ -1,5 +1,12 @@
 # @substrat-run/kernel
 
+## 0.215.0
+
+### Minor Changes
+
+- 291c401: The platform's own bookkeeping reads during a scheduled pass are recorded as one access-log row per pass instead of one per read (K-73, amends K-24; #3326), and the directory's access log now ships to the lake by default alongside the admin log.
+- 27b025e: A hosted scope with work for the platform now wakes itself (K-69, step 4 of the tenant-scale RFC). After a commit that enqueues a platform intent or leaves an event unshipped, the scope arms its alarm and asks the control plane for its own drain, within seconds for an intent and within five minutes for the lake. While the work stays, it looks again on a back-off capped at 15 minutes. A scope with nothing pending arms nothing, so an idle scope costs no request. The control plane's `SCOPE_WAKE_PHASES` (`platform-requests`, `events`, unset by default) hands each phase to the scopes: the per-scope drain object then ships the scope's events to the lake too, and the scheduled pass only checks, leaving work younger than an hour to its scope and draining older work as before. Each check is logged as `scope-wake-check`. A kick to a `defineKickCoalescerDO` object may name what it wants, and its pass is handed the union (`KickWants`); a pass's `more` may name the part that had more. The scope's drain object uses it so a lake-only drain runs no intents. The kernel exports `drainScopeEvents`, the pass's event drain takes `eventDrainCheck`, and the intent drain takes `holdFrom` and reports `leftToScope`.
+
 ## 0.214.0
 
 ### Minor Changes

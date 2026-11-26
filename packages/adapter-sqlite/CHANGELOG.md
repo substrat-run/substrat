@@ -1,5 +1,17 @@
 # @substrat-run/adapter-sqlite
 
+## 0.215.0
+
+### Minor Changes
+
+- 291c401: The platform's own bookkeeping reads during a scheduled pass are recorded as one access-log row per pass instead of one per read (K-73, amends K-24; #3326), and the directory's access log now ships to the lake by default alongside the admin log.
+
+### Patch Changes
+
+- Updated dependencies [291c401]
+- Updated dependencies [27b025e]
+  - @substrat-run/kernel@0.215.0
+
 ## 0.214.0
 
 ### Patch Changes

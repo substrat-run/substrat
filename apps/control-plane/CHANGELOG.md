@@ -1,5 +1,24 @@
 # @substrat-run/control-plane
 
+## 0.19.17
+
+### Patch Changes
+
+- 291c401: The platform's own bookkeeping reads during a scheduled pass are recorded as one access-log row per pass instead of one per read (K-73, amends K-24; #3326), and the directory's access log now ships to the lake by default alongside the admin log.
+- 27b025e: A hosted scope with work for the platform now wakes itself (K-69, step 4 of the tenant-scale RFC). After a commit that enqueues a platform intent or leaves an event unshipped, the scope arms its alarm and asks the control plane for its own drain, within seconds for an intent and within five minutes for the lake. While the work stays, it looks again on a back-off capped at 15 minutes. A scope with nothing pending arms nothing, so an idle scope costs no request. The control plane's `SCOPE_WAKE_PHASES` (`platform-requests`, `events`, unset by default) hands each phase to the scopes: the per-scope drain object then ships the scope's events to the lake too, and the scheduled pass only checks, leaving work younger than an hour to its scope and draining older work as before. Each check is logged as `scope-wake-check`. A kick to a `defineKickCoalescerDO` object may name what it wants, and its pass is handed the union (`KickWants`); a pass's `more` may name the part that had more. The scope's drain object uses it so a lake-only drain runs no intents. The kernel exports `drainScopeEvents`, the pass's event drain takes `eventDrainCheck`, and the intent drain takes `holdFrom` and reports `leftToScope`.
+- 3e5e4f1: A control-plane directory whose `_substrat_sweep_runs` table predates its `request_id` column starts again. The table's dedupe index was created before the column was added, so every start failed with "no such column: request_id" and the column never arrived. The index is now created once the columns exist.
+- Updated dependencies [291c401]
+- Updated dependencies [5fd00d8]
+- Updated dependencies [27b025e]
+- Updated dependencies [3e5e4f1]
+  - @substrat-run/kernel@0.215.0
+  - @substrat-run/adapter-cloudflare@0.215.0
+  - @substrat-run/connector-fortnox@0.11.0
+  - @substrat-run/connector-planima@0.3.0
+  - @substrat-run/connector-scrive@0.16.0
+  - @substrat-run/control-plane-api@0.215.0
+  - @substrat-run/vertical-host@0.215.0
+
 ## 0.19.16
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @substrat-run/engine-booking
 
+## 0.10.0
+
+### Minor Changes
+
+- 5fd00d8: Engines and connectors take `@substrat-run/kernel` and `@substrat-run/contracts` as peer dependencies (`>=0.213.0 <1.0.0`) instead of their own `^0.x` copy: the vertical installs the one kernel they run in, and a kernel release no longer republishes every engine. A project scaffolded by `create-substrat` already declares both; the scaffold now pins `contracts` on its own version line.
+
 ## 0.9.39
 
 ### Patch Changes
