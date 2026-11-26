@@ -442,6 +442,13 @@ export function parseDirectoryLakeCapture(value: string | undefined): DirectoryL
   return names as DirectoryLakeDataset[];
 }
 
+/**
+ * K-70's proposed window: how many days of each captured data set the directory keeps once the
+ * prune is switched on, and the boundary a history read splits at (directory after, lake before).
+ * 35 days covers a billing period and a dispute. An open choice in K-70; one constant on purpose.
+ */
+export const DIRECTORY_LAKE_WINDOW_DAYS = 35;
+
 /** How many outbox rows one batch ships by default, and how many batches one pass may drain. */
 export const DIRECTORY_LAKE_BATCH = 500;
 export const DIRECTORY_LAKE_BATCHES_PER_PASS = 8;

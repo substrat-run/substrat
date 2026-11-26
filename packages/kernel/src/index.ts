@@ -1383,6 +1383,7 @@ export {
 export {
   DIRECTORY_LAKE_DATASET_NAMES,
   DIRECTORY_LAKE_DDL,
+  DIRECTORY_LAKE_WINDOW_DAYS,
   ackDirectoryOutbox,
   ensureDirectoryLakeTriggers,
   advanceDirectoryLakeBackfill,

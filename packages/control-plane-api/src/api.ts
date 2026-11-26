@@ -264,6 +264,7 @@ import { STORE_REBUILD_REQUEST_SUBREQUESTS, runStoreFleetRebuild, storeRebuildBu
 import { PUSH_HOLD_TTL_MS, STORE_RELEASE_STORED_MAX_BYTES, approveStoredDriverRelease, readStoreDriverApprovals, runStoreDriverRevoke, runStoreDriverRollout, storeDriverRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
 import { assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, listAllScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
+import { readAdminLogHistory, readWholeAdminLog, type DirectoryLakeReads } from './directory-lake-reads.js';
 import { DIRECTORY_LAKE_BACKFILL_PAGE_MAX, DirectoryLakeBackfillRefused, backfillDirectoryLake } from './directory-lake-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
 import type { PersonaIssuerSeam } from './persona-issuer.js';
@@ -621,6 +622,12 @@ export interface ControlPlaneApiOptions {
    * ⇒ a real backfill answers 501; a dry run still reads.
    */
   directoryLakeSink?: DirectoryLakeSink;
+  /**
+   * K-70: whether history before the directory's window is read from the lake (`directory-lake-
+   * reads.ts`): `off` (the default) reads only the directory, `compare` also reads the lake and
+   * logs a difference, `on` reads the lake for it. Needs `lakeQuery`; without it, `off`.
+   */
+  directoryLakeReads?: DirectoryLakeReads;
   /**
    * #2450 step 2: where a preview's copy runs when it outlasts the request that started it (a
    * Durable Object per job in the hosted control plane). Without it, or without
@@ -8703,7 +8710,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // customer's Art. 20 data, and it carries staff actor ids and internal action
       // names. An escrow or a dispute needs it, which is why break-glass reaches it
       // rather than nothing reaching it.
-      const adminLog = full ? await c.var.admin.auditLog(actor, { tenantId }) : null;
+      // K-70: once the directory keeps a window, the history before it is the lake's.
+      const adminLog = full ? await readWholeAdminLog(adminLogHistoryDeps(c.var.admin, actor), { tenantId }) : null;
 
       const body: TenantExport = {
         tenantId,
@@ -9599,6 +9607,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       { admin: c.var.admin, actor: c.get('actor'), resolveRef: options.resolveVerticalRef },
       body,
     ));
+  });
+
+  /** K-70: what a history read needs, per request. */
+  const adminLogHistoryDeps = (admin: HostAdmin, actor: PlatformActorId) => ({
+    admin,
+    actor,
+    lake: options.lakeQuery,
+    mode: options.directoryLakeReads ?? 'off',
+    nowMs: Date.now(),
+    report: (line: Record<string, unknown>) => console.warn('directory-lake', JSON.stringify(line)),
   });
 
   // -- directory lake backfill (K-70) ---------------------------------------------------------
@@ -14276,7 +14294,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       cursor: c.req.query('cursor'),
       order: c.req.query('order'),
     });
-    const entries = await c.var.admin.auditLog(c.get('actor'), filter as Parameters<typeof c.var.admin.auditLog>[1]);
+    // K-70: the window from the directory, history before it from the lake when the switch says so.
+    const entries = await readAdminLogHistory(
+      adminLogHistoryDeps(c.var.admin, c.get('actor')),
+      filter as Parameters<typeof c.var.admin.auditLog>[1] & { limit: number },
+    );
     // #2064: each audited change's row says the outcome its operation stands at — the latest
     // outcome row wins — beside the raw row, which is returned as written.
     const resolved = await withAuditedOutcomes(c.var.admin, c.get('actor'), entries);

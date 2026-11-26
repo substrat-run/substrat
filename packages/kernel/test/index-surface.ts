@@ -81,6 +81,8 @@ export const INDEX_VALUE_EXPORTS = [
   'DIRECTORY_LAKE_DATASET_NAMES',
   // K-70: both adapters' directory DDL.
   'DIRECTORY_LAKE_DDL',
+  // K-70: the window a history read splits at (control-plane-api) and the prune cuts at.
+  'DIRECTORY_LAKE_WINDOW_DAYS',
   // #3139: download links, the table both adapters build and the lookup they redeem through.
   'DOWNLOAD_LINK_DDL',
   'DOWNLOAD_LINK_GONE',

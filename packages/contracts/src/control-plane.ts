@@ -1092,6 +1092,11 @@ export const delegatedReadParams: {
  * there is no co-located twin to match. It is one tenant's read and may span every one of
  * its scopes, so its scope is nullable — and only on this arm, so a scope read still
  * cannot be recorded without naming its scope.
+ *
+ * The third arm is a read of the lake's directory table (K-70, tenants × time data leaves the
+ * objects): the history of the directory's own logs, read by staff once it is older than the
+ * directory keeps. A staff-wide read names no tenant, and K-70 asks that it be recorded all the
+ * same, so the tenant is nullable on this arm alone.
  */
 export const delegatedReadRecord = z.union([
   z.object({
@@ -1104,6 +1109,13 @@ export const delegatedReadRecord = z.union([
   z.object({
     method: z.literal('lakeEvents'),
     tenantId,
+    scopeId: scopeId.nullable(),
+    params: z.unknown(),
+    resultCount: z.number().int().nonnegative(),
+  }),
+  z.object({
+    method: z.literal('lakeDirectory'),
+    tenantId: tenantId.nullable(),
     scopeId: scopeId.nullable(),
     params: z.unknown(),
     resultCount: z.number().int().nonnegative(),
