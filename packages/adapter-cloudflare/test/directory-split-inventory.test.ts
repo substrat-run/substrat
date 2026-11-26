@@ -27,7 +27,8 @@ function enclosing(index: number): string {
 
 /** Sites per member: lines matching `pattern` that are code, not a comment. */
 function sitesBy(pattern: RegExp): Record<string, number> {
-  const out: Record<string, number> = {};
+  // No prototype: a site in `constructor` must not read `Object.prototype.constructor`.
+  const out: Record<string, number> = Object.create(null) as Record<string, number>;
   lines.forEach((line, i) => {
     if (!pattern.test(line) || /^\s*(\*|\/\/|\/\*)/.test(line)) return;
     const member = enclosing(i);
@@ -42,7 +43,7 @@ const sorted = (o: Record<string, number>) => Object.fromEntries(Object.entries(
 describe('the directory split inventory (K-68)', () => {
   it('lists every transaction site in control-plane-do.ts, per method', () => {
     expect(sorted(inventoried(DIRECTORY_TRANSACTION_SITES))).toEqual(sorted(sitesBy(/\.transactionSync\(|storage\.transaction\(/)));
-    expect(DIRECTORY_TRANSACTION_SITES.reduce((n, r) => n + r.sites, 0)).toBe(50);
+    expect(DIRECTORY_TRANSACTION_SITES.reduce((n, r) => n + r.sites, 0)).toBe(51);
   });
 
   it('lists every caller of writeAndAudit, and of audited and auditedConnectLink', () => {

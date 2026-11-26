@@ -109,7 +109,9 @@
       // directory-objects.test.ts and the directory crossing contract suite.
       { "name": "DIRECTORY_REGISTRY", "class_name": "DirectoryRegistryDO" },
       { "name": "TENANT_DIRECTORY", "class_name": "TenantDirectoryDO" },
-      { "name": "ROUTES_CONTROL_PLANE", "class_name": "RoutesControlPlaneDO" }
+      { "name": "ROUTES_CONTROL_PLANE", "class_name": "RoutesControlPlaneDO" },
+      // K-68 step 3b: the directory with the dual-write on — directory-mirror.test.ts.
+      { "name": "MIRROR_CONTROL_PLANE", "class_name": "MirrorControlPlaneDO" }
     ]
   },
   "migrations": [
@@ -227,6 +229,10 @@
     {
       "tag": "v28",
       "new_sqlite_classes": ["ConnectionSweepTestDO", "ConnectionSweepUnownedDO"]
+    },
+    {
+      "tag": "v29",
+      "new_sqlite_classes": ["MirrorControlPlaneDO"]
     }
   ],
   // #3395: the routing read model's namespace, seen by RoutesControlPlaneDO alone (as `ROUTES`).

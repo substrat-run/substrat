@@ -278,6 +278,28 @@ const INDEXES_ADDED: readonly string[] = [
   'CREATE UNIQUE INDEX IF NOT EXISTS orgs_tenant_slug ON orgs (tenant_id, slug)',
 ];
 
+/**
+ * A foreign key the directory holds that names a row another object owns after the split. A tenant
+ * object enforces its foreign keys (DO SQLite has them on), so it builds the column WITHOUT the
+ * reference: a managed tenant's `provisioned_by_tenant` names its provisioner, whose `tenants` row
+ * lives in the provisioner's own object and never in this one (step 3b's dual-write would park the
+ * managed tenant's row for good). K-64's rule, applied to constraints: nothing crosses an object's
+ * boundary in a transaction, so no constraint may either. The registry holds every tenant's row and
+ * keeps the reference.
+ */
+export const CROSS_OBJECT_REFERENCES: readonly { object: DirectoryObjectKind; table: string; column: string; reference: string }[] = [
+  { object: 'tenant', table: 'tenants', column: 'provisioned_by_tenant TEXT', reference: ' REFERENCES tenants(tenant_id)' },
+];
+
+/** A directory statement or column, as `object` builds it (`CROSS_OBJECT_REFERENCES`). */
+export function withoutCrossObjectReferences(object: DirectoryObjectKind, table: string, text: string): string {
+  let out = text;
+  for (const r of CROSS_OBJECT_REFERENCES) {
+    if (r.object === object && r.table === table) out = out.replaceAll(`${r.column}${r.reference}`, r.column);
+  }
+  return out;
+}
+
 /** One step of an object's schema: a statement, or a column it ALTERs in (tolerating one already there). */
 export type SchemaStep = { exec: string } | { addColumn: readonly [table: string, column: string] };
 
@@ -288,8 +310,10 @@ export type SchemaStep = { exec: string } | { addColumn: readonly [table: string
  */
 export function directoryObjectSchema(object: DirectoryObjectKind): SchemaStep[] {
   const placed = placedIn(object);
-  const statements = (stmts: readonly string[]): SchemaStep[] => stmts.filter((s) => placed(tableOfStatement(s))).map((exec) => ({ exec }));
-  const columns = (list: readonly (readonly [string, string])[]): SchemaStep[] => list.filter(([t]) => placed(t)).map((addColumn) => ({ addColumn }));
+  const statements = (stmts: readonly string[]): SchemaStep[] =>
+    stmts.filter((s) => placed(tableOfStatement(s))).map((s) => ({ exec: withoutCrossObjectReferences(object, tableOfStatement(s), s) }));
+  const columns = (list: readonly (readonly [string, string])[]): SchemaStep[] =>
+    list.filter(([t]) => placed(t)).map(([t, c]) => ({ addColumn: [t, withoutCrossObjectReferences(object, t, c)] as const }));
   return [
     ...statements(DIRECTORY_DDL_PLAN.loop),
     ...columns(DIRECTORY_COLUMNS_ADDED),

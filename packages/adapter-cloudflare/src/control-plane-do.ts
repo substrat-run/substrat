@@ -293,6 +293,9 @@ import {
   type RouteReadModelStatus,
 } from './route-read-model-publisher.js';
 import { readPeerCallTarget, type PeerCallTargetRow } from './peer-call-target.js';
+// K-68 step 3b: the directory's dual-write to the registry and the tenant objects (off by default).
+import { DIRECTORY_MIRROR_TABLE_GLOB, directoryMirrorFor, isDirectoryMirrorTable, type DirectoryMirror, type MirrorFlush, type MirrorStatus } from './directory-mirror.js';
+import { durableMirrorSender } from './directory-objects.js';
 import type {
   AdminLogEntry,
   OnBehalfOf,
@@ -1848,7 +1851,35 @@ export class ControlPlaneDO extends DurableObject {
     this.kernelSql = switchSqlOver(this.sql);
     this.applyDirectorySchema();
     this.installRouteReadModel(routeKvWriterOf(Reflect.get(env as object, 'ROUTES')));
+    this.directoryMirror = directoryMirrorFor(env, durableMirrorSender(env), {
+      sql: this.sql,
+      transaction: (fn) => ctx.storage.transactionSync(fn),
+      quiet: () => this.routeCallDepth === 0,
+      armRetry: async (at) => {
+        const current = await ctx.storage.getAlarm();
+        if (current === null || current > at) await ctx.storage.setAlarm(at);
+      },
+    });
     this.backfillArmed = ctx.blockConcurrencyWhile(() => this.armVersionMigrationsBackfill());
+  }
+
+  // -- K-68 step 3b: the dual-write to the split's objects (directory-mirror.ts) -----
+
+  /** Set where `DIRECTORY_MIRROR` is on and the two object namespaces are bound; null otherwise. */
+  private readonly directoryMirror: DirectoryMirror | null;
+
+  /** Flush what the outbox holds. Called when the outermost method returns, like the route kick. */
+  kickDirectoryMirror(): void {
+    this.directoryMirror?.kick();
+  }
+
+  /** Drain the outbox now, for a caller (and a test) that must see the copy land. */
+  async settleDirectoryMirror(): Promise<MirrorFlush | null> {
+    return this.directoryMirror ? this.directoryMirror.settle() : null;
+  }
+
+  directoryMirrorStatus(): MirrorStatus | { enabled: false } {
+    return this.directoryMirror ? this.directoryMirror.status() : { enabled: false };
   }
 
   // -- the routing read model (#3395) -------------------------------------------
@@ -2080,6 +2111,8 @@ export class ControlPlaneDO extends DurableObject {
     // #3395: the routing read model's retry. It lifts the backoff (and redoes a failed namespace
     // check); the flush itself starts when this alarm returns, as after any directory method.
     await this.retryRouteReadModel().catch((err: unknown) => console.error('route read model: retry failed', err));
+    // K-68 step 3b: the dual-write's retry after a send an object refused.
+    this.directoryMirror?.retry();
     let more: boolean;
     try {
       more = this.ctx.storage.transactionSync(() => splitVersionMigrationsBatch(this.kernelSql)).more;
@@ -2718,11 +2751,13 @@ export class ControlPlaneDO extends DurableObject {
       .exec(
         `SELECT name, sql FROM sqlite_master
           WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'
-            AND name NOT GLOB ? AND name NOT GLOB ? AND sql IS NOT NULL
+            AND name NOT GLOB ? AND name NOT GLOB ? AND name NOT GLOB ? AND sql IS NOT NULL
           ORDER BY name`,
         COPY_GLOB,
         // #3395: the read model's ledger describes KV, not the directory (route-read-model-publisher.ts).
         ROUTE_READ_MODEL_TABLE_GLOB,
+        // K-68 step 3b: the dual-write's queue and version describe the objects (directory-mirror.ts).
+        DIRECTORY_MIRROR_TABLE_GLOB,
       )
       .toArray() as unknown as { name: string; sql: string }[];
   }
@@ -2756,7 +2791,7 @@ export class ControlPlaneDO extends DurableObject {
     // #3395: the routing read model's tables describe KV, survive a restore, and are never in a dump
     // this code exported. One a dump names (in any case: SQLite's names are) is crafted, and loading
     // it would make the ledger lie about what KV holds.
-    const routeTable = tables.find((t) => t.name.toLowerCase().startsWith('route_read_model_'));
+    const routeTable = tables.find((t) => t.name.toLowerCase().startsWith('route_read_model_') || isDirectoryMirrorTable(t.name));
     if (routeTable) {
       throw substratError('validation_failed', `refusing this dump: it names ${routeTable.name}, a table no directory dump carries`);
     }
@@ -2770,8 +2805,10 @@ export class ControlPlaneDO extends DurableObject {
       const existing = this.sql
         .exec(
           `SELECT name FROM sqlite_master
-            WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT GLOB ?`,
+            WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT GLOB ? AND name NOT GLOB ?`,
           ROUTE_READ_MODEL_TABLE_GLOB,
+          // K-68 step 3b: the dual-write's version must never go back, so its tables survive too.
+          DIRECTORY_MIRROR_TABLE_GLOB,
         )
         .toArray() as unknown as { name: string }[];
       for (const { name } of existing) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
@@ -2808,6 +2845,11 @@ export class ControlPlaneDO extends DurableObject {
       // #3395: every key the restored directory routes, and every key KV was given before it —
       // a route the restored directory does not hold is deleted, not left serving.
       this.routePublisher?.markAll();
+      // K-68 step 3b: the triggers went with the tables. Back AFTER the load, so the restore writes
+      // what it wrote before; the objects now differ from the restored directory, which is recorded
+      // for 3c's backfill to fill again, not sent row by row.
+      this.directoryMirror?.install();
+      this.directoryMirror?.markRestored();
     });
     // A restore is a new #1764 backfill episode. It replaced the data the old failure count and
     // backoff were about, so neither may delay or silence it: the count is cleared and the next
@@ -7766,6 +7808,8 @@ const ROUTE_KICK_EXEMPT = new Set([
   // The retry path: its own return must not start a flush, or a failure is retried at once rather than
   // after `ROUTE_PUBLISH_RETRY_MS`; the alarm starts it (`retryRouteReadModel`).
   'armRouteReadModelRetry', 'retryRouteReadModel',
+  // K-68 step 3b: the dual-write's flush is kicked by the same return, and drives itself.
+  'kickDirectoryMirror', 'settleDirectoryMirror',
 ]);
 for (const name of Object.getOwnPropertyNames(ControlPlaneDO.prototype)) {
   if (ROUTE_KICK_EXEMPT.has(name)) continue;
@@ -7779,7 +7823,10 @@ for (const name of Object.getOwnPropertyNames(ControlPlaneDO.prototype)) {
       // transaction (`bumpLifecycleRevision` within `writeAndAudit`) must not start a flush there.
       const leave = (): void => {
         this.routeCallDepth -= 1;
-        if (this.routeCallDepth === 0) this.kickRouteReadModel();
+        if (this.routeCallDepth === 0) {
+          this.kickRouteReadModel();
+          this.kickDirectoryMirror();
+        }
       };
       this.routeCallDepth += 1;
       let out: unknown;

@@ -429,6 +429,12 @@ export class RoutesControlPlaneDO extends ControlPlaneDO {
     super(ctx, { ...env, ROUTES: env['TEST_ROUTES'] });
   }
 }
+/** K-68 step 3b: the one directory with the dual-write to the split's objects switched on. */
+export class MirrorControlPlaneDO extends ControlPlaneDO {
+  constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
+    super(ctx, { ...env, DIRECTORY_MIRROR: 'all' });
+  }
+}
 
 // -- the platform-sweep trigger (platform-sweeper.test.ts) --------------------
 

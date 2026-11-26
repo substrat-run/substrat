@@ -48,7 +48,9 @@ import {
   type SettleInput,
   type SwitchSql,
 } from '@substrat-run/kernel';
-import { directoryObjectSchema, type DirectoryObjectKind } from './directory-placement.js';
+import { DIRECTORY_PLACEMENT, directoryObjectSchema, type DirectoryObjectKind } from './directory-placement.js';
+import { applyMirrorBatch, MIRROR_TARGET_DDL, mirrorTargetStatus, type MirrorTargetStatus } from './directory-mirror-apply.js';
+import type { MirrorApplyResult, MirrorBatch, MirrorSender } from './directory-mirror.js';
 import { switchSqlOver } from './scope-do.js';
 
 /** The registry's object name. */
@@ -81,11 +83,14 @@ function addColumn(sql: SqlStorage, table: string, column: string): void {
 abstract class DirectoryObjectBase extends DurableObject {
   protected readonly sql: SqlStorage;
   protected readonly kernelSql: SwitchSql;
+  /** The directory tables placed in this object: the only ones the dual-write may write (step 3b). */
+  private readonly placed: ReadonlySet<string>;
 
   constructor(ctx: DurableObjectState, env: unknown, kind: DirectoryObjectKind) {
     super(ctx, env as never);
     this.sql = ctx.storage.sql;
     this.kernelSql = switchSqlOver(this.sql);
+    this.placed = new Set(Object.entries(DIRECTORY_PLACEMENT).filter(([, p]) => p.to === kind || p.to === 'both').map(([t]) => t));
     // Every statement is `IF NOT EXISTS` and every column tolerated, so a construction after the
     // first runs the same list and changes nothing. One transaction: a construction that fails
     // half-way leaves the object as it was, never a table without its later columns.
@@ -95,7 +100,27 @@ abstract class DirectoryObjectBase extends DurableObject {
         else addColumn(this.sql, step.addColumn[0], step.addColumn[1]);
       }
       this.sql.exec(DIRECTORY_SELF_DDL);
+      // Step 3b: the per-key versions and parked changes of the directory's dual-write.
+      for (const stmt of MIRROR_TARGET_DDL) this.sql.exec(stmt);
     });
+  }
+
+  /**
+   * Step 3b (K-68): apply a batch the directory's dual-write sent (`directory-mirror.ts`). Each
+   * change applies once and never backwards (`directory-mirror-apply.ts`). Binds an unbound object to
+   * its owner, as a crossing does: the first write an object takes decides whose it is.
+   */
+  applyMirror(owner: string, jurisdiction: Jurisdiction, batch: MirrorBatch): MirrorApplyResult {
+    this.ctx.storage.transactionSync(() => this.assertOwner(owner, jurisdiction, true));
+    return applyMirrorBatch(
+      { sql: this.sql, transaction: (fn) => this.ctx.storage.transactionSync(fn), tables: this.placed, now: () => Date.now() },
+      batch,
+    );
+  }
+
+  /** What the dual-write has left here: rows, tombstones, and changes parked for want of a parent. */
+  mirrorStatus(): MirrorTargetStatus {
+    return mirrorTargetStatus(this.sql);
   }
 
   /** Refuse a call meant for another object; bind this one to its owner on the first write. */
@@ -232,5 +257,28 @@ export function durableDirectoryObjects(options: {
       return ledgerPort(stub as unknown as LedgerRpc, tenantOwnerOf(tenantId), jurisdiction);
     },
     complete: (ledger, crossingId) => runCrossing(ledger, claims, crossingId),
+  };
+}
+
+const isNamespace = (value: unknown): value is DurableObjectNamespace =>
+  typeof value === 'object' && value !== null && typeof Reflect.get(value, 'idFromName') === 'function' && typeof Reflect.get(value, 'get') === 'function';
+
+/**
+ * Step 3b: how the directory's dual-write reaches the objects (`directory-mirror.ts`), or null where
+ * the two namespaces are not bound. Every tenant object is addressed `global`, as `durableDirectoryObjects`
+ * does until a tenant's jurisdiction is recorded (the only one the provisioning boundary accepts).
+ */
+export function durableMirrorSender(env: unknown): MirrorSender | null {
+  const registry = Reflect.get(env as object, 'DIRECTORY_REGISTRY');
+  const tenants = Reflect.get(env as object, 'TENANT_DIRECTORY');
+  if (!isNamespace(registry) || !isNamespace(tenants)) return null;
+  const tenantPrefix = tenantOwnerOf('');
+  return {
+    send: async (owner, batch) => {
+      if (owner === REGISTRY_OWNER) return registryStub(registry as DurableObjectNamespace<DirectoryRegistryDO>).applyMirror(owner, 'global', batch);
+      if (!owner.startsWith(tenantPrefix)) throw new Error(`directory mirror: not an owner: ${owner}`);
+      const stub = tenantDirectoryStub(tenants as DurableObjectNamespace<TenantDirectoryDO>, owner.slice(tenantPrefix.length), 'global');
+      return stub.applyMirror(owner, 'global', batch);
+    },
   };
 }
