@@ -1,5 +1,31 @@
 # @substrat-run/control-plane
 
+## 0.19.15
+
+### Patch Changes
+
+- 614fe7f: The directory's admin log ships to the lake by default wherever the directory lake's stream is bound (K-70); `DIRECTORY_LAKE_CAPTURE` becomes an override. The scheduled pass's log line now says what the directory outbox captured and shipped.
+- b6ac54e: The directory can prune a captured data set to its 35-day window once the lake provably holds the rows (K-70), behind a switch that is off by default and only for data sets whose history is read from the lake.
+- 86b1995: K-68 (directory split), step 3a: the directory registry and per-tenant directory object classes, created empty beside the existing directory, with the intent-first crossing helper (`runCrossing`), its one-database seam (`SqliteScopeHost.directoryObjects()`) and the crossing contract suite. Nothing routes traffic to them yet.
+- Updated dependencies [3b46226]
+- Updated dependencies [b6ac54e]
+- Updated dependencies [86b1995]
+  - @substrat-run/adapter-cloudflare@0.213.0
+  - @substrat-run/contracts@0.213.0
+  - @substrat-run/kernel@0.213.0
+  - @substrat-run/control-plane-api@0.213.0
+  - @substrat-run/connector-bolagsverket@0.1.9
+  - @substrat-run/connector-fortnox@0.9.5
+  - @substrat-run/connector-mail-in@0.1.50
+  - @substrat-run/connector-microsoft365@0.0.74
+  - @substrat-run/connector-planima@0.2.110
+  - @substrat-run/connector-scrive@0.15.15
+  - @substrat-run/connector-shopify@0.0.9
+  - @substrat-run/connector-stripe@0.0.15
+  - @substrat-run/connector-woocommerce@0.0.19
+  - @substrat-run/model-providers@0.5.103
+  - @substrat-run/vertical-host@0.213.0
+
 ## 0.19.14
 
 ### Patch Changes

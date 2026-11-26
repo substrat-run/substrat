@@ -1,5 +1,16 @@
 # @substrat-run/console
 
+## 0.14.130
+
+### Patch Changes
+
+- Updated dependencies [b6ac54e]
+- Updated dependencies [86b1995]
+  - @substrat-run/contracts@0.213.0
+  - @substrat-run/kernel@0.213.0
+  - @substrat-run/control-plane-api@0.213.0
+  - @substrat-run/elements@0.9.8
+
 ## 0.14.129
 
 ### Patch Changes
