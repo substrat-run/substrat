@@ -8,13 +8,16 @@
  *
  *   node scripts/directory-lake-backfill.mjs                       # dry run, every data set
  *   node scripts/directory-lake-backfill.mjs --dataset admin_log   # dry run, one
- *   node scripts/directory-lake-backfill.mjs --apply               # ship
+ *   node scripts/directory-lake-backfill.mjs --dataset ops_failures,sweep_runs --apply   # ship two
  *
  * A DRY RUN BY DEFAULT: it walks each data set and prints how many rows a real run would ship
  * and the span of their times; it ships and records nothing. `--apply` ships. A real run needs the
  * data set to be capturing (the control plane's DIRECTORY_LAKE_CAPTURE_DEFAULT, or its
  * DIRECTORY_LAKE_CAPTURE override, applied by its next pass) and refuses otherwise, because rows
- * written after the walk passed would reach the lake only through the outbox.
+ * written after the walk passed would reach the lake only through the outbox. A data set outside
+ * the default is captured by ADDING it, `DIRECTORY_LAKE_CAPTURE=+ops_failures,+sweep_runs`: a plain
+ * list replaces the default, and one that leaves a default out stops its capture and resets its
+ * backfill mark.
  *
  * Resumable and idempotent: a real run starts where the directory says the last recorded page
  * ended, so an interrupted run is finished by running it again; a data set already backfilled is
@@ -48,7 +51,7 @@ const apply = has('apply');
 const secretsFile = flag('file') ?? 'secrets/platform.prod.env';
 const cpUrl = (flag('cp') ?? 'https://console.substrat.net').replace(/\/$/, '').replace(/\/api$/, '');
 const limit = Number(flag('limit') ?? 500);
-const only = flag('dataset');
+const only = flag('dataset')?.split(',').map((d) => d.trim()).filter(Boolean);
 
 function fail(msg) {
   console.error(`✗ ${msg}`);
@@ -76,7 +79,8 @@ function readSecret(key) {
 }
 
 if (!Number.isInteger(limit) || limit < 1 || limit > 1000) fail('--limit must be an integer from 1 to 1000.');
-if (only !== undefined && !DATASETS.includes(only)) fail(`--dataset must be one of ${DATASETS.join(', ')}`);
+const unknown = (only ?? []).filter((d) => !DATASETS.includes(d));
+if (unknown.length > 0) fail(`--dataset ${unknown.join(', ')}: must be one or more of ${DATASETS.join(', ')}`);
 const token = readSecret('SERVICE_TOKEN');
 if (!token) fail(`SERVICE_TOKEN blank in ${secretsFile} — the control-plane route needs it.`);
 
@@ -100,7 +104,8 @@ async function page(dataset, after, dryRun = !apply) {
 console.log(`Directory lake backfill  (${cpUrl})${apply ? '' : '  [dry-run]'}\n`);
 
 let total = 0;
-for (const dataset of only ? [only] : DATASETS) {
+const notCapturing = [];
+for (const dataset of only ?? DATASETS) {
   // A dry first page answers whether the data set captures and where a real walk resumes.
   const probe = await page(dataset, 0, true);
   let out = probe;
@@ -111,6 +116,7 @@ for (const dataset of only ? [only] : DATASETS) {
     }
     if (!probe.capturing) {
       console.log(`  – ${dataset}  not capturing; switch its capture on first`);
+      notCapturing.push(dataset);
       continue;
     }
     out = await page(dataset, probe.resumeAfter);
@@ -129,3 +135,9 @@ for (const dataset of only ? [only] : DATASETS) {
   console.log(`  ${apply ? '✓' : '·'} ${dataset}  ${rows} row(s)${span}${out.capturing ? '' : '  (not capturing)'}`);
 }
 console.log(apply ? `\n${total} row(s) shipped.` : `\n${total} row(s) would be shipped. Run with --apply to ship.`);
+if (notCapturing.length > 0) {
+  console.log(
+    `\nNot capturing: ${notCapturing.join(', ')}. Add them to the control plane's capture with a reviewed\n` +
+      `DIRECTORY_LAKE_CAPTURE=${notCapturing.map((d) => `+${d}`).join(',')}, let one pass apply it, then run this again.`,
+  );
+}

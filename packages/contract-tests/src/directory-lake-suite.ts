@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { platformActorId, tenantId, type PlatformActorId, type TenantId } from '@substrat-run/contracts';
-import { ulid, type DirectoryLakeRow, type ScopeHost } from '@substrat-run/kernel';
+import { DIRECTORY_LAKE_DATASET_NAMES, ulid, type DirectoryLakeRow, type ScopeHost } from '@substrat-run/kernel';
 
 /** K-70: what the directory-outbox suite needs of an adapter. */
 export interface DirectoryLakeFixture {
@@ -76,6 +76,34 @@ export function directoryLakeContractSuite(adapterName: string, makeFixture: () 
         await host.admin.advanceDirectoryLakeBackfill!(staff, 'admin_log', { after: 0, next: state!.backfillUntil, done: true });
         expect(await host.admin.pruneDirectoryLakeWindow!(staff, 'admin_log', before, 10)).toEqual({ pruned: 0, refused: null });
         expect(await host.admin.auditLog(staff, { action: 'pruneDirectoryLake', actor: staff })).toEqual([]);
+      } finally {
+        await host.admin.setDirectoryLakeCapture!(staff, []);
+        await cleanup();
+      }
+    });
+
+    it('builds every data set\'s capture against the tables this adapter creates, and backfills each in the outbox\'s shape', async () => {
+      // The backfill and the capture of a data set both read its table as built, so a data set
+      // whose table this adapter lacks, or spells differently, fails here and not on a real run.
+      const { host, cleanup } = await makeFixture();
+      const staff = platformActorId.parse(ulid());
+      const operation = `contract.lake-${ulid().toLowerCase()}`;
+      const unit = `contract-lake-${ulid().toLowerCase()}`;
+      try {
+        const on = await host.admin.setDirectoryLakeCapture!(staff, [...DIRECTORY_LAKE_DATASET_NAMES]);
+        expect(on.current.map((c) => c.dataset).sort()).toEqual([...DIRECTORY_LAKE_DATASET_NAMES].sort());
+        await host.admin.recordOpsFailure({ actor: staff, operation, message: 'lake capture' });
+        await host.admin.recordSweepRun({ kind: 'connector', unit, outcome: 'ok' });
+        const mine = (await queued(host, staff)).filter((r) => r.kind === operation || JSON.parse(r.row).unit === unit);
+        expect(mine.map((r) => r.dataset).sort()).toEqual(['ops_failures', 'sweep_runs']);
+        for (const dataset of DIRECTORY_LAKE_DATASET_NAMES) {
+          const page = await host.admin.directoryLakeBackfill!(staff, dataset, 0, 2);
+          expect(page.dataset).toBe(dataset);
+          for (const r of page.rows) {
+            expect(r).toMatchObject({ seq: null, dataset });
+            expect(typeof JSON.parse(r.row)).toBe('object');
+          }
+        }
       } finally {
         await host.admin.setDirectoryLakeCapture!(staff, []);
         await cleanup();

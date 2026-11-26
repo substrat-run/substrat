@@ -597,8 +597,9 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * K-70: an OVERRIDE of which directory data sets capture into the outbox, only with
    * `DIRECTORY_LAKE_STREAM`. Normally unset: then the code's `DIRECTORY_LAKE_CAPTURE_DEFAULT` decides.
    * `off` captures nothing (an emergency stop, and the reset after a directory lake is recreated);
-   * `all`, or a comma list of `DIRECTORY_LAKE_DATASET_NAMES`. A value it refuses is logged and read
-   * as `off`.
+   * `all`, or a comma list of `DIRECTORY_LAKE_DATASET_NAMES`, which replaces the default; or a list
+   * of `+name` additions to the default (`+ops_failures,+sweep_runs`), the safe way to capture more.
+   * A value it refuses is logged and read as `off`.
    */
   DIRECTORY_LAKE_CAPTURE?: string;
   /**
@@ -2002,7 +2003,7 @@ const DIRECTORY_LAKE_CAPTURE_DEFAULT: readonly DirectoryLakeDataset[] = ['admin_
 function directoryLakeCaptureOf(env: Env): DirectoryLakeDataset[] {
   if (env.DIRECTORY_LAKE_CAPTURE === undefined || env.DIRECTORY_LAKE_CAPTURE.trim() === '') return [...DIRECTORY_LAKE_CAPTURE_DEFAULT];
   try {
-    return parseDirectoryLakeCapture(env.DIRECTORY_LAKE_CAPTURE);
+    return parseDirectoryLakeCapture(env.DIRECTORY_LAKE_CAPTURE, DIRECTORY_LAKE_CAPTURE_DEFAULT);
   } catch (err) {
     console.error('directory-lake: DIRECTORY_LAKE_CAPTURE refused, capture stays off:', (err as Error).message);
     return [];

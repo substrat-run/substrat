@@ -176,6 +176,10 @@ describe('the directory outbox (K-70)', () => {
     expect(parseDirectoryLakeCapture('all')).toHaveLength(9);
     expect(parseDirectoryLakeCapture('admin_log, meter_days,admin_log')).toEqual(['admin_log', 'meter_days']);
     expect(() => parseDirectoryLakeCapture('admin_logs')).toThrow(/unknown data set admin_logs/);
+    // `+name` adds to the default, so capturing one more cannot drop a default; mixing is refused.
+    expect(parseDirectoryLakeCapture('+ops_failures, +admin_log', ['admin_log', 'access_log'])).toEqual(['admin_log', 'access_log', 'ops_failures']);
+    expect(() => parseDirectoryLakeCapture('+ops_failures,sweep_runs', ['admin_log'])).toThrow(/not both/);
+    expect(() => parseDirectoryLakeCapture('+opsfailures', ['admin_log'])).toThrow(/unknown data set opsfailures/);
   });
 });
 
