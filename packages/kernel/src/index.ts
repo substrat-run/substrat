@@ -1388,6 +1388,8 @@ export {
   ensureDirectoryLakeTriggers,
   advanceDirectoryLakeBackfill,
   parseDirectoryLakeCapture,
+  pruneDirectoryLakeWindow,
+  type DirectoryLakePruneRefusal,
   readDirectoryLakeBackfill,
   readDirectoryLakeCapture,
   readDirectoryOutbox,

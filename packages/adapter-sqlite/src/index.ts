@@ -449,6 +449,7 @@ import {
   ackDirectoryOutbox,
   ensureDirectoryLakeTriggers,
   advanceDirectoryLakeBackfill,
+  pruneDirectoryLakeWindow,
   readDirectoryLakeBackfill,
   readDirectoryLakeCapture,
   readDirectoryOutbox,
@@ -13973,6 +13974,14 @@ export class SqliteScopeHost implements ScopeHost {
           return result.changed;
         }, () => this.recordAdmin(actor, 'backfillDirectoryLake', { tenantId: null }, null, { dataset, ...page }));
         return result.state;
+      },
+      pruneDirectoryLakeWindow: async (actor, dataset, before, limit) => {
+        let result!: ReturnType<typeof pruneDirectoryLakeWindow>;
+        this.directoryWriteAndAudit(() => {
+          result = pruneDirectoryLakeWindow(redactionSqlOf(this.directory), dataset, before, limit);
+          return result.pruned > 0;
+        }, () => this.recordAdmin(actor, 'pruneDirectoryLake', { tenantId: null }, null, { dataset, pruned: result.pruned, before }));
+        return result;
       },
       auditLog: async (actor, filter?: AuditLogFilter): Promise<AdminLogEntry[]> => {
         const where: string[] = [];

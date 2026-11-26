@@ -6,6 +6,7 @@ import type { AdminLogEntry, PlatformActorId } from '@substrat-run/contracts';
 import type { AuditLogFilter, HostAdmin } from '@substrat-run/kernel';
 import {
   compileDirectoryLakeQuery,
+  prunableDirectoryDatasets,
   queryDirectoryLake,
   readAdminLogHistory,
   readWholeAdminLog,
@@ -117,5 +118,18 @@ describe('admin log history across the window (K-70)', () => {
     const page = await readAdminLogHistory(deps(admin, lake.engine, 'compare', (l) => reported.push(l)), { limit: 10 });
     expect(page.map((e) => e.id)).toEqual(['A1', 'A2', 'B1', 'B2']);
     expect(reported).toEqual([{ compare: 'admin_log', directory: 2, lake: 1, missing: ['A2'], first: 'A1' }]);
+  });
+});
+
+describe('which data sets the prune may take (K-70)', () => {
+  it('allows only a data set whose history is read from the lake, and only while reads are on', () => {
+    expect(prunableDirectoryDatasets(['admin_log', 'sweep_runs'], 'on')).toEqual({
+      allowed: ['admin_log'],
+      refused: [{ dataset: 'sweep_runs', reason: 'its history readers do not read the lake yet' }],
+    });
+    expect(prunableDirectoryDatasets(['admin_log'], 'compare')).toEqual({
+      allowed: [],
+      refused: [{ dataset: 'admin_log', reason: 'DIRECTORY_LAKE_READS is compare, not on' }],
+    });
   });
 });

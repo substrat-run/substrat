@@ -138,6 +138,7 @@ import {
   createPipelinesEventSink,
   createPipelinesDirectoryLakeSink,
   parseDirectoryLakeReads,
+  prunableDirectoryDatasets,
   type DirectoryLakeReads,
   createR2SqlEngine,
   type LakeQueryEngine,
@@ -517,6 +518,13 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * query engine (`lakeQueryFor`). A value it does not know is logged and read as `off`.
    */
   DIRECTORY_LAKE_READS?: string;
+  /**
+   * K-70: which data sets the pass prunes to the window once the lake holds them, spelled as
+   * `DIRECTORY_LAKE_CAPTURE` is. Off by default. A data set is pruned only if its history readers
+   * read the lake and `DIRECTORY_LAKE_READS` is `on` (`prunableDirectoryDatasets`); the others are
+   * logged and left alone.
+   */
+  DIRECTORY_LAKE_PRUNE?: string;
   /**
    * Reads the Tier-2 lake with R2 SQL (#1334), pushed by `scripts/secrets.mjs`. Provisioned as
    * an R2 "Admin Read only" token scoped to the lake bucket; whether that permission set is
@@ -1877,6 +1885,20 @@ function directoryLakeCaptureOf(env: Env): DirectoryLakeDataset[] {
   }
 }
 
+/** K-70: the prune switch, narrowed to the data sets whose history is read from the lake. Off on any doubt. */
+function directoryLakePruneOf(env: Env): DirectoryLakeDataset[] {
+  let wanted: DirectoryLakeDataset[];
+  try {
+    wanted = parseDirectoryLakeCapture(env.DIRECTORY_LAKE_PRUNE);
+  } catch (err) {
+    console.error('directory-lake: DIRECTORY_LAKE_PRUNE refused, nothing is pruned:', (err as Error).message);
+    return [];
+  }
+  const { allowed, refused } = prunableDirectoryDatasets(wanted, directoryLakeReadsOf(env));
+  for (const r of refused) console.warn(`directory-lake: not pruning ${r.dataset}: ${r.reason}`);
+  return allowed;
+}
+
 /** K-70: the history-read switch, as the capture switch: a value it refuses is logged and read as off. */
 function directoryLakeReadsOf(env: Env): DirectoryLakeReads {
   try {
@@ -3214,7 +3236,13 @@ export default {
       // reconciles capture to DIRECTORY_LAKE_CAPTURE every pass (off by default, so it drops any
       // trigger left on) and drains what is queued. Unbound ⇒ skipped.
       ...(env.DIRECTORY_LAKE_STREAM
-        ? { directoryLake: { sink: createPipelinesDirectoryLakeSink(env.DIRECTORY_LAKE_STREAM), capture: directoryLakeCaptureOf(env) } }
+        ? {
+            directoryLake: {
+              sink: createPipelinesDirectoryLakeSink(env.DIRECTORY_LAKE_STREAM),
+              capture: directoryLakeCaptureOf(env),
+              prune: directoryLakePruneOf(env),
+            },
+          }
         : {}),
       // #1705 PR 2: cross-vertical events, for every hosted edge. The phase narrows to the
       // scopes whose running version imports something before it calls any, so a fleet with no

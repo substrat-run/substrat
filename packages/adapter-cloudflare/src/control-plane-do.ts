@@ -87,6 +87,8 @@ import {
   ackDirectoryOutbox,
   ensureDirectoryLakeTriggers,
   advanceDirectoryLakeBackfill,
+  pruneDirectoryLakeWindow,
+  type DirectoryLakePruneRefusal,
   readDirectoryLakeBackfill,
   readDirectoryLakeCapture,
   readDirectoryOutbox,
@@ -1775,6 +1777,7 @@ export const REPLIED_METHODS = [
   'setDirectoryLakeCapture',
   'ackDirectoryOutbox',
   'advanceDirectoryLakeBackfill',
+  'pruneDirectoryLakeWindow',
   'writeImpersonationAndAudit',
   'endImpersonationAndAudit',
   'setIssueStatusAndAudit',
@@ -6518,6 +6521,20 @@ export class ControlPlaneDO extends DurableObject {
       return result.changed;
     }, () => ({ ...audit, after: { dataset, ...page } }));
     return result.state;
+  }
+
+  pruneDirectoryLakeWindow(
+    dataset: DirectoryLakeDataset,
+    before: string,
+    limit: number,
+    audit: AdminEntryInput,
+  ): { pruned: number; refused: DirectoryLakePruneRefusal | null } {
+    let result!: ReturnType<typeof pruneDirectoryLakeWindow>;
+    this.writeAndAudit(() => {
+      result = pruneDirectoryLakeWindow(doRedactionSql(this.sql), dataset, before, limit);
+      return result.pruned > 0;
+    }, () => ({ ...audit, after: { dataset, pruned: result.pruned, before } }));
+    return result;
   }
 
   /** ONLY drained rows. Age alone is not a licence to delete evidence (K-24). */

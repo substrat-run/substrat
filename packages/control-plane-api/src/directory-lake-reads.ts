@@ -280,3 +280,29 @@ export async function readWholeAdminLog(deps: AdminLogHistoryDeps, filter: Audit
     cursor = page[page.length - 1]!.id;
   }
 }
+
+/**
+ * The data sets whose every history reader reads the lake before the window (this file), so the
+ * directory may prune them to it. Only the admin log so far; the readers of the others are listed
+ * in the PR that added this (#3405) and join here one by one as they move.
+ */
+export const DIRECTORY_LAKE_HISTORY_READ: readonly DirectoryLakeDataset[] = ['admin_log'];
+
+/**
+ * Of the data sets the prune switch lists, those that may be pruned now: their history is read
+ * from the lake (`DIRECTORY_LAKE_HISTORY_READ`) and reads are `on`. The rest are refused with the
+ * reason, so a switch set ahead of its reader prunes nothing a console still needs.
+ */
+export function prunableDirectoryDatasets(
+  wanted: readonly DirectoryLakeDataset[],
+  reads: DirectoryLakeReads,
+): { allowed: DirectoryLakeDataset[]; refused: { dataset: DirectoryLakeDataset; reason: string }[] } {
+  const allowed: DirectoryLakeDataset[] = [];
+  const refused: { dataset: DirectoryLakeDataset; reason: string }[] = [];
+  for (const dataset of wanted) {
+    if (!DIRECTORY_LAKE_HISTORY_READ.includes(dataset)) refused.push({ dataset, reason: 'its history readers do not read the lake yet' });
+    else if (reads !== 'on') refused.push({ dataset, reason: `DIRECTORY_LAKE_READS is ${reads}, not on` });
+    else allowed.push(dataset);
+  }
+  return { allowed, refused };
+}

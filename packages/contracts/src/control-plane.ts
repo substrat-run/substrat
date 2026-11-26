@@ -131,6 +131,9 @@ export const adminAction = z.enum([
   // K-70: a backfill walked a capturing data set to its end, so the rows it held before capture
   // began have reached the lake too.
   'backfillDirectoryLake',
+  // K-70: directory rows older than the window deleted, once the lake held them. A deletion of the
+  // record of tenants' activity from the directory, so it is recorded: how many, of what, before when.
+  'pruneDirectoryLake',
   'pruneAccessLog', // K-24 — deleting drained access rows is itself a mutation // K-23 — a provider declares its topology before it may link
   'createTenant', // §4.1
   // §4.1/§4.8 — before/after carry the transitioned status. Starting the delete grace
