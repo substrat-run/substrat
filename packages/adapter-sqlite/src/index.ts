@@ -446,6 +446,9 @@ import {
   type ScopeObjectReadInput,
   METER_DAYS_DDL,
   DIRECTORY_LAKE_DDL,
+  ACCESS_SUMMARY_METHOD,
+  AccessSummary,
+  openAccessSummary,
   ackDirectoryOutbox,
   ensureDirectoryLakeTriggers,
   advanceDirectoryLakeBackfill,
@@ -2590,6 +2593,8 @@ export class SqliteScopeHost implements ScopeHost {
    * requests never carries one request's person into another's audit row.
    */
   private readonly onBehalfOf: OnBehalfOf | null = null;
+  /** K-73: the actor whose reads are being summarized, if any (`summarizeAccess`). */
+  private readonly accessSummary: { current: AccessSummary | null } = { current: null };
   private readonly systemPrincipal: PrincipalId = principalId.parse(ulid());
   private readonly secretBox: SecretBox;
   /** The parsers attachment text is extracted with (K-43); the host's own, never imported here. */
@@ -8646,6 +8651,12 @@ export class SqliteScopeHost implements ScopeHost {
     params: unknown,
     resultCount: number,
   ): void {
+    // K-73: an actor being summarized adds to its pass's one row instead of writing its own.
+    const open = this.accessSummary.current;
+    if (open && open.actor === actor) {
+      open.add(method, target, resultCount);
+      return;
+    }
     const summary = params == null ? null : JSON.stringify(params).slice(0, 500);
     this.directory
       .prepare(
@@ -13833,6 +13844,33 @@ export class SqliteScopeHost implements ScopeHost {
        * Through the SAME `recordAccess` the co-located branch uses, so the two are
        * indistinguishable in the log — which is what the seam is for.
        */
+      /**
+       * K-73 (amends K-24; #3326): the platform's bookkeeping reads, one access-log row per pass.
+       * The slot is a box shared with every view of this host, so a view neither forks it nor
+       * shadows it.
+       */
+      summarizeAccess: async (actor) => {
+        this.accessSummary.current = openAccessSummary(this.accessSummary.current, actor, new Date().toISOString());
+      },
+      flushAccessSummary: async (actor) => {
+        const s = this.accessSummary.current;
+        if (!s || s.actor !== actor) return null;
+        s.depth -= 1;
+        if (s.depth > 0) return null;
+        this.accessSummary.current = null;
+        if (s.empty) return null;
+        const result = s.result();
+        // Straight to the table, past `recordAccess`: the summary is not folded into itself, and its
+        // params carry their own, wider cap.
+        this.directory
+          .prepare(
+            `INSERT INTO _substrat_access_log
+               (id, actor, method, tenant_id, scope_id, params, result_count, on_behalf_of, drained_at, at)
+             VALUES (?, ?, ?, NULL, NULL, ?, ?, NULL, NULL, ?)`,
+          )
+          .run(ulid(), actor, ACCESS_SUMMARY_METHOD, s.params(new Date().toISOString()), result.resultCount, new Date().toISOString());
+        return result;
+      },
       recordDelegatedRead: async (actor, record) => {
         const parsed = delegatedReadRecord.parse(record);
         this.recordAccess(

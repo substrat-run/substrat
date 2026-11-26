@@ -1711,6 +1711,23 @@ export async function runPlatformSweep(
   host: ScopeHost,
   options: PlatformSweepOptions,
 ): Promise<PlatformSweepReport> {
+  // K-73 (amends K-24; #3326): the pass's own reads are bookkeeping, recorded as one summary row
+  // for the pass rather than one row each. Nested inside a caller's summary (the hosted scheduled
+  // handler opens one around its whole pass), this only adds a level; the row is the caller's.
+  await host.admin.summarizeAccess?.(options.actor);
+  try {
+    return await runPlatformSweepPass(host, options);
+  } finally {
+    await host.admin.flushAccessSummary?.(options.actor).catch((err: unknown) => {
+      console.error(`platform sweep: the access summary could not be written: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+}
+
+async function runPlatformSweepPass(
+  host: ScopeHost,
+  options: PlatformSweepOptions,
+): Promise<PlatformSweepReport> {
   assertSweepBatches(options);
   assertConnectorSweepOptions(options);
   const concurrency = options.concurrency ?? 8;

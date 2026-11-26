@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-151 decisions · 79 plan · 72 kernel
+152 decisions · 79 plan · 73 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -69,7 +69,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-21](decisions/K-021-revoking-a-tuple-tombstones-it-and-assignment-authority-is-a.md) | 2026-07-19 | kernel | Revoking a tuple tombstones it, and assignment authority is a set comparison the kernel owns |  |
 | [K-22](decisions/K-022-the-membership-seam-is-a-connector-and-orgid-becomes-a-brand.md) | 2026-07-19 | kernel | The membership seam is a connector, and OrgId becomes a branded ULID | #53 |
 | [K-23](decisions/K-023-identity-pools-are-registered-and-declare-topology-rather-th.md) | 2026-07-19 | kernel | Identity pools are registered, and declare topology rather than audience | #48 |
-| [K-24](decisions/K-024-staff-reads-are-audited-into-a-separate-access-log-that-drai.md) | 2026-07-19 | kernel | Staff reads are audited into a separate access log that drains rather than expires | #43, #42 |
+| [K-24](decisions/K-024-staff-reads-are-audited-into-a-separate-access-log-that-drai.md) | 2026-07-19 | kernel | Staff reads are audited into a separate access log that drains rather than expires <br>*amended by K-73* | #43, #42 |
 | [K-25](decisions/K-025-the-idp-is-not-fronted-whatever-mints-externalid-becomes-the.md) | 2026-07-19 | kernel | The IdP is not fronted: whatever mints externalId becomes the identity of record |  |
 | [K-26](decisions/K-026-one-environment-wide-router-verticals-are-unreachable-except.md) | 2026-07-19 | kernel | One environment-wide router; verticals are unreachable except through it; residency is… <br>*amended by D-77* <br>*amended by K-72* | #31 |
 | [K-27](decisions/K-027-the-router-presents-a-shared-secret-and-the-vertical-verifie.md) | 2026-07-19 | kernel | The router presents a shared secret and the vertical verifies it; the vertical reads its… <br>*amended by K-58* |  |
@@ -163,3 +163,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-70](decisions/K-070-data-that-grows-with-tenants-times-time-leaves-the-sqlite-objects-each-object-keeps-a-bounded-recent-window.md) | 2026-11-25 | kernel | Data that grows with tenants times time leaves the SQLite objects: each object keeps a bounded recent window, and the admin log is written where the change is made and shipped onward <br>*awaiting ratification* | #3326, #3325, #3316, #2501, #1232 |
 | [K-71](decisions/K-071-the-hosted-issuer-partitions-its-people-by-person-and-prunes-what-expires.md) | 2026-11-25 | kernel | A shared hosted issuer partitions its people by person, and prunes the sessions and tokens that expire <br>*awaiting ratification* |  |
 | [K-72](decisions/K-072-the-router-reads-routes-from-a-kv-read-model-the-directory-publishes.md) | 2026-11-25 | kernel | The router reads routes from a KV read model the directory publishes <br>*awaiting ratification* <br>*amends K-26* | #3395 |
+| [K-73](decisions/K-073-the-platform-s-own-bookkeeping-reads-are-recorded-as-one-access-log-row-per-pass.md) | 2026-11-26 | kernel | The platform's own bookkeeping reads are recorded as one access-log row per pass <br>*amends K-24* | #3326 |

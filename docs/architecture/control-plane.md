@@ -810,6 +810,12 @@ noise would be kept forever *and* would bury the mutation rows an auditor came f
 asks, and a subset decides in advance which reads will not matter. Reading the access
 log is itself logged.
 
+**One exception, the platform's own bookkeeping** ([K-73](../decisions/K-073-the-platform-s-own-bookkeeping-reads-are-recorded-as-one-access-log-row-per-pass.md),
+#3326). The reads the scheduled pass makes as its sweep actor are recorded as ONE row for the
+pass (`method: summarizedReads`): the window, the count per method, and how many distinct
+tenants and scopes they named. They were about 95% of the log. Anyone else's read, in the same
+isolate or not, is still a row of its own.
+
 `result_count` is what makes a row worth keeping. *"Called listScopes"* is navigation;
 *"enumerated 4,000 tenants"* is an incident, and only the count tells them apart.
 

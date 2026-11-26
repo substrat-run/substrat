@@ -1893,10 +1893,11 @@ function capabilityDelegationFor(env: Env): CapabilityDelegation | undefined {
  * not an environment variable, because the binding already says which environment ships (only
  * prod's deploy binds the stream), and a variable here would be one more committed value to change
  * in a PR all the same. The admin log first: small, and the data set whose history the lake serves
- * (`DIRECTORY_LAKE_READS`). Another joins in a reviewed PR; the access log waits on #3326, since
- * capturing it costs about two more directory row writes per row at ~720 rows a pass.
+ * (`DIRECTORY_LAKE_READS`). The access log since #3326 was decided (K-73): the pass's own reads are
+ * one row a pass, so what remains is people's reads, a few rows a pass rather than ~720. Another
+ * data set joins in a reviewed PR.
  */
-const DIRECTORY_LAKE_CAPTURE_DEFAULT: readonly DirectoryLakeDataset[] = ['admin_log'];
+const DIRECTORY_LAKE_CAPTURE_DEFAULT: readonly DirectoryLakeDataset[] = ['admin_log', 'access_log'];
 
 /**
  * K-70: what the pass captures: the code's default, unless `DIRECTORY_LAKE_CAPTURE` overrides it. A
@@ -3149,480 +3150,493 @@ export default {
       console.error('route read model: reconcile failed', err);
     }
     const host = hostFor(env);
-    const resolveVersion = resolveVerticalVersionFor(env);
-    const resolveRef = resolveVerticalRefFor(env);
-    const retainedReapDeps = {
-      host,
-      stores: platformStoresFor(env),
-      ...(resolveRef ? { resolveRef } : {}),
-      ...(resolveVersion ? { resolveVersion } : {}),
-      // #3261, D-72: a managed tenant's scope takes its client and place at its manager's auth-servers with it.
-      removeManagedSignIn: (tenantId: TenantId, scopeId: ScopeId, commit: () => Promise<void>) =>
-        removeManagedSignIn({ admin: host.admin, actor: SWEEP_ACTOR, resolveVerticalForScope: resolveVerticalForScopeFor(env) }, tenantId, scopeId, commit),
-    };
-    // #1722: before the reaps below, so a preview whose carry crashed is settled, not refused.
-    if (resolveRef) {
-      const copies = await sweepScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef });
-      if (copies.failed) console.error(`scope-copy cleanup: ${copies.failed} of ${copies.expired + copies.retried} copies need retry`);
-    }
-    // #1416 — the failure digest's "since the previous pass", read BEFORE the sweep:
-    // a drained batch this pass lands carries its vertical's own pass time, and read
-    // afterwards it would pose as the previous pass and hide failures nobody mailed.
-    // Skipped entirely when nobody has opted in — no read, no ledger row.
-    const digestSince = env.STAFF_ALERT_EMAIL
-      ? await failureDigestWatermark({ admin: host.admin, actor: SWEEP_ACTOR, passStartedAt: new Date() })
-      : undefined;
-    const crossVertical = crossVerticalFor(env, host);
-    const orphanAttachments = orphanAttachmentSweepFor(env, host.admin, resolveRef);
-    const requestRollup = requestRollupFor(env);
-    // #3316: each scope's object id, through the script that holds its data, and the day's costs.
-    const scopeObjects = scopeObjectsFor(resolveRef);
-    const cloudflareCosts = cloudflareCostsFor(env);
-    // #2501: the storage gauge's database and attachment reads go through one deployment per scope.
-    const gaugeDeployment = oncePerScope(resolveVerticalForScopeFor(env));
-    const recordNow = scopeRecordNowIn(host.admin, SWEEP_ACTOR);
-    // #1840: what the drain row is stamped with — the drain phase's end, or the pass start
-    // when the phase reached no scope at all.
-    const passStartedAt = new Date();
-    const platformDrain = timedDrain((t: TenantId, s: ScopeId, o?: { skip?: readonly string[] }) => drainOneScope(env, t, s, o));
-    // #1232: the durable sweep record. Not awaited where it is made — a recorder failure must
-    // never sink the pass it is recording (the ops-failure recorder's shape) — but settled before
-    // the pass returns (`writes`, the end of this handler), or the last ones are dropped.
-    const writes = pendingWrites();
-    const recordSweepRun = (e: SweepRunInput) => writes.track(host.admin.recordSweepRun(e).catch(() => undefined));
-    // #2316: a failed connection sweep's own text, staff's row under the reference its sweep row
-    // names; the digest lists it from the ledger. Not awaited, as the row above — but this
-    // row is the text's only copy, so a write that fails leaves the reference in the tail. The
-    // reference and the write's own error only: the text can carry a provider's answer.
-    const recordFailure = (entry: Omit<OpsFailureInput, 'actor'>) =>
-      writes.track(
-        host.admin.recordOpsFailure({ actor: SWEEP_ACTOR, ...entry }).catch((err: unknown) =>
-          console.error('sweep-failure record failed', { reference: entry.reference, error: err instanceof Error ? err.message : String(err) }),
-        ),
-      );
-    // #3324: the connector sweep, run LAST in this pass (below), after every phase that keeps the
-    // fleet moving. A connection's sweep downloads a third party's data through this isolate; when
-    // one exhausted it, the reset took every phase after it, on every pass, for three days.
-    const connectorSweep: ConnectorSweepOptions = {
-      actor: SWEEP_ACTOR,
-      // Sanctioned egress for the connector sweepers below.
-      fetch: globalFetch,
-      // #574: the platform runs the connector pass FOR dispatch verticals — they are
-      // CP-less and cannot reach the connection directory. The sweep enumerates THIS
-      // directory's connections, opens each with the coordinator-held secret box, polls
-      // the provider, and writes back through the vertical's /internal/connector-*
-      // surface (the host's connectorDelegation). A connection whose secret cannot be
-      // opened (no CONNECTION_SEAL_KEY) fails its sweep loudly: its row says so under a
-      // reference, and the text is staff's ledger row under it (`recordFailure` below).
-      sweepers: connectorSweepersFor(env),
-      // A vertical-defined provider (vertical-connectors.md §6.4) is swept, and bound below, by
-      // calling into its vertical: one call per bound scope, to that scope's own deployment.
-      sweeperFor: (c) => (isVerticalConnectorProvider(c.provider) ? verticalConnectorSweeper(verticalConnectorDepsFor(env, host, SWEEP_ACTOR), c) : undefined),
-      sweepEveryMinutes: connectorSweepEveryMinutesFor(),
-      // #2316: each live connection is granted and bound from the landings its vertical's running
-      // version declares, before it is swept — so a company approved through a connect link lands
-      // without anyone running `substrat connection bind`.
-      connectionLandings: {
-        read: (slug, versionId) => host.versionConnectionLandings(slug, versionId),
-        binders: connectionBindersFor(env),
-        binderFor: verticalConnectorBinderFor(env, host, SWEEP_ACTOR),
-      },
-      recordSweepRun,
-      recordFailure,
-      // #3324: awaited, unlike the row above: the attempt must be on record before the sweep can
-      // take the isolate down, or a sweep that does is run again on every pass. A rejected write
-      // holds that connection back a pass.
-      recordSweepAttempt: (e) => host.admin.recordSweepRun(e),
-      pausedConnections: pausedConnectionsOf(env.CONNECTOR_SWEEP_PAUSED),
-    };
-    const report = await runPlatformSweep(host, {
-      actor: SWEEP_ACTOR,
-      fetch: globalFetch,
-      sweepers: {},
-      // #3324: run at the end of `scheduled`, by `runConnectorSweep`.
-      sweepConnectors: false,
-      recordSweepRun,
-      recordFailure,
-      drainRetries: false,
-      deleteSnapshotFn: (tenantId, scopeId) => reapExpiredSnapshot({
+    // K-73 (amends K-24; #3326): every read this pass makes as the sweep actor is bookkeeping, and
+    // lands as ONE access-log row for the pass, written when it ends however it ends. The phases
+    // outside `runPlatformSweep` (copies, reaps, the digest, the connector sweep) are in it too.
+    await host.admin.summarizeAccess?.(SWEEP_ACTOR);
+    try {
+      const resolveVersion = resolveVerticalVersionFor(env);
+      const resolveRef = resolveVerticalRefFor(env);
+      const retainedReapDeps = {
         host,
         stores: platformStoresFor(env),
-        issuerClient: resolveVerticalForScopeFor(env),
         ...(resolveRef ? { resolveRef } : {}),
         ...(resolveVersion ? { resolveVersion } : {}),
-      }, tenantId, scopeId),
-      // §4.4 storage reap — opt-in via SCOPE_RETENTION_DAYS. Same orchestrated shape as
-      // the snapshot delete: wipe the scope's DO in the vertical deployment that holds it
-      // (its storage is CP-less), then the in-process reapScope for the directory
-      // transition + audit. Left unset ⇒ the kernel skips the phase, so a deployment that
-      // has not chosen a retention window never auto-deletes an app's data.
-      reapArchivedAfterDays: parseRetentionDays(env.SCOPE_RETENTION_DAYS),
-      reapScopeFn: (tenantId, scopeId) => reapRetainedScope(retainedReapDeps, tenantId, scopeId),
-      // The tenant reap's per-scope reap: the same, holding the tenant to `deleting` (D-71).
-      reapTenantScopeFn: (tenantId, scopeId) => reapRetainedScope(retainedReapDeps, tenantId, scopeId, { whileTenantDeleting: true }),
-      // §4.8 tenant reap — opt-in via TENANT_RETENTION_DAYS. The kernel's default
-      // `reapTenantFn` composes `reapTenantScopeFn` above (archive-if-needed → fence and wipe each
-      // scope's DO in its vertical deployment → reapScope), then clears the directory via
-      // reapTenant — so the orchestrated per-scope wipe applies here without a separate
-      // override. Left unset ⇒ the kernel skips the phase.
-      reapDeletingAfterDays: parseRetentionDays(env.TENANT_RETENTION_DAYS),
-      // Platform-intent drain (platform-intents.md B2/C): for each active scope, pull its pending
-      // intents from the vertical's /internal surface (its DO lives in the vertical's deployment),
-      // execute each with platform authority, and settle back. The same `drainOneScope` the router
-      // kick calls on demand — the sweep is the reliability backstop, the kick is the latency path.
-      drainPlatformRequestsFn: platformDrain.drain,
-      // #1524: the stored storage gauge. The kernel reads only scopes the drain above just
-      // reached, so a reading lands on a DO that is already awake and never wakes an idle one.
-      storageGauge: {
-        read: storageReaderFor(gaugeDeployment, recordNow),
-        readStores: storeStorageReaderFor((scope) => declaredStoreSizes(env, host.admin, scope)),
-        // #2501: attachment bytes beside the database, through the same deployment, found once.
-        readAttachments: attachmentReaderFor(gaugeDeployment, recordNow),
-      },
-      // #1172 — a push repairs its own installs. `onProvision` runs once per scope, at
-      // install, so a scope serving code whose provision hook never ran against it is
-      // missing whatever that hook mints, and nothing else would ever deliver it.
-      reconcileScopeFn: (t, s, expected) => reconcileOneScope(env, t, s, expected),
-      // #1653 — and since the phase follows the version a scope RUNS, a listed
-      // vertical's promote puts every install of it behind at once. At most this many
-      // per pass; the rest on the passes after.
-      provisionReconcileBatch: parseReconcileBatch(env.PROVISION_RECONCILE_BATCH),
-      // K-24 §4.4 — ship the staff access log to Tier 2, then prune what was shipped.
-      // Rides the DIRECTORY backup bucket rather than a binding of its own: this is the
-      // platform's own record (no tenant owns it), the `access-log/` prefix cannot collide
-      // with `directory/`, and a fourth bucket would be one more thing to provision for no
-      // isolation gained. Absent binding ⇒ the kernel skips the phase and the log grows —
-      // the same opt-in posture as the two retention windows above.
-      ...(env.DIRECTORY_BACKUPS
-        ? { accessLogSink: createR2AccessLogSink(env.DIRECTORY_BACKUPS) }
-        : {}),
-      // #1334 — the domain-event drain, bound in prod to the `SUBSTRAT_OUTBOX_STREAM`
-      // pipeline that feeds the Iceberg lake. Pipelines rather than the NDJSON staging sink
-      // beside it: §5.3's adapter table names "Pipelines → Iceberg/R2" as the Cloudflare
-      // row for event transport, and the seam means the drain never learns which it got.
-      // Unbound ⇒ skipped, so a self-host that ships nowhere stays a supported deployment.
-      // Bound but unable to reach a vertical (no DISPATCH / PLATFORM_SECRET) ⇒ ALSO
-      // skipped: the host's own scope namespace is the placeholder, and a drain over it
-      // would read nothing and report a fleet with no events as drained.
-      ...(env.SUBSTRAT_OUTBOX_STREAM && eventDrainDelegationFor(env)
-        ? { eventSink: createPipelinesEventSink(env.SUBSTRAT_OUTBOX_STREAM) }
-        : {}),
-      // K-70: the directory's own logs and meters, shipped through its outbox. Bound ⇒ the phase
-      // reconciles capture to DIRECTORY_LAKE_CAPTURE_DEFAULT (or the DIRECTORY_LAKE_CAPTURE override)
-      // every pass, so a data set taken off the list loses its triggers, and drains what is queued.
-      // Unbound ⇒ skipped.
-      ...(env.DIRECTORY_LAKE_STREAM
-        ? {
-            directoryLake: {
-              sink: createPipelinesDirectoryLakeSink(env.DIRECTORY_LAKE_STREAM),
-              capture: directoryLakeCaptureOf(env),
-              prune: directoryLakePruneOf(env),
-            },
-          }
-        : {}),
-      // #1705 PR 2: cross-vertical events, for every hosted edge. The phase narrows to the
-      // scopes whose running version imports something before it calls any, so a fleet with no
-      // importer costs the directory reads and nothing else. The router kick runs one
-      // producer's edges sooner (`/internal/drain-scope`); this is the backstop.
-      ...(crossVertical ? { crossVertical } : {}),
-      // #2314: attachment bytes no row names, collected through the script that serves each scope.
-      // Off unless ORPHAN_ATTACHMENT_SWEEP says otherwise, and a dry run before any delete.
-      ...(orphanAttachments ? { orphanAttachments } : {}),
-      // #2501: each closed day of the router's request datapoints, kept in the directory as
-      // estimated counts before Analytics Engine ages them out. Off without the router's dataset.
-      ...(requestRollup ? { requestRollup } : {}),
-      // #3316: the directory learns each scope's Durable Object id, then each closed day of the
-      // account's billed Cloudflare analytics is attributed through it. Costs are opt-in per env.
-      ...(scopeObjects ? { scopeObjects } : {}),
-      ...(cloudflareCosts ? { cloudflareCosts } : {}),
-      // #2501: each UTC day's meters 1 and 2, one row per tenant, taken by the day's first pass and
-      // kept for the billing horizon. A directory transaction, so nothing to configure.
-      meterSnapshot: {},
-      // #3313: once a UTC day, the scopes nothing will clean up (idle, orphaned, never-expiring,
-      // stuck), listed for staff at GET /stale-scopes. A directory transaction; it moves no scope.
-      staleScopes: {},
-    });
-    // #3313: the day's stale-scopes report, one line on the pass that takes it (and on every pass of
-    // a failing run), so the tail shows the fleet's counts without opening the console.
-    const stale = staleScopesLogOf(report.staleScopes);
-    if (stale) console.log('stale-scopes', stale);
-    // #1713 — the lifecycle heal: re-deliver to every hosted scope whose deployment did not
-    // acknowledge the directory's lifecycle, and to every scope held now. Each failed delivery is
-    // already an ops-failure row (so it reaches the digest below); the tail says a pass had any.
-    const lifecycle = await host.healLifecycles(SWEEP_ACTOR);
-    if (lifecycle.failed > 0) console.log('lifecycle-heal', lifecycle);
-    // Log whenever the pass DID something — reaps, errors, or any platform-intent
-    // activity (drained/failed/still-pending). The last one matters most (#444): a
-    // scope with intents stuck `pending` should leave a trace on every pass, so a
-    // drain that silently never converges is visible in the tail instead of invisible.
-    const pr = report.platformRequestTotals;
-    // #1840: the same totals, kept.
-    await recordPlatformRequestPass(host.admin, report, platformDrain.finishedAt(passStartedAt).toISOString());
-    const al = report.accessLog;
-    // #1172: a pass that re-provisioned anything says so, and so does one that tried and
-    // failed — a scope that stays behind pass after pass is the shape of a repair that
-    // never converges, and it should be visible in the tail rather than only in a report
-    // nobody reads.
-    const rc = report.provisionReconcile;
-    // #1636: outbox rows the event drain stepped over because they would not decode. They
-    // never reach the lake while they stay that way, so a pass that met any says so here —
-    // they are not `errors` (nothing about the pass failed), and would otherwise be silent.
-    const skipped = report.eventDrain?.skipped;
-    // #2544: active scopes whose deployment does not hold them. Standing, so said here on every pass
-    // while it lasts and filed as an ops-failure once, when it appears; never an `errors` entry.
-    const notHeld = report.eventDrain?.notHeld;
-    await fileNotHeld({ admin: host.admin, actor: SWEEP_ACTOR, recorded: eventDrainNotHeldRecorded, notHeld });
-    // #1637: pending intents nothing can settle, and where — the sweep row counts them, this says
-    // which scope's journal to open. Standing, like `skipped`, so said on every pass while it lasts.
-    const unsettleable = report.platformRequestUnsettleable;
-    // #1705: an edge that moved, paused or could not resolve. The counts only; each edge and
-    // its reason is already a `vertical-events` sweep-run row.
-    const cv = report.crossVertical;
-    const cvActive = cv != null && (cv.delivered > 0 || cv.withheld > 0 || cv.paused > 0 || cv.unresolved > 0);
-    // #2314: a pass that found, deleted or could not judge anything says so; each scope's finding is
-    // also its admin-log row. A scope with no store is not on the list: a vertical that keeps no files
-    // answers so on every visit, and one whose store binding is missing fails into `errors` instead.
-    const oa = report.orphanAttachments;
-    const orphansActive = oa != null && (oa.orphans > 0 || oa.deleted > 0 || oa.refused.count > 0 || oa.unsupported.count > 0);
-    // #2501: days rolled up, a failing run (on every pass it lasts, between its hourly retries too,
-    // though the digest mails it once) and days found saturated.
-    const rollup = requestRollupLogOf(report.requestRollup);
-    // #2501: the day's snapshot taken, or a failing run, on every pass it lasts.
-    const snapshot = meterSnapshotLogOf(report.meterSnapshot);
-    // #3316: object ids asked and recorded, and cost days read or failing.
-    const costs = cloudflareCostsLogOf(report.scopeObjects, report.cloudflareCosts);
-    // K-70: the directory outbox, when the pass changed or shipped anything, or a prune listed in
-    // the switch did nothing for a standing reason (said on every pass while it lasts).
-    const directoryLake = directoryLakeLogOf(report.directoryLake);
-    if (
-      report.snapshotsReaped > 0 ||
-      report.archivedScopesReaped > 0 ||
-      report.tenantsReaped > 0 ||
-      report.errors.length > 0 ||
-      pr.drained > 0 ||
-      pr.failed > 0 ||
-      pr.pending > 0 ||
-      (rc !== null && rc.behind > 0) ||
-      (al !== null && (al.shipped > 0 || al.pruned > 0)) ||
-      skipped !== undefined ||
-      notHeld !== undefined ||
-      unsettleable !== undefined ||
-      cvActive ||
-      orphansActive ||
-      rollup !== null ||
-      snapshot !== null ||
-      costs !== null ||
-      directoryLake !== null
-    ) {
-      console.log('platform-sweep', {
-        snapshotsReaped: report.snapshotsReaped,
-        archivedScopesReaped: report.archivedScopesReaped,
-        tenantsReaped: report.tenantsReaped,
-        platformRequests: pr,
-        ...(rc && rc.behind > 0 ? { provisionReconcile: rc } : {}),
-        // An egress leaves a trace in the tail as well as the admin log: `ref` is the
-        // object the rows landed in, so a question about a pruned row has an address.
-        ...(al ? { accessLog: al } : {}),
-        ...(skipped ? { eventDrainSkipped: skipped } : {}),
-        ...(notHeld ? { eventDrainNotHeld: { count: notHeld.length, scopeIds: notHeld.slice(0, 20).map((n) => n.scopeId) } } : {}),
-        ...(unsettleable ? { platformRequestUnsettleable: unsettleable } : {}),
-        ...(cvActive
+        // #3261, D-72: a managed tenant's scope takes its client and place at its manager's auth-servers with it.
+        removeManagedSignIn: (tenantId: TenantId, scopeId: ScopeId, commit: () => Promise<void>) =>
+          removeManagedSignIn({ admin: host.admin, actor: SWEEP_ACTOR, resolveVerticalForScope: resolveVerticalForScopeFor(env) }, tenantId, scopeId, commit),
+      };
+      // #1722: before the reaps below, so a preview whose carry crashed is settled, not refused.
+      if (resolveRef) {
+        const copies = await sweepScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef });
+        if (copies.failed) console.error(`scope-copy cleanup: ${copies.failed} of ${copies.expired + copies.retried} copies need retry`);
+      }
+      // #1416 — the failure digest's "since the previous pass", read BEFORE the sweep:
+      // a drained batch this pass lands carries its vertical's own pass time, and read
+      // afterwards it would pose as the previous pass and hide failures nobody mailed.
+      // Skipped entirely when nobody has opted in — no read, no ledger row.
+      const digestSince = env.STAFF_ALERT_EMAIL
+        ? await failureDigestWatermark({ admin: host.admin, actor: SWEEP_ACTOR, passStartedAt: new Date() })
+        : undefined;
+      const crossVertical = crossVerticalFor(env, host);
+      const orphanAttachments = orphanAttachmentSweepFor(env, host.admin, resolveRef);
+      const requestRollup = requestRollupFor(env);
+      // #3316: each scope's object id, through the script that holds its data, and the day's costs.
+      const scopeObjects = scopeObjectsFor(resolveRef);
+      const cloudflareCosts = cloudflareCostsFor(env);
+      // #2501: the storage gauge's database and attachment reads go through one deployment per scope.
+      const gaugeDeployment = oncePerScope(resolveVerticalForScopeFor(env));
+      const recordNow = scopeRecordNowIn(host.admin, SWEEP_ACTOR);
+      // #1840: what the drain row is stamped with — the drain phase's end, or the pass start
+      // when the phase reached no scope at all.
+      const passStartedAt = new Date();
+      const platformDrain = timedDrain((t: TenantId, s: ScopeId, o?: { skip?: readonly string[] }) => drainOneScope(env, t, s, o));
+      // #1232: the durable sweep record. Not awaited where it is made — a recorder failure must
+      // never sink the pass it is recording (the ops-failure recorder's shape) — but settled before
+      // the pass returns (`writes`, the end of this handler), or the last ones are dropped.
+      const writes = pendingWrites();
+      const recordSweepRun = (e: SweepRunInput) => writes.track(host.admin.recordSweepRun(e).catch(() => undefined));
+      // #2316: a failed connection sweep's own text, staff's row under the reference its sweep row
+      // names; the digest lists it from the ledger. Not awaited, as the row above — but this
+      // row is the text's only copy, so a write that fails leaves the reference in the tail. The
+      // reference and the write's own error only: the text can carry a provider's answer.
+      const recordFailure = (entry: Omit<OpsFailureInput, 'actor'>) =>
+        writes.track(
+          host.admin.recordOpsFailure({ actor: SWEEP_ACTOR, ...entry }).catch((err: unknown) =>
+            console.error('sweep-failure record failed', { reference: entry.reference, error: err instanceof Error ? err.message : String(err) }),
+          ),
+        );
+      // #3324: the connector sweep, run LAST in this pass (below), after every phase that keeps the
+      // fleet moving. A connection's sweep downloads a third party's data through this isolate; when
+      // one exhausted it, the reset took every phase after it, on every pass, for three days.
+      const connectorSweep: ConnectorSweepOptions = {
+        actor: SWEEP_ACTOR,
+        // Sanctioned egress for the connector sweepers below.
+        fetch: globalFetch,
+        // #574: the platform runs the connector pass FOR dispatch verticals — they are
+        // CP-less and cannot reach the connection directory. The sweep enumerates THIS
+        // directory's connections, opens each with the coordinator-held secret box, polls
+        // the provider, and writes back through the vertical's /internal/connector-*
+        // surface (the host's connectorDelegation). A connection whose secret cannot be
+        // opened (no CONNECTION_SEAL_KEY) fails its sweep loudly: its row says so under a
+        // reference, and the text is staff's ledger row under it (`recordFailure` below).
+        sweepers: connectorSweepersFor(env),
+        // A vertical-defined provider (vertical-connectors.md §6.4) is swept, and bound below, by
+        // calling into its vertical: one call per bound scope, to that scope's own deployment.
+        sweeperFor: (c) => (isVerticalConnectorProvider(c.provider) ? verticalConnectorSweeper(verticalConnectorDepsFor(env, host, SWEEP_ACTOR), c) : undefined),
+        sweepEveryMinutes: connectorSweepEveryMinutesFor(),
+        // #2316: each live connection is granted and bound from the landings its vertical's running
+        // version declares, before it is swept — so a company approved through a connect link lands
+        // without anyone running `substrat connection bind`.
+        connectionLandings: {
+          read: (slug, versionId) => host.versionConnectionLandings(slug, versionId),
+          binders: connectionBindersFor(env),
+          binderFor: verticalConnectorBinderFor(env, host, SWEEP_ACTOR),
+        },
+        recordSweepRun,
+        recordFailure,
+        // #3324: awaited, unlike the row above: the attempt must be on record before the sweep can
+        // take the isolate down, or a sweep that does is run again on every pass. A rejected write
+        // holds that connection back a pass.
+        recordSweepAttempt: (e) => host.admin.recordSweepRun(e),
+        pausedConnections: pausedConnectionsOf(env.CONNECTOR_SWEEP_PAUSED),
+      };
+      const report = await runPlatformSweep(host, {
+        actor: SWEEP_ACTOR,
+        fetch: globalFetch,
+        sweepers: {},
+        // #3324: run at the end of `scheduled`, by `runConnectorSweep`.
+        sweepConnectors: false,
+        recordSweepRun,
+        recordFailure,
+        drainRetries: false,
+        deleteSnapshotFn: (tenantId, scopeId) => reapExpiredSnapshot({
+          host,
+          stores: platformStoresFor(env),
+          issuerClient: resolveVerticalForScopeFor(env),
+          ...(resolveRef ? { resolveRef } : {}),
+          ...(resolveVersion ? { resolveVersion } : {}),
+        }, tenantId, scopeId),
+        // §4.4 storage reap — opt-in via SCOPE_RETENTION_DAYS. Same orchestrated shape as
+        // the snapshot delete: wipe the scope's DO in the vertical deployment that holds it
+        // (its storage is CP-less), then the in-process reapScope for the directory
+        // transition + audit. Left unset ⇒ the kernel skips the phase, so a deployment that
+        // has not chosen a retention window never auto-deletes an app's data.
+        reapArchivedAfterDays: parseRetentionDays(env.SCOPE_RETENTION_DAYS),
+        reapScopeFn: (tenantId, scopeId) => reapRetainedScope(retainedReapDeps, tenantId, scopeId),
+        // The tenant reap's per-scope reap: the same, holding the tenant to `deleting` (D-71).
+        reapTenantScopeFn: (tenantId, scopeId) => reapRetainedScope(retainedReapDeps, tenantId, scopeId, { whileTenantDeleting: true }),
+        // §4.8 tenant reap — opt-in via TENANT_RETENTION_DAYS. The kernel's default
+        // `reapTenantFn` composes `reapTenantScopeFn` above (archive-if-needed → fence and wipe each
+        // scope's DO in its vertical deployment → reapScope), then clears the directory via
+        // reapTenant — so the orchestrated per-scope wipe applies here without a separate
+        // override. Left unset ⇒ the kernel skips the phase.
+        reapDeletingAfterDays: parseRetentionDays(env.TENANT_RETENTION_DAYS),
+        // Platform-intent drain (platform-intents.md B2/C): for each active scope, pull its pending
+        // intents from the vertical's /internal surface (its DO lives in the vertical's deployment),
+        // execute each with platform authority, and settle back. The same `drainOneScope` the router
+        // kick calls on demand — the sweep is the reliability backstop, the kick is the latency path.
+        drainPlatformRequestsFn: platformDrain.drain,
+        // #1524: the stored storage gauge. The kernel reads only scopes the drain above just
+        // reached, so a reading lands on a DO that is already awake and never wakes an idle one.
+        storageGauge: {
+          read: storageReaderFor(gaugeDeployment, recordNow),
+          readStores: storeStorageReaderFor((scope) => declaredStoreSizes(env, host.admin, scope)),
+          // #2501: attachment bytes beside the database, through the same deployment, found once.
+          readAttachments: attachmentReaderFor(gaugeDeployment, recordNow),
+        },
+        // #1172 — a push repairs its own installs. `onProvision` runs once per scope, at
+        // install, so a scope serving code whose provision hook never ran against it is
+        // missing whatever that hook mints, and nothing else would ever deliver it.
+        reconcileScopeFn: (t, s, expected) => reconcileOneScope(env, t, s, expected),
+        // #1653 — and since the phase follows the version a scope RUNS, a listed
+        // vertical's promote puts every install of it behind at once. At most this many
+        // per pass; the rest on the passes after.
+        provisionReconcileBatch: parseReconcileBatch(env.PROVISION_RECONCILE_BATCH),
+        // K-24 §4.4 — ship the staff access log to Tier 2, then prune what was shipped.
+        // Rides the DIRECTORY backup bucket rather than a binding of its own: this is the
+        // platform's own record (no tenant owns it), the `access-log/` prefix cannot collide
+        // with `directory/`, and a fourth bucket would be one more thing to provision for no
+        // isolation gained. Absent binding ⇒ the kernel skips the phase and the log grows —
+        // the same opt-in posture as the two retention windows above.
+        ...(env.DIRECTORY_BACKUPS
+          ? { accessLogSink: createR2AccessLogSink(env.DIRECTORY_BACKUPS) }
+          : {}),
+        // #1334 — the domain-event drain, bound in prod to the `SUBSTRAT_OUTBOX_STREAM`
+        // pipeline that feeds the Iceberg lake. Pipelines rather than the NDJSON staging sink
+        // beside it: §5.3's adapter table names "Pipelines → Iceberg/R2" as the Cloudflare
+        // row for event transport, and the seam means the drain never learns which it got.
+        // Unbound ⇒ skipped, so a self-host that ships nowhere stays a supported deployment.
+        // Bound but unable to reach a vertical (no DISPATCH / PLATFORM_SECRET) ⇒ ALSO
+        // skipped: the host's own scope namespace is the placeholder, and a drain over it
+        // would read nothing and report a fleet with no events as drained.
+        ...(env.SUBSTRAT_OUTBOX_STREAM && eventDrainDelegationFor(env)
+          ? { eventSink: createPipelinesEventSink(env.SUBSTRAT_OUTBOX_STREAM) }
+          : {}),
+        // K-70: the directory's own logs and meters, shipped through its outbox. Bound ⇒ the phase
+        // reconciles capture to DIRECTORY_LAKE_CAPTURE_DEFAULT (or the DIRECTORY_LAKE_CAPTURE override)
+        // every pass, so a data set taken off the list loses its triggers, and drains what is queued.
+        // Unbound ⇒ skipped.
+        ...(env.DIRECTORY_LAKE_STREAM
           ? {
-              crossVertical: {
-                delivered: cv.delivered,
-                withheld: cv.withheld,
-                paused: cv.paused,
-                unresolved: cv.unresolved,
-                candidates: cv.candidates,
-                deferred: cv.deferred,
+              directoryLake: {
+                sink: createPipelinesDirectoryLakeSink(env.DIRECTORY_LAKE_STREAM),
+                capture: directoryLakeCaptureOf(env),
+                prune: directoryLakePruneOf(env),
               },
             }
           : {}),
-        ...(orphansActive ? { orphanAttachments: oa } : {}),
-        ...(rollup ? { requestRollup: rollup } : {}),
-        ...(snapshot ? { meterSnapshot: snapshot } : {}),
-        ...(costs ? { cloudflareCosts: costs } : {}),
-        ...(directoryLake ? { directoryLake } : {}),
-        errors: report.errors,
+        // #1705 PR 2: cross-vertical events, for every hosted edge. The phase narrows to the
+        // scopes whose running version imports something before it calls any, so a fleet with no
+        // importer costs the directory reads and nothing else. The router kick runs one
+        // producer's edges sooner (`/internal/drain-scope`); this is the backstop.
+        ...(crossVertical ? { crossVertical } : {}),
+        // #2314: attachment bytes no row names, collected through the script that serves each scope.
+        // Off unless ORPHAN_ATTACHMENT_SWEEP says otherwise, and a dry run before any delete.
+        ...(orphanAttachments ? { orphanAttachments } : {}),
+        // #2501: each closed day of the router's request datapoints, kept in the directory as
+        // estimated counts before Analytics Engine ages them out. Off without the router's dataset.
+        ...(requestRollup ? { requestRollup } : {}),
+        // #3316: the directory learns each scope's Durable Object id, then each closed day of the
+        // account's billed Cloudflare analytics is attributed through it. Costs are opt-in per env.
+        ...(scopeObjects ? { scopeObjects } : {}),
+        ...(cloudflareCosts ? { cloudflareCosts } : {}),
+        // #2501: each UTC day's meters 1 and 2, one row per tenant, taken by the day's first pass and
+        // kept for the billing horizon. A directory transaction, so nothing to configure.
+        meterSnapshot: {},
+        // #3313: once a UTC day, the scopes nothing will clean up (idle, orphaned, never-expiring,
+        // stuck), listed for staff at GET /stale-scopes. A directory transaction; it moves no scope.
+        staleScopes: {},
       });
-    }
-
-    // #2309 — the store scripts' rebuild: after the key lists, the store entry or its verifier
-    // changed (a deploy of this worker), every store script is rebuilt at the release it runs, a
-    // bounded number per pass, resuming where the last pass stopped. Before the digest below, so a
-    // script that could not be rebuilt is in this pass's digest. Contained: loud, never sunk.
-    await rebuildStoreScripts(env, host.admin).catch((err: unknown) => {
-      console.error('store-rebuild failed', err instanceof Error ? err.message : String(err));
-    });
-
-    // #2064 — an audited change (owner hand-over, member change) whose intent row has had no
-    // outcome for an hour: its outcome write failed, or the request died between the two. The
-    // pass writes an `unknown` outcome for each and an ops-failure row, BEFORE the digest below,
-    // so the digest this pass sends names it. Contained like the phases below: loud, never sunk.
-    try {
-      const settled = await settleUnrecordedOutcomes({ admin: host.admin, actor: SWEEP_ACTOR });
-      if (settled.settled.length || settled.errors.length) console.error('audit-outcome-settle', settled);
-    } catch (err) {
-      console.error('audit-outcome-settle failed', err instanceof Error ? err.message : String(err));
-    }
-
-    // #1054 — the model usage ledger against what Cloudflare saw, one closed UTC day at a time.
-    // Before the digest, so a day's gaps filed this pass are in the digest it sends. Production
-    // only (MODEL_RECONCILIATION). Contained like the phases around it: loud, never sunk.
-    const modelCosts = env.MODEL_RECONCILIATION === 'on' ? modelCostReaderFor(env) : undefined;
-    if (modelCosts) {
-      try {
-        const recon = await runModelReconciliationPass({ admin: host.admin, actor: SWEEP_ACTOR, reader: modelCosts, gatewayProviders: GATEWAY_PROVIDERS });
-        if (recon.reconciled.length || recon.failed.length) console.log('model-reconcile', recon);
-      } catch (err) {
-        console.error('model-reconcile failed', err instanceof Error ? err.message : String(err));
+      // #3313: the day's stale-scopes report, one line on the pass that takes it (and on every pass of
+      // a failing run), so the tail shows the fleet's counts without opening the console.
+      const stale = staleScopesLogOf(report.staleScopes);
+      if (stale) console.log('stale-scopes', stale);
+      // #1713 — the lifecycle heal: re-deliver to every hosted scope whose deployment did not
+      // acknowledge the directory's lifecycle, and to every scope held now. Each failed delivery is
+      // already an ops-failure row (so it reaches the digest below); the tail says a pass had any.
+      const lifecycle = await host.healLifecycles(SWEEP_ACTOR);
+      if (lifecycle.failed > 0) console.log('lifecycle-heal', lifecycle);
+      // Log whenever the pass DID something — reaps, errors, or any platform-intent
+      // activity (drained/failed/still-pending). The last one matters most (#444): a
+      // scope with intents stuck `pending` should leave a trace on every pass, so a
+      // drain that silently never converges is visible in the tail instead of invisible.
+      const pr = report.platformRequestTotals;
+      // #1840: the same totals, kept.
+      await recordPlatformRequestPass(host.admin, report, platformDrain.finishedAt(passStartedAt).toISOString());
+      const al = report.accessLog;
+      // #1172: a pass that re-provisioned anything says so, and so does one that tried and
+      // failed — a scope that stays behind pass after pass is the shape of a repair that
+      // never converges, and it should be visible in the tail rather than only in a report
+      // nobody reads.
+      const rc = report.provisionReconcile;
+      // #1636: outbox rows the event drain stepped over because they would not decode. They
+      // never reach the lake while they stay that way, so a pass that met any says so here —
+      // they are not `errors` (nothing about the pass failed), and would otherwise be silent.
+      const skipped = report.eventDrain?.skipped;
+      // #2544: active scopes whose deployment does not hold them. Standing, so said here on every pass
+      // while it lasts and filed as an ops-failure once, when it appears; never an `errors` entry.
+      const notHeld = report.eventDrain?.notHeld;
+      await fileNotHeld({ admin: host.admin, actor: SWEEP_ACTOR, recorded: eventDrainNotHeldRecorded, notHeld });
+      // #1637: pending intents nothing can settle, and where — the sweep row counts them, this says
+      // which scope's journal to open. Standing, like `skipped`, so said on every pass while it lasts.
+      const unsettleable = report.platformRequestUnsettleable;
+      // #1705: an edge that moved, paused or could not resolve. The counts only; each edge and
+      // its reason is already a `vertical-events` sweep-run row.
+      const cv = report.crossVertical;
+      const cvActive = cv != null && (cv.delivered > 0 || cv.withheld > 0 || cv.paused > 0 || cv.unresolved > 0);
+      // #2314: a pass that found, deleted or could not judge anything says so; each scope's finding is
+      // also its admin-log row. A scope with no store is not on the list: a vertical that keeps no files
+      // answers so on every visit, and one whose store binding is missing fails into `errors` instead.
+      const oa = report.orphanAttachments;
+      const orphansActive = oa != null && (oa.orphans > 0 || oa.deleted > 0 || oa.refused.count > 0 || oa.unsupported.count > 0);
+      // #2501: days rolled up, a failing run (on every pass it lasts, between its hourly retries too,
+      // though the digest mails it once) and days found saturated.
+      const rollup = requestRollupLogOf(report.requestRollup);
+      // #2501: the day's snapshot taken, or a failing run, on every pass it lasts.
+      const snapshot = meterSnapshotLogOf(report.meterSnapshot);
+      // #3316: object ids asked and recorded, and cost days read or failing.
+      const costs = cloudflareCostsLogOf(report.scopeObjects, report.cloudflareCosts);
+      // K-70: the directory outbox, when the pass changed or shipped anything, or a prune listed in
+      // the switch did nothing for a standing reason (said on every pass while it lasts).
+      const directoryLake = directoryLakeLogOf(report.directoryLake);
+      if (
+        report.snapshotsReaped > 0 ||
+        report.archivedScopesReaped > 0 ||
+        report.tenantsReaped > 0 ||
+        report.errors.length > 0 ||
+        pr.drained > 0 ||
+        pr.failed > 0 ||
+        pr.pending > 0 ||
+        (rc !== null && rc.behind > 0) ||
+        (al !== null && (al.shipped > 0 || al.pruned > 0)) ||
+        skipped !== undefined ||
+        notHeld !== undefined ||
+        unsettleable !== undefined ||
+        cvActive ||
+        orphansActive ||
+        rollup !== null ||
+        snapshot !== null ||
+        costs !== null ||
+        directoryLake !== null
+      ) {
+        console.log('platform-sweep', {
+          snapshotsReaped: report.snapshotsReaped,
+          archivedScopesReaped: report.archivedScopesReaped,
+          tenantsReaped: report.tenantsReaped,
+          platformRequests: pr,
+          ...(rc && rc.behind > 0 ? { provisionReconcile: rc } : {}),
+          // An egress leaves a trace in the tail as well as the admin log: `ref` is the
+          // object the rows landed in, so a question about a pruned row has an address.
+          ...(al ? { accessLog: al } : {}),
+          ...(skipped ? { eventDrainSkipped: skipped } : {}),
+          ...(notHeld ? { eventDrainNotHeld: { count: notHeld.length, scopeIds: notHeld.slice(0, 20).map((n) => n.scopeId) } } : {}),
+          ...(unsettleable ? { platformRequestUnsettleable: unsettleable } : {}),
+          ...(cvActive
+            ? {
+                crossVertical: {
+                  delivered: cv.delivered,
+                  withheld: cv.withheld,
+                  paused: cv.paused,
+                  unresolved: cv.unresolved,
+                  candidates: cv.candidates,
+                  deferred: cv.deferred,
+                },
+              }
+            : {}),
+          ...(orphansActive ? { orphanAttachments: oa } : {}),
+          ...(rollup ? { requestRollup: rollup } : {}),
+          ...(snapshot ? { meterSnapshot: snapshot } : {}),
+          ...(costs ? { cloudflareCosts: costs } : {}),
+          ...(directoryLake ? { directoryLake } : {}),
+          errors: report.errors,
+        });
       }
-    }
 
-    // #1416 — the one push in the observability stack. Everything above records; this
-    // reads what was recorded since the previous pass (the ops-failure ledger plus the
-    // pass's own errors) and mails ONE digest to the opted-in staff address. Unset
-    // STAFF_ALERT_EMAIL ⇒ nothing sent — the same opt-in posture as every phase below.
-    // A send failure is its own ledger row and never sinks the pass (`sendFailureDigest`
-    // does not throw); it is logged here so the tail shows a digest that did not go.
-    if (digestSince !== undefined) {
-      const digest = await sendFailureDigest({
-        admin: host.admin,
-        actor: SWEEP_ACTOR,
-        transport: transportFor(env),
-        from: senderFor(env, 'Substrat alerts'),
-        recipients: env.STAFF_ALERT_EMAIL,
-        since: digestSince,
-        reportErrors: report.errors,
-        consoleUrl: env.PLATFORM_CP_URL,
+      // #2309 — the store scripts' rebuild: after the key lists, the store entry or its verifier
+      // changed (a deploy of this worker), every store script is rebuilt at the release it runs, a
+      // bounded number per pass, resuming where the last pass stopped. Before the digest below, so a
+      // script that could not be rebuilt is in this pass's digest. Contained: loud, never sunk.
+      await rebuildStoreScripts(env, host.admin).catch((err: unknown) => {
+        console.error('store-rebuild failed', err instanceof Error ? err.message : String(err));
       });
-      if (digest.status !== 'skipped') console.log('failure-digest', digest);
-    }
 
-    // #305 §4.7 — the custom-hostname reconcile pass: unbind rows whose scope is
-    // archived/reaped (a deleted app's hostnames must not linger), poll every `verifying`
-    // domain (→ active/failed) and retry any `pending` custom bind whose create never landed.
-    // This is what makes issuance self-heal without a human flipping status by hand. It
-    // needs a CF-for-SaaS zone; without one (dev/self-host) the provisioner is undefined
-    // and the pass is skipped. Contained per-row, so a bad domain never sinks the sweep, and
-    // contained as a step like the backup and the prune below: a read that throws for the whole
-    // step is logged, and the steps after it still run.
-    const provisioner = provisionHostnameFor(env);
-    if (provisioner) {
+      // #2064 — an audited change (owner hand-over, member change) whose intent row has had no
+      // outcome for an hour: its outcome write failed, or the request died between the two. The
+      // pass writes an `unknown` outcome for each and an ops-failure row, BEFORE the digest below,
+      // so the digest this pass sends names it. Contained like the phases below: loud, never sunk.
       try {
-        const bases = platformBaseDomains(env);
-        const hostnameReport = await reconcilePendingHostnames({
+        const settled = await settleUnrecordedOutcomes({ admin: host.admin, actor: SWEEP_ACTOR });
+        if (settled.settled.length || settled.errors.length) console.error('audit-outcome-settle', settled);
+      } catch (err) {
+        console.error('audit-outcome-settle failed', err instanceof Error ? err.message : String(err));
+      }
+
+      // #1054 — the model usage ledger against what Cloudflare saw, one closed UTC day at a time.
+      // Before the digest, so a day's gaps filed this pass are in the digest it sends. Production
+      // only (MODEL_RECONCILIATION). Contained like the phases around it: loud, never sunk.
+      const modelCosts = env.MODEL_RECONCILIATION === 'on' ? modelCostReaderFor(env) : undefined;
+      if (modelCosts) {
+        try {
+          const recon = await runModelReconciliationPass({ admin: host.admin, actor: SWEEP_ACTOR, reader: modelCosts, gatewayProviders: GATEWAY_PROVIDERS });
+          if (recon.reconciled.length || recon.failed.length) console.log('model-reconcile', recon);
+        } catch (err) {
+          console.error('model-reconcile failed', err instanceof Error ? err.message : String(err));
+        }
+      }
+
+      // #1416 — the one push in the observability stack. Everything above records; this
+      // reads what was recorded since the previous pass (the ops-failure ledger plus the
+      // pass's own errors) and mails ONE digest to the opted-in staff address. Unset
+      // STAFF_ALERT_EMAIL ⇒ nothing sent — the same opt-in posture as every phase below.
+      // A send failure is its own ledger row and never sinks the pass (`sendFailureDigest`
+      // does not throw); it is logged here so the tail shows a digest that did not go.
+      if (digestSince !== undefined) {
+        const digest = await sendFailureDigest({
           admin: host.admin,
           actor: SWEEP_ACTOR,
-          provisioner,
-          isCustom: (h) => isCustomHostname(h, bases),
-          onActivated: relayOnActivatedFor(env),
+          transport: transportFor(env),
+          from: senderFor(env, 'Substrat alerts'),
+          recipients: env.STAFF_ALERT_EMAIL,
+          since: digestSince,
+          reportErrors: report.errors,
+          consoleUrl: env.PLATFORM_CP_URL,
         });
-        if (
-          hostnameReport.activated ||
-          hostnameReport.failed ||
-          hostnameReport.created ||
-          hostnameReport.healed ||
-          hostnameReport.orphaned ||
-          hostnameReport.errors.length ||
-          hostnameReport.unreadableScopes.length
-        ) {
-          console.log('hostname-reconcile', hostnameReport);
-        }
-      } catch (err) {
-        console.error('hostname-reconcile failed', err instanceof Error ? err.message : String(err));
+        if (digest.status !== 'skipped') console.log('failure-digest', digest);
       }
-    }
 
-    // #40 — the platform's own disaster recovery. After every phase that changes the directory
-    // (only the connector sweep follows it, #3324), deliberately: the phases above mutate the directory (reaps, hostname transitions, intent settling),
-    // so a copy taken after them is a copy of a settled directory rather than of one
-    // mid-sweep. The cadence guard lives in `backupDirectoryIfDue` and reads the newest
-    // stored copy, so a quarter-hourly cron takes one a day and a missed tick means the
-    // next pass takes it late instead of never.
-    //
-    // A failure here is logged, not thrown: it must not sink the sweep (the drain and
-    // reap phases above are what keep the fleet moving), but it must be LOUD, because a
-    // backup that has been quietly failing is worse than no backup — it is a false
-    // belief. `GET /api/directory/backups` is where that belief gets checked.
-    if (env.DIRECTORY_BACKUPS) {
+      // #305 §4.7 — the custom-hostname reconcile pass: unbind rows whose scope is
+      // archived/reaped (a deleted app's hostnames must not linger), poll every `verifying`
+      // domain (→ active/failed) and retry any `pending` custom bind whose create never landed.
+      // This is what makes issuance self-heal without a human flipping status by hand. It
+      // needs a CF-for-SaaS zone; without one (dev/self-host) the provisioner is undefined
+      // and the pass is skipped. Contained per-row, so a bad domain never sinks the sweep, and
+      // contained as a step like the backup and the prune below: a read that throws for the whole
+      // step is logged, and the steps after it still run.
+      const provisioner = provisionHostnameFor(env);
+      if (provisioner) {
+        try {
+          const bases = platformBaseDomains(env);
+          const hostnameReport = await reconcilePendingHostnames({
+            admin: host.admin,
+            actor: SWEEP_ACTOR,
+            provisioner,
+            isCustom: (h) => isCustomHostname(h, bases),
+            onActivated: relayOnActivatedFor(env),
+          });
+          if (
+            hostnameReport.activated ||
+            hostnameReport.failed ||
+            hostnameReport.created ||
+            hostnameReport.healed ||
+            hostnameReport.orphaned ||
+            hostnameReport.errors.length ||
+            hostnameReport.unreadableScopes.length
+          ) {
+            console.log('hostname-reconcile', hostnameReport);
+          }
+        } catch (err) {
+          console.error('hostname-reconcile failed', err instanceof Error ? err.message : String(err));
+        }
+      }
+
+      // #40 — the platform's own disaster recovery. After every phase that changes the directory
+      // (only the connector sweep follows it, #3324), deliberately: the phases above mutate the directory (reaps, hostname transitions, intent settling),
+      // so a copy taken after them is a copy of a settled directory rather than of one
+      // mid-sweep. The cadence guard lives in `backupDirectoryIfDue` and reads the newest
+      // stored copy, so a quarter-hourly cron takes one a day and a missed tick means the
+      // next pass takes it late instead of never.
+      //
+      // A failure here is logged, not thrown: it must not sink the sweep (the drain and
+      // reap phases above are what keep the fleet moving), but it must be LOUD, because a
+      // backup that has been quietly failing is worse than no backup — it is a false
+      // belief. `GET /api/directory/backups` is where that belief gets checked.
+      if (env.DIRECTORY_BACKUPS) {
+        try {
+          const byReference = parseDirectoryCopyByReference(env.DIRECTORY_BACKUP_BY_REFERENCE);
+          if (byReference.invalid) console.error('directory-backup:', byReference.invalid, '- taking the copy as off');
+          const backup = await backupDirectoryIfDue({
+            admin: host.admin,
+            store: createR2DirectoryBackupStore(env.DIRECTORY_BACKUPS),
+            actor: SWEEP_ACTOR,
+            byReference: byReference.mode,
+          });
+          if (backup.taken || backup.pruned) console.log('directory-backup', backup);
+          // #3325: a `verify` copy found an append-only table changing under a copy. The switch must
+          // stay off until that is explained, so it is said where a failing backup is said.
+          const faults = referenceFaults(backup.referenceCheck);
+          if (faults.length) {
+            console.error('directory-backup: a by-reference copy would have differed in append-only tables', faults);
+          }
+          // #2868: a copy that started and never finished is waited out, not retried; every pass
+          // that waits says so, so a backup failing that way is as loud as one that throws.
+          if (backup.waitingOutAttempt) {
+            console.error('directory-backup: waiting out a copy started at', backup.waitingOutAttempt, 'that has not finished');
+          }
+        } catch (err) {
+          console.error('directory-backup failed', err instanceof Error ? err.message : String(err));
+        }
+      }
+
+      // #557 — the stored-copy lifecycle rule, the retention leg #36 left unmade. Both
+      // windows are opt-in (unset ⇒ every copy kept forever), the same posture as the two
+      // reap windows: the platform never deletes evidence on a schedule a human did not
+      // choose. `directory/` copies are not here — their 30-copy window has lived in
+      // `backupDirectoryIfDue` since #40. Contained like the backup above: a failed prune
+      // must not sink the sweep, but it must be loud, because a lifecycle rule that has
+      // been quietly failing is a cost leak wearing a policy's name.
       try {
-        const byReference = parseDirectoryCopyByReference(env.DIRECTORY_BACKUP_BY_REFERENCE);
-        if (byReference.invalid) console.error('directory-backup:', byReference.invalid, '- taking the copy as off');
-        const backup = await backupDirectoryIfDue({
-          admin: host.admin,
-          store: createR2DirectoryBackupStore(env.DIRECTORY_BACKUPS),
-          actor: SWEEP_ACTOR,
-          byReference: byReference.mode,
-        });
-        if (backup.taken || backup.pruned) console.log('directory-backup', backup);
-        // #3325: a `verify` copy found an append-only table changing under a copy. The switch must
-        // stay off until that is explained, so it is said where a failing backup is said.
-        const faults = referenceFaults(backup.referenceCheck);
-        if (faults.length) {
-          console.error('directory-backup: a by-reference copy would have differed in append-only tables', faults);
-        }
-        // #2868: a copy that started and never finished is waited out, not retried; every pass
-        // that waits says so, so a backup failing that way is as loud as one that throws.
-        if (backup.waitingOutAttempt) {
-          console.error('directory-backup: waiting out a copy started at', backup.waitingOutAttempt, 'that has not finished');
+        const scopeBackupDays = parseRetentionDays(env.SCOPE_BACKUP_RETENTION_DAYS);
+        const accessLogDays = parseRetentionDays(env.ACCESS_LOG_RETENTION_DAYS);
+        const scopeCopies =
+          scopeBackupDays !== undefined && env.SCOPE_BACKUPS
+            ? await pruneScopeBackups(env.SCOPE_BACKUPS, { olderThanDays: scopeBackupDays })
+            : 0;
+        const accessLogBatches =
+          accessLogDays !== undefined && env.DIRECTORY_BACKUPS
+            ? await pruneAccessLogBatches(env.DIRECTORY_BACKUPS, { olderThanDays: accessLogDays })
+            : 0;
+        if (scopeCopies || accessLogBatches) {
+          console.log('stored-copy-retention', { scopeCopies, accessLogBatches });
         }
       } catch (err) {
-        console.error('directory-backup failed', err instanceof Error ? err.message : String(err));
+        console.error(
+          'stored-copy-retention failed',
+          err instanceof Error ? err.message : String(err),
+        );
       }
-    }
+      if (env.REVIEW_SOURCES) {
+        try {
+          const removed = await pruneReviews(env.REVIEW_SOURCES);
+          if (removed) console.log('review-retention', { removed });
+        } catch (err) {
+          console.error('review-retention failed', err instanceof Error ? err.message : String(err));
+        }
+      }
 
-    // #557 — the stored-copy lifecycle rule, the retention leg #36 left unmade. Both
-    // windows are opt-in (unset ⇒ every copy kept forever), the same posture as the two
-    // reap windows: the platform never deletes evidence on a schedule a human did not
-    // choose. `directory/` copies are not here — their 30-copy window has lived in
-    // `backupDirectoryIfDue` since #40. Contained like the backup above: a failed prune
-    // must not sink the sweep, but it must be loud, because a lifecycle rule that has
-    // been quietly failing is a cost leak wearing a policy's name.
-    try {
-      const scopeBackupDays = parseRetentionDays(env.SCOPE_BACKUP_RETENTION_DAYS);
-      const accessLogDays = parseRetentionDays(env.ACCESS_LOG_RETENTION_DAYS);
-      const scopeCopies =
-        scopeBackupDays !== undefined && env.SCOPE_BACKUPS
-          ? await pruneScopeBackups(env.SCOPE_BACKUPS, { olderThanDays: scopeBackupDays })
-          : 0;
-      const accessLogBatches =
-        accessLogDays !== undefined && env.DIRECTORY_BACKUPS
-          ? await pruneAccessLogBatches(env.DIRECTORY_BACKUPS, { olderThanDays: accessLogDays })
-          : 0;
-      if (scopeCopies || accessLogBatches) {
-        console.log('stored-copy-retention', { scopeCopies, accessLogBatches });
-      }
-    } catch (err) {
-      console.error(
-        'stored-copy-retention failed',
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-    if (env.REVIEW_SOURCES) {
+      // #3324 — the connector sweep, LAST. Everything above has run by now, so a sweep that exhausts
+      // this isolate costs the connections still in flight and nothing else. Its failures are ledger
+      // rows (`recordFailure`), so the next pass's digest carries them. Contained like the steps
+      // above: loud, never sunk.
       try {
-        const removed = await pruneReviews(env.REVIEW_SOURCES);
-        if (removed) console.log('review-retention', { removed });
+        const connectors = await runConnectorSweep(host, connectorSweep);
+        if (connectors.errors.length > 0 || connectors.connectionsPaused > 0 || connectors.connectionsBackingOff > 0) {
+          console.log('connector-sweep', connectors);
+        }
       } catch (err) {
-        console.error('review-retention failed', err instanceof Error ? err.message : String(err));
+        console.error('connector-sweep failed', err instanceof Error ? err.message : String(err));
+      }
+      // Every ledger write this pass made, the connector outcomes just above included, lands before
+      // the handler returns. A connector outcome dropped here reads to the next pass as a crash.
+      await writes.settle();
+    } finally {
+      try {
+        const summary = await host.admin.flushAccessSummary?.(SWEEP_ACTOR);
+        if (summary) console.log('access-summary', summary);
+      } catch (err) {
+        console.error('access-summary failed', err instanceof Error ? err.message : String(err));
       }
     }
-
-    // #3324 — the connector sweep, LAST. Everything above has run by now, so a sweep that exhausts
-    // this isolate costs the connections still in flight and nothing else. Its failures are ledger
-    // rows (`recordFailure`), so the next pass's digest carries them. Contained like the steps
-    // above: loud, never sunk.
-    try {
-      const connectors = await runConnectorSweep(host, connectorSweep);
-      if (connectors.errors.length > 0 || connectors.connectionsPaused > 0 || connectors.connectionsBackingOff > 0) {
-        console.log('connector-sweep', connectors);
-      }
-    } catch (err) {
-      console.error('connector-sweep failed', err instanceof Error ? err.message : String(err));
-    }
-    // Every ledger write this pass made, the connector outcomes just above included, lands before
-    // the handler returns. A connector outcome dropped here reads to the next pass as a crash.
-    await writes.settle();
   },
 
   fetch(request: Request, env: Env): Response | Promise<Response> {

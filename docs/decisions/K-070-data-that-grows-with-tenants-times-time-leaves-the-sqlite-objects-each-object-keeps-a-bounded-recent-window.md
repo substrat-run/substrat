@@ -41,8 +41,9 @@ tenant's Activity page reads its own window; anything older, and every staff-wid
 lake.
 
 **An access-log row records a person reading a tenant's data**, written in that tenant's object. The
-platform's own bookkeeping reads of a directory object by that object's own alarm are not staff
-access and write no row, unless the owner decides otherwise (below).
+platform's own bookkeeping reads are recorded as ONE row per pass, not one per read: the owner's
+choice on #3326, recorded as [K-73](./K-073-the-platform-s-own-bookkeeping-reads-are-recorded-as-one-access-log-row-per-pass.md),
+which amends K-24.
 
 **A staff read that visits no tenant object is recorded too.** Staff lists and search over the
 cross-tenant index, staff queries over the lake and staff reads of the registry are `HostAdmin` reads
@@ -50,8 +51,7 @@ under [K-24](./K-024-staff-reads-are-audited-into-a-separate-access-log-that-dra
 access-log row with K-24's fields (actor, method, the tenant or scope where one is named, a parameter
 summary and the result count) in the registry, which ships it to the lake. Where staff-wide rows are
 stored is an open choice; that they are written is not. This record changes where K-24's rows are
-written, not which reads K-24 records, with one exception the owner may take: the bookkeeping reads
-above. If that exception is taken, this record amends K-24 explicitly.
+written, not which reads K-24 records; the one exception, the bookkeeping reads above, is K-73's.
 
 **The billing rollups stop being kept forever in the directory.** `BILLING_ROLLUP_RETENTION_MONTHS`
 (today `null`, keep all) becomes the window above once the lake holds the history.
@@ -77,8 +77,7 @@ for every write; a row shipped from an outbox afterwards cannot be lost.
 ## Open choices for the owner
 
 - The window length (35 days proposed, to cover a billing period and a dispute).
-- **#3326's policy question:** whether the platform's own reads of a tenant's directory record write
-  access-log rows. They are about 95 % of today's inflow. K-24 is about who looked at tenant data.
+- ~~#3326's policy question~~ — decided 2026-11-26: one summary row per pass (K-73).
 - The lake's retention per data set, and whether the admin log in the lake is kept forever.
 
 ## Not built
