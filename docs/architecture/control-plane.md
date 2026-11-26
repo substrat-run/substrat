@@ -1116,6 +1116,23 @@ suspended tenant blunts what §7 calls "a live weapon". That is the same tension
 the entitlement check — hot path or cached with event invalidation — and it should be
 settled once, for both.
 
+**Proposed answer: the routing read model** ([#3395](https://github.com/substrat-run/substrat/issues/3395),
+[K-72](../decisions/K-072-the-router-reads-routes-from-a-kv-read-model-the-directory-publishes.md),
+proposed). The directory publishes every route and every vertical's serving policy to Workers KV.
+Triggers on the five tables the route read joins capture each change into an outbox in the same
+transaction, the directory drains it after every call, and the scheduled pass reconciles drift.
+The router reads memory → KV → the directory, which answers every miss. The router stops routing
+a suspended tenant or a removed hostname, and takes a promote's policy, in an estimated four
+minutes: 180 s in memory and 60 s of KV edge cache, plus KV's propagation, which Cloudflare
+documents as "60 seconds or more" and which has not been measured here. That aims at D-77's
+five minutes (proposed), a target chosen for request latency and KV reads over freshness, not a
+guaranteed maximum: an operator who suspends a tenant or removes a hostname with
+`ROUTE_READ_MODEL` set to `on` should expect the router to keep serving it for up to about five
+minutes, and possibly longer if KV propagates late. A scope whose lifecycle delivery has landed
+(§4.2) refuses sooner, at its own door, with no new mechanism. A residency-pinned route is
+never written to KV (K-36); the router keeps reading it from the directory. The router's flag
+`ROUTE_READ_MODEL` (`off` / `compare` / `on`) decides whether it reads the read model at all.
+
 ### 4.8 Tenant delete lifecycle ([#36](https://github.com/substrat-run/substrat/issues/36))
 
 The tenant analogue of the §4.4 scope reap. Before this, `deleting` was a dead status —

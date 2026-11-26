@@ -3049,6 +3049,14 @@ function humanStaffActorFor(env: Env): ((request: Request) => Promise<PlatformAc
   return async (request) => (await auth(request)) ?? null;
 }
 
+/** #3395: the directory object's routing read model methods. A stub per call, never held. */
+interface RouteReadModelDirectory {
+  reconcileRouteReadModel(opts?: { limit?: number }): Promise<{ checked: number; queued: number } | null>;
+  publishRouteReadModel(opts: { apply?: boolean }): Promise<{ status: unknown; flushed: unknown }>;
+}
+const directoryRouteReadModel = (env: Env): RouteReadModelDirectory =>
+  env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as RouteReadModelDirectory;
+
 function authFor(env: Env): PlatformActorAuth {
   const readers: PlatformActorAuth[] = [...humanStaffReaders(env)];
   // A connected vertical registers as a service (shared token), not staff.
@@ -3109,6 +3117,17 @@ export default {
    * never outlives the bytes either way.
    */
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    // #3395: the routing read model's drift repair, FIRST: it is a few hundred directory reads, and
+    // a pass that exhausts the isolate later on must not take it down with it. A failure is logged
+    // and left to the next pass; the directory's own publishing does not depend on this.
+    try {
+      const reconciled = await directoryRouteReadModel(env).reconcileRouteReadModel();
+      if (reconciled && reconciled.queued > 0) {
+        console.log(JSON.stringify({ routeReadModel: 'reconcile', ...reconciled }));
+      }
+    } catch (err) {
+      console.error('route read model: reconcile failed', err);
+    }
     const host = hostFor(env);
     const resolveVersion = resolveVerticalVersionFor(env);
     const resolveRef = resolveVerticalRefFor(env);
@@ -4314,6 +4333,21 @@ export default {
         }
       });
     }
+
+    // #3395: the routing read model's status and backfill, for scripts/route-read-model-backfill.mjs.
+    // Staff or the service token. A dry run (the default) writes nothing; `{ "apply": true }` marks
+    // every key dirty and publishes. Neither changes the directory, so neither is an admin-log entry.
+    app.post('/api/route-read-model/publish', async (c) => {
+      const actor = await authFor(c.env)(c.req.raw);
+      if (!actor) return refuse('unauthenticated', 'unauthenticated');
+      // Any body that is not an object (none, malformed, a JSON `null`) is a dry run: only a literal
+      // `true` publishes.
+      const body: unknown = await c.req.json().catch(() => null);
+      const apply = typeof body === 'object' && body !== null && Reflect.get(body, 'apply') === true;
+      const result = await directoryRouteReadModel(c.env).publishRouteReadModel({ apply });
+      console.log(JSON.stringify({ routeReadModel: apply ? 'backfill' : 'dry-run', actor, ...result }));
+      return c.json(result);
+    });
 
     // The audited control-plane API under /api (the console's baseUrl). One host for the API and
     // the reach its edge-health read uses (#1705 PR 3), not one each.

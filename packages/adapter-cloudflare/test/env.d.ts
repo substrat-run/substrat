@@ -8,6 +8,9 @@ declare namespace Cloudflare {
     /** K-68 (directory split), step 3a: the registry and the per-tenant directory object. */
     DIRECTORY_REGISTRY: DurableObjectNamespace<import('../src/directory-objects.js').DirectoryRegistryDO>;
     TENANT_DIRECTORY: DurableObjectNamespace<import('../src/directory-objects.js').TenantDirectoryDO>;
+    /** #3395: the directory with the routing read model on, and the KV namespace it publishes to. */
+    ROUTES_CONTROL_PLANE: DurableObjectNamespace;
+    TEST_ROUTES: KVNamespace;
     /** #1899: the schedule suite's own directory — its sweep counts every active scope in it. */
     SCHED_CONTROL_PLANE: DurableObjectNamespace;
     /** …and its scopes, which read SCHED_CONTROL_PLANE as their directory. */

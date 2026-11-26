@@ -18,7 +18,10 @@
 // class, and the router must not carry code for opening scopes it has no binding to.
 import {
   createPeerCallResolver,
+  createReadModelRouteResolver,
   createRouteResolver,
+  RouteMemoryCache,
+  routeReadModelModeOf,
   type RouteResolver,
 } from '@substrat-run/adapter-cloudflare/routing';
 import {
@@ -70,6 +73,17 @@ export interface Env {
    * finds the door; it never opens it.
    */
   CONTROL_PLANE: DurableObjectNamespace;
+  /**
+   * The routing read model (#3395): the KV namespace the control plane publishes routes to.
+   * Read only, and only when `ROUTE_READ_MODEL` asks for it.
+   */
+  ROUTES?: KVNamespace;
+  /**
+   * How routes are read (#3395): `off` (absent, or anything else) reads the directory on every
+   * request; `compare` serves from the directory and logs where the read model disagrees; `on`
+   * reads memory → KV → the directory. A deployment var, so it changes without a code deploy.
+   */
+  ROUTE_READ_MODEL?: string;
   /**
    * Shared secret presented to every vertical as `x-substrat-router`.
    *
@@ -366,7 +380,24 @@ const isReplayable = (request: Request): boolean => request.body === null;
  * Constructing a closure over a namespace binding costs nothing. Caching anything
  * derived from one costs a production outage that only appears on the SECOND request.
  */
-const resolverFor = (env: Env): RouteResolver => createRouteResolver(env.CONTROL_PLANE);
+const resolverFor = (env: Env, ctx?: ExecutionContext): RouteResolver => {
+  const mode = routeReadModelModeOf(env.ROUTE_READ_MODEL);
+  if (mode === 'off' || !env.ROUTES) return createRouteResolver(env.CONTROL_PLANE);
+  return createReadModelRouteResolver({
+    controlPlane: env.CONTROL_PLANE,
+    kv: env.ROUTES,
+    cache: routeMemory,
+    mode,
+    ...(ctx ? { waitUntil: (p: Promise<unknown>) => ctx.waitUntil(p) } : {}),
+  });
+};
+
+/**
+ * #3395: one isolate's memory of routes, kept across requests. Unlike the memoised resolver the
+ * comment above buries, it holds PLAIN DATA — parsed KV entries and directory rows — and never a
+ * stub, a binding or anything a request created, so a later request may read it.
+ */
+const routeMemory = new RouteMemoryCache();
 
 /**
  * A response with headers changed. A dispatched response's headers are immutable, so it is
@@ -676,7 +707,7 @@ export default {
 
     const hostname = new URL(request.url).hostname;
 
-    const target = await resolverFor(env)(hostname);
+    const target = await resolverFor(env, ctx)(hostname);
     if (!target) {
       // Unknown, non-active lifecycle, still validating, or failed — all the same from outside. Which of
       // those it is belongs in the console, not in a response to an anonymous caller.

@@ -19,6 +19,14 @@
 // WIRE_SIGN is exactly `on`; off, the router sends what it sent before. Pushed with
 // scripts/secrets.mjs as WIRE_ROUTER_KEY and WIRE_ROUTER_SIGN; runbook secrets/wire-keys.md.
 //
+// Optional (#3395): how routes are read. Absent is `off` — the control plane's directory on every
+// request, as before. `compare` serves from the directory and logs every route the KV read model
+// disagrees on (`router: 'route-read-model'`); `on` reads memory → KV → the directory. A secret,
+// like the sample rate above, so it changes without a code deploy and no deploy resets it:
+//   wrangler secret put ROUTE_READ_MODEL        # `compare`, then `on`; `wrangler secret delete` is off
+// Turn it on only after the control plane publishes to the ROUTES namespace below and the
+// backfill has run (scripts/route-read-model-backfill.mjs).
+//
 // Then bind hostnames with `HostAdmin.bindHostname` (console, or the control-plane
 // API) and set them `active`. Until a hostname is bound and active, the router
 // answers 404 — a name it does not know is a name it will not serve.
@@ -50,6 +58,12 @@
 	// rather than at the next sweep (platform-intents.md §"router kick"). Gated by
 	// PLATFORM_SECRET; unset ⇒ the kick no-ops and the sweep is the backstop.
 	"services": [{ "binding": "CONTROL_PLANE_KICK", "service": "substrat-control-plane" }],
+
+	// The routing read model (#3395): the KV namespace the control plane publishes routes to and
+	// this worker only reads. The id is an account id, so the committed config names a
+	// placeholder that tools/wrangler-config.mjs resolves at deploy (CF_KV_ROUTES_ID[_TEST]).
+	// Holds only routes that are not residency-pinned (K-36): KV has no jurisdiction.
+	"kv_namespaces": [{ "binding": "ROUTES", "id": "${CF_KV_ROUTES_ID}" }],
 
 	// No `migrations` block, deliberately: this worker does not OWN the DO class,
 	// it borrows it. The control plane's wrangler.jsonc declares it.
@@ -148,6 +162,7 @@
 				}
 			],
 			"services": [{ "binding": "CONTROL_PLANE_KICK", "service": "substrat-control-plane-test" }], // differs: test CP worker
+			"kv_namespaces": [{ "binding": "ROUTES", "id": "${CF_KV_ROUTES_ID_TEST}" }], // differs: the test control plane's namespace
 			"analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "substrat_router_test" }], // differs: test data stays out of prod charts
 			// #130, same budgets as prod. Own namespaces, so test traffic never shares a counter.
 			"ratelimits": [

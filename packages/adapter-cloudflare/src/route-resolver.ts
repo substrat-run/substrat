@@ -8,6 +8,26 @@ import {
   type PeerCaller,
   type RouteTarget,
 } from '@substrat-run/contracts';
+import {
+  readModelRouteRead,
+  readModelRouteReader,
+  type RouteKvReader,
+  type RouteMemoryCache,
+} from './route-read-model.js';
+
+export {
+  RouteMemoryCache,
+  ROUTE_KV_CACHE_TTL_S,
+  ROUTE_MEMORY_TTL_MS,
+  ROUTE_NEGATIVE_TTL_MS,
+  assembleRouteRow,
+  routeKvKey,
+  servingPolicyKvKey,
+  type RefusedRouteEntry,
+  type RouteEntry,
+  type RouteKvReader,
+  type ServingPolicyEntry,
+} from './route-read-model.js';
 
 /**
  * Hostname → route target, for the router worker (K-26).
@@ -51,7 +71,11 @@ export interface RouteRowLike {
 
 /** The one method this needs from the control-plane DO. */
 interface HostnameReader {
-  readRoute(hostname: string): Promise<RouteRowLike | undefined>;
+  /**
+   * `publish` (#3395) asks the directory to publish the route to the read model when it holds
+   * none yet. A directory that predates it ignores the argument and answers the same row.
+   */
+  readRoute(hostname: string, opts?: { publish?: boolean }): Promise<RouteRowLike | undefined>;
 }
 
 export type RouteResolver = (hostname: string) => Promise<RouteTarget | undefined>;
@@ -135,9 +159,11 @@ export const normalizeHostname = (hostname: string): string => hostname.toLowerC
  * CP-backed `getScope` retains its own check. No lifecycle state crosses the wire.
  * Direct/background calls and already-dispatched requests remain outside this gate.
  *
- * Uncached, per request, on purpose: K-26 defers cache invalidation to open
- * question 5 rather than answering it twice, because a cached route that keeps
- * serving a suspended tenant blunts suspension — which §7 calls a live weapon.
+ * This resolver is uncached, per request: K-26 deferred cache invalidation to open
+ * question 5, because a cached route that keeps serving a suspended tenant blunts
+ * suspension — which §7 calls a live weapon. `createReadModelRouteResolver` below is the
+ * cached answer (#3395, K-72 proposed): the scope refuses a suspension as soon as its
+ * lifecycle delivery lands, and the router's cache is bounded.
  */
 export function createRouteResolver(controlPlane: DurableObjectNamespace): RouteResolver {
   return async (hostname: string) => {
@@ -154,6 +180,87 @@ export function createRouteResolver(controlPlane: DurableObjectNamespace): Route
       controlPlane.idFromName('control-plane'),
     ) as unknown as HostnameReader;
     return toRouteTarget(await cp.readRoute(normalizeHostname(hostname)));
+  };
+}
+
+/**
+ * How the router reads routes (#3395):
+ * - `off`: the directory on every request, as above.
+ * - `compare`: the directory serves; the read model is read beside it and every disagreement or
+ *   miss is logged. Nothing is served from KV, so this is safe to run before trusting it.
+ * - `on`: memory → KV → the directory, which answers every miss and publishes what it answered.
+ */
+export type RouteReadModelMode = 'off' | 'compare' | 'on';
+
+/** A deployment value → a mode. Anything unrecognised is `off`: the flag can only fail safe. */
+export const routeReadModelModeOf = (raw: string | undefined): RouteReadModelMode =>
+  raw === 'on' || raw === 'compare' ? raw : 'off';
+
+/** One comparison's outcome, as `compare` logs it. A match is not logged, only counted by absence. */
+export interface RouteReadModelComparison {
+  hostname: string;
+  outcome: 'mismatch' | 'miss' | 'error';
+  directory: RouteTarget | undefined;
+  readModel: RouteTarget | undefined;
+}
+
+export interface ReadModelResolverOptions {
+  controlPlane: DurableObjectNamespace;
+  kv: RouteKvReader;
+  /** Module-scope, shared across requests: it holds plain data only. */
+  cache: RouteMemoryCache;
+  mode: Exclude<RouteReadModelMode, 'off'>;
+  /** `compare` runs its read model half here, off the response's path. */
+  waitUntil?: (promise: Promise<unknown>) => void;
+  /** `compare`'s report of a disagreement. Defaults to one JSON log line. */
+  report?: (comparison: RouteReadModelComparison) => void;
+  now?: () => number;
+}
+
+const logComparison = (c: RouteReadModelComparison): void => {
+  console.log(JSON.stringify({ router: 'route-read-model', ...c }));
+};
+
+/**
+ * The read-model resolver (#3395). Like `createRouteResolver`, the directory stub is created per
+ * call and never held: the cache keeps rows and KV entries, which are plain data.
+ */
+export function createReadModelRouteResolver(opts: ReadModelResolverOptions): RouteResolver {
+  const directory = (publish: boolean) => async (hostname: string) => {
+    const cp = opts.controlPlane.get(opts.controlPlane.idFromName('control-plane')) as unknown as HostnameReader;
+    return publish ? cp.readRoute(hostname, { publish: true }) : cp.readRoute(hostname);
+  };
+  const base = { kv: opts.kv, cache: opts.cache, ...(opts.now ? { now: opts.now } : {}) };
+  if (opts.mode === 'on') {
+    const read = readModelRouteRead({ ...base, directory: directory(true) });
+    return async (hostname) => toRouteTarget((await read(normalizeHostname(hostname))).row);
+  }
+  const fromModel = readModelRouteReader(base);
+  const report = opts.report ?? logComparison;
+  return async (hostname) => {
+    const normalized = normalizeHostname(hostname);
+    const served = toRouteTarget(await directory(false)(normalized));
+    const compare = (async () => {
+      let modelled: RouteRowLike | undefined | 'miss';
+      try {
+        modelled = await fromModel(normalized);
+      } catch {
+        report({ hostname: normalized, outcome: 'error', directory: served, readModel: undefined });
+        return;
+      }
+      if (modelled === 'miss') {
+        // A miss for a hostname the directory does not route either is the agreement: nothing.
+        if (served) report({ hostname: normalized, outcome: 'miss', directory: served, readModel: undefined });
+        return;
+      }
+      const readModel = toRouteTarget(modelled);
+      if (JSON.stringify(readModel) !== JSON.stringify(served)) {
+        report({ hostname: normalized, outcome: 'mismatch', directory: served, readModel });
+      }
+    })();
+    if (opts.waitUntil) opts.waitUntil(compare);
+    else await compare;
+    return served;
   };
 }
 

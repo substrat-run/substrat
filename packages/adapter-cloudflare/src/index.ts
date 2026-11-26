@@ -77,6 +77,20 @@ export {
 } from './r2.js';
 export type { R2BlobStores, R2BlobStoresOptions } from './r2.js';
 export { createRouteResolver } from './route-resolver.js';
+// #3395: the routing read model's one projection writer and its entry builders, for every source
+// that will feed it (the directory today; the registry and per-tenant objects after K-68's split).
+export {
+  routeEntryKey,
+  routeEntryOf,
+  servingPolicyEntryKey,
+  servingPolicyEntryOf,
+  sqlPublishedLedger,
+  writeRouteReadModelEntry,
+  type PublishedLedger,
+  type RouteKvWriter,
+  type RouteReadModelKey,
+  type RouteSourceFields,
+} from './route-read-model-publisher.js';
 export type { RouteResolver } from './route-resolver.js';
 export type { ControlPlaneReader, DoCheckerDeps } from './checker.js';
 export { cloudflareClientContext, cloudflareGeo } from './client-context.js';

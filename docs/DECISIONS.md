@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-150 decisions · 79 plan · 71 kernel
+151 decisions · 79 plan · 72 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -71,7 +71,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-23](decisions/K-023-identity-pools-are-registered-and-declare-topology-rather-th.md) | 2026-07-19 | kernel | Identity pools are registered, and declare topology rather than audience | #48 |
 | [K-24](decisions/K-024-staff-reads-are-audited-into-a-separate-access-log-that-drai.md) | 2026-07-19 | kernel | Staff reads are audited into a separate access log that drains rather than expires | #43, #42 |
 | [K-25](decisions/K-025-the-idp-is-not-fronted-whatever-mints-externalid-becomes-the.md) | 2026-07-19 | kernel | The IdP is not fronted: whatever mints externalId becomes the identity of record |  |
-| [K-26](decisions/K-026-one-environment-wide-router-verticals-are-unreachable-except.md) | 2026-07-19 | kernel | One environment-wide router; verticals are unreachable except through it; residency is… <br>*amended by D-77* | #31 |
+| [K-26](decisions/K-026-one-environment-wide-router-verticals-are-unreachable-except.md) | 2026-07-19 | kernel | One environment-wide router; verticals are unreachable except through it; residency is… <br>*amended by D-77* <br>*amended by K-72* | #31 |
 | [K-27](decisions/K-027-the-router-presents-a-shared-secret-and-the-vertical-verifie.md) | 2026-07-19 | kernel | The router presents a shared secret and the vertical verifies it; the vertical reads its… <br>*amended by K-58* |  |
 | [K-28](decisions/K-028-workers-for-platforms-fits-the-architecture-unchanged-a-user.md) | 2026-07-19 | kernel | Workers for Platforms fits the architecture unchanged: a user worker in a dispatch… |  |
 | [D-35](decisions/D-035-the-hosted-product-has-paid-cloudflare-dependencies-they-are.md) | 2026-07-20 | plan | The hosted product has paid Cloudflare dependencies; they are a cost line, not a discovery |  |
@@ -162,3 +162,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-69](decisions/K-069-nothing-iterates-over-every-tenant-on-a-schedule-work-starts-from-an-event-or-the-owning-object-s-alarm.md) | 2026-11-25 | kernel | Nothing iterates over every tenant on a schedule: work starts from an event or the owning object's alarm, and a fleet-wide change is applied on each scope's next wake, warmed by a queue and counted <br>*awaiting ratification* <br>*amends K-33* | #3324, #3331, #3376, #3388, #3367, #3369, #1653 |
 | [K-70](decisions/K-070-data-that-grows-with-tenants-times-time-leaves-the-sqlite-objects-each-object-keeps-a-bounded-recent-window.md) | 2026-11-25 | kernel | Data that grows with tenants times time leaves the SQLite objects: each object keeps a bounded recent window, and the admin log is written where the change is made and shipped onward <br>*awaiting ratification* | #3326, #3325, #3316, #2501, #1232 |
 | [K-71](decisions/K-071-the-hosted-issuer-partitions-its-people-by-person-and-prunes-what-expires.md) | 2026-11-25 | kernel | A shared hosted issuer partitions its people by person, and prunes the sessions and tokens that expire <br>*awaiting ratification* |  |
+| [K-72](decisions/K-072-the-router-reads-routes-from-a-kv-read-model-the-directory-publishes.md) | 2026-11-25 | kernel | The router reads routes from a KV read model the directory publishes <br>*awaiting ratification* <br>*amends K-26* | #3395 |

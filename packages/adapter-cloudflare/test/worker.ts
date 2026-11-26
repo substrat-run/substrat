@@ -43,6 +43,7 @@ import { defineScopeSweeperDO } from '../src/scope-sweeper-do.js';
 import { defineKickCoalescerDO } from '../src/kick-coalescer-do.js';
 import { defineCopyJobDO, type CopyJobDoRecord, type CopyJobStep } from '../src/copy-job-do.js';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
+import { createReadModelRouteResolver, RouteMemoryCache } from '../src/route-resolver.js';
 import { DurableObject } from 'cloudflare:workers';
 import { wipedCopyMod } from './wiped-copy-module.js';
 
@@ -385,6 +386,15 @@ export class SweepControlPlaneDO extends ControlPlaneDO {}
 export class VeControlPlaneDO extends ControlPlaneDO {}
 export class PcControlPlaneDO extends ControlPlaneDO {}
 export class SchedControlPlaneDO extends ControlPlaneDO {}
+/**
+ * #3395: the one directory with the routing read model on. Its KV namespace is bound as
+ * `TEST_ROUTES` and handed over as `ROUTES` here, so no other suite's directory publishes.
+ */
+export class RoutesControlPlaneDO extends ControlPlaneDO {
+  constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
+    super(ctx, { ...env, ROUTES: env['TEST_ROUTES'] });
+  }
+}
 
 // -- the platform-sweep trigger (platform-sweeper.test.ts) --------------------
 
@@ -750,8 +760,22 @@ export class ScopeStoreCounterDO extends DurableObject {
   }
 }
 
+/** #3395: one isolate's route memory, kept across requests the way the router keeps it. */
+const routeMemory = new RouteMemoryCache();
+
 export default {
-  fetch(request: Request): Response {
+  async fetch(request: Request, env: Record<string, unknown>): Promise<Response> {
+    // #3395: the router's read-model resolver, driven by real requests (route-read-model.test.ts).
+    const url = new URL(request.url);
+    if (url.pathname === '/route-read-model') {
+      const resolve = createReadModelRouteResolver({
+        controlPlane: env['ROUTES_CONTROL_PLANE'] as DurableObjectNamespace,
+        kv: env['TEST_ROUTES'] as KVNamespace,
+        cache: routeMemory,
+        mode: 'on',
+      });
+      return Response.json((await resolve(url.searchParams.get('host') ?? '')) ?? null);
+    }
     // A response whose headers arrive and whose body then never does: what a stalled provider looks
     // like to `deadlineFetch` (#2518), over workerd's own `fetch` and its own abort.
     if (new URL(request.url).pathname === '/stall') {

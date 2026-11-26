@@ -46,8 +46,9 @@ const ROLLUPS = 'Rollups and logs';
 const REPORTS = 'Platform reports';
 const HOSTNAMES = 'Hostnames';
 const SCOPE_STORES = 'Vertical scope stores';
+const ROUTING = 'Routing read model';
 
-/** `transactionSync` and `storage.transaction` sites: 48 in code. */
+/** `transactionSync` and `storage.transaction` sites: 50 in code (the rfc's 48, plus the routing read model's two, #3395). */
 export const DIRECTORY_TRANSACTION_SITES: readonly SiteRow[] = [
   row('alarm', SCHEMA, 'registry', 'none',
     'The #1764 backfill (rfc: `armVersionMigrationsBackfill`, which arms it). rfc §7.2 groups it with schema work run in every object; ' +
@@ -106,6 +107,12 @@ export const DIRECTORY_TRANSACTION_SITES: readonly SiteRow[] = [
 
   row('verticalScopeStores', SCOPE_STORES, 'registry'),
 
+  // #3395 (K-72): the routing read model. Its writer is one function every source calls, so after the
+  // split each object that holds route source rows (the registry: verticals; a tenant object: hostnames,
+  // scopes, its tenant) runs these over its own tables and its own ledger.
+  row('installRouteReadModel', ROUTING, 'every', 'none', 'The read model’s outbox, ledger and capture triggers, created with the object.'),
+  row('publishRouteReadModel', ROUTING, 'every', 'none', 'The backfill: marks every key the object can publish dirty.'),
+
   row('writeAndAudit', '`writeAndAudit`', 'both', 'none', 'Split by caller: `WRITE_AND_AUDIT_CALLERS`.'),
 ];
 
@@ -145,7 +152,7 @@ export const AUDITED_CALLERS: readonly SiteRow[] = [
 
 /**
  * The rfc counts 53 transaction sites: a text search, which also matched five comments. These are
- * the five names it gives that hold no site of their own, so the 48 above are the whole list.
+ * the five names it gives that hold no site of their own, so the 48 it names, with #3395's two, are the whole list.
  */
 export const RFC_COUNTED_NOT_SITES: readonly { name: string; why: string }[] = [
   { name: 'addColumn', why: 'a comment above `rebuildAtomically` mentions `transactionSync`; `addColumn` itself runs one ALTER' },
