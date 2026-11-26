@@ -971,6 +971,9 @@ const platformQuantitiesOut = z.object({
   containerDisk: z.string().default('0'), containerEgress: z.string().default('0'),
 });
 const platformAppOut = { vertical: z.string().nullable(), kind: z.string(), wouldCostUsd: z.string() };
+// What each dimension's quantities would cost at the platform's price, keyed like the quantities: the
+// bar's "why". A plane from before it answers none, so it is optional and the chart says less.
+const platformPricesOut = platformQuantitiesOut;
 export const platformUsageOut = z.object({
   since: z.string(), until: z.string(), readAt: z.string(),
   state: z.string(), readDays: z.number().int(), totalDays: z.number().int(), lastReadAt: z.string().nullable(),
@@ -981,7 +984,8 @@ export const platformUsageOut = z.object({
     day: z.string(), read: z.boolean(),
     wouldCostUsd: z.string().nullable(), liveWouldCostUsd: z.string().nullable(), previewWouldCostUsd: z.string().nullable(),
     quantities: platformQuantitiesOut.nullable(),
-    byApp: z.array(z.object(platformAppOut)),
+    wouldCostByDimension: platformPricesOut.nullable().optional(),
+    byApp: z.array(z.object({ ...platformAppOut, wouldCostByDimension: platformPricesOut.optional() })),
   })),
   truncated: z.boolean(),
 });

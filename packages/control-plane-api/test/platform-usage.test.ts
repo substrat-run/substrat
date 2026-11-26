@@ -109,7 +109,13 @@ describe('/tenants/:tenantId/platform-usage (#3316)', () => {
     ]);
     expect(body.days).toEqual([
       expect.objectContaining({ day: READ, read: true, wouldCostUsd: '8', previewWouldCostUsd: '3' }),
-      { day: UNREAD, read: false, wouldCostUsd: null, liveWouldCostUsd: null, previewWouldCostUsd: null, quantities: null, byApp: [] },
+      { day: UNREAD, read: false, wouldCostUsd: null, liveWouldCostUsd: null, previewWouldCostUsd: null, quantities: null, wouldCostByDimension: null, byApp: [] },
+    ]);
+    // Which usage made the day cost what it did: the day's price per dimension, and each app's.
+    expect(body.days[0].wouldCostByDimension).toMatchObject({ rowsWritten: '7', requests: '0.6', storage: '0.4', cpu: '0' });
+    expect(body.days[0].byApp.map((a: { kind: string; wouldCostByDimension: Record<string, string> }) => [a.kind, a.wouldCostByDimension.rowsWritten, a.wouldCostByDimension.requests])).toEqual([
+      ['live', '4', '0.6'],
+      ['preview', '3', '0'],
     ]);
   });
 

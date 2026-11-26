@@ -166,6 +166,14 @@ export const platformQuantities = perDimension(costQuantity);
 export type PlatformQuantities = z.infer<typeof platformQuantities>;
 
 /**
+ * What each dimension's quantities would cost at the platform's price, USD, keyed like
+ * `platformQuantities`: the answer to "which usage made this day cost what it did". A price per
+ * dimension, never a cost or a markup.
+ */
+export const platformPrices = perDimension(usd);
+export type PlatformPrices = z.infer<typeof platformPrices>;
+
+/**
  * How much of the window the cost rollup has read. `not-read`: no day yet (the daily pass has
  * not run, or has not reached these days), so an empty page says nothing about usage. `empty`:
  * days were read and the team used nothing on them. `partial`: some days are still unread.
@@ -219,7 +227,10 @@ export const tenantPlatformUsage = z.object({
       liveWouldCostUsd: usd.nullable(),
       previewWouldCostUsd: usd.nullable(),
       quantities: platformQuantities.nullable(),
-      byApp: z.array(z.object({ ...appKey, wouldCostUsd: usd })),
+      /** The day's price per dimension; null on an unread day. */
+      wouldCostByDimension: platformPrices.nullable(),
+      /** Costliest first, each with its own price per dimension. */
+      byApp: z.array(z.object({ ...appKey, wouldCostUsd: usd, wouldCostByDimension: platformPrices })),
     }),
   ),
   /** A source capped its rows, so request or storage figures are a lower bound. */

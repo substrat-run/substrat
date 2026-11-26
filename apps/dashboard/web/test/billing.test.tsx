@@ -318,7 +318,14 @@ it('shows what platform usage would cost by app and kind, marked not charged', a
       { vertical: 'acme/crm', kind: 'preview', wouldCostUsd: '3', quantities: { ...zero, rowsWritten: '3000000' } },
     ],
     days: [
-      { day: '2026-11-19', read: true, wouldCostUsd: '8', liveWouldCostUsd: '5', previewWouldCostUsd: '3', quantities, byApp: [{ vertical: 'acme/crm', kind: 'live', wouldCostUsd: '5' }, { vertical: 'acme/crm', kind: 'preview', wouldCostUsd: '3' }] },
+      {
+        day: '2026-11-19', read: true, wouldCostUsd: '8', liveWouldCostUsd: '5', previewWouldCostUsd: '3', quantities,
+        wouldCostByDimension: { ...zero, rowsWritten: '7', requests: '1' },
+        byApp: [
+          { vertical: 'acme/crm', kind: 'live', wouldCostUsd: '5', wouldCostByDimension: { ...zero, rowsWritten: '4', requests: '1' } },
+          { vertical: 'acme/crm', kind: 'preview', wouldCostUsd: '3', wouldCostByDimension: { ...zero, rowsWritten: '3' } },
+        ],
+      },
       { day: '2026-11-20', read: false, wouldCostUsd: null, liveWouldCostUsd: null, previewWouldCostUsd: null, quantities: null, byApp: [] },
     ],
   }));
@@ -329,6 +336,17 @@ it('shows what platform usage would cost by app and kind, marked not charged', a
   expect(section.textContent).toContain('CRM · preview');
   expect(section.querySelector('[data-gap="2026-11-20"]')).not.toBeNull();
   expect(section.textContent).not.toMatch(/markup|our cost/i);
+
+  // A bar explains itself: hovering it names the meters the day went on and the app behind it.
+  const bar = section.querySelector('[data-day="2026-11-19"]')!;
+  expect(bar.getAttribute('aria-label')).toBe('2026-11-19: would cost $8.00, mostly rows written');
+  await act(async () => { bar.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); });
+  const detail = section.querySelector('[data-bar-detail="2026-11-19"]')!;
+  expect([...detail.querySelectorAll('[data-meter]')].map((row) => row.textContent)).toEqual(['Rows written5M$7.0088%', 'Requests1M$1.0013%']);
+  expect(detail.querySelector('[data-segment="acme/crm"]')?.textContent).toBe('CRM · mostly rows written$8.00100%');
+  expect(detail.textContent).toContain('Rows written is 88% of this day.');
+  await act(async () => { section.querySelector('[data-day="2026-11-20"]')!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); });
+  expect(section.querySelector('[data-bar-detail="2026-11-20"]')?.textContent).toContain('Not read yet.');
 });
 
 it('shows platform usage even when the metered read fails', async () => {
