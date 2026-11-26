@@ -25,7 +25,13 @@ import {
   type ScopeDumpTable,
 } from '@substrat-run/contracts';
 import type { EventSink, AccessLogSink } from '@substrat-run/kernel';
-import type { DirectoryBackupStore, ScopeBackupEntry, ScopeBackupScopeEntry, ScopeBackupStore } from './backups.js';
+import type {
+  DirectoryBackupStore,
+  DirectoryCopyAttempt,
+  ScopeBackupEntry,
+  ScopeBackupScopeEntry,
+  ScopeBackupStore,
+} from './backups.js';
 
 /** The minimal slice of a worker `R2Bucket` binding this store relies on. */
 interface R2BucketLike {
@@ -292,6 +298,23 @@ const directoryManifest = z.object({
 
 const directoryPage = z.object({ tables: z.array(scopeDumpTable) });
 
+/** `directory-attempt.json` (#2868), with the pause a budgeted copy leaves (#3422). */
+const directoryAttempt = z.object({
+  attemptedAt: z.string().min(1),
+  failed: z.boolean().optional(),
+  paused: z
+    .object({
+      capturedAt: z.string().min(1),
+      bookmark: z.string().min(1).optional(),
+      byReference: z.enum(['off', 'verify', 'on']),
+      stageId: z.string().min(1),
+      sizes: z.array(z.number().int().nonnegative()).min(1),
+      next: z.string().min(1),
+      tables: z.array(z.string()),
+    })
+    .optional(),
+});
+
 /**
  * Delete the pages of every copy captured before `before` that has no manifest: copies cut off
  * before their commit (#2868). Read with no delimiter, so every key under `directory/` is seen:
@@ -327,10 +350,13 @@ async function sweepAbandonedPages(r2: R2BucketLike, before: string): Promise<vo
 export function createR2DirectoryBackupStore(bucket: unknown): DirectoryBackupStore {
   const r2 = bucket as R2BucketLike;
   return {
-    begin({ capturedAt, bookmark }) {
-      const stageId = crypto.randomUUID();
-      const sizes: number[] = [];
+    begin({ capturedAt, bookmark, resume }) {
+      // #3422: a copy resumed in a later pass keeps writing under its own stage, after its pages.
+      const stageId = resume?.stageId ?? crypto.randomUUID();
+      const sizes: number[] = [...(resume?.sizes ?? [])];
       return {
+        stage: () => ({ stageId, sizes: [...sizes] }),
+
         async put(seq, tables) {
           const body = JSON.stringify({ tables });
           await r2.put(directoryPageKey(capturedAt, stageId, seq), body, {
@@ -430,8 +456,8 @@ export function createR2DirectoryBackupStore(bucket: unknown): DirectoryBackupSt
       } while (cursor);
     },
 
-    async markAttempt({ attemptedAt }) {
-      await r2.put(DIRECTORY_ATTEMPT_KEY, JSON.stringify({ attemptedAt }), {
+    async markAttempt(attempt) {
+      await r2.put(DIRECTORY_ATTEMPT_KEY, JSON.stringify(attempt), {
         httpMetadata: { contentType: 'application/json' },
       });
     },
@@ -439,8 +465,12 @@ export function createR2DirectoryBackupStore(bucket: unknown): DirectoryBackupSt
     async lastAttempt() {
       const obj = await r2.get(DIRECTORY_ATTEMPT_KEY);
       if (!obj) return null;
-      const parsed = z.object({ attemptedAt: z.string().min(1) }).safeParse(JSON.parse(await obj.text()));
-      return parsed.success ? parsed.data.attemptedAt : null;
+      const raw: unknown = JSON.parse(await obj.text());
+      const parsed = directoryAttempt.safeParse(raw);
+      if (parsed.success) return parsed.data as DirectoryCopyAttempt;
+      // A pause this code cannot read is dropped, never guessed at: the copy then starts again.
+      const bare = z.object({ attemptedAt: z.string().min(1) }).safeParse(raw);
+      return bare.success ? { attemptedAt: bare.data.attemptedAt } : null;
     },
   };
 }

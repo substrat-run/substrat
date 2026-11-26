@@ -53,6 +53,8 @@ import {
   type ScopeStoreNeed,
   type StoreDriverRegistration,
   mailInRelayRequest,
+  errorCodeOf,
+  type ErrorCode,
 } from '@substrat-run/contracts';
 import type { ManifestImports, PlatformActorId, Scope, Tenant, TenantId, ScopeId } from '@substrat-run/contracts';
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
@@ -148,6 +150,7 @@ import {
   createR2BackupStore,
   createR2DirectoryBackupStore,
   backupDirectoryIfDue,
+  DIRECTORY_COPY_PASS_BUDGET_MS,
   parseDirectoryCopyByReference,
   referenceFaults,
   pruneAccessLogBatches,
@@ -3636,6 +3639,14 @@ export default {
       // backup that has been quietly failing is worse than no backup — it is a false
       // belief. `GET /api/directory/backups` is where that belief gets checked.
       if (env.DIRECTORY_BACKUPS) {
+        // An ops-failure row, so the digest mails it and the console lists it. Never thrown: a
+        // recorder that fails must not sink the pass, so it is said where the copy's failure is.
+        const recordDirectoryCopyFailure = (message: string, code: ErrorCode | null): Promise<void> =>
+          host.admin
+            .recordOpsFailure({ actor: SWEEP_ACTOR, operation: 'directory.backup', code, message })
+            .catch((err: unknown) =>
+              console.error('directory-backup: recording the failure failed', err instanceof Error ? err.message : String(err)),
+            );
         try {
           const byReference = parseDirectoryCopyByReference(env.DIRECTORY_BACKUP_BY_REFERENCE);
           if (byReference.invalid) console.error('directory-backup:', byReference.invalid, '- taking the copy as off');
@@ -3644,8 +3655,18 @@ export default {
             store: createR2DirectoryBackupStore(env.DIRECTORY_BACKUPS),
             actor: SWEEP_ACTOR,
             byReference: byReference.mode,
+            // #3422: a copy longer than this pauses and the next pass resumes it, so a growing
+            // directory never runs the pass into its wall limit and leaves no copy.
+            budgetMs: DIRECTORY_COPY_PASS_BUDGET_MS,
           });
-          if (backup.taken || backup.pruned) console.log('directory-backup', backup);
+          if (backup.taken || backup.pruned || backup.paused) console.log('directory-backup', backup);
+          // #3422: a copy cut off by its invocation's limits says nothing where it stops. The copy
+          // started after it is what finds it, and staff hear of it through the ledger.
+          if (backup.unfinishedAttempt) {
+            const message = `the directory copy started at ${backup.unfinishedAttempt} never finished; its pass was cut off`;
+            console.error('directory-backup:', message);
+            await recordDirectoryCopyFailure(message, null);
+          }
           // #3325: a `verify` copy found an append-only table changing under a copy. The switch must
           // stay off until that is explained, so it is said where a failing backup is said.
           const faults = referenceFaults(backup.referenceCheck);
@@ -3658,7 +3679,10 @@ export default {
             console.error('directory-backup: waiting out a copy started at', backup.waitingOutAttempt, 'that has not finished');
           }
         } catch (err) {
-          console.error('directory-backup failed', err instanceof Error ? err.message : String(err));
+          const message = err instanceof Error ? err.message : String(err);
+          console.error('directory-backup failed', message);
+          // #3422: two days of failed copies went unseen because this line was all there was.
+          await recordDirectoryCopyFailure(`the directory copy failed: ${message}`, errorCodeOf(err) ?? null);
         }
       }
 

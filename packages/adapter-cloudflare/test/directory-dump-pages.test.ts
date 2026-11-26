@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, expect, it } from 'vitest';
 import { mergeDumpPages, type DirectoryDumpPage, type ScopeDumpTable } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
@@ -50,4 +50,34 @@ it('pages join into the whole dump as it stood at the first page, whatever is wr
   expect(mergeDumpPages(pages.map((p) => p.tables))).toEqual(whole);
   // The last page dropped the snapshot, so a cursor into it is refused rather than read.
   await expect(() => dir.exportDumpPage(pages[1]!.next)).rejects.toThrow(/copy is gone/);
+});
+
+it('drops a copy left unfinished before the next snapshot, so a snapshot that fails leaves it gone (#3422)', async () => {
+  const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`dump-leftover-${ulid()}`));
+  const dir = stub as unknown as Directory;
+  const spec = JSON.stringify([{ key: 'x'.repeat(2_000) }]);
+  for (let i = 0; i < 6; i++) await dir.insertVertical(`v-${i}`, 'V', 'builtin', null, spec, null, 0, '2026-11-25T00:00:00.000Z');
+  // A copy whose pass was cut off after its first page: its snapshot stays in the directory.
+  await dir.exportDumpPage(null, { maxBytes: 8_000 });
+  const copyTables = (sql: SqlStorage) =>
+    sql.exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB '_directory_copy*'`).toArray().length;
+
+  const left = await runInDurableObject(stub, async (instance, state) => {
+    const before = copyTables(state.storage.sql);
+    // The next snapshot's transaction fails, as it did in production at the directory's size.
+    const target = instance as unknown as { snapshotDirectory: () => never };
+    target.snapshotDirectory = () => {
+      throw new Error('SQLITE_NOMEM');
+    };
+    const thrown = await (instance as unknown as Directory).exportDumpPage(null).catch((e: Error) => e.message);
+    delete (target as { snapshotDirectory?: unknown }).snapshotDirectory;
+    return { before, thrown, after: copyTables(state.storage.sql) };
+  });
+  expect(left).toEqual({ before: expect.any(Number), thrown: 'SQLITE_NOMEM', after: 0 });
+  expect(left.before).toBeGreaterThan(2);
+
+  const whole = await dir.exportDump();
+  const pages: DirectoryDumpPage[] = [await dir.exportDumpPage(null, { maxBytes: 8_000 })];
+  while (pages.at(-1)!.next !== null) pages.push(await dir.exportDumpPage(pages.at(-1)!.next, { maxBytes: 8_000 }));
+  expect(mergeDumpPages(pages.map((p) => p.tables))).toEqual(whole);
 });

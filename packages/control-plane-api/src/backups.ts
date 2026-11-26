@@ -32,6 +32,7 @@
 
 import type {
   DirectoryBackup,
+  DirectoryCopyByReference,
   DirectoryDump,
   ScopeBackup,
   ScopeDump,
@@ -142,7 +143,7 @@ export interface DirectoryBackupStore {
    * before it returns. A copy that is never committed is never listed; `discard` drops its pages.
    * `bookmark` (#3325) is the directory's PITR bookmark at the copy's instant, listed with it.
    */
-  begin(input: { capturedAt: string; bookmark?: string }): DirectoryBackupWriter;
+  begin(input: { capturedAt: string; bookmark?: string; resume?: DirectoryCopyStage }): DirectoryBackupWriter;
   /** Every directory copy held, newest first. */
   list(): Promise<DirectoryBackup[]>;
   /** One copy's dump, by its capture time, its pages joined. Null when no such copy is held. */
@@ -153,9 +154,37 @@ export interface DirectoryBackupStore {
    * Note that a copy was started (#2868), before its first page is read. A copy that fails leaves
    * no listed copy, so this is what the schedule waits out instead of trying again every pass.
    */
-  markAttempt(input: { attemptedAt: string }): Promise<void>;
+  markAttempt(input: DirectoryCopyAttempt): Promise<void>;
   /** The newest `markAttempt`, or null when none was noted. */
-  lastAttempt(): Promise<string | null>;
+  lastAttempt(): Promise<DirectoryCopyAttempt | null>;
+}
+
+/**
+ * The copy most recently started (#2868), as `markAttempt` noted it. `failed`: it threw, and that was
+ * reported where it threw. `paused` (#3422): it stopped at its time budget with pages still to read,
+ * and the next pass resumes it from here.
+ */
+export interface DirectoryCopyAttempt {
+  attemptedAt: string;
+  failed?: boolean;
+  paused?: DirectoryCopyPause;
+}
+
+/** Where a paused copy stands (#3422): what `begin` resumes, and the cursor of its next page. */
+export interface DirectoryCopyPause extends DirectoryCopyStage {
+  capturedAt: string;
+  bookmark?: string;
+  byReference: DirectoryCopyByReference;
+  /** The host's cursor of the next page. */
+  next: string;
+  /** The tables the pages written so far hold. */
+  tables: string[];
+}
+
+/** The pages of one copy written so far (#3422): its stage and each page's size, in order. */
+export interface DirectoryCopyStage {
+  stageId: string;
+  sizes: number[];
 }
 
 /** One directory copy being written (#2868). */
@@ -166,4 +195,6 @@ export interface DirectoryBackupWriter {
   discard(): Promise<void>;
   /** Finish the copy of `entries` pages and `tables` tables, and return its metadata. */
   commit(input: { entries: number; tables: number }): Promise<DirectoryBackup>;
+  /** The pages written so far, what `begin` takes back to resume this copy in a later pass (#3422). */
+  stage(): DirectoryCopyStage;
 }

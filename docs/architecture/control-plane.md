@@ -1302,9 +1302,18 @@ mutate the directory, so a copy is of a settled directory rather than one mid-sw
   writes each page as its own object under a manifest written last, so an unfinished copy is
   never listed. The first page copies every table into a snapshot inside the directory's own
   SQLite, in one turn, and every page reads that: the copy is of one instant, whatever is
-  written, replaced or migrated while its pages are read. The last page drops the snapshot; one
-  a copy left behind is dropped by the next copy's first page, and pages a cut-off copy left in
-  R2 are swept by a later commit once they are a day old.
+  written, replaced or migrated while its pages are read. The last page drops the snapshot. One
+  a copy left behind is dropped by the next copy's first page, a table per turn and before the
+  snapshot's own transaction
+  ([#3422](https://github.com/substrat-run/substrat/issues/3422): dropped inside it, a 1.5 M-row
+  leftover doubled that transaction, and every retry failed and reset the directory). Pages a
+  cut-off copy left in R2 are swept by a later commit once they are a day old.
+- **A copy may span passes** (#3422). A scheduled pass reads a copy for at most five minutes
+  (`DIRECTORY_COPY_PASS_BUDGET_MS`), then pauses it. The attempt note keeps the next page's cursor
+  and the pages written so far, and the next pass resumes from there, on the same snapshot. A copy
+  that needed 834 of a cron invocation's 900 s one day was killed the next, which is what this
+  prevents. A pause older than 12 hours, or one the directory no longer holds (a later copy or a
+  restore replaced its snapshot), starts again. `force` reads the whole copy in one call.
 - **Append-only and log tables are read by reference** ([#3325](https://github.com/substrat-run/substrat/issues/3325),
   the interim [D-78](../decisions/D-078-a-directory-object-recovers-by-point-in-time-restore-and-an-incremental-export-not-a-daily-whole-copy.md)
   names until the tenant-scale RFC's step 3). The snapshot wrote one row per directory row a
@@ -1326,6 +1335,10 @@ mutate the directory, so a copy is of a settled directory rather than one mid-sw
   next pass (late, never never), and the schedule needs no durable state of its own. A copy
   that fails is waited out for six hours before the next is tried: each attempt is noted
   before its first read, so even one that resets the directory leaves the note behind.
+- **A failed copy is an ops failure** (#3422), operation `directory.backup`, so the staff digest
+  mails it and the console's Issues view lists it. A copy that throws is recorded where it
+  throws. One whose pass was cut off says nothing, so the next copy to start records it. For two
+  days of failed copies the cron's log line was the only sign, and nobody saw it.
 - **Retention: 30 copies**, matching the DO PITR horizon so the two defences expire together
   instead of leaving a window covered by neither. Pruned only *after* a successful capture: a
   failed backup must never be the thing that deletes the last good copy.
