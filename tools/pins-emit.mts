@@ -73,6 +73,7 @@ const CHANGESETS = '.changeset/config.json';
  */
 const PINS = [
   { constant: 'SUBSTRAT', pkg: 'packages/kernel', fixedGroup: true },
+  { constant: 'CONTRACTS', pkg: 'packages/contracts', fixedGroup: false },
   { constant: 'ENGINE_WORKORDER', pkg: 'engines/workorder', fixedGroup: false },
   { constant: 'ENGINE_INVOICING', pkg: 'engines/invoicing', fixedGroup: false },
   { constant: 'BOUNDARY_LINT', pkg: 'packages/boundary-lint', fixedGroup: false },

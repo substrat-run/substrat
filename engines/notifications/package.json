@@ -30,22 +30,22 @@
     "test": "vitest run && vitest run -c vitest.workerd.config.ts",
     "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
-  "dependencies": {
-    "@substrat-run/contracts": "workspace:^",
-    "@substrat-run/kernel": "workspace:^"
-  },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@substrat-run/adapter-cloudflare": "workspace:^",
     "@substrat-run/contract-tests": "workspace:^",
+    "@substrat-run/contracts": "workspace:*",
     "@substrat-run/engine-test-kit": "workspace:^",
+    "@substrat-run/kernel": "workspace:*",
     "@substrat-run/model-emit": "workspace:*",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "zod": "catalog:"
   },
   "peerDependencies": {
+    "@substrat-run/contracts": ">=0.213.0 <1.0.0",
+    "@substrat-run/kernel": ">=0.213.0 <1.0.0",
     "zod": "^4.4.0"
   },
   "substrat": {

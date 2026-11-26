@@ -38,6 +38,43 @@ your own*. React, tRPC and drizzle all do this for the same reason.
 it to the exact version the workspace happens to build against refuses a consumer
 on 4.4.0 for no reason at all. The pin belongs in the catalog (§3).
 
+### The kernel is shared identity too
+
+The same rule covers our own packages. An engine or a connector runs inside the
+vertical's kernel: it takes the vertical's `ctx`, and hands back a `BoundOperations`
+the vertical's host registers — a class whose ES-private field makes two copies
+incompatible types. So every package under `engines/` and `connectors/` declares
+`@substrat-run/kernel` and `@substrat-run/contracts` as **peers**, plus a
+`workspace:*` devDependency so the monorepo still builds it against HEAD.
+
+They were `workspace:^` dependencies until then, published as `^0.<minor>.0`, and
+on 0.x a caret admits one minor. Every kernel minor left every engine out of range,
+so changesets republished all of them with nothing in their changelogs but "Updated
+dependencies": a kernel-only feature released 28 published packages, measured with
+`changeset status` on the change that made the switch. With peers, plus
+`contracts` out of the `fixed` group and `updateInternalDependencies: "minor"`, the
+same change releases 8.
+
+**The range is wide and states a floor**: `>=0.213.0 <1.0.0`. An engine moves its
+floor when it starts using kernel surface newer than it; changesets leaves an
+in-range peer alone (`onlyUpdatePeerDependentsWhenOutOfRange`, the experimental
+option in `.changeset/config.json` — without it, any bump of a peer major-bumps the
+dependent). The workspace proves the top of that range on every build. The bottom
+is `pnpm lint:peer-floor` (`tools/peer-floor.mjs`), in CI's `checks` job: it installs
+each floor from npm and typechecks every engine's and connector's `src` against it,
+and refuses a regular dependency, a range in any other shape, or a floor the
+workspace's own version falls outside. It proves types, not behaviour; a behavioural
+reliance on newer kernel code is the reviewer's to raise the floor for.
+
+The ceiling is a promise: an engine published today says it works with every 0.x
+kernel after its floor. That holds as long as the kernel's engine-facing surface
+evolves additively, the same rule engines keep for verticals. A kernel change that
+breaks it is a change to every published engine's claim, and wants the ranges
+narrowed in the same PR.
+
+The scaffold already declares both packages itself (`create-substrat`'s
+`project-files.js`, one pin each), so a vertical owns the copy the peers name.
+
 ## 2. "Declare what you reference" — and the shortcut that does not work
 
 The tempting alternative is a chokepoint: **only contracts depends on zod;

@@ -4,7 +4,6 @@
   "commit": false,
   "fixed": [
     [
-      "@substrat-run/contracts",
       "@substrat-run/kernel",
       "@substrat-run/adapter-sqlite",
       "@substrat-run/adapter-cloudflare",
@@ -16,6 +15,9 @@
   "linked": [],
   "access": "public",
   "baseBranch": "main",
-  "updateInternalDependencies": "patch",
-  "ignore": []
+  "updateInternalDependencies": "minor",
+  "ignore": [],
+  "___experimentalUnsafeOptions_WILL_CHANGE_IN_PATCH": {
+    "onlyUpdatePeerDependentsWhenOutOfRange": true
+  }
 }

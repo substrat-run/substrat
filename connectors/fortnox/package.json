@@ -30,17 +30,17 @@
     "test": "vitest run",
     "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
-  "dependencies": {
-    "@substrat-run/contracts": "workspace:^",
-    "@substrat-run/kernel": "workspace:^"
-  },
   "devDependencies": {
     "@substrat-run/adapter-sqlite": "workspace:^",
+    "@substrat-run/contracts": "workspace:*",
+    "@substrat-run/kernel": "workspace:*",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "zod": "catalog:"
   },
   "peerDependencies": {
+    "@substrat-run/contracts": ">=0.213.0 <1.0.0",
+    "@substrat-run/kernel": ">=0.213.0 <1.0.0",
     "zod": "^4.4.0"
   }
 }
