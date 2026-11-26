@@ -82,12 +82,11 @@ async function readCapped(res: Response, maxBytes: number): Promise<string> {
  * has exercised them. Until a human has, the control plane is deployed without the bucket
  * var that turns this on, and the gateway's route answers 501.
  *
- * **Which permissions the token needs is unverified too.** It is provisioned today as an R2
- * "Admin Read only" token scoped to the lake bucket. Cloudflare's R2 SQL docs list catalog,
- * storage and R2 SQL permissions for a query token, and their example grants storage read
- * and write, so whether read-only is enough has not been checked. The smoke test that turns
- * this engine on establishes the smallest set that works. This client never writes; the
- * gateway only ever sends the SELECT it compiled.
+ * **Which permissions the token needs is unverified too.** `scripts/env-provision.mjs` mints it
+ * with read groups only (R2 SQL, Data Catalog and Storage Bucket Item read), scoped to the lake
+ * bucket. Cloudflare's example grants storage read and write, so whether read-only is enough has
+ * not been checked: `pnpm lake:smoke` is the run that checks it, and the whole engine, before the
+ * bucket var is set. This client never writes; its callers only ever send the SELECT they compiled.
  */
 export function createR2SqlEngine(opts: R2SqlEngineOptions): LakeQueryEngine {
   const fetchImpl = opts.fetchImpl ?? fetch;
