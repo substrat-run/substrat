@@ -101,7 +101,8 @@
       // K-68 (directory split), step 3a: the registry and the per-tenant directory object —
       // directory-objects.test.ts and the directory crossing contract suite.
       { "name": "DIRECTORY_REGISTRY", "class_name": "DirectoryRegistryDO" },
-      { "name": "TENANT_DIRECTORY", "class_name": "TenantDirectoryDO" }
+      { "name": "TENANT_DIRECTORY", "class_name": "TenantDirectoryDO" },
+      { "name": "ROUTES_CONTROL_PLANE", "class_name": "RoutesControlPlaneDO" }
     ]
   },
   "migrations": [
@@ -203,6 +204,12 @@
     {
       "tag": "v24",
       "new_sqlite_classes": ["DirectoryRegistryDO", "TenantDirectoryDO"]
+    },
+    {
+      "tag": "v25",
+      "new_sqlite_classes": ["RoutesControlPlaneDO"]
     }
-  ]
+  ],
+  // #3395: the routing read model's namespace, seen by RoutesControlPlaneDO alone (as `ROUTES`).
+  "kv_namespaces": [{ "binding": "TEST_ROUTES", "id": "test-routes" }]
 }

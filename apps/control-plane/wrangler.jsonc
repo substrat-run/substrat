@@ -318,6 +318,14 @@
 		// Accepted inbound mail waiting for delivery (#2611). Deleted once delivered.
 		{ "binding": "MAIL_IN_BUCKET", "bucket_name": "substrat-mail-in" }
 	],
+	// The routing read model (#3395): the directory object publishes every route and every
+	// vertical's serving policy here, and the router reads them instead of the directory.
+	// Unbound, the directory publishes nothing and drops its capture triggers. The id is an
+	// account id: tools/wrangler-config.mjs resolves CF_KV_ROUTES_ID[_TEST] at deploy. The namespaces
+	// must exist BEFORE this deploys (deploys run with --x-provision=false). `pnpm env:provision`
+	// creates them (titled substrat-routes / substrat-routes-test), writes the ids and sets the CI
+	// variables; by hand it is `wrangler kv namespace create substrat-routes[-test]`.
+	"kv_namespaces": [{ "binding": "ROUTES", "id": "${CF_KV_ROUTES_ID}" }],
 	// DEPLOY-ONLY BINDINGS — tools/wrangler-config.mjs splices apps/control-plane/
 	// wrangler.deploy.json in at this marker, and `wrangler deploy` is pointed at the
 	// result. They are not here because THIS file is also what the workers vitest pool
@@ -444,6 +452,7 @@
 				{ "binding": "STORE_RELEASES", "bucket_name": "substrat-store-releases-test" },
 				{ "binding": "MAIL_IN_BUCKET", "bucket_name": "substrat-mail-in-test" }
 			], // differs
+			"kv_namespaces": [{ "binding": "ROUTES", "id": "${CF_KV_ROUTES_ID_TEST}" }], // differs: the test router reads it
 			"assets": {
 				"directory": "../console/dist",
 				"binding": "ASSETS",

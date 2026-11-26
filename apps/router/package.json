@@ -8,9 +8,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "dev": "wrangler dev",
-    "cf:deploy": "wrangler deploy",
-    "cf:deploy:test": "wrangler deploy --env test",
-    "dry-run": "wrangler deploy --dry-run --outdir dist-worker"
+    "cf:deploy": "node ../../tools/wrangler-config.mjs --app router && wrangler deploy -c wrangler.generated.jsonc --x-provision=false",
+    "cf:deploy:test": "node ../../tools/wrangler-config.mjs --app router && wrangler deploy -c wrangler.generated.jsonc --env test --x-provision=false",
+    "dry-run": "node ../../tools/wrangler-config.mjs --app router && wrangler deploy -c wrangler.generated.jsonc --dry-run --outdir dist-worker"
   },
   "dependencies": {
     "@substrat-run/adapter-cloudflare": "workspace:^",

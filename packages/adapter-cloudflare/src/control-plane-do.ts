@@ -283,6 +283,15 @@ import {
 import { autoAdmittedProdRefusal, listedPromoteRefusal, opsFailureReferenceWhere } from '@substrat-run/kernel';
 import { canonicalInstant } from '@substrat-run/kernel';
 import { doBuiltColumnsOf, doRedactionSql } from './sql.js';
+import {
+  ROUTE_READ_MODEL_TABLE_GLOB,
+  RouteReadModelPublisher,
+  routeKvWriterOf,
+  uninstallRouteReadModel,
+  type RouteKvWriter,
+  type RouteReadModelFlush,
+  type RouteReadModelStatus,
+} from './route-read-model-publisher.js';
 import type {
   AdminLogEntry,
   OnBehalfOf,
@@ -1663,6 +1672,8 @@ export function assertDirectoryDdlPlan<P extends { missing: string[] }>(plan: P)
  * control-plane request goes through, so batches are spaced rather than run back to back.
  */
 const BACKFILL_PAUSE_MS = 1000;
+/** #3395: how soon a routing read model publish that KV refused is tried again. */
+export const ROUTE_PUBLISH_RETRY_MS = 10_000;
 /** The longest a failing #1764 backfill waits before it tries again. */
 const BACKFILL_BACKOFF_MAX_MS = 60 * 60 * 1000;
 
@@ -1853,7 +1864,207 @@ export class ControlPlaneDO extends DurableObject {
     this.sql = ctx.storage.sql;
     this.kernelSql = switchSqlOver(this.sql);
     this.applyDirectorySchema();
+    this.installRouteReadModel(routeKvWriterOf(Reflect.get(env as object, 'ROUTES')));
     this.backfillArmed = ctx.blockConcurrencyWhile(() => this.armVersionMigrationsBackfill());
+  }
+
+  // -- the routing read model (#3395) -------------------------------------------
+
+  /** Set where a `ROUTES` KV namespace is bound; null otherwise, and the read model is off. */
+  private routePublisher: RouteReadModelPublisher | null = null;
+  private routeFlushing: Promise<void> | null = null;
+  private routeFlushAgain = false;
+  /**
+   * How many of this object's methods are running (`kickRouteReadModelAfterEveryCall`). A flush
+   * computes entries synchronously from the directory, so it only starts, and only reads a group
+   * of keys, while this is 0: a method still running may hold a transaction that has not committed,
+   * and a snapshot read inside it could be published and then rolled back.
+   */
+  routeCallDepth = 0;
+
+  /**
+   * On where a KV namespace is bound, off (triggers dropped, outbox emptied) where none is. A
+   * directory that had no triggers before marks every key dirty, so switching on IS the backfill;
+   * `publishRouteReadModel` is the operator's handle on the same thing.
+   */
+  private installRouteReadModel(kv: RouteKvWriter | null): void {
+    if (!kv) {
+      uninstallRouteReadModel(this.sql);
+      return;
+    }
+    const publisher = new RouteReadModelPublisher(this.sql, kv);
+    this.ctx.storage.transactionSync(() => {
+      if (publisher.install()) publisher.markAll();
+    });
+    this.routePublisher = publisher;
+    // The ledger must describe THIS namespace before anything is published against it. Checked in the
+    // background, so no directory call waits on a KV read; publishing waits for it instead.
+    this.routeLedgerVerified = false;
+    this.routeLedgerCheck = (async () => {
+      try {
+        await publisher.verifyNamespace();
+        this.routeLedgerVerified = true;
+        this.kickRouteReadModel();
+      } catch (err) {
+        console.error('route read model: the namespace check failed, retrying from the alarm', err);
+        this.routeRetryAfter = Date.now() + ROUTE_PUBLISH_RETRY_MS;
+        await this.armRouteReadModelRetry().catch(() => undefined);
+      }
+    })();
+  }
+
+  /** The ledger has been checked against the bound namespace (`verifyNamespace`). */
+  private routeLedgerVerified = false;
+  /** That check, for a caller that must see publishing settle (`settleRouteReadModel`). */
+  private routeLedgerCheck: Promise<void> = Promise.resolve();
+  /** After a failed publish, nothing publishes before this time but the alarm (`ROUTE_PUBLISH_RETRY_MS`). */
+  private routeRetryAfter = 0;
+
+  /** The alarm's half of the retry: check the namespace again if that failed, then publish. */
+  private async retryRouteReadModel(): Promise<void> {
+    const publisher = this.routePublisher;
+    if (!publisher) return;
+    this.routeRetryAfter = 0;
+    if (!this.routeLedgerVerified) {
+      try {
+        await publisher.verifyNamespace();
+        this.routeLedgerVerified = true;
+      } catch (err) {
+        console.error('route read model: the namespace check failed again', err);
+        this.routeRetryAfter = Date.now() + ROUTE_PUBLISH_RETRY_MS;
+        await this.armRouteReadModelRetry().catch(() => undefined);
+        return;
+      }
+    }
+    this.kickRouteReadModel();
+  }
+
+  /** The flush may read the directory: none of this object's methods is running. */
+  private readonly routeQuiet = (): boolean => this.routeCallDepth === 0;
+
+  /**
+   * Publish what the outbox holds, one flush at a time: a kick that lands mid-flush runs one more
+   * round after it, so a change made during a flush is never left waiting for the next one. Called
+   * when the last running method of this class returns (`kickRouteReadModelAfterEveryCall`); a kick
+   * while one is still running waits for that return, so a flush never reads a write whose
+   * transaction has not committed. A KV failure arms the alarm.
+   */
+  kickRouteReadModel(): void {
+    const publisher = this.routePublisher;
+    if (!publisher || this.routeCallDepth > 0 || !this.routeLedgerVerified) return;
+    // After a failure, only the alarm retries: a directory write meanwhile must not retry KV at once.
+    if (Date.now() < this.routeRetryAfter) return;
+    if (this.routeFlushing) {
+      this.routeFlushAgain = true;
+      return;
+    }
+    if (!publisher.pending()) return;
+    void this.ownRouteFlush(async () => {
+      let result: RouteReadModelFlush;
+      do {
+        this.routeFlushAgain = false;
+        result = await publisher.flush(undefined, this.routeQuiet);
+        // A deferred flush is restarted by the method it deferred to, when that one returns.
+      } while (!result.deferred && (this.routeFlushAgain || result.remaining > 0));
+      return result;
+    }).catch(async (err) => {
+      console.error('route read model: publish failed, retrying from the alarm', err);
+      this.routeRetryAfter = Date.now() + ROUTE_PUBLISH_RETRY_MS;
+      await this.armRouteReadModelRetry().catch(() => undefined);
+    });
+  }
+
+  /**
+   * Run `flush` as THE flush: after any running one, and with every kick meanwhile queued behind it
+   * as one more round. The only way a flush starts, so two never race the same key in KV.
+   */
+  private async ownRouteFlush<T>(flush: () => Promise<T>): Promise<T> {
+    while (this.routeFlushing) await this.routeFlushing;
+    let result!: T;
+    let failure: unknown;
+    let failed = false;
+    this.routeFlushing = (async () => {
+      try {
+        result = await flush();
+      } catch (err) {
+        failure = err;
+        failed = true;
+      }
+    })();
+    try {
+      await this.routeFlushing;
+    } finally {
+      this.routeFlushing = null;
+    }
+    // A kick that arrived during this flush asked for another round.
+    if (this.routeFlushAgain) {
+      this.routeFlushAgain = false;
+      this.kickRouteReadModel();
+    }
+    if (failed) throw failure;
+    return result;
+  }
+
+  /** A retry no later than `ROUTE_PUBLISH_RETRY_MS` from now. An earlier alarm is kept. */
+  private async armRouteReadModelRetry(): Promise<void> {
+    const at = Date.now() + ROUTE_PUBLISH_RETRY_MS;
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > at) await this.ctx.storage.setAlarm(at);
+  }
+
+  /** The current flush, for a caller (and a test) that must see it land. */
+  async settleRouteReadModel(): Promise<void> {
+    await this.routeLedgerCheck;
+    this.kickRouteReadModel();
+    while (this.routeFlushing) await this.routeFlushing;
+  }
+
+  /** The read model's counts, for the backfill script and staff. */
+  routeReadModelStatus(): RouteReadModelStatus | { enabled: false } {
+    return this.routePublisher ? this.routePublisher.status() : { enabled: false };
+  }
+
+  /**
+   * The one-off backfill (scripts/route-read-model-backfill.mjs). A dry run reports what the read
+   * model holds and would hold, and writes nothing. `apply` marks every key dirty and publishes up
+   * to `maxKeys` now; the rest is published by the flush rounds that follow, and the status says
+   * how many are left.
+   */
+  async publishRouteReadModel(opts: { apply?: boolean; maxKeys?: number } = {}): Promise<{
+    status: RouteReadModelStatus | { enabled: false };
+    flushed: RouteReadModelFlush | null;
+  }> {
+    const publisher = this.routePublisher;
+    if (!publisher || !opts.apply) return { status: this.routeReadModelStatus(), flushed: null };
+    this.ctx.storage.transactionSync(() => publisher.markAll());
+    // As THE flush, so a kick meanwhile queues a round instead of racing it.
+    let flushed: RouteReadModelFlush;
+    try {
+      flushed = await this.ownRouteFlush(() => publisher.flush(opts.maxKeys ?? 2_000, this.routeQuiet));
+    } catch (err) {
+      // As the automatic path does: the alarm retries, and the caller still sees the refusal.
+      this.routeRetryAfter = Date.now() + ROUTE_PUBLISH_RETRY_MS;
+      await this.armRouteReadModelRetry().catch(() => undefined);
+      throw err;
+    }
+    // What this call's bound left queued is published by the rounds that follow, not left for the
+    // next directory write or the scheduled pass.
+    if (flushed.remaining > 0) this.kickRouteReadModel();
+    return { status: publisher.status(), flushed };
+  }
+
+  /**
+   * The scheduled pass's drift repair: one slice of every source. What it finds is queued in the
+   * outbox (durable) and a flush is started, not awaited: the pass must not wait behind a publish
+   * backlog, such as a large backfill over slow KV. A flush that fails arms the alarm retry, and a
+   * caller that must see the publish land calls `settleRouteReadModel`.
+   */
+  async reconcileRouteReadModel(opts: { limit?: number } = {}): Promise<{ checked: number; queued: number } | null> {
+    const publisher = this.routePublisher;
+    if (!publisher) return null;
+    const result = await publisher.reconcile(opts.limit);
+    this.kickRouteReadModel();
+    return result;
   }
 
   /**
@@ -1883,6 +2094,9 @@ export class ControlPlaneDO extends DurableObject {
    * meanwhile, because a version the backfill has not reached reads from its manifest.
    */
   override async alarm(): Promise<void> {
+    // #3395: the routing read model's retry. It lifts the backoff (and redoes a failed namespace
+    // check); the flush itself starts when this alarm returns, as after any directory method.
+    await this.retryRouteReadModel().catch((err: unknown) => console.error('route read model: retry failed', err));
     let more: boolean;
     try {
       more = this.ctx.storage.transactionSync(() => splitVersionMigrationsBatch(this.kernelSql)).more;
@@ -2510,16 +2724,18 @@ export class ControlPlaneDO extends DurableObject {
   /**
    * The tables a dump carries, by name. Not `_cf_*` either: workerd's own tables (the #1764
    * backfill's alarm creates `_cf_METADATA`), which are not the directory's and which it refuses
-   * to drop on restore.
+   * to drop on restore. Nor the routing read model's (#3395), which record what KV holds.
    */
   private dumpTableDefs(): { name: string; sql: string }[] {
     return this.sql
       .exec(
         `SELECT name, sql FROM sqlite_master
           WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'
-            AND name NOT GLOB ? AND sql IS NOT NULL
+            AND name NOT GLOB ? AND name NOT GLOB ? AND sql IS NOT NULL
           ORDER BY name`,
         COPY_GLOB,
+        // #3395: the read model's ledger describes KV, not the directory (route-read-model-publisher.ts).
+        ROUTE_READ_MODEL_TABLE_GLOB,
       )
       .toArray() as unknown as { name: string; sql: string }[];
   }
@@ -2550,15 +2766,25 @@ export class ControlPlaneDO extends DurableObject {
     // TABLE. Pure input validation, so it runs before the first DROP: a refused dump touches
     // nothing.
     assertReplayableDump(tables, { maxColumns: DO_SQL_LIMITS.columns });
+    // #3395: the routing read model's tables describe KV, survive a restore, and are never in a dump
+    // this code exported. One a dump names (in any case: SQLite's names are) is crafted, and loading
+    // it would make the ledger lie about what KV holds.
+    const routeTable = tables.find((t) => t.name.toLowerCase().startsWith('route_read_model_'));
+    if (routeTable) {
+      throw substratError('validation_failed', `refusing this dump: it names ${routeTable.name}, a table no directory dump carries`);
+    }
     await this.ctx.storage.transaction(async () => {
       // #1713: the epoch this directory was in, read before the drops take it.
       const epochBefore = this.lifecycleEpoch();
       this.sql.exec('PRAGMA defer_foreign_keys = ON');
       // `_cf_*` is workerd's, and dropping it is refused (SQLITE_AUTH), as `exportDump` says.
+      // The routing read model's ledger survives too (#3395): it says what KV holds, which the
+      // restore does not change, and the re-publish below needs it to delete what KV no longer may.
       const existing = this.sql
         .exec(
           `SELECT name FROM sqlite_master
-            WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'`,
+            WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT GLOB ?`,
+          ROUTE_READ_MODEL_TABLE_GLOB,
         )
         .toArray() as unknown as { name: string }[];
       for (const { name } of existing) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
@@ -2566,6 +2792,9 @@ export class ControlPlaneDO extends DurableObject {
       // rebuilds fires (each would reach `transactionSync`, which this async transaction cannot
       // hold): every table is created on the current shape.
       this.buildDirectorySchema({ holdSwitchRecords: [] });
+      // #3395: the dropped tables took their triggers with them. Back before the load, so the
+      // rows the dump brings in are captured like any other write.
+      this.routePublisher?.install();
       // Refuses a table this code does not build, adds unknown columns bare, loads the rows by
       // name, then the legacy scope and #1674 backfills, all inside this transaction.
       loadDirectoryDump(tables, {
@@ -2589,6 +2818,9 @@ export class ControlPlaneDO extends DurableObject {
       // Append the restore's own row after the dump rows have landed in the rebuilt
       // admin table, inside this same import transaction.
       if (audit) this.recordAdmin(audit);
+      // #3395: every key the restored directory routes, and every key KV was given before it —
+      // a route the restored directory does not hold is deleted, not left serving.
+      this.routePublisher?.markAll();
     });
     // A restore is a new #1764 backfill episode. It replaced the data the old failure count and
     // backoff were about, so neither may delay or silence it: the count is cleared and the next
@@ -3950,12 +4182,15 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /**
-   * Uncached request-path gate: only an active hostname, correctly paired active
-   * scope and active owning tenant resolve (#1713). No lifecycle fields cross the
-   * wire: refusal is the existing unresolved route. CP-less direct/background calls
-   * and already-dispatched requests are outside this gate.
+   * Request-path gate: only an active hostname, correctly paired active scope and active
+   * owning tenant resolve (#1713). No lifecycle fields cross the wire: refusal is the existing
+   * unresolved route. CP-less direct/background calls and already-dispatched requests are
+   * outside this gate.
+   *
+   * `publish` (#3395) is the router's read-model miss: the route is queued for publishing
+   * unless it is published already. The answer is the same either way.
    */
-  readRoute(hostname: string): RouteRow | undefined {
+  readRoute(hostname: string, opts?: { publish?: boolean }): RouteRow | undefined {
     // Join the scope's dispatch script, so the router resolves it in the same one
     // directory read (orchestration.md §5.4). A scope whose data lives in the stable
     // serving script (#286) routes THERE — per-scope truth, because rerouting a scope
@@ -3984,6 +4219,16 @@ export class ControlPlaneDO extends DurableObject {
     // #2005: the predicate runs here, once, rather than travelling as two columns for the
     // router to re-derive — every reader of the directory answers it the same way.
     const { kind, forked_from, scope_hostnames_json, ...route } = row;
+    if (opts?.publish === true && this.routePublisher) {
+      // Optional: a fill that cannot be queued (storage full) must not fail a read that succeeded. The
+      // route stays unpublished, and the next miss asks again.
+      try {
+        this.routePublisher.requestPublish(hostname);
+        this.kickRouteReadModel();
+      } catch (err) {
+        console.error('route read model: could not queue a miss for publishing', hostname, err);
+      }
+    }
     return {
       ...route,
       primary: isPrimaryScopeRow({ kind, forked_from }),
@@ -7584,4 +7829,50 @@ export class ControlPlaneDO extends DurableObject {
       labelTruncated: row.label_truncated !== 0, reported: row.reported !== 0,
       inputTokens: row.input_tokens, outputTokens: row.output_tokens }));
   }
+}
+
+/**
+ * #3395: when the last running method of the directory returns, publish what its writes queued.
+ *
+ * The capture is the triggers (route-read-model-publisher.ts), which miss no write path; this is
+ * the matching half for the publish, so it cannot be forgotten either: a method added later is
+ * covered without naming it. The check is one read of an outbox that is empty almost always. It
+ * runs once the method's promise settles, so a flush never reads the writes of a transaction its
+ * own call has not finished. `readRoute` is the hot path and kicks only when it queued something.
+ */
+// The publishing methods drive the flush themselves, and count as no running method while they do.
+const ROUTE_KICK_EXEMPT = new Set([
+  'constructor', 'readRoute', 'kickRouteReadModel', 'settleRouteReadModel', 'publishRouteReadModel',
+  'reconcileRouteReadModel', 'routeReadModelStatus', 'ownRouteFlush', 'routeQuiet',
+  // The retry path: its own return must not start a flush, or a failure is retried at once rather than
+  // after `ROUTE_PUBLISH_RETRY_MS`; the alarm starts it (`retryRouteReadModel`).
+  'armRouteReadModelRetry', 'retryRouteReadModel',
+]);
+for (const name of Object.getOwnPropertyNames(ControlPlaneDO.prototype)) {
+  if (ROUTE_KICK_EXEMPT.has(name)) continue;
+  const descriptor = Object.getOwnPropertyDescriptor(ControlPlaneDO.prototype, name);
+  if (!descriptor || typeof descriptor.value !== 'function') continue;
+  const original = descriptor.value as (this: ControlPlaneDO, ...args: unknown[]) => unknown;
+  Object.defineProperty(ControlPlaneDO.prototype, name, {
+    ...descriptor,
+    value: function (this: ControlPlaneDO, ...args: unknown[]): unknown {
+      // Counted in and out, so only the OUTERMOST return kicks: a private helper returning inside a
+      // transaction (`bumpLifecycleRevision` within `writeAndAudit`) must not start a flush there.
+      const leave = (): void => {
+        this.routeCallDepth -= 1;
+        if (this.routeCallDepth === 0) this.kickRouteReadModel();
+      };
+      this.routeCallDepth += 1;
+      let out: unknown;
+      try {
+        out = original.apply(this, args);
+      } catch (err) {
+        leave();
+        throw err;
+      }
+      if (out instanceof Promise) return out.finally(leave);
+      leave();
+      return out;
+    },
+  });
 }

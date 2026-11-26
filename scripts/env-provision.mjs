@@ -32,8 +32,10 @@
  *      CLOUDFLARE_API_TOKEN Actions secret may hold its current value, and a roll would leave
  *      release.yml and docs.yml without Cloudflare until a person replaced that secret.
  *   2. Resources. Read from each app's `wrangler.jsonc` for this env — the D1 databases, R2
- *      buckets and dispatch namespaces it binds, the wildcard zone route's proxied DNS record
- *      and ACM certificate. Declared once, there; this file adds no second list to drift.
+ *      buckets, KV namespaces and dispatch namespaces it binds, the wildcard zone route's proxied
+ *      DNS record and ACM certificate. Declared once, there; this file adds no second list to
+ *      drift. A KV binding names no namespace, only an id, so its title is derived from the
+ *      binding (`kvTitleOf`): ROUTES is `substrat-routes`, `substrat-routes-test` in test.
  *   2b. Lakes (prod only). The Tier-2 lakes the control plane's prod deploy binds
  *      (apps/control-plane/wrangler.deploy.json → scripts/lake/lakes.mjs): the lake's two standing
  *      tokens (R2_LAKE_CATALOG_TOKEN, R2_LAKE_SQL_TOKEN, scoped to its bucket), then each lake through
@@ -408,6 +410,13 @@ async function cfAll(token, path) {
 }
 
 // ── wrangler configs → the env's resources ───────────────────────────────────
+/**
+ * A KV namespace's title, from its binding and the env whose block binds it. A KV binding carries
+ * only an id (an account id, a `${…}` placeholder in the committed config), so the title is the
+ * rule both this script and a person creating one by hand follow: `substrat-<binding>[-<env>]`.
+ */
+const kvTitleOf = (binding, env) => `substrat-${binding.toLowerCase().replace(/_/g, '-')}${env === 'prod' ? '' : `-${env}`}`;
+
 function configOf(app) {
   const top = parseJsonc(readFileSync(join(ROOT, 'apps', app, 'wrangler.jsonc'), 'utf8'));
   // A named env inherits no bindings, only the name (`<name>-<env>`), so its block is the whole truth.
@@ -418,6 +427,7 @@ function configOf(app) {
 function resourcesOf() {
   const d1 = new Map(); // database_name → id placeholder key
   const r2 = new Set();
+  const kv = new Map(); // title → id placeholder key
   const namespaces = new Set();
   const artifacts = new Set();
   const customDomains = new Set();
@@ -434,6 +444,7 @@ function resourcesOf() {
       d1.set(db.database_name, key);
     }
     for (const b of block.r2_buckets ?? []) r2.add(b.bucket_name);
+    for (const k of block.kv_namespaces ?? []) kv.set(kvTitleOf(k.binding, ENV), /^\$\{(\w+)\}$/.exec(k.id ?? '')?.[1]);
     for (const n of block.dispatch_namespaces ?? []) namespaces.add(n.namespace);
     for (const a of block.artifacts ?? []) artifacts.add(a.namespace);
     for (const [binding, feature] of FEATURE_BINDINGS) if (block[binding]?.length ?? block[binding]) needs.add(feature);
@@ -457,7 +468,7 @@ function resourcesOf() {
       mailDomain = block.vars?.MAIL_IN_DOMAIN;
     }
   }
-  return { d1, r2, namespaces, artifacts, customDomains, wildcards, scripts, saasZone, mailDomain, needs };
+  return { d1, r2, kv, namespaces, artifacts, customDomains, wildcards, scripts, saasZone, mailDomain, needs };
 }
 
 // ── steps ────────────────────────────────────────────────────────────────────
@@ -908,6 +919,30 @@ async function main() {
     }
   }
 
+  section('KV');
+  const kvAll = await cfAll(deploy, `/accounts/${account}/storage/kv/namespaces`);
+  for (const [title, key] of res.kv) {
+    // An id given explicitly (the environment, else the env file) is THE namespace: checked to exist
+    // and written to the file, so the local deploy (configIds) and CI (secrets.mjs github) use the
+    // same one. Only with none given is the namespace found, or created, by its title.
+    const explicit = key ? (process.env[key] ?? values[key]) : undefined;
+    let ns;
+    if (explicit) {
+      ns = kvAll.find((n) => n.id === explicit);
+      if (!ns) fail(`${key} names KV namespace ${explicit}, which is not in the account — fix or unset it to find "${title}" by title`);
+      ok(`${title} → ${key} ${ns.title === title ? '' : `(the namespace titled "${ns.title}") `}as given`);
+    } else {
+      ns = kvAll.find((n) => n.title === title);
+      if (ns) ok(title);
+      else {
+        act(`create KV namespace ${title}`);
+        if (DRY) continue;
+        ns = (await cf(deploy, 'POST', `/accounts/${account}/storage/kv/namespaces`, { title })).result;
+      }
+    }
+    if (key && setValue(key, ns.id)) act(`${key} written`);
+  }
+
   section('Dispatch namespaces');
   for (const name of res.namespaces) {
     if (await cfFind(deploy, `/accounts/${account}/workers/dispatch/namespaces/${name}`)) ok(name);
@@ -1135,6 +1170,22 @@ async function configIds(deploy, account, prodValues) {
       }
     }
   }
+  // KV ids (#3395), per block: the other env's too, since the generated config resolves every
+  // block. One the account does not hold gets an inert id, as the stream below does in test: the
+  // binding it fills is in a block this env never deploys. This env's own must exist (step 2).
+  const kvAll = await cfAll(deploy, `/accounts/${account}/storage/kv/namespaces`);
+  for (const { app } of WORKERS) {
+    const { top } = configOf(app);
+    for (const [env, block] of [['prod', top], ...Object.entries(top.env ?? {})]) {
+      for (const k of block.kv_namespaces ?? []) {
+        const key = /^\$\{(\w+)\}$/.exec(k.id ?? '')?.[1];
+        if (!key || out[key]) continue;
+        const v = process.env[key] ?? values[key] ?? prodValues[key] ?? kvAll.find((n) => n.title === kvTitleOf(k.binding, env))?.id;
+        if (v) out[key] = v;
+        else if (env !== ENV) out[key] = '0'.repeat(32);
+      }
+    }
+  }
   // The Tier-2 stream is a top-level-only binding (wrangler.deploy.json): a test deploy never
   // carries it, but the generated config still has to resolve it. A test env with no lake gets
   // an inert id, because the binding it fills is in the block that test does not deploy.
@@ -1175,6 +1226,7 @@ function gh(args, input) {
  */
 const CI_DEPLOY_VARIABLES = [
   'CLOUDFLARE_ACCOUNT_ID', 'CF_D1_AUTH_DB_ID', 'CF_D1_AUTH_DB_ID_TEST', 'CF_PIPELINE_OUTBOX_STREAM_ID', 'CF_PIPELINE_DIRECTORY_STREAM_ID',
+  'CF_KV_ROUTES_ID', 'CF_KV_ROUTES_ID_TEST',
 ];
 
 async function github(deploy, account, smokeFailed) {

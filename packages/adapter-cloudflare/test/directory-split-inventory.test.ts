@@ -42,7 +42,7 @@ const sorted = (o: Record<string, number>) => Object.fromEntries(Object.entries(
 describe('the directory split inventory (K-68)', () => {
   it('lists every transaction site in control-plane-do.ts, per method', () => {
     expect(sorted(inventoried(DIRECTORY_TRANSACTION_SITES))).toEqual(sorted(sitesBy(/\.transactionSync\(|storage\.transaction\(/)));
-    expect(DIRECTORY_TRANSACTION_SITES.reduce((n, r) => n + r.sites, 0)).toBe(48);
+    expect(DIRECTORY_TRANSACTION_SITES.reduce((n, r) => n + r.sites, 0)).toBe(50);
   });
 
   it('lists every caller of writeAndAudit, and of audited and auditedConnectLink', () => {

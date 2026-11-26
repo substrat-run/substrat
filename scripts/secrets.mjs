@@ -380,6 +380,8 @@ const STORE_ONLY = {
 const GITHUB_VARIABLES = {
   CF_D1_AUTH_DB_ID: 'the staff-roster D1, which the committed wrangler config does not name',
   CF_D1_AUTH_DB_ID_TEST: 'the same for the test env',
+  CF_KV_ROUTES_ID: 'the routing read model KV namespace (#3395), which the committed wrangler configs do not name',
+  CF_KV_ROUTES_ID_TEST: 'the same for the test env',
   CF_PIPELINE_OUTBOX_STREAM_ID: 'the Tier-2 outbox stream (#1334) — CHANGES on every lake --recreate',
   CF_PIPELINE_DIRECTORY_STREAM_ID: 'the directory lake stream (K-70) — CHANGES on every `lake --lake directory --recreate`',
 };

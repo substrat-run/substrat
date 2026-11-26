@@ -11804,8 +11804,9 @@ export class CloudflareScopeHost implements ScopeHost {
    * strictly newer than the one it holds.
    *
    * Never throws. A transition is the operator's lever in an incident, and the router refuses
-   * the scope's requests as soon as the directory moves (#1730), so a deployment that cannot be
-   * reached must not refuse the lever. A failure writes no receipt, and the heal sweep delivers
+   * the scope's requests once the directory moves (#1730) — at once on the directory read, and
+   * within the read model's bound when the router reads routes from KV (#3395, K-72) — so a
+   * deployment that cannot be reached must not refuse the lever. A failure writes no receipt, and the heal sweep delivers
    * again: on the next pass after the first failure, then backing off (#3119), so a scope that can
    * never be delivered to is not asked every pass for good. Only news is an ops-failure row — the
    * first failure against a receipt and a deployment, or another error than the last.

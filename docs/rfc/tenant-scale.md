@@ -17,7 +17,8 @@ decision records, [K-68 (directory split)](../decisions/K-068-the-control-plane-
 [D-79 (idle tenant costs storage only)](../decisions/D-079-a-tenant-at-rest-costs-storage-only-and-every-platform-change-is-held-to-that.md),
 all `proposed`. They wait for the owner. The router's edge read model, which is step 1 of the
 migration order, is designed and built under
-[#3395](https://github.com/substrat-run/substrat/issues/3395), with its own record answering K-26's
+[#3395](https://github.com/substrat-run/substrat/issues/3395), with its own record,
+[K-72 (routing read model)](../decisions/K-072-the-router-reads-routes-from-a-kv-read-model-the-directory-publishes.md), answering K-26's
 cache question; this document cites it and does not design it again.
 
 ## 1. The problem, measured
@@ -749,9 +750,11 @@ of the design:
 
 **Step 1. The router's edge read model ([#3395](https://github.com/substrat-run/substrat/issues/3395),
 in progress as [#3397](https://github.com/substrat-run/substrat/pull/3397)).** Designed there, with a `compare` mode before the router reads it and its own
-record; this RFC adds only that the projection's source will move from
+record, [K-72 (routing read model)](../decisions/K-072-the-router-reads-routes-from-a-kv-read-model-the-directory-publishes.md); this RFC adds only that the projection's source will move from
 the one directory to the registry and the tenant objects in step 3, so the projection writer should
-be one function both can call. *Revert:* the router reads the directory again.
+be one function both can call. #3397 builds it that way: `writeRouteReadModelEntry` is the one
+writer (KV plus a ledger the source keeps), and `routeEntryOf` / `servingPolicyEntryOf` build an
+entry from a source's own rows, so step 3 changes where the rows come from and not what is written. *Revert:* the router reads the directory again.
 
 **Step 2. Logs and meters out.** The admin log, access log, ops failures, sweep runs, model and
 build usage, cost, request and meter days ship to the lake through an outbox in the directory (the
@@ -833,9 +836,9 @@ interim.
 
 All `proposed`. Each lists the owner's open choices.
 
-**The numbers may change.** The router read model's record (#3395) also takes K-68 on today's
-`main`, and `lint:decisions` refuses a gap, so whichever pull request merges second renumbers its
-records. Every reference in this document and in these records therefore carries a short name
+**The numbers may change.** This RFC merged first, so the router read model's record (#3395),
+which also took K-68 while both were open, is now K-72 (routing read model): `lint:decisions`
+refuses a gap, so whichever pull request merged second renumbered its records. Every reference in this document and in these records therefore carries a short name
 beside the number: directory split, no scheduled walk over tenants, tenants × time data leaves the
 objects, shared issuer partitioned by person, five-minute bound, PITR and incremental export, idle
 tenant costs storage only. A renumber changes the number and the file name and leaves the name.
@@ -852,7 +855,7 @@ tenant costs storage only. A renumber changes the number and the file name and l
 
 **Relations to earlier records and to the one-model RFC.** K-26 stands: one router, verticals
 reachable only through it. Its open note on suspension latency is answered by D-77 (five-minute bound), and step 1's
-record (#3395) answers its deferred cache, held to five minutes by D-77 (five-minute bound). D-41's entitlement projection
+record, K-72 (routing read model, #3395), answers its deferred cache, held to five minutes by D-77 (five-minute bound). D-41's entitlement projection
 stands; its "settle once for both" note is answered by putting routing and suspension at the edge
 (D-77, five-minute bound). K-33's in-place
 serving and per-scope migrations stand; only the reconcile half of a promote moves from a batched
