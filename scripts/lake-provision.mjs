@@ -663,7 +663,22 @@ if (drifted.length > 0) {
 
 // Printed only when a stream was actually made. On a plain check nothing changed and a
 // paragraph of next steps would be noise that trains people to skip it.
-if (stream.created) {
+if (stream.created && lakeName === 'directory' && !recreate) {
+  // The directory lake's FIRST stream: nothing binds an old id yet, nothing was dropped, and the
+  // binding reaches production through the release of the PR that adds it, never a laptop deploy.
+  const id = stream.live?.id;
+  console.log(`
+The directory lake's stream was created. The control plane binds it by id, through CI's
+repository variable. Run these ONE AT A TIME:
+
+  1. In ${secretsFile} set:
+       ${LAKE.idVar}=${id ?? '<the id the create returned — dry run, none yet>'}
+  2. node scripts/secrets.mjs github   (with the same --file, relative to the repo root)
+  3. Merge the change that binds DIRECTORY_LAKE_STREAM; its release deploys the control plane.
+     A deploy before step 2 fails: tools/wrangler-config.mjs refuses an unresolved id.
+
+Capture stays off until DIRECTORY_LAKE_CAPTURE names a data set; nothing ships before that.`);
+} else if (stream.created) {
   const id = stream.live?.id;
   console.log(`
 A NEW STREAM HAS A NEW ID, and the control plane binds it by id — wrangler's pipelines
