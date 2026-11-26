@@ -1,5 +1,32 @@
 # @substrat-run/control-plane
 
+## 0.19.16
+
+### Patch Changes
+
+- fdfcc48: A store can now connect its own Fortnox company. When each install of an app is a store that keeps its own books, the app starts the consent round from the store with `owner: 'scope'` (`requestConnectUrl`), and the round ends in that install's own connection, bound to that install alone, so each store lands only its own company's ledger. A re-consent of the same company from the same store rotates its connection, and the same company connected from another store is that store's own. The dashboard lists the connection on its install's Integrations tab, marked as its own, and disconnecting it stops only that store's sync. A Fortnox connection made from the dashboard or a connect link stays the tenant's, as before. In `@substrat-run/control-plane-api`, the connect-url relay takes `owner: 'scope'`, and `POST /tenants/:tenantId/connections/consented` stores and binds a scope's own round after verifying its signed state.
+- d419e56: After a promote, a scope now asks for its provision reconcile on its next wake instead of waiting for the batched pass (K-69, step 5 of the tenant-scale RFC). The first time a scope object runs its migration pass on a version it has not asked about, it writes one `provision-reconcile` intent into its own journal, once per version, never from a copy, never after a failed migration, and never into a full journal. The response that woke it flags a drain, and the control plane reconciles the scope against the version it runs if the directory says it is behind, with the batched pass's own rule, reach and receipt. `PROVISION_RECONCILE_ON_WAKE=off` turns the handler into a no-op, and the batched pass (`PROVISION_RECONCILE_BATCH`) stays on beside it for now. Staff read how far a vertical's installs have come at `GET /verticals/:slug/reconcile-progress`, idle installs included, and the console shows it on the vertical's page. Contracts adds `PROVISION_RECONCILE_KIND`, `provisionReconcilePayload`, `provisionReconcileResult` and `reconcileProgressReading`. The kernel adds `provisionReconcileTarget` and `reconcileProgressOf`, and refuses `provision-reconcile` from module code. The control-plane API adds `provisionReconcileHandler`, `reconcileOnWakeEnabled`, `readReconcileProgress` and the staff client's `readReconcileProgress`.
+- 6b08a73: The routing read model (#3395, K-72 proposed). With a `ROUTES` KV namespace bound, the control plane's directory publishes every route and every vertical's serving policy to it, captured by triggers in the same transaction as each change, reconciled by the scheduled pass and re-published after a restore. `createReadModelRouteResolver` reads memory → KV → the directory, and the router's `ROUTE_READ_MODEL` (`off` by default, `compare`, `on`) decides whether it does. Residency-pinned routes are never published (K-36).
+- Updated dependencies [fdfcc48]
+- Updated dependencies [d419e56]
+- Updated dependencies [72300c5]
+- Updated dependencies [6b08a73]
+  - @substrat-run/contracts@0.214.0
+  - @substrat-run/control-plane-api@0.214.0
+  - @substrat-run/vertical-host@0.214.0
+  - @substrat-run/connector-fortnox@0.10.0
+  - @substrat-run/kernel@0.214.0
+  - @substrat-run/adapter-cloudflare@0.214.0
+  - @substrat-run/connector-bolagsverket@0.1.10
+  - @substrat-run/connector-mail-in@0.1.51
+  - @substrat-run/connector-microsoft365@0.0.75
+  - @substrat-run/connector-planima@0.2.111
+  - @substrat-run/connector-scrive@0.15.16
+  - @substrat-run/connector-shopify@0.0.10
+  - @substrat-run/connector-stripe@0.0.16
+  - @substrat-run/connector-woocommerce@0.0.20
+  - @substrat-run/model-providers@0.5.104
+
 ## 0.19.15
 
 ### Patch Changes

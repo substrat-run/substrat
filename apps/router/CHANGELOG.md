@@ -1,5 +1,17 @@
 # @substrat-run/router
 
+## 0.6.51
+
+### Patch Changes
+
+- 6b08a73: The routing read model (#3395, K-72 proposed). With a `ROUTES` KV namespace bound, the control plane's directory publishes every route and every vertical's serving policy to it, captured by triggers in the same transaction as each change, reconciled by the scheduled pass and re-published after a restore. `createReadModelRouteResolver` reads memory → KV → the directory, and the router's `ROUTE_READ_MODEL` (`off` by default, `compare`, `on`) decides whether it does. Residency-pinned routes are never published (K-36).
+- Updated dependencies [fdfcc48]
+- Updated dependencies [d419e56]
+- Updated dependencies [72300c5]
+- Updated dependencies [6b08a73]
+  - @substrat-run/contracts@0.214.0
+  - @substrat-run/adapter-cloudflare@0.214.0
+
 ## 0.6.50
 
 ### Patch Changes

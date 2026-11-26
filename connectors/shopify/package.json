@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/connector-shopify",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "private": true,
   "description": "Substrat connector: reads a Shopify store's products and orders on a poll, through its Admin GraphQL API with a Dev Dashboard app's client credentials, and lands them in a scope in the provider-neutral commerce shape. Read-only. Host code, never module code.",
   "license": "AGPL-3.0-only",
