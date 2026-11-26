@@ -619,7 +619,8 @@ repository variable. Run these ONE AT A TIME:
   3. Merge the change that binds DIRECTORY_LAKE_STREAM; its release deploys the control plane.
      A deploy before step 2 fails: tools/wrangler-config.mjs refuses an unresolved id.
 
-Capture stays off until DIRECTORY_LAKE_CAPTURE names a data set; nothing ships before that.`);
+On the first scheduled pass after that deploy, the admin log starts capturing (the code's
+DIRECTORY_LAKE_CAPTURE_DEFAULT; the DIRECTORY_LAKE_CAPTURE variable overrides it).`);
 } else if (stream.created) {
   const id = stream.live?.id;
   console.log(`
@@ -634,7 +635,7 @@ the shell carries on past a failure and can publish the old id:
   3. pnpm --filter @substrat-run/control-plane cf:deploy
        — note the time it FINISHES; step 4 needs it
   4. ${lakeName === 'directory'
-    ? 'switch DIRECTORY_LAKE_CAPTURE off for one pass and back on, then\n       node scripts/directory-lake-backfill.mjs --apply  (the directory has no redrain: its\n       outbox deletes what it shipped, so the rows still in the directory are backfilled again)'
+    ? 'set DIRECTORY_LAKE_CAPTURE=off for one pass, then remove it (capture starts over), then\n       node scripts/directory-lake-backfill.mjs --apply  (the directory has no redrain: its\n       outbox deletes what it shipped, so the rows still in the directory are backfilled again)'
     : 'pnpm lake:redrain --drained-before=<that time, ISO 8601>'}
 
 Step 2 is the one that is easy to skip and the most expensive. CI reads the repository
