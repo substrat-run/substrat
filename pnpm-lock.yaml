@@ -650,17 +650,16 @@ importers:
         version: 4.158.0(@cloudflare/workers-types@5.20261104.1)(@types/node@26.6.3)
 
   connectors/bolagsverket:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 'catalog:'
         version: 5.20261104.1
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -675,17 +674,16 @@ importers:
         version: 4.4.3
 
   connectors/fortnox:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
         version: link:../../packages/adapter-sqlite
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -698,12 +696,6 @@ importers:
 
   connectors/mail-in:
     dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
       postal-mime:
         specifier: 'catalog:'
         version: 4.2.0
@@ -714,6 +706,12 @@ importers:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../../packages/contract-tests
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -725,13 +723,6 @@ importers:
         version: 4.4.3
 
   connectors/microsoft365:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
@@ -739,6 +730,12 @@ importers:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../../packages/contract-tests
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -750,17 +747,16 @@ importers:
         version: 4.4.3
 
   connectors/planima:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
         version: link:../../packages/adapter-sqlite
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -772,20 +768,19 @@ importers:
         version: 4.4.3
 
   connectors/scrive:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
         version: link:../../packages/adapter-sqlite
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@substrat-run/engine-protocol':
         specifier: workspace:^
         version: link:../../engines/protocol
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -797,13 +792,6 @@ importers:
         version: 4.4.3
 
   connectors/shopify:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
@@ -811,6 +799,12 @@ importers:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../../packages/contract-tests
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -822,17 +816,16 @@ importers:
         version: 4.4.3
 
   connectors/stripe:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
         version: link:../../packages/adapter-sqlite
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -844,13 +837,6 @@ importers:
         version: 4.4.3
 
   connectors/woocommerce:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
@@ -858,6 +844,12 @@ importers:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../../packages/contract-tests
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -1793,20 +1785,19 @@ importers:
         version: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@26.6.3)(@vitest/ui@5.0.5)(jsdom@26.1.0)(vite@8.3.5(@types/node@26.6.3)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
 
   engines/absence:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../../packages/contract-tests
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@substrat-run/engine-test-kit':
         specifier: workspace:^
         version: link:../../packages/engine-test-kit
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       '@substrat-run/model-emit':
         specifier: workspace:*
         version: link:../../packages/model-emit
@@ -1821,20 +1812,19 @@ importers:
         version: 4.4.3
 
   engines/assistant:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../../packages/contract-tests
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@substrat-run/engine-test-kit':
         specifier: workspace:^
         version: link:../../packages/engine-test-kit
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       '@substrat-run/model-emit':
         specifier: workspace:*
         version: link:../../packages/model-emit
@@ -1849,20 +1839,19 @@ importers:
         version: 4.4.3
 
   engines/booking:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../../packages/contract-tests
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@substrat-run/engine-test-kit':
         specifier: workspace:^
         version: link:../../packages/engine-test-kit
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       '@substrat-run/model-emit':
         specifier: workspace:*
         version: link:../../packages/model-emit
@@ -1877,20 +1866,19 @@ importers:
         version: 4.4.3
 
   engines/invites:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../../packages/contract-tests
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@substrat-run/engine-test-kit':
         specifier: workspace:^
         version: link:../../packages/engine-test-kit
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       '@substrat-run/model-emit':
         specifier: workspace:*
         version: link:../../packages/model-emit
@@ -1905,20 +1893,19 @@ importers:
         version: 4.4.3
 
   engines/invoicing:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../../packages/contract-tests
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@substrat-run/engine-test-kit':
         specifier: workspace:^
         version: link:../../packages/engine-test-kit
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       '@substrat-run/model-emit':
         specifier: workspace:*
         version: link:../../packages/model-emit
@@ -1933,20 +1920,19 @@ importers:
         version: 4.4.3
 
   engines/metering:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../../packages/contract-tests
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@substrat-run/engine-test-kit':
         specifier: workspace:^
         version: link:../../packages/engine-test-kit
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -1958,13 +1944,6 @@ importers:
         version: 4.4.3
 
   engines/notifications:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@cloudflare/vitest-plugin':
         specifier: 'catalog:'
@@ -1978,9 +1957,15 @@ importers:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../../packages/contract-tests
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@substrat-run/engine-test-kit':
         specifier: workspace:^
         version: link:../../packages/engine-test-kit
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       '@substrat-run/model-emit':
         specifier: workspace:*
         version: link:../../packages/model-emit
@@ -1995,13 +1980,6 @@ importers:
         version: 4.4.3
 
   engines/protocol:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
@@ -2009,9 +1987,15 @@ importers:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../../packages/contract-tests
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@substrat-run/engine-test-kit':
         specifier: workspace:^
         version: link:../../packages/engine-test-kit
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       '@substrat-run/model-emit':
         specifier: workspace:*
         version: link:../../packages/model-emit
@@ -2026,20 +2010,19 @@ importers:
         version: 4.4.3
 
   engines/workorder:
-    dependencies:
-      '@substrat-run/contracts':
-        specifier: workspace:^
-        version: link:../../packages/contracts
-      '@substrat-run/kernel':
-        specifier: workspace:^
-        version: link:../../packages/kernel
     devDependencies:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../../packages/contract-tests
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@substrat-run/engine-test-kit':
         specifier: workspace:^
         version: link:../../packages/engine-test-kit
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
       '@substrat-run/model-emit':
         specifier: workspace:*
         version: link:../../packages/model-emit

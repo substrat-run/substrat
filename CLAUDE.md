@@ -701,6 +701,13 @@ so the shorthand puts the login callback on the API's port. Nine of eleven demo 
 carried it and every suite stayed green, because a scenario drives the module and never
 reaches `server.ts`, #1388. A whole file opts out with `vite-proxy-allow: <reason>` —
 `demos/auth-server` does, taking its origin from `PORT` instead),
+`lint:peer-floor` (`tools/peer-floor.mjs`, tests via `pnpm test:peer-floor`: every package under
+`engines/` and `connectors/` takes `@substrat-run/kernel` and `@substrat-run/contracts` as **peers**
+in the shape `>=X.Y.Z <1.0.0`, with a `workspace:*` devDependency, never as a regular dependency —
+the vertical owns the one kernel, and a kernel minor no longer republishes every engine. The floor is
+installed from npm and each package's `src` typechecked against it, because the workspace only ever
+proves HEAD. A package that starts using newer kernel surface raises its floor to a published version.
+`docs/architecture/dependency-policy.md` §1 says why),
 `lint:workspace-cli` (`tools/workspace-cli.mjs`, fixtures via `pnpm test:workspace-cli`: a workflow
 in this repo runs the CLI built from its checkout, `node packages/cli/dist/cli.js`, never a registry
 `@substrat-run/cli` or `@substrat-run/boundary-lint`. `substrat push` gates on the layer rules its

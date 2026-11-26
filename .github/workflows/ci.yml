@@ -366,6 +366,14 @@ jobs:
       # while the engine surface moved underneath it. `version-packages` runs
       # the write, so this only reddens on a hand edit.
       - run: pnpm lint:pins --check
+      # The peer-floor checkpoint. Engines and connectors take kernel + contracts as
+      # peers (`>=X.Y.Z <1.0.0`), so a kernel minor no longer republishes all of them —
+      # which is only honest if each still compiles against the floor it states. The
+      # workspace builds against HEAD and proves the top of the range only; this installs
+      # the floor from npm and typechecks each package's src against it. Test first, so a
+      # rule that stopped refusing is red rather than quiet.
+      - run: pnpm test:peer-floor
+      - run: pnpm lint:peer-floor
       # The platform-entry checkpoint (#1893). The control plane uploads its own entry
       # module in front of every vertical's bundle, so each request is stamped whether
       # or not the vertical mounted `invocationLog`. That module is vertical-host's

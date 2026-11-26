@@ -28,9 +28,12 @@ import { DEV_SERVERS } from './dev-servers.js';
 // scaffold's own tests stayed green while the surface moved underneath them.
 //
 // The runtime packages release together off one version line (the changesets `fixed`
-// group), so one constant is right for all of them. Engines do NOT share a line —
-// each versions on its own, so one pin per engine, deliberately.
+// group), so one constant is right for all of them. `contracts` left that group so a
+// kernel release stops republishing everything that only reads the vocabulary — it has
+// its own line, and its own pin. Engines do NOT share a line either — each versions on
+// its own, so one pin per engine, deliberately.
 const SUBSTRAT = '^0.214.0';
+const CONTRACTS = '^0.214.0';
 const ENGINE_WORKORDER = '^0.13.39';
 const ENGINE_INVOICING = '^0.11.98';
 const BOUNDARY_LINT = '^0.9.2';
@@ -139,7 +142,7 @@ export function packageJson(name) {
       },
       dependencies: {
         '@substrat-run/kernel': SUBSTRAT,
-        '@substrat-run/contracts': SUBSTRAT,
+        '@substrat-run/contracts': CONTRACTS,
         '@substrat-run/adapter-sqlite': SUBSTRAT,
         '@substrat-run/adapter-cloudflare': SUBSTRAT,
         '@substrat-run/vertical-host': SUBSTRAT,
