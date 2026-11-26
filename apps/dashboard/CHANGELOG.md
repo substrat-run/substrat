@@ -1,5 +1,26 @@
 # @substrat-run/dashboard
 
+## 0.49.32
+
+### Patch Changes
+
+- fdfcc48: A store can now connect its own Fortnox company. When each install of an app is a store that keeps its own books, the app starts the consent round from the store with `owner: 'scope'` (`requestConnectUrl`), and the round ends in that install's own connection, bound to that install alone, so each store lands only its own company's ledger. A re-consent of the same company from the same store rotates its connection, and the same company connected from another store is that store's own. The dashboard lists the connection on its install's Integrations tab, marked as its own, and disconnecting it stops only that store's sync. A Fortnox connection made from the dashboard or a connect link stays the tenant's, as before. In `@substrat-run/control-plane-api`, the connect-url relay takes `owner: 'scope'`, and `POST /tenants/:tenantId/connections/consented` stores and binds a scope's own round after verifying its signed state.
+- 72300c5: Platform usage prices each day per meter (`wouldCostByDimension`, for the day and for each app in it), and the dashboard's Billing chart opens a breakdown of what a bar went on when you hover or focus it.
+- Updated dependencies [fdfcc48]
+- Updated dependencies [d419e56]
+- Updated dependencies [72300c5]
+- Updated dependencies [6b08a73]
+  - @substrat-run/contracts@0.214.0
+  - @substrat-run/control-plane-api@0.214.0
+  - @substrat-run/vertical-host@0.214.0
+  - @substrat-run/connector-fortnox@0.10.0
+  - @substrat-run/kernel@0.214.0
+  - @substrat-run/adapter-cloudflare@0.214.0
+  - @substrat-run/engine-invites@0.9.91
+  - @substrat-run/engine-protocol@0.14.14
+  - @substrat-run/control-plane-client@0.9.14
+  - @substrat-run/model-providers@0.5.104
+
 ## 0.49.31
 
 ### Patch Changes
