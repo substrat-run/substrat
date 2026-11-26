@@ -182,7 +182,12 @@ function main() {
   const groups = new Map();
   for (const { rel, manifest } of found) {
     // The package's own compiler options, flattened, so the floor is judged as its build is.
-    const shown = JSON.parse(execFileSync(tsc, ['-p', join(ROOT, rel, 'tsconfig.json'), '--showConfig'], { encoding: 'utf8' }));
+    let shown;
+    try {
+      shown = JSON.parse(execFileSync(tsc, ['-p', join(ROOT, rel, 'tsconfig.json'), '--showConfig'], { encoding: 'utf8', stdio: 'pipe' }));
+    } catch (e) {
+      cannot(`cannot read ${rel}/tsconfig.json with \`tsc --showConfig\`: ${`${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message}`);
+    }
     const floors = PEERS.map((name) => `${name}@${parseRange(manifest.peerDependencies[name]).floor}`);
     const key = floors.join(' ');
     if (!groups.has(key)) groups.set(key, { floors, deps: {}, packages: [] });
