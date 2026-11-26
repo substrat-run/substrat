@@ -341,6 +341,26 @@ export class SetCheckScopeDO extends SetCheckBase {
 }
 
 /**
+ * K-69: the on-wake provision reconcile — reconcile-on-wake.test.ts. Hosted, `SUBSTRAT_VERSION_ID`
+ * is the plain_text binding an in-place promote rewrites; here env is script-wide (as
+ * `SET_CHECK_DIGEST` says), so the class reads the version a test sets under this key, and a
+ * promote is the test moving it.
+ */
+export const WAKE_VERSION = Symbol.for('substrat.test.wake-version');
+const WakeVersionBase = defineScopeDO([listMod], {});
+export class WakeVersionScopeDO extends WakeVersionBase {
+  constructor(ctx: DurableObjectState, env: ScopeDoEnv) {
+    super(
+      ctx,
+      Object.defineProperty({ ...env }, 'SUBSTRAT_VERSION_ID', {
+        enumerable: true,
+        get: () => (globalThis as Record<symbol, string | undefined>)[WAKE_VERSION],
+      }),
+    );
+  }
+}
+
+/**
  * #3316: the scope-work meter on a real object — scope-work.test.ts. Hosted, the dataset is an
  * Analytics Engine binding the uploader injects with the vertical and the script kind; here the
  * class is handed a recorder whose points the test reads through `SCOPE_WORK_POINTS` (env is

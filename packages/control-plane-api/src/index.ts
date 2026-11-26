@@ -147,6 +147,9 @@ export {
 } from './managed-sign-in.js';
 export { reconcileOutcomeOf, reconcilePayloadFor, reconcileThenReassert, reviewedEntityGrants, switchCarryFor, type SwitchCarry } from './reconcile.js';
 export type { ReconcilePayload, ReconcileGatherAdmin } from './reconcile.js';
+// K-69: the on-wake provision reconcile's handler, and the progress count staff read.
+export { provisionReconcileHandler, reconcileOnWakeEnabled, type ProvisionReconcileIntentDeps } from './provision-reconcile-intent.js';
+export { readReconcileProgress } from './reconcile-progress.js';
 export { attributeFailure, terminalFailureNote } from './failure-attribution.js';
 export {
   sendEmailHandler,

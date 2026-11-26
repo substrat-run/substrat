@@ -8,7 +8,9 @@
  * (#1232) is the CP-less scope sweeper's batched schedule outcomes, and its handler
  * lands every entry into `_substrat_sweep_runs`. Enqueued from module code, it
  * forges the vertical's own schedule and freshness verdicts — a stale schedule
- * reads green on the dashboard and in the fleet rollup.
+ * reads green on the dashboard and in the fleet rollup. `provision-reconcile` (K-69)
+ * is the scope's own wake signal; raised by module code it would spend a platform
+ * reconcile on the vertical's say-so.
  *
  * So the refusal lives where the journal is handed to module code: both adapters
  * call `assertModuleEnqueueableKind` first in `ctx.requestPlatform`, before the
@@ -19,7 +21,7 @@
  * module code by design (#1054), and the drain attributes it from the scope the
  * intent lives in rather than from the payload.
  */
-import { SWEEP_RUNS_KIND, substratError } from '@substrat-run/contracts';
+import { PROVISION_RECONCILE_KIND, SWEEP_RUNS_KIND, substratError } from '@substrat-run/contracts';
 
 /**
  * Kinds `ctx.requestPlatform` refuses: the platform enqueues these itself.
@@ -29,7 +31,7 @@ import { SWEEP_RUNS_KIND, substratError } from '@substrat-run/contracts';
  * away from module code disarming its own guard. The assertion below is the whole
  * public surface; the data behind it stays in this module.
  */
-const PLATFORM_AUTHORED_KINDS: ReadonlySet<string> = new Set([SWEEP_RUNS_KIND]);
+const PLATFORM_AUTHORED_KINDS: ReadonlySet<string> = new Set([SWEEP_RUNS_KIND, PROVISION_RECONCILE_KIND]);
 
 /**
  * Refuse a platform-authored kind from module code. Throws a `forbidden`

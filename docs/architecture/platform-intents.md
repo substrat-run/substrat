@@ -239,6 +239,17 @@ Retry classification follows the drain's rule (`isTerminalDispatchFailure`), rea
 `cause` a tenant send's 502 carries, so the provider's own status decides. Delivery is at least
 once: if a send succeeds but its settle is lost, the mail is sent again on the next pass.
 
+### 3c. `provision-reconcile` — a scope asking for its own reconcile (K-69)
+
+A platform-authored kind, like `sweep-runs`: `ctx.requestPlatform` refuses it from module code. The
+scope's host writes it on the first wake on a version it has not asked about, after a migration pass
+that succeeded, and never from a copy (`docs/architecture/scheduler.md`, "On wake, beside the
+batch"). The payload names the version the scope woke on, and is informational: the handler
+reconciles against what the directory says the scope runs, and settles `up-to-date` when the receipt
+already matches. A refused reconcile is a thrown handler, so the intent stays `pending` and the next
+drain retries it, up to the attempt ceiling. The ask takes one slot of the shared 32; a journal at its
+cap asks on the next wake instead.
+
 ### 4. The router kick
 
 The router recognises a generic response header ("this scope has a pending platform request") and

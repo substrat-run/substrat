@@ -31,6 +31,7 @@ import {
 } from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
+import { ReconcileProgress } from './ReconcileProgress';
 import type { Api, EgressReport } from '../lib/api';
 import { moveScopes, readMoveReviews, reviewsToShow, type ScopeMoveReview } from '../lib/rebind';
 import {
@@ -1076,6 +1077,9 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
           </>
         )}
       </Card>
+
+      {/* K-69: how far a promote's provision reconcile has reached this vertical's installs. */}
+      <ReconcileProgress api={api} slug={vertical.slug} />
 
       {/* Delete — type the slug to confirm. The control plane refuses while any scope is
           still bound, so a mistaken confirm cannot strand a live scope. */}

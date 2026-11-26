@@ -65,7 +65,8 @@ import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js'
 import { OUTBOX_PRUNE_BATCH, OUTBOX_RETENTION_DAYS, outboxPruneDue } from './outbox-prune.js';
 import { resolveVerticalInstanceFrom, type PeerTenant } from './peer.js';
 import type { ScheduleSweepReport } from './schedule-state.js';
-import { isPrimaryScope, runningVersionOf, servingPointersFor } from './scope-identity.js';
+import { isPrimaryScope, servingPointersFor } from './scope-identity.js';
+import { provisionReconcileTarget } from './provision-reconcile.js';
 import { mapBounded, message } from './map-bounded.js';
 import { runningImportsOf } from './export-break.js';
 import { ORPHAN_SWEEP_DRY_RUN_WINDOW_MS, type OrphanSweepReport } from './attachment-sweep.js';
@@ -1937,19 +1938,12 @@ export async function runPlatformSweep(
     const serving = await servingPointersFor(host.admin, options.actor, scopes);
     const behind: { id: ScopeId; tenantId: TenantId; target: string; receiptBehind: boolean }[] = [];
     for (const s of scopes) {
-      const running = runningVersionOf(s, s.vertical ? serving.get(s.vertical) : null);
-      // No running version ⇒ nothing to compare, and nothing a reconcile could target.
-      if (!running) continue;
-      // A null receipt is "unknown", NOT "up to date": a scope provisioned before the
-      // platform recorded this has no evidence either way, and guessing the optimistic
-      // answer leaves exactly the broken installs this phase exists to heal. It costs
-      // one reconcile per pre-existing scope, once, and then the receipt is there.
-      // #2185: and a receipt whose reconcile did not finish the version's retirements is behind
-      // too, so a retirement left open is run again, as the kernel's reconcile expects. A row from
-      // before the column reads null here, so every existing install is reconciled once more.
-      // #2184: likewise one that did not report which binding shapes links have bound in it.
-      if (s.provisionedVersionId === running && s.retirementsFinishedVersionId === running && s.boundShapes?.versionId === running) continue;
-      behind.push({ id: s.id, tenantId: s.tenantId, target: running, receiptBehind: s.provisionedVersionId !== running });
+      // The one rule (`provisionReconcileTarget`), shared with the on-wake reconcile (K-69) and
+      // the progress count: no running version ⇒ nothing to target; a null receipt is "unknown",
+      // never "up to date"; and a receipt whose retirements (#2185) or bound shapes (#2184) were
+      // not reported for the version it runs is behind too.
+      const due = provisionReconcileTarget(s, s.vertical ? serving.get(s.vertical) : null);
+      if (due) behind.push({ id: s.id, tenantId: s.tenantId, ...due });
     }
     provisionReconcile.behind = behind.length;
     const batch = options.provisionReconcileBatch ?? PROVISION_RECONCILE_BATCH;

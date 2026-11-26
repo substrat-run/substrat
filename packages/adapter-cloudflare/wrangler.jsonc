@@ -91,6 +91,8 @@
       { "name": "REMOVED_PEER_SCOPE", "class_name": "RemovedPeerScopeDO" },
       // #2349: scopes held to a stored migration set digest the test sets — migration-set-check.test.ts.
       { "name": "SET_CHECK_SCOPE", "class_name": "SetCheckScopeDO" },
+      // K-69: scopes whose version identity the test moves — reconcile-on-wake.test.ts.
+      { "name": "WAKE_VERSION_SCOPE", "class_name": "WakeVersionScopeDO" },
       { "name": "METERED_SCOPE", "class_name": "MeteredScopeDO" },
       { "name": "UNMETERED_SCOPE", "class_name": "UnmeteredScopeDO" },
       // #2209: the scope-store door's same-script counter. The cross-script binding is the spike's.
@@ -208,6 +210,10 @@
     {
       "tag": "v25",
       "new_sqlite_classes": ["RoutesControlPlaneDO"]
+    },
+    {
+      "tag": "v26",
+      "new_sqlite_classes": ["WakeVersionScopeDO"]
     }
   ],
   // #3395: the routing read model's namespace, seen by RoutesControlPlaneDO alone (as `ROUTES`).
