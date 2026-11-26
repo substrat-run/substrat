@@ -730,6 +730,7 @@ describe('the hosted narrowing over a real directory (#1705 PR 2)', () => {
 describe('the cross-vertical kick is coalesced per producer, fleet-wide (#1705 PR 2)', () => {
   const log = () => env.KICK_LOG.get(env.KICK_LOG.idFromName('log')) as unknown as { lines(): Promise<string[]> };
   const passesFor = async (s: string) => (await log().lines()).filter((l) => l.endsWith(`:${s}`) && l.startsWith('pass:'));
+  const askedFor = async (s: string) => (await log().lines()).filter((l) => l.startsWith(`asked:${s}=`));
   const coalescer = (ns: DurableObjectNamespace, t: string, s: string) =>
     ns.get(ns.idFromName(kickCoalescerName(tenantId.parse(t), scopeId.parse(s))));
   const kick = (stub: DurableObjectStub, t: string, s: string): Promise<KickOutcome> =>
@@ -813,6 +814,23 @@ describe('the cross-vertical kick is coalesced per producer, fleet-wide (#1705 P
     await runDurableObjectAlarm(stub);
     expect(await passesFor(s)).toHaveLength(2);
     expect(await storageOf(stub)).toEqual({ keys: [], alarm: null });
+    // K-69: a kick naming nothing asks for everything; the continuation asked only for what had more.
+    expect(await askedFor(s)).toEqual([`asked:${s}=*`, `asked:${s}=events`]);
+  });
+
+  it('K-69: a pass is asked for the union of what its kicks named, and only that', async () => {
+    const t = ulid();
+    const s = ulid();
+    const stub = coalescer(env.KICK_ALARM, t, s);
+    const named = (wants: string[]) => (stub as unknown as KickCoalescerDo).kick(tenantId.parse(t), scopeId.parse(s), wants);
+    expect(await named(['intents'])).toBe('deferred');
+    expect(await named(['events'])).toBe('deferred');
+    await runDurableObjectAlarm(stub);
+    for (let i = 0; i < 400 && (await passesFor(s)).length < 1; i += 1) await new Promise((r) => setTimeout(r, 5));
+    // The continuation named `events` alone: the intents asked for once are not run again.
+    await windowOver(stub);
+    await runDurableObjectAlarm(stub);
+    expect(await askedFor(s)).toEqual([`asked:${s}=events,intents`, `asked:${s}=events`]);
   });
 
   it('two producers do not coalesce with each other', async () => {

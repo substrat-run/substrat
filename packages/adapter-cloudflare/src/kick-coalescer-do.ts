@@ -18,9 +18,20 @@ export interface KickProducer {
   scopeId: ScopeId;
 }
 
+/**
+ * What the pass is asked to do, as the kicks since the last pass named it (K-69): `null` is
+ * everything, which is what a kick naming nothing asks for, as every kick did before kicks could
+ * name anything. Otherwise the union of the names the kicks gave.
+ */
+export type KickWants = ReadonlySet<string> | null;
+
 /** The RPC surface a `defineKickCoalescerDO` class exposes over its stub. */
 export interface KickCoalescerDo {
-  kick(tenantId: TenantId, scopeId: ScopeId): Promise<KickOutcome>;
+  /**
+   * `wants` (K-69): what this kick asks the pass for. Absent, everything. A pass is handed the union
+   * of what the kicks it covers asked for, so one kind of work never runs because another was asked.
+   */
+  kick(tenantId: TenantId, scopeId: ScopeId, wants?: readonly string[]): Promise<KickOutcome>;
 }
 
 export interface KickCoalescerConfig<Env> {
@@ -32,7 +43,7 @@ export interface KickCoalescerConfig<Env> {
    * authority lives: the deployment runs `runCrossVerticalFrom` here with the same reach and
    * gates as its sweep, so this object decides only WHEN, never what or for whom.
    */
-  run(env: Env, producer: KickProducer): Promise<void | { more?: boolean }>;
+  run(env: Env, producer: KickProducer, wants: KickWants): Promise<void | { more?: boolean | readonly string[] }>;
   /**
    * #3365: every pass runs from the alarm, never inside the kick. A kick only marks the producer
    * dirty and arms the alarm (at once when no pass started within the window), so a pass is never
@@ -56,6 +67,19 @@ interface KickState {
   lastStartedAt: number;
   /** A kick arrived that the last pass may not have covered. */
   dirty: boolean;
+  /**
+   * K-69: what the kicks since the last pass asked for. `null` (or absent, as in a state stored before
+   * kicks could name anything) is everything; a list is the union of the names given.
+   */
+  wants?: string[] | null;
+}
+
+/** Fold one kick's ask into what the next pass is asked for. Everything absorbs any list. */
+function wantsUnion(prior: KickState, wants: readonly string[] | null): string[] | null {
+  if (wants === null) return null;
+  const known = prior.dirty ? prior.wants : [];
+  if (known === null || known === undefined) return prior.dirty ? null : [...wants];
+  return [...new Set([...known, ...wants])].sort();
 }
 
 /**
@@ -86,9 +110,10 @@ export function defineKickCoalescerDO<Env>(
     /** The in-flight pass, when one is running. */
     #running: Promise<void> | null = null;
 
-    async kick(tenantId: TenantId, scopeId: ScopeId): Promise<KickOutcome> {
+    async kick(tenantId: TenantId, scopeId: ScopeId, wants?: readonly string[]): Promise<KickOutcome> {
       const prior = await this.ctx.storage.get<KickState>('state');
-      const state: KickState = prior ?? { producer: { tenantId, scopeId }, lastStartedAt: 0, dirty: false };
+      const base: KickState = prior ?? { producer: { tenantId, scopeId }, lastStartedAt: 0, dirty: false };
+      const state: KickState = { ...base, wants: wantsUnion(base, wants ?? null) };
       if (this.#running) {
         await this.ctx.storage.put('state', { ...state, dirty: true });
         return 'coalesced';
@@ -127,15 +152,19 @@ export function defineKickCoalescerDO<Env>(
 
     async #pass(state: KickState): Promise<void> {
       const startedAt = Date.now();
-      await this.ctx.storage.put('state', { ...state, lastStartedAt: startedAt, dirty: false });
+      const wants: KickWants = state.wants === null || state.wants === undefined ? null : new Set(state.wants);
+      await this.ctx.storage.put('state', { ...state, lastStartedAt: startedAt, dirty: false, wants: [] });
       this.#running = (async () => {
         try {
-          const outcome = await config.run(this.env, state.producer);
+          const outcome = await config.run(this.env, state.producer, wants);
           // #3365: the pass stopped with work left (a deadline, its last round). Dirty again, so
           // the alarm at this window's end runs the next one, and so on until a pass finishes.
-          if (outcome && outcome.more) {
+          // K-69: `more` may name the part that had more, and the next pass is asked for that part
+          // alone (beside whatever kicks arrived meanwhile); `true` asks for everything, as before.
+          const more = outcome?.more;
+          if (more === true || (Array.isArray(more) && more.length > 0)) {
             const now = await this.ctx.storage.get<KickState>('state');
-            if (now) await this.ctx.storage.put('state', { ...now, dirty: true });
+            if (now) await this.ctx.storage.put('state', { ...now, wants: wantsUnion(now, more === true ? null : (more as readonly string[])), dirty: true });
           }
         } catch (err) {
           config.onError?.(err, this.env);

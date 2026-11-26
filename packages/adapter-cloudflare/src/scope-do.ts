@@ -521,7 +521,7 @@ import type {
 import { createDoTupleChecker, createLocalControlPlaneReader, scopeTupleReader, type ControlPlaneReader } from './checker.js';
 import { settlePlatformRequestIn, type PlatformRequestSettle } from '@substrat-run/kernel';
 import { loadDropsRowsOf, SCOPE_COPY_LEASE_MS, ulidTime } from '@substrat-run/kernel';
-import { SCOPE_WAKE_KEY, kickControlPlane, runWake, wakeAfterCommit, wakeDueAt, type CommitWork, type ScopeWakeState, type WakeWork } from './scope-wake.js';
+import { SCOPE_WAKE_KEY, keepRegisteredMeanwhile, kickControlPlane, runWake, wakeAfterCommit, wakeDueAt, type CommitWork, type ScopeWakeState, type WakeWork } from './scope-wake.js';
 import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertSpineTablesBuilt, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, CLEAN_ROOM_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 import { GRANT_CHILDREN_INDEX_DDL, SHAPE_MARKER_INDEX_DDL, grantedEntitiesForContext, type ShapeCursor } from '@substrat-run/kernel';
 
@@ -4267,7 +4267,9 @@ export function defineScopeDO(
           await this.ctx.storage.delete(SCOPE_WAKE_KEY);
           return;
         }
-        const next = await runWake(state, Date.now(), () => this.wakeWork(), (body) => kickControlPlane(transport, body));
+        const ran = await runWake(state, Date.now(), () => this.wakeWork(), (body) => kickControlPlane(transport, body));
+        // The object took other calls while the kick was out: keep what a commit stored meanwhile.
+        const next = keepRegisteredMeanwhile(state, ran, (await this.ctx.storage.get<ScopeWakeState>(SCOPE_WAKE_KEY)) ?? null);
         if (!next) {
           await this.ctx.storage.delete(SCOPE_WAKE_KEY);
           return;
@@ -7687,7 +7689,7 @@ export function defineScopeDO(
      * `invocationId` is LAST, and defaulted, for the RPC-skew reason `recordExecutorAttempt`
      * states at length.
      */
-    routeExecutorEventToPlatform(
+    async routeExecutorEventToPlatform(
       eventId: string,
       deliveryId: string,
       kind: string,
@@ -7700,7 +7702,7 @@ export function defineScopeDO(
        * so leaving it null would make the column read "no call" for the common case.
        */
       invocationId: string | null = null,
-    ): PlatformRequestId | null {
+    ): Promise<PlatformRequestId | null> {
       if (this.pendingConnectorDispatches() >= MAX_PENDING_CONNECTOR_DISPATCHES) return null;
       const id = platformRequestId.parse(ulid());
       // K-42: the intent inherits the SOURCE EVENT's stamp rather than being written
@@ -7710,8 +7712,8 @@ export function defineScopeDO(
       // caused an outbound effect. Read here rather than passed over the RPC: the DO
       // owns the outbox, so a coordinator cannot claim a stamp or drop one.
       const source = this.sql
-        .exec('SELECT impersonation FROM _substrat_outbox WHERE id = ?', eventId)
-        .toArray()[0] as { impersonation: string | null } | undefined;
+        .exec('SELECT impersonation, tenant_id, scope_id FROM _substrat_outbox WHERE id = ?', eventId)
+        .toArray()[0] as { impersonation: string | null; tenant_id: string; scope_id: string } | undefined;
       this.sql.exec(
         `INSERT INTO _substrat_platform_requests
            (id, kind, payload, requested_by, impersonation, status, attempts, requested_at)
@@ -7724,6 +7726,10 @@ export function defineScopeDO(
         instant.parse(new Date().toISOString()),
       );
       this.recordExecutorAttempt(eventId, deliveryId, null, null, invocationId);
+      // K-69: this intent is enqueued by the coordinator after the commit's own wake was armed, so
+      // it arms one too, under the ids its source event carries. Both writes above are made before
+      // this await, as one unit.
+      if (source) await this.noteScopeWake(tenantIdOf.parse(source.tenant_id), scopeIdOf.parse(source.scope_id));
       return id;
     }
 

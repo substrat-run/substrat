@@ -611,16 +611,19 @@ export const KickSlowDO = defineKickCoalescerDO<KickEnv>({
 
 /**
  * #3365: a coalescer that runs every pass from its alarm, never inside the kick, and whose first pass
- * for a scope stops with `more` — as a drain at its deadline does — so the next one is armed.
+ * for a scope stops with `more` — as a drain at its deadline does — so the next one is armed. K-69:
+ * each pass records what it was asked for (`asked:<scope>=<parts>`, `*` for everything), and the
+ * first one's `more` names `events` alone, as a full lake batch does.
  */
 export const KickAlarmDO = defineKickCoalescerDO<KickEnv>({
   windowMs: 60_000,
   passesFromAlarm: true,
-  run: async (env, producer) => {
+  run: async (env, producer, wants) => {
     const log = kickLog(env) as unknown as { record(l: string): Promise<void>; lines(): Promise<string[]> };
+    await log.record(`asked:${producer.scopeId}=${wants === null ? '*' : [...wants].sort().join(',')}`);
     await log.record(`pass:${producer.tenantId}:${producer.scopeId}`);
-    const passes = (await log.lines()).filter((l) => l.endsWith(`:${producer.scopeId}`)).length;
-    return { more: passes < 2 };
+    const passes = (await log.lines()).filter((l) => l.startsWith('pass:') && l.endsWith(`:${producer.scopeId}`)).length;
+    return { more: passes < 2 ? ['events'] : false };
   },
 });
 

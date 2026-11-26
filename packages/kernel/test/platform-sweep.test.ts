@@ -2356,9 +2356,10 @@ describe('runPlatformSweep · event drain skips (#1636, #1641)', () => {
     expect(h.shipped).toEqual([]);
     expect(h.marked).toEqual([]);
 
-    batch = [old, young];
+    // The old one need not be first: an id keeps rising when the clock steps back.
+    batch = [young, old];
     expect((await check(h)).eventDrain).toEqual({ scopes: 1, shipped: 2, incomplete: 0, check: { held: 0, heldEvents: 0, rescued: 1 } });
-    expect(h.shipped).toEqual([[old, young]]);
+    expect(h.shipped).toEqual([[young, old]]);
   });
 
   it('reports a skip even when nothing behind it could ship', async () => {

@@ -333,18 +333,29 @@ export const PLATFORM_DRAIN_KICK_BUDGET_MS = 2 * 60_000;
 export const PlatformDrainKickDO = defineKickCoalescerDO<Env>({
   windowMs: PLATFORM_DRAIN_KICK_WINDOW_MS,
   passesFromAlarm: true,
-  run: async (env, { tenantId: t, scopeId: s }) => {
-    const report = await drainOneScope(env, t, s, {
-      rounds: PLATFORM_DRAIN_KICK_ROUNDS,
-      deadline: Date.now() + PLATFORM_DRAIN_KICK_BUDGET_MS,
-    });
-    // K-69: and the scope's lake shipment, where the scopes own it. Its own failure is its own: the
-    // intents above are settled already, and the scope asks again on its back-off.
-    const shipped = await drainScopeLake(env, t, s).catch((err) => {
-      console.error('platform drain kick: the lake drain failed; the scope asks again', { scopeId: s, err });
-      return 0;
-    });
-    return { more: report.more === true || shipped >= SCOPE_WAKE_EVENT_BATCH };
+  run: async (env, { tenantId: t, scopeId: s }, wants) => {
+    // K-69: only what the kicks asked for. Each intent run spends one of its attempts, whose ceiling
+    // is set for the pass's cadence, so a kick that asked for the lake alone must not run them too.
+    const asked = (part: (typeof PLATFORM_DRAIN_PARTS)[number]) => wants === null || wants.has(part);
+    const more: string[] = [];
+    if (asked('intents')) {
+      const report = await drainOneScope(env, t, s, {
+        rounds: PLATFORM_DRAIN_KICK_ROUNDS,
+        deadline: Date.now() + PLATFORM_DRAIN_KICK_BUDGET_MS,
+      });
+      if (report.more === true) more.push('intents');
+    }
+    if (asked('events')) {
+      // The scope's lake shipment, where the scopes own it. Its own failure is its own: the scope
+      // asks again on its back-off.
+      const shipped = await drainScopeLake(env, t, s).catch((err) => {
+        console.error('platform drain kick: the lake drain failed; the scope asks again', { scopeId: s, err });
+        return 0;
+      });
+      // A full batch continues the lake alone: the next pass ships events and runs no intent.
+      if (shipped >= SCOPE_WAKE_EVENT_BATCH) more.push('events');
+    }
+    return { more };
   },
   onError: (err) => console.error('platform drain kick: the drain failed; the sweep is the backstop', err),
 });
@@ -376,20 +387,25 @@ async function drainScopeLake(env: Env, t: TenantId, s: ScopeId): Promise<number
   return shipped;
 }
 
+/** K-69: the two kinds of work a scope's drain object runs, which a kick names. */
+export const PLATFORM_DRAIN_PARTS = ['intents', 'events'] as const;
+
 /**
  * #3365: ask a scope's drain object for a drain. `unwired` where the namespace is not bound (the
  * caller drains inline, as before), `lost` where the object could not be reached: the intents are
- * durable, so a lost kick costs latency and the sweep is the backstop.
+ * durable, so a lost kick costs latency and the sweep is the backstop. K-69: `wants` names what the
+ * drain is for, the scope's intents unless said otherwise.
  */
 export async function kickPlatformDrain(
   env: Pick<Env, 'PLATFORM_DRAIN_KICK'>,
   scope: { tenantId: TenantId; scopeId: ScopeId },
+  wants: readonly (typeof PLATFORM_DRAIN_PARTS)[number][] = ['intents'],
 ): Promise<KickOutcome | 'unwired' | 'lost'> {
   const ns = env.PLATFORM_DRAIN_KICK;
   if (!ns) return 'unwired';
   try {
     const stub = ns.get(ns.idFromName(kickCoalescerName(scope.tenantId, scope.scopeId))) as unknown as KickCoalescerDo;
-    return await stub.kick(scope.tenantId, scope.scopeId);
+    return await stub.kick(scope.tenantId, scope.scopeId, wants);
   } catch (err) {
     console.warn('platform drain kick lost; the sweep is the backstop', { scopeId: scope.scopeId, err });
     return 'lost';
@@ -3939,6 +3955,10 @@ export default {
       // runs after it and is reported beside it.
       let report: ScopeDrainReport & { named?: ScopeDrainReport } = { drained: 0, done: 0, failed: 0, pending: 0 };
       let routedRec: Scope | undefined | null = null;
+      // K-69: who owns each phase, which a scope's own wake reads to decide whether to keep asking.
+      // The router ignores it.
+      const wake = scopeWakeAnswerFor(c.env);
+      const shipsLake = kick.events && wake.events === 'scope';
       if (kick.intents) {
         const [routed, named] = await intentScopesOf(c.env, ids.data, sids.data, body.namedScopeId);
         routedRec = routed!.rec;
@@ -3948,25 +3968,29 @@ export default {
           // #3365: handed to the scope's drain object, which runs it from its alarm and again while
           // a backlog remains. Only for a scope on record with a vertical: a secret-holder naming
           // fresh ids mints no objects (the #1737 rule), and such a scope holds no intents anyway.
-          const queue = async (s: { scopeId: ScopeId; rec: Scope | undefined }) =>
-            s.rec?.vertical ? kickPlatformDrain(c.env, { tenantId: ids.data, scopeId: s.scopeId }) : ('not-on-record' as const);
-          const answer: ScopeDrainReport & { drain?: string; namedDrain?: string } = { ...report, drain: await queue(routed!) };
-          if (named) answer.namedDrain = await queue(named);
+          const queue = async (s: { scopeId: ScopeId; rec: Scope | undefined }, wants: ('intents' | 'events')[]) =>
+            s.rec?.vertical ? kickPlatformDrain(c.env, { tenantId: ids.data, scopeId: s.scopeId }, wants) : ('not-on-record' as const);
+          // A scope's own wake that also asked for its lake gets both from the one pass.
+          const answer: ScopeDrainReport & { drain?: string; namedDrain?: string } = {
+            ...report,
+            drain: await queue(routed!, shipsLake ? ['intents', 'events'] : ['intents']),
+          };
+          if (named) answer.namedDrain = await queue(named, ['intents']);
           report = answer;
         } else {
           report = await drain(routed!);
           if (named) report.named = await drain(named);
         }
       }
-      // K-69: who owns each phase, which a scope's own wake reads to decide whether to keep asking.
-      // The router ignores it. A scope asking for its lake shipment alone (`events`, no intents)
-      // is handed to the same drain object, which ships it from its alarm, once the directory has
-      // it on record with a vertical (the #1737 rule: a secret-holder naming fresh ids mints nothing).
-      const wake = scopeWakeAnswerFor(c.env);
-      if (kick.events && !kick.intents && wake.events === 'scope') {
+      // K-69: a scope asking for its lake shipment alone (`events`, no intents) is handed to the same
+      // drain object for its lake only, which ships it from its alarm and runs none of its intents,
+      // once the directory has it on record with a vertical (the #1737 rule: a secret-holder naming
+      // fresh ids mints nothing).
+      if (shipsLake && !kick.intents) {
         const rec = routedRec ?? (await hostFor(c.env).admin.getScopeRecord(SWEEP_ACTOR, ids.data, sids.data).catch(() => undefined));
         routedRec = rec ?? null;
-        const queued = rec?.vertical && rec.status === 'active' ? await kickPlatformDrain(c.env, { tenantId: ids.data, scopeId: sids.data }) : 'not-on-record';
+        const queued =
+          rec?.vertical && rec.status === 'active' ? await kickPlatformDrain(c.env, { tenantId: ids.data, scopeId: sids.data }, ['events']) : 'not-on-record';
         report = { ...report, lake: queued } as typeof report;
       }
       // The scope's response committed an exported type: ask for THIS producer's outgoing edges.

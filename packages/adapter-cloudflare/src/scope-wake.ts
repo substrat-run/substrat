@@ -208,6 +208,35 @@ export async function runWake(
   return settled(next, now);
 }
 
+/**
+ * What the alarm stores after its kick, keeping what a commit registered while the kick was out.
+ *
+ * The alarm reads the state (`read`), awaits the control plane, and builds `next` from that read.
+ * The object takes other calls during the await, so a commit may have stored a phase in the
+ * meantime (`fresh`). Writing `next` as it stands would drop it, and the wake it asked for with it.
+ * So a phase whose due time in `fresh` differs from the one the alarm read was set meanwhile, and is
+ * kept: the earlier of it and `next`'s. A newer intent mark is kept too.
+ */
+export function keepRegisteredMeanwhile(
+  read: ScopeWakeState,
+  next: ScopeWakeState | null,
+  fresh: ScopeWakeState | null,
+): ScopeWakeState | null {
+  if (!fresh) return next;
+  const meanwhile = (['intents', 'events'] as const).filter((p) => fresh.due[p] !== undefined && fresh.due[p] !== read.due[p]);
+  const newerMark = fresh.intentsMark !== undefined && (next?.intentsMark === undefined || fresh.intentsMark > next.intentsMark);
+  if (meanwhile.length === 0 && !newerMark) return next;
+  const merged: ScopeWakeState = next
+    ? { ...next, due: { ...next.due }, retries: { ...next.retries } }
+    : { tenantId: fresh.tenantId, scopeId: fresh.scopeId, due: {}, retries: {} };
+  for (const p of meanwhile) {
+    const theirs = fresh.due[p]!;
+    merged.due[p] = merged.due[p] === undefined ? theirs : Math.min(merged.due[p]!, theirs);
+  }
+  if (newerMark) merged.intentsMark = fresh.intentsMark;
+  return merged;
+}
+
 /** Drop what no longer says anything; null when the whole state says nothing. */
 function settled(state: ScopeWakeState, now: number): ScopeWakeState | null {
   if (state.eventsHeldUntil !== undefined && state.eventsHeldUntil <= now) delete state.eventsHeldUntil;

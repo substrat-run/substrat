@@ -3193,8 +3193,8 @@ export async function drainScopeEvents(
   options: Pick<PlatformSweepOptions, 'actor'>,
   sink: EventSink,
   /**
-   * `holdFrom` (K-69 check mode): when the oldest event read is at or after this instant, nothing
-   * is shipped and the batch is reported `held`, its scope's own wake's to ship.
+   * `holdFrom` (K-69 check mode): when every event read is at or after this instant, nothing is
+   * shipped and the batch is reported `held`, its scope's own wake's to ship.
    */
   input: { tenantId: TenantId; scopeId: ScopeId; budget: number; holdFrom?: string },
 ): Promise<{ shipped: number; skipped?: UndrainedSkipped; held?: number }> {
@@ -3215,7 +3215,9 @@ export async function drainScopeEvents(
   }
   const skipped = skippedOf(read.skipped, refused);
   if (events.length === 0) return { shipped: 0, skipped };
-  if (input.holdFrom !== undefined && events[0]!.occurredAt >= input.holdFrom) return { shipped: 0, skipped, held: events.length };
+  // Every event, not the first: ids keep rising when the wall clock steps back, so an older event can
+  // follow a young one, and it is the pass's to ship once it is past the grace.
+  if (input.holdFrom !== undefined && events.every((e) => e.occurredAt >= input.holdFrom!)) return { shipped: 0, skipped, held: events.length };
   await sink.ship({ tenantId: input.tenantId, scopeId: input.scopeId }, events);
   await host.admin.markEventsDrained(
     options.actor,

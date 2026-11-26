@@ -14,6 +14,7 @@ import {
   SCOPE_WAKE_INTENTS_DELAY_MS,
   SCOPE_WAKE_KEY,
   SCOPE_WAKE_PASS_HOLD_MS,
+  keepRegisteredMeanwhile,
   runWake,
   wakeAfterCommit,
   wakeDueAt,
@@ -91,6 +92,16 @@ describe('the wake decision (scope-wake.ts)', () => {
     expect(wakeAfterCommit(state, ids, { newestIntent: 'A', undrainedEvents: true }, then + SCOPE_WAKE_PASS_HOLD_MS + 1)).not.toBeNull();
   });
 
+  it('keeps a phase a commit stored while the alarm’s kick was out', () => {
+    const read = { ...ids, due: { events: NOW }, retries: {} };
+    // The alarm's look found the lake drained and kept nothing; meanwhile a commit armed an intent.
+    const fresh = { ...read, due: { events: NOW, intents: NOW + 2_000 }, intentsMark: 'B' };
+    expect(keepRegisteredMeanwhile(read, null, fresh)).toEqual({ ...ids, due: { intents: NOW + 2_000 }, retries: {}, intentsMark: 'B' });
+    // Nothing stored meanwhile: the alarm's own answer stands.
+    const next = { ...read, due: { events: NOW + 60_000 }, retries: { events: 1 } };
+    expect(keepRegisteredMeanwhile(read, next, read)).toBe(next);
+  });
+
   it('asks again on the back-off when a kick does not land', async () => {
     const armed = wakeAfterCommit(null, ids, { newestIntent: null, undrainedEvents: true }, NOW)!;
     const then = NOW + SCOPE_WAKE_EVENTS_DELAY_MS;
@@ -116,11 +127,12 @@ describe('a real scope object wakes itself (WakeScopeDO)', () => {
       wake: (await state.storage.get<ScopeWakeState>(SCOPE_WAKE_KEY)) ?? null,
       alarm: await state.storage.getAlarm(),
     }));
-  /** Bring the wake's due times to now, as the clock would, and run the alarm it armed. */
-  const fireWake = async (s: ScopeId) => {
+  /** Bring the named phases' due times to now, as the clock would, and run the alarm the wake armed. */
+  const fireWake = async (s: ScopeId, phases: readonly ('intents' | 'events')[] = ['intents', 'events']) => {
     await runInDurableObject(stubOf(s), async (_i, state) => {
       const w = (await state.storage.get<ScopeWakeState>(SCOPE_WAKE_KEY))!;
-      const due = Object.fromEntries(Object.keys(w.due).map((p) => [p, Date.now() - 1]));
+      const due = { ...w.due };
+      for (const p of phases) if (due[p] !== undefined) due[p] = Date.now() - 1;
       await state.storage.put(SCOPE_WAKE_KEY, { ...w, due });
     });
     // The alarm the wake armed, run now rather than at its time.
@@ -161,7 +173,7 @@ describe('a real scope object wakes itself (WakeScopeDO)', () => {
     expect(armed.wake!.due.intents).toBeGreaterThanOrEqual(before + SCOPE_WAKE_INTENTS_DELAY_MS);
     expect(armed.alarm).toBeLessThanOrEqual(armed.wake!.due.intents!);
 
-    await fireWake(s);
+    await fireWake(s, ['intents']);
     expect(kicks).toHaveLength(1);
     expect(kicks[0]).toEqual({ secret: 'wake-test-secret', body: { tenantId: t, scopeId: s, platformRequests: true, events: false, source: 'scope' } });
     // The intent is still pending (nobody drained it): looked at again on the back-off.
