@@ -171,7 +171,7 @@ const MANIFEST = {
       // Reads the Tier-2 Iceberg lake with R2 SQL — a read-only token scoped to substrat-lake,
       // minted by scripts/env-provision.mjs as substrat-<env>-lake-sql. Optional: unset, the plane simply serves no lake
       // query. Set, it is still not enough on its own: the gateway (#1334) also needs the
-      // worker's LAKE_BUCKET var, which stays unset until its R2 SQL client is smoke-tested.
+      // worker's LAKE_BUCKET var, which stays unset until `pnpm lake:smoke` passes.
       // Read-only on purpose. The catalog's write token is NOT interchangeable with
       // this and is never pushed to a worker (see STORE_ONLY below).
       R2_SQL_TOKEN: 'R2_LAKE_SQL_TOKEN',

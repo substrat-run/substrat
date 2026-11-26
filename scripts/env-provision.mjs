@@ -917,6 +917,10 @@ async function main() {
         }
       });
     }
+    // The query half has no resource to create: the SQL token above is pushed as R2_SQL_TOKEN, and
+    // what turns the engine on is the LAKE_BUCKET var, set by a reviewed PR once a person has run
+    // the smoke test against the lake (scripts/lake-sql-smoke.mjs says what it proves and what next).
+    note(`lake queries: off until prod's vars set LAKE_BUCKET; first run \`pnpm lake:smoke --file ${FILE_REL}\` (after building control-plane-api)`);
   }
 
   section('KV');
