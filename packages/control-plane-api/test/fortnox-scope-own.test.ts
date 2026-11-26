@@ -86,10 +86,12 @@ describe("a store's own Fortnox company lands in that store alone (#3410)", () =
     options: (raw) => connectionBindingOptions('fortnox').parse(raw ?? {}),
     unbind: (h, row, s) => unbindFortnoxScope(h, row.id, s),
   };
-  const landings = (): ConnectionBindingRelayOptions['landings'] => ({
+  const landings = (b: ConnectionBinder = binder): ConnectionBindingRelayOptions['landings'] => ({
     read: (slug, versionId) => host.versionConnectionLandings(slug, versionId),
-    binders: { fortnox: binder },
+    binders: { fortnox: b },
   });
+  /** A binder whose connector refuses every option, as a bind the scope's landing turns down. */
+  const refusing: ConnectionBinder = { ...binder, options: () => { throw new Error('the landing refuses these options'); } };
   const scopeOwnable = (p: string) => p === 'fortnox';
 
   /** A store's worker asks for a round as its own; answers the signed state the browser carries. */
@@ -109,13 +111,13 @@ describe("a store's own Fortnox company lands in that store alone (#3410)", () =
   };
 
   /** The callback, once the company consented: the credential and the state, relayed. */
-  const consented = (state: string, company: string) =>
+  const consented = (state: string, company: string, b: ConnectionBinder = binder) =>
     relayConsentedConnection(
       host,
       actor,
       t,
       { state, label: `Fortnox — ${company}`, externalAccountRef: company, secret: { clientId: 'client-id', clientSecret: 'client-secret', tenantId: company } },
-      { platformSecret: SECRET, landings: landings(), scopeOwnable },
+      { platformSecret: SECRET, landings: landings(b), scopeOwnable },
     );
 
   const pass = () =>
@@ -251,6 +253,14 @@ describe("a store's own Fortnox company lands in that store alone (#3410)", () =
     expect(fromB.connectionId).not.toBe(first.connectionId);
     expect((await listFortnoxBindings(host, first.connectionId)).map((x) => x.scopeId)).toEqual([a]);
     expect((await listFortnoxBindings(host, fromB.connectionId)).map((x) => x.scopeId)).toEqual([b]);
+
+    // A re-consent whose re-bind is refused writes nothing, so store A's binding stays and syncs:
+    // the answer reports it. A first round refused the same way reports none.
+    const refusedAgain = await consented(await mint(a), COMPANY_A, refusing);
+    expect(refusedAgain).toMatchObject({ connectionId: first.connectionId, bound: { scopeId: a }, bindRefusal: expect.stringContaining('refuses these options') });
+    expect(Object.keys(refusedAgain.bound!.options)).not.toContain('ownerScopeId');
+    const refusedFirst = await consented(await mint(b), COMPANY_B, refusing);
+    expect(refusedFirst).toMatchObject({ created: true, bound: null, bindRefusal: expect.stringContaining('refuses these options') });
   });
 
   it('refuses a scope round that was never proven, a tenant round, and a version that does not land Fortnox on request', async () => {

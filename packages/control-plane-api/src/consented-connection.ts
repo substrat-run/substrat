@@ -1,7 +1,7 @@
 import type { ConnectionLandingOptionsInput, ScopeHost } from '@substrat-run/kernel';
 import { scopeId as scopeIdSchema, z, type ConnectionProbe, type PlatformActorId, type TenantId } from '@substrat-run/contracts';
 import { verifyConnectState } from './connect-state.js';
-import { relayConnectionBind } from './connection-binding-relay.js';
+import { heldScopeBinding, relayConnectionBind } from './connection-binding-relay.js';
 import { ConnectionRelayError, relayConnectionUpsert } from './connection-relay.js';
 
 /**
@@ -43,7 +43,11 @@ export interface ConsentedConnectionResult {
   probe?: ConnectionProbe;
   /** The scope the connection is the own connection of: the claim's. */
   scopeId: string;
-  /** The binding the round made, or null when the scope's landing refused it (`bindRefusal`). */
+  /**
+   * The scope's binding to the connection after the round: the one it made, or, when the bind was
+   * refused (`bindRefusal`), the one the scope already held, which a refused re-bind leaves syncing.
+   * Null only when the scope holds none.
+   */
   bound: { scopeId: string; options: Record<string, unknown> } | null;
   bindRefusal?: string;
 }
@@ -124,6 +128,9 @@ export async function relayConsentedConnection(
     return { ...stored, scopeId: scope, bound: { scopeId: result.scopeId, options: result.options } };
   } catch (err) {
     if (!(err instanceof ConnectionRelayError) || err.status >= 500) throw err;
-    return { ...stored, scopeId: scope, bound: null, bindRefusal: err.message };
+    // A refused bind writes nothing: a re-consent's earlier binding stays and keeps syncing, so the
+    // answer reports it rather than calling the scope unbound.
+    const held = await heldScopeBinding(host, actor, { tenantId, scopeId: scope, connectionId: stored.connectionId }, landings);
+    return { ...stored, scopeId: scope, bound: held, bindRefusal: err.message };
   }
 }
