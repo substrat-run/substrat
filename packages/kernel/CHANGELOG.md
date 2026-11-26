@@ -1,5 +1,18 @@
 # @substrat-run/kernel
 
+## 0.212.0
+
+### Minor Changes
+
+- 7506838: The directory gets an outbox to the lake for its own logs and meters (K-70): capture per data set, off by default, written in the same transaction as each row, drained by the scheduled pass, and a dry-run-first backfill of the rows it already holds.
+- f7dae19: The admin log and a tenant's export can read history before the directory's 35-day window from the lake (K-70), behind a switch that is off by default and has a compare mode; a staff read of the lake's directory table is recorded in the access log.
+
+### Patch Changes
+
+- Updated dependencies [7506838]
+- Updated dependencies [f7dae19]
+  - @substrat-run/contracts@0.212.0
+
 ## 0.211.0
 
 ### Minor Changes
