@@ -86,6 +86,13 @@ export interface ConnectStateClaim {
    * round, which lives minutes and has no row (above). `exp` is then the row's own expiry.
    */
   linkId?: string;
+  /**
+   * `'scope'` when the round ends in the named scope's OWN connection (#3410), bound to that scope
+   * alone; absent for the tenant's, as every round was before. Decided at mint from a proven
+   * caller's request, never by the callback: the control plane re-verifies this claim before it
+   * stores anything as a scope's own. A mailed link (`linkId`) is always the tenant's.
+   */
+  owner?: 'scope';
   /** Epoch ms. */
   exp: number;
 }
@@ -203,6 +210,10 @@ export async function verifyConnectState(
     // A link round with a malformed row reference would read as an in-session round — the
     // one kind the callback spends nothing for — so it is refused, never downgraded.
     if (claim.linkId !== undefined && (typeof claim.linkId !== 'string' || !claim.linkId)) return null;
+    // An owner other than the one this claim can carry, or a scope's own round on a mailed link
+    // (which is the tenant's by construction), is a claim no mint wrote: refused, never read as the
+    // tenant's round it would otherwise look like.
+    if (claim.owner !== undefined && (claim.owner !== 'scope' || claim.linkId !== undefined)) return null;
     return claim;
   } catch {
     return null;

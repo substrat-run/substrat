@@ -616,6 +616,29 @@ export class TenantNarrowedControlPlane {
   }
 
   /**
+   * #3410: store the credential a consent round asked for as a scope's OWN connection, and bind it
+   * to that scope alone. `state` is the round's signed state, relayed as it arrived: the control
+   * plane verifies it again and takes the scope, provider and principal from it, never from here.
+   * `bound` is null, with the reason, when the connection was stored but its scope's landing
+   * refused the binding.
+   */
+  upsertConsentedConnection(input: {
+    state: string;
+    label?: string;
+    externalAccountRef?: string;
+    secret: Record<string, string>;
+  }): Promise<{
+    connectionId: string;
+    created: boolean;
+    scopeId: string;
+    bound: { scopeId: string; options: Record<string, unknown> } | null;
+    bindRefusal?: string;
+    probe?: ConnectionProbe;
+  }> {
+    return this.post(`/tenants/${this.tenantId}/connections/consented`, input);
+  }
+
+  /**
    * Verify a stored credential against the provider (#605) — the plane opens the sealed
    * secret, spends one cheap authenticated read, and answers what the provider said.
    * A rejected credential is a 200 with `ok: false`; only an unwired provider (501) or

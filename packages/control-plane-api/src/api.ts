@@ -273,6 +273,7 @@ import { scopeDeployment, versionReachedAt, type ScopeDeployment } from './scope
 import { reconcileConnectionGrants } from './connection-grants.js';
 import { reconcileOutcomeOf, reconcileThenReassert, reviewedEntityGrants, switchCarryFor } from './reconcile.js';
 import { chooseScopeConnection, readScopeConnectionChoice } from './connection-choice.js';
+import { relayConsentedConnection } from './consented-connection.js';
 import { ConnectionRelayError, relayConnectionUpsert, type ConnectionCandidatePrepare, type ConnectionCandidateProbe, type VerticalConnectorDeclarationOf } from './connection-relay.js';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { provisionSiblingScope } from './platform-drain.js';
@@ -888,6 +889,13 @@ export interface ControlPlaneApiOptions {
    * connection an install lands through binds exactly as the pass would. Absent, that door 501s.
    */
   connectionLandings?: ConnectionLandingOptionsInput;
+  /**
+   * #3410: this deployment's `PLATFORM_SECRET`, read only to verify a consent round's signed state
+   * at `POST …/connections/consented`. The control plane minted that state, and checks its own
+   * signature again rather than taking the caller's word that a round was asked for as a scope's
+   * own. Absent, that route answers 503.
+   */
+  connectStateSecret?: string;
   /**
    * The mail sender each provider that sends as a tenant's own addresses registers (#2098), by
    * provider — the same `{ provider → sender }` the email relay routes through. Behind
@@ -1887,6 +1895,8 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'GET', re: /\/tenants\/[^/]+\/connections$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/connections\/calls$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/connections$/, pin: 'path' },
+  // #3410: the end of a scope's own consent round; the signed state must name the path's tenant too.
+  { method: 'POST', re: /\/tenants\/[^/]+\/connections\/consented$/, pin: 'path' },
   { method: 'DELETE', re: /\/tenants\/[^/]+\/connections\/[^/]+$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/connections\/[^/]+\/activity$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/connections\/[^/]+\/credential$/, pin: 'path' },
@@ -4055,6 +4065,37 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // failing, not the caller — rethrown so the shared boundary maps it (still a 503
       // with this message) and records the ops-failure row a console can list. Answering
       // it here would leave the operator's screen as the only place it was ever seen.
+      throw err;
+    }
+  });
+
+  // #3410: the end of a consent round a vertical asked for as a scope's OWN connection
+  // (`/internal/connections/connect-url` with `owner: 'scope'`). The route above is always the
+  // tenant's; here the scope's request is the round's signed state, which this plane minted and
+  // verifies again. See `consented-connection.ts`.
+  app.post('/tenants/:tenantId/connections/consented', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    try {
+      return c.json(
+        await relayConsentedConnection(c.var.host, c.get('actor'), tenantId, await c.req.json().catch(() => undefined), {
+          ...(options.connectStateSecret ? { platformSecret: options.connectStateSecret } : {}),
+          ...(options.connectionLandings ? { landings: options.connectionLandings } : {}),
+          scopeOwnable: (provider) => options.connectionInspectors?.[provider]?.scopeOwned === true,
+          upsert: {
+            probeCandidate,
+            prepareCandidate,
+            accountFromProbe,
+            ...(options.onConnectionUpserted
+              ? { onUpserted: (connection) => afterResponse(c, options.onConnectionUpserted!(connection)) }
+              : {}),
+          },
+        }),
+      );
+    } catch (err) {
+      if (err instanceof ConnectionRelayError && err.status < 500) {
+        const probe = err.probe ? { probe: err.probe } : undefined;
+        return err.code ? refuse(c, err.code, err.message, probe) : refuseStatus(c, err.status, err.message, probe);
+      }
       throw err;
     }
   });

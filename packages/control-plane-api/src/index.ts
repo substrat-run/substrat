@@ -18,6 +18,13 @@ export {
   confinedTenant,
 } from './auth.js';
 export { relayConnectionUpsert, ConnectionRelayError, PREVIEW_CONNECTIONS_REFUSAL, PROVEN_CALLER_REFUSAL } from './connection-relay.js';
+export {
+  consentedConnectionRequest,
+  relayConsentedConnection,
+  NOT_A_SCOPE_ROUND,
+  type ConsentedConnectionOptions,
+  type ConsentedConnectionResult,
+} from './consented-connection.js';
 // #2732: a scope binds its own connection to itself, unbinds it, and reads its bindings' status.
 // #3189: a scope opens a checkout through the payment connection bound to it.
 export {

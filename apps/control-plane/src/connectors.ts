@@ -304,7 +304,8 @@ export interface ConnectorRegistration {
    * selector) wherever it opens one, so a scope may hold its own through the relay's
    * `owner: 'scope'` and bind it, and the tenant's inspection routes open it through the inspector
    * (#3201). Absent, its connections are the tenant's, and the relay refuses a scope's own: its sweep,
-   * dispatch and inspection open the tenant's connection by key. WooCommerce and Shopify set it (#3201).
+   * dispatch and inspection open the tenant's connection by key. WooCommerce and Shopify set it (#3201),
+   * and Fortnox (#3410).
    */
   readonly scopeOwned?: true;
   /**
@@ -485,11 +486,20 @@ const FORTNOX: ConnectorRegistration = {
   provider: 'fortnox',
   grants: FORTNOX_CONNECTION_GRANTS,
   accountOnBinding: true,
+  // #3410: a scope may hold its own company's connection, started from the vertical by a consent
+  // round asked for as the scope's own, so each of a tenant's stores lands only its own books.
+  // Every open names the owner: the binding records it, the inspector reads it off the row.
+  scopeOwned: true,
   inspector: (env) => ({
     // #2316: the company rides on the binding, so the sweep opens THIS company's credential when a
     // bureau has several connected.
     bindScope: (h, row, target) =>
-      bindFortnoxScope(h, { ...target, connectionId: row.id, externalAccountRef: row.externalAccountRef }),
+      bindFortnoxScope(h, {
+        ...target,
+        connectionId: row.id,
+        externalAccountRef: row.externalAccountRef,
+        ownerScopeId: row.ownerScopeId,
+      }),
     bindings: (h, row) => listFortnoxBindings(h, row.id),
     unbindScope: (h, row, scopeId) => unbindFortnoxScope(h, row.id, scopeId),
     probe: async (h, row) =>

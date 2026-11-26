@@ -217,6 +217,12 @@ export interface FortnoxBinding {
    * still opens the single live connection and fails, naming the re-bind, once there are several.
    */
   externalAccountRef?: string | null;
+  /**
+   * The scope that OWNS this connection (#3410), for a scope's own connection: always the bound
+   * scope, and every open names it, so a scope's own company's books are never read for another
+   * scope or as the tenant's. Absent for the tenant's connection.
+   */
+  ownerScopeId?: string | null;
   boundAt: string;
   /** Set after the first successful sync — the cursor that makes a re-sync cheap. */
   lastSync?: {
@@ -668,11 +674,16 @@ export async function bindFortnoxScope(
     grantPreflighted?: boolean;
     /** The connection's `externalAccountRef` — the company. See {@link FortnoxBinding.externalAccountRef}. */
     externalAccountRef?: string | null;
+    /** The connection's owner, for a scope's own. See {@link FortnoxBinding.ownerScopeId}. */
+    ownerScopeId?: string | null;
     now?: () => number;
   },
 ): Promise<FortnoxBinding> {
   const tenant = tenantIdSchema.parse(input.tenantId);
   const scope = scopeIdSchema.parse(input.scopeId);
+  if (input.ownerScopeId && input.ownerScopeId !== input.scopeId) {
+    throw new Error(`connection ${input.connectionId} is scope ${input.ownerScopeId}'s own, and lands in that scope alone, not ${input.scopeId}`);
+  }
   if (input.form !== undefined && (input.kind ?? 'ledger') !== 'ledger') {
     throw new Error(`form applies to a ledger binding, not to '${String(input.kind)}'`);
   }
@@ -718,6 +729,7 @@ export async function bindFortnoxScope(
     ...(input.firstPass !== undefined ? { firstPass: input.firstPass } : {}),
     ...(input.writeback !== undefined ? { writeback: input.writeback } : {}),
     ...(input.externalAccountRef ? { externalAccountRef: input.externalAccountRef } : {}),
+    ...(input.ownerScopeId ? { ownerScopeId: input.ownerScopeId } : {}),
     // A re-bind that changes nothing keeps the years already landed: an operator re-PUT or a scope
     // asking again must not re-download a whole history. Any change starts over, a newly recorded
     // company included, since the years held may be another company's.
@@ -811,7 +823,7 @@ export async function syncFortnoxScope(
     binding.tenantId,
     binding.vertical,
     options.timeoutMs ?? 30_000,
-    { externalAccountRef: binding.externalAccountRef ?? null, expected: connectionId },
+    { externalAccountRef: binding.externalAccountRef ?? null, owner: ownerOf(connectionId, binding), expected: connectionId },
   );
   const api = new FortnoxApi(conn, apiOptions(options));
   // #2422: a consent without `bookkeeping` answers every read 403; say so before reading.
@@ -952,7 +964,7 @@ export async function syncFortnoxSieFiles(
     binding.tenantId,
     binding.vertical,
     options.timeoutMs ?? 30_000,
-    { externalAccountRef: binding.externalAccountRef ?? null, expected: connectionId },
+    { externalAccountRef: binding.externalAccountRef ?? null, owner: ownerOf(connectionId, binding), expected: connectionId },
   );
   const api = new FortnoxApi(conn, apiOptions(options));
   await noteConsent(host.admin, connectionId, api, options);
@@ -1103,7 +1115,7 @@ export async function syncFortnoxSupplierInvoices(
     binding.tenantId,
     binding.vertical,
     options.timeoutMs ?? 30_000,
-    { externalAccountRef: binding.externalAccountRef ?? null, expected: connectionId },
+    { externalAccountRef: binding.externalAccountRef ?? null, owner: ownerOf(connectionId, binding), expected: connectionId },
   );
   const api = new FortnoxApi(conn, apiOptions(options));
   // #2422: without these nothing lands, so the binding fails saying so rather than on a 403. The
@@ -1911,7 +1923,7 @@ export async function probeFortnoxSecret(
 /** Probe the credential a live connection already holds. Verifying is itself a use. */
 export async function probeFortnoxConnection(
   host: ScopeHost,
-  connection: { tenantId: string; vertical: string; externalAccountRef?: string | null },
+  connection: { tenantId: string; vertical: string; externalAccountRef?: string | null; ownerScopeId?: string | null },
   options: FortnoxConnectorOptions,
 ): Promise<ConnectionProbe> {
   const conn = await openFortnoxConnection(
@@ -1920,7 +1932,7 @@ export async function probeFortnoxConnection(
     connection.tenantId,
     connection.vertical,
     options.timeoutMs ?? 15_000,
-    { externalAccountRef: connection.externalAccountRef ?? null },
+    { externalAccountRef: connection.externalAccountRef ?? null, owner: connection.ownerScopeId ?? null },
   );
   // A probe a person asked for is a fresh check, so it always rewrites what the console reads.
   return probeWith(conn, options, (consent) => recordFortnoxConsent(host.admin, conn.id, consent, true));
@@ -2075,14 +2087,16 @@ export async function fortnoxConnectionActivity(
  */
 export async function fortnoxCredentialSummary(
   host: ScopeHost,
-  connection: { tenantId: string; vertical: string; externalAccountRef?: string | null },
+  connection: { tenantId: string; vertical: string; externalAccountRef?: string | null; ownerScopeId?: string | null },
 ): Promise<ConnectionCredential> {
-  // #2316: this company's connection, not whichever one (tenant, vertical) would pick.
+  // #2316: this company's connection, not whichever one (tenant, vertical) would pick; and a
+  // scope's own (#3410) only when the row says so.
   const open = await host.admin.openConnection(
     tenantIdSchema.parse(connection.tenantId),
     connection.vertical,
     'fortnox',
     connection.externalAccountRef ?? undefined,
+    connection.ownerScopeId ? scopeIdSchema.parse(connection.ownerScopeId) : undefined,
   );
   if (!open) {
     throw new Error(
@@ -2104,6 +2118,17 @@ const maskSecret = (value: string): string =>
   value.length < 8 ? '••••••••' : `••••••••${value.slice(-4)}`;
 
 /**
+ * The owner a binding opens its connection as (#3410). A scope's own company lands in that scope
+ * alone, whatever wrote the binding: one naming another scope's own connection reads nothing.
+ */
+function ownerOf(connectionId: ConnectionId, binding: FortnoxBinding): string | null {
+  if (binding.ownerScopeId && binding.ownerScopeId !== binding.scopeId) {
+    throw new Error(`connection ${connectionId} is scope ${binding.ownerScopeId}'s own, and is bound to ${binding.scopeId}; nothing was read`);
+  }
+  return binding.ownerScopeId ?? null;
+}
+
+/**
  * Open the live Fortnox connection for a (tenant, vertical) — and, with several companies
  * connected, the one `account.externalAccountRef` names (#2316) — with health recorded.
  *
@@ -2118,10 +2143,12 @@ async function openFortnoxConnection(
   tenant: string,
   vertical: string,
   timeoutMs: number,
-  account: { externalAccountRef?: string | null; expected?: ConnectionId } = {},
+  account: { externalAccountRef?: string | null; owner?: string | null; expected?: ConnectionId } = {},
 ): Promise<ConnectorConnection> {
   const parsedTenant = tenantIdSchema.parse(tenant);
-  const open = await admin.openConnection(parsedTenant, vertical, 'fortnox', account.externalAccountRef ?? undefined);
+  // `owner` opens a scope's OWN connection (#3410); without it only the tenant's is ever opened.
+  const owner = account.owner ? scopeIdSchema.parse(account.owner) : undefined;
+  const open = await admin.openConnection(parsedTenant, vertical, 'fortnox', account.externalAccountRef ?? undefined, owner);
   if (!open) {
     throw new Error(
       `no live 'fortnox' connection for tenant ${tenant} / vertical '${vertical}'` +
