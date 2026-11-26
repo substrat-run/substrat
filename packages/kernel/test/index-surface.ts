@@ -456,6 +456,8 @@ export const INDEX_VALUE_EXPORTS = [
   'derivedMigrationDigest',
   'derivesAnything',
   'domainEventOf',
+  // K-69: one scope's lake shipment, for a scope's own wake as well as the pass.
+  'drainScopeEvents',
   'driverDeclarationsOf',
   'dumpMetaValue',
   // #2555: why a staff restore or import on a host the control plane runs may not load a dump.

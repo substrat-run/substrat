@@ -59,6 +59,7 @@ import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/w
 import {
   runPlatformSweep,
   runConnectorSweep,
+  drainScopeEvents,
   type ConnectorSweepOptions,
   type OpsFailureInput,
   runCrossVerticalFrom,
@@ -279,6 +280,14 @@ import {
   type ConnectorEnv,
 } from './connectors.js';
 import { verticalConnectorBinderFor, verticalConnectorDepsFor, type ConnectorCallsBinding } from './vertical-connectors.js';
+import {
+  SCOPE_WAKE_CHECK_GRACE_MS,
+  SCOPE_WAKE_EVENT_BATCH,
+  intentCheckTally,
+  scopeWakeAnswerOf,
+  scopeWakeCheckLogOf,
+  scopeWakePhasesOf,
+} from './scope-wake.js';
 
 /**
  * Whether code reviews are priced at zero (hosted-review-runner.md Q1b: zero-rated in phases 1–2,
@@ -324,30 +333,79 @@ export const PLATFORM_DRAIN_KICK_BUDGET_MS = 2 * 60_000;
 export const PlatformDrainKickDO = defineKickCoalescerDO<Env>({
   windowMs: PLATFORM_DRAIN_KICK_WINDOW_MS,
   passesFromAlarm: true,
-  run: async (env, { tenantId: t, scopeId: s }) => {
-    const report = await drainOneScope(env, t, s, {
-      rounds: PLATFORM_DRAIN_KICK_ROUNDS,
-      deadline: Date.now() + PLATFORM_DRAIN_KICK_BUDGET_MS,
-    });
-    return { more: report.more === true };
+  run: async (env, { tenantId: t, scopeId: s }, wants) => {
+    // K-69: only what the kicks asked for. Each intent run spends one of its attempts, whose ceiling
+    // is set for the pass's cadence, so a kick that asked for the lake alone must not run them too.
+    const asked = (part: (typeof PLATFORM_DRAIN_PARTS)[number]) => wants === null || wants.has(part);
+    const more: string[] = [];
+    if (asked('intents')) {
+      const report = await drainOneScope(env, t, s, {
+        rounds: PLATFORM_DRAIN_KICK_ROUNDS,
+        deadline: Date.now() + PLATFORM_DRAIN_KICK_BUDGET_MS,
+      });
+      if (report.more === true) more.push('intents');
+    }
+    if (asked('events')) {
+      // The scope's lake shipment, where the scopes own it. Its own failure is its own: the scope
+      // asks again on its back-off.
+      const shipped = await drainScopeLake(env, t, s).catch((err) => {
+        console.error('platform drain kick: the lake drain failed; the scope asks again', { scopeId: s, err });
+        return 0;
+      });
+      // A full batch continues the lake alone: the next pass ships events and runs no intent.
+      if (shipped >= SCOPE_WAKE_EVENT_BATCH) more.push('events');
+    }
+    return { more };
   },
   onError: (err) => console.error('platform drain kick: the drain failed; the sweep is the backstop', err),
 });
 
 /**
+ * K-69: what a scope's kick is answered — which phases the scope's own wake owns here
+ * (`SCOPE_WAKE_PHASES`), given what this deployment can run from the drain object.
+ */
+function scopeWakeAnswerFor(env: Env) {
+  return scopeWakeAnswerOf(scopeWakePhasesOf(env.SCOPE_WAKE_PHASES), {
+    kick: Boolean(env.PLATFORM_DRAIN_KICK),
+    // `eventDrainDelegationFor`'s own gate, without building the delegation on every kick.
+    ship: Boolean(env.SUBSTRAT_OUTBOX_STREAM && env.DISPATCH && env.PLATFORM_SECRET),
+  });
+}
+
+/**
+ * K-69: ship one batch of a scope's events to the lake, the pass's own read→ship→stamp, when the
+ * scopes own the lake drain (`SCOPE_WAKE_PHASES` names `events`). Answers how many it shipped; 0
+ * where the phase is the pass's, so a kick never ships beside a pass that is shipping too.
+ */
+async function drainScopeLake(env: Env, t: TenantId, s: ScopeId): Promise<number> {
+  if (scopeWakeAnswerFor(env).events !== 'scope') return 0;
+  const { shipped } = await drainScopeEvents(hostFor(env), { actor: SWEEP_ACTOR }, createPipelinesEventSink(env.SUBSTRAT_OUTBOX_STREAM!), {
+    tenantId: t,
+    scopeId: s,
+    budget: SCOPE_WAKE_EVENT_BATCH,
+  });
+  return shipped;
+}
+
+/** K-69: the two kinds of work a scope's drain object runs, which a kick names. */
+export const PLATFORM_DRAIN_PARTS = ['intents', 'events'] as const;
+
+/**
  * #3365: ask a scope's drain object for a drain. `unwired` where the namespace is not bound (the
  * caller drains inline, as before), `lost` where the object could not be reached: the intents are
- * durable, so a lost kick costs latency and the sweep is the backstop.
+ * durable, so a lost kick costs latency and the sweep is the backstop. K-69: `wants` names what the
+ * drain is for, the scope's intents unless said otherwise.
  */
 export async function kickPlatformDrain(
   env: Pick<Env, 'PLATFORM_DRAIN_KICK'>,
   scope: { tenantId: TenantId; scopeId: ScopeId },
+  wants: readonly (typeof PLATFORM_DRAIN_PARTS)[number][] = ['intents'],
 ): Promise<KickOutcome | 'unwired' | 'lost'> {
   const ns = env.PLATFORM_DRAIN_KICK;
   if (!ns) return 'unwired';
   try {
     const stub = ns.get(ns.idFromName(kickCoalescerName(scope.tenantId, scope.scopeId))) as unknown as KickCoalescerDo;
-    return await stub.kick(scope.tenantId, scope.scopeId);
+    return await stub.kick(scope.tenantId, scope.scopeId, wants);
   } catch (err) {
     console.warn('platform drain kick lost; the sweep is the backstop', { scopeId: scope.scopeId, err });
     return 'lost';
@@ -663,6 +721,12 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * put`), not in `vars`: that takes effect at once, survives the next deploy, and needs no PR.
    */
   CONNECTOR_SWEEP_PAUSED?: string;
+  /**
+   * K-69, step 4: the phases each scope's own wake owns — `platform-requests`, `events`, or both,
+   * comma-separated (`scope-wake.ts`). Unset, the default: the pass drains both as before. A named
+   * phase is drained by the scope's drain object when the scope asks, and the pass only checks it.
+   */
+  SCOPE_WAKE_PHASES?: string;
   /**
    * #3316: the daily Cloudflare cost rollup. `on` reads each closed day of the account's billed
    * Workers and Durable Objects analytics into the directory, attributed through it; anything else
@@ -2744,9 +2808,14 @@ export function sameDeploymentScope(
  * literal `true` asks for the edges: they cost a directory read and scope calls, so anything else
  * is read as not asking.
  */
-export function drainKickOf(body: { platformRequests?: unknown; exports?: unknown }): { intents: boolean; exports: boolean } {
-  const legacy = body.platformRequests === undefined && body.exports === undefined;
-  return { intents: legacy || body.platformRequests === true, exports: body.exports === true };
+export function drainKickOf(body: { platformRequests?: unknown; exports?: unknown; events?: unknown }): {
+  intents: boolean;
+  exports: boolean;
+  events: boolean;
+} {
+  const legacy = body.platformRequests === undefined && body.exports === undefined && body.events === undefined;
+  // K-69: `events` is a scope's own wake asking for its lake shipment (`scope-wake.ts`).
+  return { intents: legacy || body.platformRequests === true, exports: body.exports === true, events: body.events === true };
 }
 
 /**
@@ -2908,7 +2977,7 @@ async function drainOneScope(
    * #2431: intents an earlier drain this pass already tried — `PlatformDrainOptions.skip`. `rec`:
    * the scope's record when the caller already read it, so a kick reads it once.
    */
-  opts?: { skip?: readonly string[]; rec?: Scope; rounds?: number; deadline?: number },
+  opts?: { skip?: readonly string[]; rec?: Scope; rounds?: number; deadline?: number; holdFrom?: string },
 ): Promise<ScopeDrainReport & { attempted: string[] }> {
   const host = hostFor(env);
   const resolveVerticalForScope = resolveVerticalForScopeFor(env);
@@ -3005,6 +3074,8 @@ async function drainOneScope(
       // #3365: a kicked drain's rounds and budget (`PlatformDrainKickDO`); the sweep lists once.
       ...(opts?.rounds !== undefined ? { rounds: opts.rounds } : {}),
       ...(opts?.deadline !== undefined ? { deadline: opts.deadline } : {}),
+      // K-69: the pass's check mode — an intent younger than this is its scope's own wake's.
+      ...(opts?.holdFrom !== undefined ? { holdFrom: opts.holdFrom } : {}),
       attempted,
     },
   );
@@ -3190,7 +3261,15 @@ export default {
       // #1840: what the drain row is stamped with — the drain phase's end, or the pass start
       // when the phase reached no scope at all.
       const passStartedAt = new Date();
-      const platformDrain = timedDrain((t: TenantId, s: ScopeId, o?: { skip?: readonly string[] }) => drainOneScope(env, t, s, o));
+      // K-69, step 4: the phases the scopes' own wakes own (`SCOPE_WAKE_PHASES`); the pass checks them.
+      const wakePhases = scopeWakeAnswerFor(env);
+      const holdFrom = new Date(passStartedAt.getTime() - SCOPE_WAKE_CHECK_GRACE_MS).toISOString();
+      const intentCheck = wakePhases.platformRequests === 'scope' ? intentCheckTally() : null;
+      const platformDrain = timedDrain(async (t: TenantId, s: ScopeId, o?: { skip?: readonly string[] }) => {
+        const r = await drainOneScope(env, t, s, intentCheck ? { ...o, holdFrom } : o);
+        intentCheck?.add(r);
+        return r;
+      });
       // #1232: the durable sweep record. Not awaited where it is made — a recorder failure must
       // never sink the pass it is recording (the ops-failure recorder's shape) — but settled before
       // the pass returns (`writes`, the end of this handler), or the last ones are dropped.
@@ -3313,6 +3392,8 @@ export default {
         ...(env.SUBSTRAT_OUTBOX_STREAM && eventDrainDelegationFor(env)
           ? { eventSink: createPipelinesEventSink(env.SUBSTRAT_OUTBOX_STREAM) }
           : {}),
+        // K-69, step 4: the scopes ship their own events; the phase checks and ships only what they left.
+        ...(wakePhases.events === 'scope' ? { eventDrainCheck: { graceMs: SCOPE_WAKE_CHECK_GRACE_MS } } : {}),
         // K-70: the directory's own logs and meters, shipped through its outbox. Bound ⇒ the phase
         // reconciles capture to DIRECTORY_LAKE_CAPTURE_DEFAULT (or the DIRECTORY_LAKE_CAPTURE override)
         // every pass, so a data set taken off the list loses its triggers, and drains what is queued.
@@ -3352,6 +3433,9 @@ export default {
       // a failing run), so the tail shows the fleet's counts without opening the console.
       const stale = staleScopesLogOf(report.staleScopes);
       if (stale) console.log('stale-scopes', stale);
+      // K-69: what the check of each phase the scopes own found — on every such pass, zeros included.
+      const wakeCheck = scopeWakeCheckLogOf(intentCheck, report.eventDrain?.check);
+      if (wakeCheck) console.log('scope-wake-check', wakeCheck);
       // #1713 — the lifecycle heal: re-deliver to every hosted scope whose deployment did not
       // acknowledge the directory's lifecycle, and to every scope held now. Each failed delivery is
       // already an ops-failure row (so it reaches the digest below); the tail says a pass had any.
@@ -3855,6 +3939,7 @@ export default {
         scopeId?: unknown;
         platformRequests?: unknown;
         exports?: unknown;
+        events?: unknown;
         namedScopeId?: unknown;
       };
       const ids = tenantId.safeParse(body.tenantId);
@@ -3870,6 +3955,10 @@ export default {
       // runs after it and is reported beside it.
       let report: ScopeDrainReport & { named?: ScopeDrainReport } = { drained: 0, done: 0, failed: 0, pending: 0 };
       let routedRec: Scope | undefined | null = null;
+      // K-69: who owns each phase, which a scope's own wake reads to decide whether to keep asking.
+      // The router ignores it.
+      const wake = scopeWakeAnswerFor(c.env);
+      const shipsLake = kick.events && wake.events === 'scope';
       if (kick.intents) {
         const [routed, named] = await intentScopesOf(c.env, ids.data, sids.data, body.namedScopeId);
         routedRec = routed!.rec;
@@ -3879,30 +3968,45 @@ export default {
           // #3365: handed to the scope's drain object, which runs it from its alarm and again while
           // a backlog remains. Only for a scope on record with a vertical: a secret-holder naming
           // fresh ids mints no objects (the #1737 rule), and such a scope holds no intents anyway.
-          const queue = async (s: { scopeId: ScopeId; rec: Scope | undefined }) =>
-            s.rec?.vertical ? kickPlatformDrain(c.env, { tenantId: ids.data, scopeId: s.scopeId }) : ('not-on-record' as const);
-          const answer: ScopeDrainReport & { drain?: string; namedDrain?: string } = { ...report, drain: await queue(routed!) };
-          if (named) answer.namedDrain = await queue(named);
+          const queue = async (s: { scopeId: ScopeId; rec: Scope | undefined }, wants: ('intents' | 'events')[]) =>
+            s.rec?.vertical ? kickPlatformDrain(c.env, { tenantId: ids.data, scopeId: s.scopeId }, wants) : ('not-on-record' as const);
+          // A scope's own wake that also asked for its lake gets both from the one pass.
+          const answer: ScopeDrainReport & { drain?: string; namedDrain?: string } = {
+            ...report,
+            drain: await queue(routed!, shipsLake ? ['intents', 'events'] : ['intents']),
+          };
+          if (named) answer.namedDrain = await queue(named, ['intents']);
           report = answer;
         } else {
           report = await drain(routed!);
           if (named) report.named = await drain(named);
         }
       }
+      // K-69: a scope asking for its lake shipment alone (`events`, no intents) is handed to the same
+      // drain object for its lake only, which ships it from its alarm and runs none of its intents,
+      // once the directory has it on record with a vertical (the #1737 rule: a secret-holder naming
+      // fresh ids mints nothing).
+      if (shipsLake && !kick.intents) {
+        const rec = routedRec ?? (await hostFor(c.env).admin.getScopeRecord(SWEEP_ACTOR, ids.data, sids.data).catch(() => undefined));
+        routedRec = rec ?? null;
+        const queued =
+          rec?.vertical && rec.status === 'active' ? await kickPlatformDrain(c.env, { tenantId: ids.data, scopeId: sids.data }, ['events']) : 'not-on-record';
+        report = { ...report, lake: queued } as typeof report;
+      }
       // The scope's response committed an exported type: ask for THIS producer's outgoing edges.
       // Through its coalescer, never inline: the flag is a header tenant code sets, and a pass
       // per flagged response would let one vertical drive this worker and the directory as hard
       // as it likes. The coalescer runs at most one pass per window for the producer, and a
       // lost kick costs latency, never an event (the sweep is the backstop).
-      if (!kick.exports) return c.json(report);
+      if (!kick.exports) return c.json({ ...report, wake });
       // The directory first, before any coalescer is touched (#1737 review). PLATFORM_SECRET
       // proves only "a platform script", and every pushed vertical holds it. Without this, a
       // secret-holder naming a fresh scope id per request would mint a new coalescer, and a
       // pass, each time. Now a scope that is not an active, primary install of a vertical costs
       // this one read and nothing else.
       const rec = routedRec ?? (await hostFor(c.env).admin.getScopeRecord(SWEEP_ACTOR, ids.data, sids.data).catch(() => undefined));
-      if (!isKickableProducer(rec)) return c.json({ ...report, crossVertical: 'not-a-producer' });
-      return c.json({ ...report, crossVertical: await kickCrossVertical(c.env, { tenantId: ids.data, scopeId: sids.data }) });
+      if (!isKickableProducer(rec)) return c.json({ ...report, wake, crossVertical: 'not-a-producer' });
+      return c.json({ ...report, wake, crossVertical: await kickCrossVertical(c.env, { tenantId: ids.data, scopeId: sids.data }) });
     });
 
     // The social relay's self-heal (#1544): an Auth Server install asks for ITS OWN client at

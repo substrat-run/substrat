@@ -2342,6 +2342,26 @@ describe('runPlatformSweep · event drain skips (#1636, #1641)', () => {
     expect(report.errors).toEqual([]);
   });
 
+  it('K-69 check mode: leaves a young batch to its scope, ships one its wake missed', async () => {
+    const scope = sid();
+    const graceMs = 60 * 60_000;
+    const young = drained(scope, { occurredAt: new Date(Date.now() - 60_000).toISOString() });
+    const old = drained(scope, { occurredAt: new Date(Date.now() - 2 * graceMs).toISOString() });
+    let batch = [young];
+    const h = eventHost(scope, () => Object.assign([...batch], {}));
+    const check = (hh: typeof h) =>
+      runPlatformSweep(hh.host, { actor: ACTOR, fetch: FETCH, sweepers: {}, eventSink: hh.eventSink as never, eventDrainCheck: { graceMs } });
+
+    expect((await check(h)).eventDrain).toEqual({ scopes: 0, shipped: 0, incomplete: 0, check: { held: 1, heldEvents: 1, rescued: 0 } });
+    expect(h.shipped).toEqual([]);
+    expect(h.marked).toEqual([]);
+
+    // The old one need not be first: an id keeps rising when the clock steps back.
+    batch = [young, old];
+    expect((await check(h)).eventDrain).toEqual({ scopes: 1, shipped: 2, incomplete: 0, check: { held: 0, heldEvents: 0, rescued: 1 } });
+    expect(h.shipped).toEqual([[young, old]]);
+  });
+
   it('reports a skip even when nothing behind it could ship', async () => {
     const scope = sid();
     const bad = genId();

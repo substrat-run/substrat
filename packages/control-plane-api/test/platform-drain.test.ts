@@ -217,6 +217,17 @@ describe('drainScopePlatformRequests — the kind→handler dispatcher', () => {
     expect(attempted).toEqual([fresh.id]);
   });
 
+  it('K-69 check mode: leaves an intent younger than the hold to its scope and runs an older one', async () => {
+    const hold = '2026-11-25T10:00:00.000Z';
+    const old = intent('provision-sibling', { requestedAt: '2026-11-25T08:00:00.000Z' as never });
+    const young = intent('provision-sibling', { requestedAt: '2026-11-25T10:00:01.000Z' as never });
+    const { client, settled } = fakeTransport([old, young]);
+    const handler: PlatformRequestHandler = async () => ({ status: 'done', result: null });
+    const report = await drainScopePlatformRequests(client, ctx, { 'provision-sibling': handler }, { holdFrom: hold });
+    expect(settled.map((s) => s.id)).toEqual([old.id]);
+    expect(report).toEqual({ drained: 1, done: 1, failed: 0, pending: 1, leftToScope: 1 });
+  });
+
   it('settles an unknown kind as failed — never a silent drop', async () => {
     const unknown = intent('mystery');
     const { client, settled } = fakeTransport([unknown]);

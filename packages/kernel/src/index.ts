@@ -1052,6 +1052,8 @@ export {
   runPlatformSweep,
   // #3324: the connector sweep on its own, for a caller that runs it after every other phase.
   runConnectorSweep,
+  // K-69: one scope's lake shipment, for a scope's own wake as well as the pass.
+  drainScopeEvents,
   UNREADABLE_SCOPE_ROWS_NAMED,
   startPlatformSweeper,
   StorageReadUnsupported,

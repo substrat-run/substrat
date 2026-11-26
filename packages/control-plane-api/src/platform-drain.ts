@@ -182,6 +182,11 @@ export interface PlatformDrainReport {
    * Absent otherwise, and always absent from a single-round drain with no deadline.
    */
   more?: true;
+  /**
+   * K-69 check mode (`PlatformDrainOptions.holdFrom`): pending intents requested at or after the
+   * hold, left to their scope's own wake and counted in `pending`, not run. Absent when none were.
+   */
+  leftToScope?: number;
 }
 
 /** How many stored ids an `unsettleable` report names; `count` stays exact. */
@@ -240,6 +245,13 @@ export interface PlatformDrainOptions {
   rounds?: number;
   /** #3365: epoch ms (on {@link now}'s clock) after which no further intent is started; `more` then. */
   deadline?: number;
+  /**
+   * K-69 (no scheduled walk over tenants), step 4 check mode: an intent requested at or after this
+   * instant is its scope's own wake's to drain (`scope-wake.ts` in adapter-cloudflare), so the pass
+   * leaves it pending and counts it `leftToScope`. An older one is run as always: its wake did not
+   * come. Unset: every pending intent is run.
+   */
+  holdFrom?: string;
   /**
    * The handler for a kind `handlers` has no entry for (a vertical-defined provider's
    * `connector:<namespace>.<name>`). Asked only when the record has none; absent, or answering
@@ -533,7 +545,14 @@ export async function drainScopePlatformRequests(
     // id — the settle route parses it as a ULID. Decided on the id ITSELF, never on a settle's
     // caught error, which would also swallow a transient outage. The rest are reported, not run.
     const unsettleable = listed.filter((e) => isUndecodablePlatformRequest(e) && !platformRequestId.safeParse(e.id).success);
-    const pending = listed.filter((e) => !unsettleable.includes(e) && !(e.id !== null && tried.has(e.id)));
+    const untried = listed.filter((e) => !unsettleable.includes(e) && !(e.id !== null && tried.has(e.id)));
+    // K-69: what the scope's own wake will drain. A row that did not decode is never held: it is
+    // refused below, and its `requestedAt` cannot be trusted to say how old it is.
+    const leftToScope =
+      opts?.holdFrom === undefined
+        ? []
+        : untried.filter((e) => !isUndecodablePlatformRequest(e) && e.decodeError === undefined && e.requestedAt >= opts.holdFrom!);
+    const pending = untried.filter((e) => !leftToScope.includes(e));
     const reported = unsettleable.length
       ? { unsettleable: { count: unsettleable.length, ids: unsettleable.slice(0, UNSETTLEABLE_IDS).map((e) => e.id) } }
       : {};
@@ -541,13 +560,19 @@ export async function drainScopePlatformRequests(
       // #1713: a held scope's intents wait. Not settled `pending` either, since a settle counts an
       // attempt and the ceiling would give up on an intent nobody tried.
       if (lifecycleRefusal(ctx.lifecycle) !== null) {
-        return { drained: 0, done: 0, failed: 0, pending: pending.length, held: true, ...reported };
+        return { drained: 0, done: 0, failed: 0, pending: untried.length, held: true, ...reported };
       }
       report = { drained: 0, done: 0, failed: 0, pending: 0, ...reported };
     } else {
+      // Counted on the first listing only: a later round's are the ones it already counted, or new.
+      leftToScope.length = 0;
       // The newest listing's count: an unsettleable row stays until an operator repairs it.
       delete report.unsettleable;
       Object.assign(report, reported);
+    }
+    if (leftToScope.length > 0) {
+      report.pending += leftToScope.length;
+      report.leftToScope = leftToScope.length;
     }
     if (pending.length === 0) break;
     const settledBefore = report.done + report.failed;

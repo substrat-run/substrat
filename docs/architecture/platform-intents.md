@@ -274,6 +274,35 @@ pass and a connection being connected or rotated each ask for a drain. Staff re-
 connector intent or a dead-lettered executor delivery with `POST /tenants/:t/scopes/:s/redrive`,
 which is audited as `redriveDelivery`.
 
+### 5. The scope wakes itself (K-69, step 4)
+
+The router's kick covers a request the router served. An intent enqueued anywhere else (a consumer,
+a settle's follow-up, a peer call) and every event bound for the lake waited for the `*/15` pass,
+which visits every active scope to look, whether it has work or not. Under
+[K-69 (no scheduled walk over tenants)](../decisions/K-069-nothing-iterates-over-every-tenant-on-a-schedule-work-starts-from-an-event-or-the-owning-object-s-alarm.md)
+the scope asks instead (`packages/adapter-cloudflare/src/scope-wake.ts`):
+
+- After every commit (`settleCommitted`, which every committing door runs), the scope reads by index
+  whether an intent newer than the last one it asked about exists, and whether an event of its own is
+  unshipped. Either arms the scope's one alarm, shared with the live reaper, earliest wins: two seconds
+  for an intent, five minutes for the lake, which coalesces a busy scope's shipping.
+- The alarm checks again and, if the work is still there, posts the router's kick body to
+  `/internal/drain-scope` with `events` and `source: 'scope'`, over the `CONTROL_PLANE_URL` and
+  `PLATFORM_SECRET` every pushed vertical is given. Without them nothing is armed.
+- The answer's `wake` says who owns each phase. `scope`: the scope's drain object (`PlatformDrainKickDO`)
+  drains it, and the scope looks again after one, two, four, eight and then every 15 minutes while
+  the work stays. `pass`: the pass drains it as always, and the scope makes no retries, since an
+  intent's attempt ceiling is counted in drains at the pass's cadence; for the lake, it asks no more
+  for an hour. A control plane that predates the answer reads as `pass`.
+
+The control plane's `SCOPE_WAKE_PHASES` names the phases the scopes own: `platform-requests`,
+`events`, or both. Unset, the default, the pass owns both and nothing changes but the commit's kick.
+A phase the scopes own runs in check mode in the pass: work younger than an hour is left to its
+scope and counted `held`, older work is drained as before and counted `rescued` (a vertical on an
+older adapter, a lost alarm), and each pass logs the counts as `scope-wake-check`. Replacing the
+pass's phase with a safety net over a due index is the next step; until then the walk still reads
+every scope, so the idle cost falls only when that lands.
+
 ## Authorization & isolation
 
 - **Authorization is the vertical's.** It calls `ctx.requestPlatform` only after checking its own
