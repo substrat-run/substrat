@@ -24,6 +24,7 @@ import {
 import {
   executableSqlStatements,
   splitVersionMigrationsBatch,
+  SWEEP_RUNS_INTENT_INDEX,
   ulid,
   UNSAFE_allowAllChecker,
   VERSION_MIGRATIONS_DDL,
@@ -558,15 +559,20 @@ describe('the #1764 backfill survives a failing batch', () => {
  * statement that only mentions the table is never skipped silently, and the held-back set
  * cannot drift from what the DDL carries.
  */
-describe('the directory DDL plan holds back exactly #1764\'s statements', () => {
-  it('the real DDL: the fragment\'s statements run after the columns, every other statement in the loop', () => {
+/** What the plan holds back: #1764's fragment, then the sweep-runs index (#3395: it names `request_id`). */
+const heldBack = () => [...executableSqlStatements(VERSION_MIGRATIONS_DDL), ...executableSqlStatements(SWEEP_RUNS_INTENT_INDEX)];
+
+describe('the directory DDL plan holds back exactly #1764\'s statements and the sweep-runs index', () => {
+  it('the real DDL: the held statements run after the columns, every other statement in the loop', () => {
     // The plan holds the statements as they EXECUTE: comment-blanked (#2068).
-    const fragment = executableSqlStatements(VERSION_MIGRATIONS_DDL);
+    const fragment = heldBack();
     expect(DIRECTORY_DDL_PLAN.afterColumns).toEqual(fragment);
     expect(DIRECTORY_DDL_PLAN.missing).toEqual([]);
     for (const stmt of fragment) expect(DIRECTORY_DDL_PLAN.loop).not.toContain(stmt);
     // Nothing else is held back: the loop is every other statement, the table's own neighbours included.
     expect(DIRECTORY_DDL_PLAN.loop.some((s) => s.includes('CREATE TABLE IF NOT EXISTS vertical_versions'))).toBe(true);
+    // The sweep-runs table itself is created in the loop; only its index waits for the columns.
+    expect(DIRECTORY_DDL_PLAN.loop.some((s) => s.includes('CREATE TABLE IF NOT EXISTS _substrat_sweep_runs'))).toBe(true);
   });
 
   it('a statement that only names the table or the index runs in the loop, and a missing one is named', () => {
@@ -574,15 +580,15 @@ describe('the directory DDL plan holds back exactly #1764\'s statements', () => 
       'CREATE INDEX IF NOT EXISTS vvm_module ON vertical_version_migrations (module_id)',
       "SELECT 'vertical_versions_unsplit'",
     ];
-    const plan = planDirectoryDdl(`${VERSION_MIGRATIONS_DDL};\n${extra.join(';\n')};`);
+    const plan = planDirectoryDdl(`${VERSION_MIGRATIONS_DDL};\n${SWEEP_RUNS_INTENT_INDEX}\n${extra.join(';\n')};`);
     expect(plan.loop).toEqual(extra);
     expect(plan.missing).toEqual([]);
-    // A DDL that no longer carries the fragment says so, rather than quietly running it twice,
-    // and the module-load check refuses it outright.
+    // A DDL that no longer carries the held statements says so, rather than quietly running them
+    // twice, and the module-load check refuses it outright.
     const drifted = planDirectoryDdl(extra.join(';\n'));
-    expect(drifted.missing).toEqual(executableSqlStatements(VERSION_MIGRATIONS_DDL));
-    // Three: the table, the #1764 index, and the #2339 one.
-    expect(() => assertDirectoryDdlPlan(drifted)).toThrow(/does not carry 3 statement/);
+    expect(drifted.missing).toEqual(heldBack());
+    // Four: the table, the #1764 index, the #2339 one, and the sweep-runs index.
+    expect(() => assertDirectoryDdlPlan(drifted)).toThrow(/does not carry 4 statement/);
     expect(assertDirectoryDdlPlan(plan)).toBe(plan);
   });
 });

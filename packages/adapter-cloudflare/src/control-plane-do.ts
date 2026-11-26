@@ -1665,7 +1665,7 @@ export function planDirectoryDdl(ddl: string): { loop: string[]; afterColumns: s
 export function assertDirectoryDdlPlan<P extends { missing: string[] }>(plan: P): P {
   if (plan.missing.length > 0) {
     throw new Error(
-      `the directory DDL does not carry ${plan.missing.length} statement(s) of VERSION_MIGRATIONS_DDL — ` +
+      `the directory DDL does not carry ${plan.missing.length} statement(s) it holds back until the columns exist (VERSION_MIGRATIONS_DDL, the sweep-runs index) — ` +
         `interpolate the fragment whole: ${plan.missing[0]}`,
     );
   }
