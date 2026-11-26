@@ -23,8 +23,9 @@ import { ConnectionRelayError, relayConnectionUpsert } from './connection-relay.
  * The round then binds the connection to that scope alone, through the `on-request` landing its
  * running version declares, because the vertical never learns the connection's id to bind it
  * itself. The two steps are not one transaction: a bind refused after the store leaves the scope's
- * own connection stored and unbound, answered as `bound: null` with the reason, and the next round
- * for the same company from the same scope rotates that connection and binds it.
+ * own connection stored and unbound, answered as `bound: null` with the reason. After a passing
+ * refusal, the next round for the same company from the same scope rotates that connection and binds
+ * it; a version that no longer lands the provider on request refuses the next round at mint too.
  */
 export const consentedConnectionRequest = z.object({
   /** The round's signed state, as the provider handed it back. */

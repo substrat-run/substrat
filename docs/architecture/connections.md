@@ -554,8 +554,10 @@ store's books.
 - **The round binds** the connection to that scope alone through its `on-request` landing, because
   the vertical never learns the connection's id to call `/internal/connections/bind` itself. The
   store and the bind are two steps: a bind refused after the store leaves the connection stored and
-  unbound, and the round returns `?error=bind_failed`. The next round for the same company from the
-  same scope rotates that connection (the owner is part of the key) and binds it. The same company
+  unbound, and the round returns `?error=bind_failed`. After a passing refusal, the next round for
+  the same company from the same scope rotates that connection (the owner is part of the key) and
+  binds it. When the running version no longer declares the `on-request` landing, the next round is
+  refused at mint as well, so the landing has to be restored and promoted before a retry can bind. The same company
   consented from another scope becomes that scope's own connection.
 
 **What is deliberately still absent.** The vertical cannot list its tenant's connections —
