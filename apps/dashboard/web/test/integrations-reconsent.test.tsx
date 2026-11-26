@@ -61,3 +61,33 @@ it('shows a short consent as "Needs re-consent" and offers the consent round, no
   const opened = [...container.querySelectorAll('wa-dialog')].map((d) => d.getAttribute('label'));
   expect(opened).toContain('Rotate Fortnox');
 });
+
+it("offers no Rotate or Re-consent on an app's own connection, and says to connect again from the app (#3410)", async () => {
+  // The team's doors always make the tenant's connection, so from here they would leave the app's
+  // own credential as it was and add a tenant-wide one beside it.
+  const own = { ...connection, ownerScopeId: 'app-a' };
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path === '/api/teams/team-a/apps/app-a/integrations') {
+      return Response.json({ providers: [{
+        provider: 'fortnox', name: 'Fortnox', description: 'Accounting', monogram: 'F', fields: [],
+        connectFlow: 'redirect', multiAccount: false, required: true, connection: own, connections: [own],
+      }] });
+    }
+    if (path.startsWith('/api/teams/team-a/apps/app-a/integrations/fortnox/connections/conn-1/activity')) {
+      return Response.json({
+        source: 'ledger', entries: [], live: false, consent, grants: [], credential: [], certificate: null, mailSenders: [],
+        connection: own, sweepRuns: [], intents: [], unreadableIntents: [],
+      });
+    }
+    return Response.json({ error: `unexpected ${path}` }, { status: 500 });
+  }));
+  await act(async () => root.render(<AppIntegrations teamId="team-a" app={{ app_scope_id: 'app-a' } as AppRow} />));
+  await act(async () => buttons(container).find((b) => b.textContent?.trim() === 'Details')!.click());
+
+  const drawer = container.querySelector('wa-dialog')!;
+  expect(drawer.textContent).toContain('Needs re-consent');
+  expect(buttons(drawer).map((b) => b.textContent?.trim())).not.toEqual(expect.arrayContaining(['Rotate']));
+  expect(buttons(drawer).map((b) => b.textContent?.trim())).not.toEqual(expect.arrayContaining(['Re-consent']));
+  expect(drawer.textContent).toContain('Connect Fortnox again from the app that connected it');
+});

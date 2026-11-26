@@ -278,7 +278,8 @@ The round ends in that store's own connection, bound to that store alone, with n
 the store never learns the connection's id and does not need it. A re-consent of the same company
 from the same store rotates its connection; the same company connected from another store is that
 store's own. The dashboard lists it under the store's app, marked as its own, and disconnecting it
-stops only that store's sync. If the binding is refused after the company was saved (the version
+stops only that store's sync. The dashboard offers no Rotate or Re-consent for it, since its doors
+make the tenant's connection: connect it again from the store instead. If the binding is refused after the company was saved (the version
 no longer lands Fortnox on request, say), the round returns `?error=bind_failed`, and connecting
 again binds it. A connection made from the dashboard or a connect link stays the tenant's, as above.
 

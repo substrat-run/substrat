@@ -410,6 +410,12 @@ function IntegrationDetail({
   // #2422: a fresh probe's answer over the recorded one, which can predate a re-consent.
   const consent = probe?.consent ?? activity?.consent ?? null;
   const reconsent = health.status !== 'revoked' && consent !== null && consent.missing.length > 0 ? consent : null;
+  // #3410: an app's own connection was made by the app, and only the app can make it again. This
+  // drawer's Rotate and Re-consent go through the team's doors, which always make the TENANT's
+  // connection: the app's own credential would stay as it was, and a second, tenant-wide one would
+  // appear beside it. So an own row offers neither, and says where to go instead.
+  const own = !!connection.ownerScopeId;
+  const reconnectHere = `Connect ${provider.name} again from the app that connected it: that replaces this app's own credential.`;
   return (
     <Dialog
       open
@@ -433,10 +439,18 @@ function IntegrationDetail({
             <HealthLine conn={health} />
             <SweepStrip runs={activity?.sweepRuns ?? []} skippedNote="nothing polls this connection" />
           </div>
-          <Button variant="secondary" size="sm" onClick={() => onRotate(activity?.credential.map((f) => f.key) ?? [])}>
-            Rotate
-          </Button>
+          {!own && (
+            <Button variant="secondary" size="sm" onClick={() => onRotate(activity?.credential.map((f) => f.key) ?? [])}>
+              Rotate
+            </Button>
+          )}
         </div>
+
+        {own && (
+          <div style={{ ...card, padding: 12, fontSize: 12.5, color: 'var(--text-primary)' }}>
+            This is this app's own connection, so it lands in this app alone. {reconnectHere}
+          </div>
+        )}
 
         {/* #2422: the consent is short of what the platform asks for. Not a refused credential —
             the keys work — so the repair offered is a new consent round, not new keys. */}
@@ -451,9 +465,11 @@ function IntegrationDetail({
                 re-consenting, Test connection checks again.
               </div>
             </div>
-            <Button variant="primary" size="sm" onClick={() => onRotate(activity?.credential.map((f) => f.key) ?? [])}>
-              Re-consent
-            </Button>
+            {!own && (
+              <Button variant="primary" size="sm" onClick={() => onRotate(activity?.credential.map((f) => f.key) ?? [])}>
+                Re-consent
+              </Button>
+            )}
           </div>
         )}
 
@@ -522,7 +538,7 @@ function IntegrationDetail({
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>
               Secrets are shown only by their last four characters — enough to tell two credentials apart, never
-              enough to use. Rotate to replace them.
+              enough to use. {own ? 'Connect again from the app to replace them.' : 'Rotate to replace them.'}
             </div>
             {/* #3281: a client secret's end, when the owner gave it. Nothing renews it. */}
             {clientSecretEnd(activity.credential) && (
