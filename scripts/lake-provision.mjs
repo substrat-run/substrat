@@ -167,9 +167,12 @@ const flag = (n) => {
 const dryRun = has('dry-run');
 const recreate = has('recreate');
 const secretsFile = flag('file') ?? 'secrets/platform.prod.env';
-// Which declared lake this run provisions or checks; the events lake unless told otherwise.
-const lakeName = flag('lake') ?? 'events';
-if (!Object.prototype.hasOwnProperty.call(LAKES, lakeName)) fail(`--lake must be one of ${Object.keys(LAKES).join(', ')}`);
+// Which declared lake this run provisions or checks: the events lake only when no `--lake` is
+// given. A `--lake` with no name, or a flag where its name should be, is refused below rather than
+// read as the default — with `--recreate`, the default is a different lake's teardown.
+const lakeEq = argv.find((a) => a.startsWith('--lake='));
+const lakeName = lakeEq !== undefined ? lakeEq.slice('--lake='.length) : has('lake') ? flag('lake') : 'events';
+if (typeof lakeName !== 'string' || !Object.prototype.hasOwnProperty.call(LAKES, lakeName)) fail(`--lake must be one of ${Object.keys(LAKES).join(', ')}`);
 const LAKE = LAKES[lakeName];
 
 function fail(msg) {
