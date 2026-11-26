@@ -2527,6 +2527,9 @@ export class ControlPlaneDO extends DurableObject {
     opts: { maxBytes?: number; byReference?: DirectoryCopyByReference } = {},
   ): Promise<DirectoryDumpPage & { copiedTables?: number }> {
     const maxBytes = opts.maxBytes ?? SCOPE_DUMP_PAGE_MAX_BYTES;
+    // #3422: a copy whose pass was cut off leaves its whole snapshot here. Dropped inside the
+    // snapshot's own transaction, it doubled that transaction, which then failed every retry.
+    if (cursor === null) await this.dropLeftoverSnapshot();
     const taken = cursor === null ? this.snapshotDirectory(opts.byReference ?? 'off') : null;
     // Right after the snapshot's transaction: the storage call holds this object's input gate, so
     // no write lands between the copy's instant and the bookmark's.
@@ -2670,9 +2673,10 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /**
-   * Copy every dumped table into a fresh snapshot (#2868), replacing any a copy left unfinished,
-   * and return the cursor of its first page and how many tables it holds. One synchronous
-   * transaction, so no write lands between two tables' reads.
+   * Copy every dumped table into a fresh snapshot (#2868), and return the cursor of its first page
+   * and how many tables it holds. One synchronous transaction, so no write lands between two
+   * tables' reads. A snapshot a copy left unfinished is dropped before it (`dropLeftoverSnapshot`,
+   * #3422); the drop here only catches one a concurrent first page made in between.
    *
    * #3325: under `on`, a by-reference table is not copied; its horizon (largest rowid) and row
    * count are recorded instead, which costs no row written. Under `verify` it is copied as before,
@@ -2721,6 +2725,22 @@ export class ControlPlaneDO extends DurableObject {
       });
       return { cursor: { copyId, ord: 0, after: 0 }, tables: defs.length };
     });
+  }
+
+  /**
+   * #3422: drop the snapshot a copy left unfinished, one table per turn. Writes with no `await`
+   * between them commit as one transaction, so each drop is followed by a timer, which ends the turn
+   * and commits it. The snapshot's own transaction then has nothing left to drop. A failed
+   * snapshot rolls back only its own writes, so the leftover stays gone.
+   */
+  private async dropLeftoverSnapshot(): Promise<void> {
+    const tables = this.sql
+      .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB ?`, COPY_GLOB)
+      .toArray() as unknown as { name: string }[];
+    for (const { name } of tables) {
+      this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
   }
 
   private dropDirectorySnapshot(): void {
