@@ -1647,7 +1647,12 @@ const SCOPE_COLUMNS_ADDED = [
  */
 export function planDirectoryDdl(ddl: string): { loop: string[]; afterColumns: string[]; missing: string[] } {
   const all = executableSqlStatements(ddl);
-  const afterColumns = executableSqlStatements(VERSION_MIGRATIONS_DDL);
+  // The sweep-runs dedupe index names `request_id` (#1232) and `kind` (#1572). On a directory whose
+  // `_substrat_sweep_runs` predates `request_id`, the loop meets the index before
+  // `ensureDirectoryColumns` adds the column: "no such column: request_id", on every construction,
+  // so the column is never added and the directory never starts again (the test directory, from
+  // 2026-09-07, #3395). Held back to run once the columns exist.
+  const afterColumns = [...executableSqlStatements(VERSION_MIGRATIONS_DDL), ...executableSqlStatements(SWEEP_RUNS_INTENT_INDEX)];
   const held = new Set(afterColumns);
   return {
     loop: all.filter((stmt) => !held.has(stmt)),
@@ -1660,7 +1665,7 @@ export function planDirectoryDdl(ddl: string): { loop: string[]; afterColumns: s
 export function assertDirectoryDdlPlan<P extends { missing: string[] }>(plan: P): P {
   if (plan.missing.length > 0) {
     throw new Error(
-      `the directory DDL does not carry ${plan.missing.length} statement(s) of VERSION_MIGRATIONS_DDL — ` +
+      `the directory DDL does not carry ${plan.missing.length} statement(s) it holds back until the columns exist (VERSION_MIGRATIONS_DDL, the sweep-runs index) — ` +
         `interpolate the fragment whole: ${plan.missing[0]}`,
     );
   }
@@ -2337,7 +2342,11 @@ export class ControlPlaneDO extends DurableObject {
         '_substrat_sweep_runs_intent',
       )
       .toArray()[0] as unknown as { sql: string } | undefined;
-    if (row && sweepRunsIntentHasKind(row.sql)) return;
+    // None at all (a fresh or restored directory, or one whose index never got built): the held-back
+    // `DIRECTORY_DDL_PLAN.afterColumns` creates it right after this. Nothing to rebuild, and a restore's
+    // async transaction could not hold the `transactionSync` a rebuild takes.
+    if (!row) return;
+    if (sweepRunsIntentHasKind(row.sql)) return;
     this.rebuildAtomically(['DROP INDEX IF EXISTS _substrat_sweep_runs_intent', SWEEP_RUNS_INTENT_INDEX]);
   }
 

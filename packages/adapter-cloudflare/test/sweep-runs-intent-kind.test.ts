@@ -203,3 +203,44 @@ describe('#1840: a directory DO whose sweep-run table predates platform_requests
     expect(seen.written).toEqual(seen.totals);
   });
 });
+
+/**
+ * #3395's finding: a directory whose `_substrat_sweep_runs` predates `request_id` (#1232, created
+ * before #1262 added the column and its dedupe index). `DIRECTORY_DDL` created the index in its loop,
+ * before `ensureDirectoryColumns` added the column, so every construction threw "no such column:
+ * request_id" and the column never arrived: the test directory, unable to start from 2026-09-07.
+ */
+describe('a directory DO whose _substrat_sweep_runs predates request_id', () => {
+  beforeAll(async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+  });
+
+  it('constructs, gains the column and the index, and keeps its rows', async () => {
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`sweep-precolumn-${ulid()}`));
+    const seen = await runInDurableObject(stub, (_instance, state) => {
+      const sql = state.storage.sql;
+      // The table as it stood before #1262: no request_id, event_type, observed_at or platform_requests.
+      sql.exec('DROP TABLE _substrat_sweep_runs');
+      sql.exec(`CREATE TABLE _substrat_sweep_runs (
+        id TEXT PRIMARY KEY, kind TEXT NOT NULL, unit TEXT NOT NULL, outcome TEXT NOT NULL,
+        tenant_id TEXT, scope_id TEXT, vertical TEXT, version TEXT, operation TEXT,
+        connection_id TEXT, error TEXT, elapsed_ms INTEGER, at TEXT NOT NULL)`);
+      sql.exec(
+        `INSERT INTO _substrat_sweep_runs (id, kind, unit, outcome, at) VALUES ('01JPRECOLUMNROWAAAAAAAAAAA', 'connector', 'conn-1', 'ok', '2099-01-01T00:00:00.000Z')`,
+      );
+      new ControlPlaneDO(state, env);
+      const columns = (sql.exec(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '_substrat_sweep_runs'`).one() as { sql: string }).sql;
+      return { columns, index: indexSql(state), rows: sql.exec('SELECT id FROM _substrat_sweep_runs').toArray() };
+    });
+    expect(seen.columns).toMatch(/request_id/);
+    expect(seen.index).toMatch(/\(request_id, kind, unit\)/);
+    expect(seen.rows).toEqual([{ id: '01JPRECOLUMNROWAAAAAAAAAAA' }]);
+  });
+});
+
+const indexSql = (state: DurableObjectState): string | undefined =>
+  (
+    state.storage.sql
+      .exec("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = '_substrat_sweep_runs_intent'")
+      .toArray()[0] as { sql: string } | undefined
+  )?.sql;
