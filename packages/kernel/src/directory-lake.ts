@@ -464,19 +464,31 @@ export function pruneDirectoryLakeWindow(
 
 /**
  * The switch as the control plane's environment spells it: unset, empty or `off` captures
- * nothing; `all` captures every data set; otherwise a comma list of data set names. A name this
- * code does not know is refused rather than ignored, so a typo cannot read as "on".
+ * nothing; `all` captures every data set; otherwise a comma list of data set names, which is the
+ * whole list. A list whose every name is written `+name` ADDS those data sets to `defaults` instead
+ * (`+ops_failures,+sweep_runs`): capturing one more data set then cannot drop a default by being
+ * left out of the list, which would stop its capture and reset its backfill mark. A list mixing
+ * the two spellings is refused, and so is a name this code does not know, so a typo cannot read
+ * as "on".
  */
-export function parseDirectoryLakeCapture(value: string | undefined): DirectoryLakeDataset[] {
+export function parseDirectoryLakeCapture(
+  value: string | undefined,
+  defaults: readonly DirectoryLakeDataset[] = [],
+): DirectoryLakeDataset[] {
   const text = (value ?? '').trim();
   if (text === '' || text === 'off') return [];
   if (text === 'all') return [...DIRECTORY_LAKE_DATASET_NAMES];
-  const names = [...new Set(text.split(',').map((s) => s.trim()).filter((s) => s !== ''))];
+  const items = text.split(',').map((s) => s.trim()).filter((s) => s !== '');
+  const adding = items.filter((s) => s.startsWith('+')).length;
+  if (adding > 0 && adding !== items.length) {
+    throw new Error('directory lake: a list is either the whole list or additions (+name) to the default, not both');
+  }
+  const names = [...new Set(adding > 0 ? items.map((s) => s.slice(1).trim()) : items)];
   const unknown = names.filter((n) => !isDirectoryLakeDataset(n));
   if (unknown.length > 0) {
     throw new Error(`directory lake: unknown data set ${unknown.join(', ')} (known: ${DIRECTORY_LAKE_DATASET_NAMES.join(', ')}, or all, or off)`);
   }
-  return names as DirectoryLakeDataset[];
+  return adding > 0 ? [...new Set([...defaults, ...(names as DirectoryLakeDataset[])])] : (names as DirectoryLakeDataset[]);
 }
 
 /**
