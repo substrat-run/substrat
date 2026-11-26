@@ -352,7 +352,9 @@ relay (#303) — same secret, same trust derivation, same one uniform posture:
     - the provider's connector opens a scope's own connection: a vertical-defined provider, or a
       registration marked `scopeOwned`. WooCommerce is the first-party one that is (#3201): a
       vertical whose scopes are each a store with its own shop connects each shop as that store's,
-      so no store is delivered another store's customers.
+      so no store is delivered another store's customers. Fortnox is too (#3410), for stores that
+      each keep their own books; its credential comes from a consent round, so a scope gets its own
+      through the connect-url relay instead (§3.5.3, *A scope's own round*).
   - **Binding.** `POST /internal/connections/bind` `{ tenantId, scopeId, connectionId, options?,
     boundBy }` binds the scope's own connection to that scope alone. The landing's operation and key
     come from that declaration and the options from the scope, validated by the connector's bind. It
@@ -374,7 +376,8 @@ relay (#303) — same secret, same trust derivation, same one uniform posture:
     `ownerScopeId`). A vertical connector's routed event is handed its scope's own connection when
     that connection is bound on the scope, else the tenant's, never another scope's. A first-party
     connector that is `scopeOwned` records the owner on each binding and names it on every open, and
-    refuses a binding of a scope's own connection to any other scope (WooCommerce, #3201).
+    refuses a binding of a scope's own connection to any other scope (WooCommerce, #3201; Fortnox,
+    #3410).
   - **Inspection and the dashboard** (#3201). The tenant's `/verify` and `/credential` routes answer
     for a scope's own connection only when its provider's inspector says it opens one
     (`ConnectionInspector.scopeOwned`, set from the registration); otherwise it reads as absent, as
@@ -532,6 +535,30 @@ unvalidated `returnUrl` is an open redirect there. K-26's map is the right autho
 hostname bound to this scope" and "a hostname this scope answers on" are the same sentence.
 Refusals return the same way, as a stable `?error=` slug: a bureau's staff must not be
 stranded on a platform page whose only advice is to contact an administrator they do not have.
+
+**A scope's own round** (#3410). A vertical whose scopes each keep their own books in their own
+company asks for the round as the scope's own: `owner: 'scope'` on the connect-url request
+(`requestConnectUrl({ …, owner: 'scope' })`). Without it the round ends in the tenant's connection,
+which an `every-install` landing binds to every scope of the tenant, so every store would land every
+store's books.
+
+- **At mint**, the request is held to the upsert relay's three conditions for a scope's own
+  connection (§3.5.2): a proven caller, a provider whose connector opens a scope's own connection
+  (`scopeOwned`), and an `on-request` landing in the scope's running version. The state records
+  `owner: 'scope'`. A mailed link (§3.5.4) never carries it: a link is the tenant's.
+- **At the callback**, the dashboard does not use the tenant's upsert route, which is always the
+  tenant's. It relays the state as it arrived to `POST /tenants/:t/connections/consented`. The
+  control plane verifies its own signature again and takes the scope, provider and principal from
+  the claim, so the worker holding the callback relays the proof rather than supplying it. The store
+  judges the three conditions again against the scope as it stands.
+- **The round binds** the connection to that scope alone through its `on-request` landing, because
+  the vertical never learns the connection's id to call `/internal/connections/bind` itself. The
+  store and the bind are two steps: a bind refused after the store leaves the connection stored and
+  unbound, and the round returns `?error=bind_failed`. After a passing refusal, the next round for
+  the same company from the same scope rotates that connection (the owner is part of the key) and
+  binds it. When the running version no longer declares the `on-request` landing, the next round is
+  refused at mint as well, so the landing has to be restored and promoted before a retry can bind. The same company
+  consented from another scope becomes that scope's own connection.
 
 **What is deliberately still absent.** The vertical cannot list its tenant's connections —
 it learns a landing from the return, and thereafter from the connector's own delivered

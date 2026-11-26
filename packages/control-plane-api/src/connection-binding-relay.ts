@@ -82,6 +82,31 @@ function parsed<T extends z.ZodTypeAny>(schema: T, body: unknown, what: string):
 /** A binding's inspection notes, never its options. */
 const INSPECTION = new Set(['permissionInspectionError', 'auditWarning', 'health']);
 
+/**
+ * #3410: the binding a scope holds to one of its own connections, as the bind relay answers one
+ * (its options, never its fixed fields or inspection notes), or null when it holds none. A refused
+ * re-bind writes nothing, so a binding made earlier stays and keeps syncing; a caller reporting the
+ * refusal reads this rather than calling the scope unbound.
+ */
+export async function heldScopeBinding(
+  host: ScopeHost,
+  actor: PlatformActorId,
+  input: { tenantId: Scope['tenantId']; scopeId: Scope['id']; connectionId: Connection['id'] },
+  landings: ConnectionLandingOptionsInput,
+): Promise<{ scopeId: string; options: Record<string, unknown> } | null> {
+  const connection = (await host.admin.listConnections(actor, { tenantId: input.tenantId, ownerScopeId: input.scopeId })).find(
+    (c) => c.id === input.connectionId,
+  );
+  const binder = connection ? binderOf(landings, connection) : undefined;
+  if (!connection || !binder) return null;
+  const binding = (await binder.list(host, connection)).find((b) => b.scopeId === input.scopeId) as Record<string, unknown> | undefined;
+  if (!binding) return null;
+  return {
+    scopeId: input.scopeId,
+    options: Object.fromEntries(Object.entries(binding).filter(([k]) => !FIXED.has(k) && !INSPECTION.has(k))),
+  };
+}
+
 /** The named scope, for a caller proven to be it, of a vertical, and primary; or the refusal. */
 async function primaryScope(
   host: ScopeHost,

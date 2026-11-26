@@ -257,6 +257,37 @@ pushing and promoting the version that declares it is enough, and the next pass 
 hour) grants and binds every company connected so far. A binding written by hand before bindings
 recorded the company is re-written once on that pass.
 
+**An install that keeps its own books.** When each install is its own store, with its own Fortnox
+company, the tenant's connection is the wrong shape: it lands in every install, so every store
+would receive every store's books. Declare the landing `bind: 'on-request'` instead, and start the
+consent round from the store with `owner: 'scope'`:
+
+```ts
+const { url } = await requestConnectUrl({
+  controlPlaneUrl: env.CONTROL_PLANE_URL,
+  platformSecret: env.PLATFORM_SECRET,
+  tenantId, scopeId,
+  provider: 'fortnox',
+  createdBy: principal,
+  owner: 'scope',
+  returnUrl: `https://${host}/books`,
+});
+```
+
+The round ends in that store's own connection, bound to that store alone, with no further call:
+the store never learns the connection's id and does not need it. A re-consent of the same company
+from the same store rotates its connection; the same company connected from another store is that
+store's own. The dashboard lists it under the store's app, marked as its own, and disconnecting it
+stops only that store's sync. The dashboard offers no Rotate or Re-consent for it, since its doors
+make the tenant's connection: connect it again from the store instead.
+
+If the binding is refused after the company was saved, the round returns `?error=bind_failed` and
+the company stays connected but unbound. When the refusal was passing, connecting again from the
+store rotates the saved connection and binds it. When the running version no longer lands Fortnox
+on request, connecting again is refused too, before any consent: restore the `on-request` landing
+and promote that version first. A connection made from the dashboard or a connect link stays the
+tenant's, as above.
+
 Each due pass writes one row per connection, shown in Health › Connections: **ok** when every
 polled binding, ledger or invoice, landed or was unchanged, **skipped** when the connection has
 no binding, and **failed**, naming the scope, when a scope could not be landed in or a declared

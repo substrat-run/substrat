@@ -1,4 +1,4 @@
-import { isPrimaryScope, type ScopeHost } from '@substrat-run/kernel';
+import { isPrimaryScope, onRequestLandingFor, type ConnectionLandingOptionsInput, type ScopeHost } from '@substrat-run/kernel';
 import { signConnectState } from './connect-state.js';
 import {
   codeForRefusalStatus,
@@ -10,7 +10,7 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
+import { PREVIEW_CONNECTIONS_REFUSAL, PROVEN_CALLER_REFUSAL } from './connection-relay.js';
 
 /**
  * The connect-url relay (connections.md §3.5.3) — the OAuth half of §3.5.2's credential
@@ -42,7 +42,7 @@ export class ConnectUrlRelayError extends Error {
   constructor(
     message: string,
     /** `503` when the DEPLOYMENT cannot run a round at all, the same distinction #603 drew. */
-    readonly status: 400 | 403 | 404 | 503,
+    readonly status: 400 | 403 | 404 | 409 | 503,
   ) {
     super(message);
     this.name = 'ConnectUrlRelayError';
@@ -71,6 +71,17 @@ export interface ConnectUrlRelayOptions {
   flows: Readonly<Record<string, ConnectFlowSpec | undefined>>;
   /** This deployment's `PLATFORM_SECRET` — the state's signing key (via HKDF). */
   platformSecret?: string;
+  /**
+   * #3410: what a round asked for as the scope's own (`owner: 'scope'`) is held to, the upsert
+   * relay's own three (#2732); a host without them refuses one. `proven` is whether the call's
+   * caller was established as the scope it names. `scopeOwnable` says a provider's connector opens
+   * a scope's own connection. `readLandings` reads a version's declared landings.
+   */
+  scopeOwned?: {
+    proven: boolean;
+    scopeOwnable: (provider: string) => boolean;
+    readLandings: ConnectionLandingOptionsInput['read'];
+  };
 }
 
 /** 15 minutes. The clamp is in the schema; this is the default when none is asked for. */
@@ -176,6 +187,20 @@ export async function relayConnectUrl(
     throw new ConnectUrlRelayError(PREVIEW_CONNECTIONS_REFUSAL, 403);
   }
 
+  // #3410: a round that ends in the scope's OWN connection is refused here on the upsert relay's
+  // grounds, before anything is signed, so the callback never runs a consent it would refuse to
+  // store. The callback's store judges all three again, against the record at that moment.
+  if (input.owner === 'scope') {
+    const held = options.scopeOwned;
+    if (!held) throw new ConnectUrlRelayError("this deployment is not configured for a scope's own connections", 503);
+    if (!held.proven) throw new ConnectUrlRelayError(PROVEN_CALLER_REFUSAL, 403);
+    if (!held.scopeOwnable(input.provider)) {
+      throw new ConnectUrlRelayError(`'${input.provider}' connections are the tenant's: its connector does not open a scope's own`, 409);
+    }
+    const declared = await onRequestLandingFor(host.admin, actor, held.readLandings, rec, input.provider);
+    if ('refused' in declared) throw new ConnectUrlRelayError(declared.refused, 409);
+  }
+
   if (input.returnUrl) {
     await assertReturnUrlBelongsToScope(host, actor, {
       tenantId: input.tenantId,
@@ -193,6 +218,7 @@ export async function relayConnectUrl(
     principal: input.createdBy,
     ...(input.returnUrl ? { returnUrl: input.returnUrl } : {}),
     ...(input.subjectRef ? { subjectRef: input.subjectRef } : {}),
+    ...(input.owner === 'scope' ? { owner: 'scope' as const } : {}),
     exp: expiresAtMs,
   });
 

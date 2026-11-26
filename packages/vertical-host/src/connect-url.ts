@@ -75,6 +75,14 @@ export interface ConnectUrlRequest {
   subjectRef?: string;
   /** Seconds the URL stays openable; the platform clamps to 15 minutes. */
   ttlSeconds?: number;
+  /**
+   * Whose connection the round ends in (#3410). Absent or `'tenant'`: the tenant's, as always.
+   * `'scope'`: this scope's OWN connection, bound to this scope alone through the `on-request`
+   * landing its running version declares for the provider. Needs a proven caller (the call must
+   * come from this scope's dispatched worker) and a provider whose connector opens a scope's own
+   * connection (Fortnox does).
+   */
+  owner?: 'tenant' | 'scope';
   /** `fetch` seam for tests; defaults to the runtime's, bound (see `lint:bound-fetch`). */
   fetchImpl?: typeof fetch;
 }
@@ -115,6 +123,7 @@ export async function requestConnectUrl(request: ConnectUrlRequest): Promise<Con
       ...(request.returnUrl ? { returnUrl: request.returnUrl } : {}),
       ...(request.subjectRef ? { subjectRef: request.subjectRef } : {}),
       ...(request.ttlSeconds ? { ttlSeconds: request.ttlSeconds } : {}),
+      ...(request.owner ? { owner: request.owner } : {}),
     }),
   });
   const body = (await res.json().catch(() => ({}))) as Partial<ConnectUrlRelayResult>;

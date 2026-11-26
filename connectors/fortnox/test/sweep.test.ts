@@ -1762,6 +1762,35 @@ describe('fortnox connector — inbound sync', () => {
     expect(landed.map((p) => p.connectionId).sort()).toEqual([...ids].sort());
   });
 
+  it("lands a scope's own company in that scope alone, refusing it elsewhere at bind and at the sweep (#3410)", async () => {
+    // A store's own connection: owned by scope s, keyed on its company.
+    await host.admin.revokeConnection(staff, connId);
+    const own = connectionId.parse(ulid());
+    await host.admin.createConnection(staff, {
+      id: own,
+      tenantId: t,
+      vertical: 'forecast',
+      provider: 'fortnox',
+      label: 'Store company',
+      externalAccountRef: '123456',
+      ownerScopeId: s,
+      secret: { clientId: 'client-id', clientSecret: 'client-secret', tenantId: '123456' },
+    });
+    await host.admin.grantToConnection(staff, { connectionId: own, permission: LEDGER_RECORD, node: { tenantId: t, scopeId: s }, grantedBy: staff });
+    const target = { connectionId: own, tenantId: t, vertical: 'forecast', operation: OPERATION, permission: LEDGER_RECORD, externalAccountRef: '123456', ownerScopeId: s };
+    const sibling = scopeId.parse(ulid());
+    await expect(bindFortnoxScope(host, { ...target, scopeId: sibling })).rejects.toThrow(`is scope ${s}'s own`);
+    await bindFortnoxScope(host, { ...target, scopeId: s });
+    // A binding of it to another scope, however written, reads nothing at the sweep.
+    await host.admin.putConnectorState(own, `fortnox:binding:${sibling}`, { ...target, scopeId: sibling, boundAt: new Date().toISOString() });
+
+    const result = await sweepFortnoxLedger(host, own, options());
+
+    expect(result.synced.map((r) => r.scopeId)).toEqual([s]);
+    expect(result.failed).toEqual([{ scopeId: sibling, error: expect.stringContaining('nothing was read') }]);
+    expect(landed.length).toBeGreaterThan(0);
+  });
+
   it('refuses to read one company with another\'s credential (#2316)', async () => {
     // A binding written before it recorded the company opens whichever connection the pair
     // finds. With a second company that is ambiguous, and the refusal names the re-bind.

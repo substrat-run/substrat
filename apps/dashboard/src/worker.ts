@@ -3865,6 +3865,12 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
   const label = completion.company.CompanyName
     ? `Fortnox — ${completion.company.CompanyName}`
     : 'Fortnox';
+  // #3410: a round the vertical asked for as the scope's OWN connection is stored as that scope's
+  // and bound to it alone. The control plane takes the scope, provider and principal from the
+  // signed state, which it verifies again, so this worker relays the state rather than vouching
+  // for it. `unbound` is set when it was stored and the scope's landing refused the binding.
+  const scopeOwn = round.kind === 'platform' && round.claim.owner === 'scope';
+  let unbound: string | undefined;
   const settled = await settleConsent(
     roundLinkRow(c.env, round),
     {
@@ -3872,8 +3878,19 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
       ...(completion.company.CompanyName ? { accountLabel: completion.company.CompanyName } : {}),
     },
     async () => {
+      const cp = controlPlaneFor(c.env, tenantId.parse(claim.tenantId), principalId.parse(claim.principal));
+      if (scopeOwn) {
+        const stored = await cp.upsertConsentedConnection({
+          state: c.req.query('state') ?? '',
+          label,
+          externalAccountRef: completion.secret.tenantId,
+          secret: completion.secret as unknown as Record<string, string>,
+        });
+        if (!stored.bound) unbound = stored.bindRefusal ?? 'the binding was refused';
+        return;
+      }
       // #977: the round's own principal — who authorized it — is the person the row names.
-      await controlPlaneFor(c.env, tenantId.parse(claim.tenantId), principalId.parse(claim.principal)).upsertConnection({
+      await cp.upsertConnection({
         // A link round names the app it was minted for; a platform round names the scope
         // whose own operation authorized it. Either way the control plane re-derives the
         // VERTICAL from this scope rather than trusting the state — so a forged or replayed
@@ -3923,6 +3940,19 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
   // company has no licence for, say). The connection is stored — its keys work — and the person
   // still here is told what is missing; the connection view shows "needs re-consent" until a
   // round grants it. Unknown when Fortnox named no scopes, which says nothing.
+  if (unbound) {
+    // Stored, so the company is connected, but nothing lands for the scope yet: the vertical is told
+    // so it can ask again, and the next round for this company rotates the connection and binds it.
+    console.error('fortnox scope connection stored but not bound', unbound);
+    const back = connectReturn(round, { error: 'bind_failed', account: completion.secret.tenantId });
+    if (back) return c.redirect(back);
+    return connectPage('The company is connected, but its books will not sync yet', [
+      `Fortnox company <strong>${escapeHtml(completion.company.CompanyName || '(unnamed)')}</strong> was saved, ` +
+        'but the app it was connected from could not start receiving its books:',
+      escapeHtml(unbound),
+      'Connect it again from the app once that is fixed. The saved connection is reused.',
+    ], 409);
+  }
   const granted = completion.grantedScopes;
   const missing = granted === null ? [] : cfg.scopes.filter((scope) => !granted.includes(scope));
   const back = connectReturn(round, {

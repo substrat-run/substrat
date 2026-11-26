@@ -303,6 +303,25 @@ describe('connection binders (#2316)', () => {
     ).rejects.toThrow(/lands in that scope alone/);
   });
 
+  it("lets a scope own its Fortnox company, and binds it with its company and its owner (#3410)", async () => {
+    expect(scopeOwnable('fortnox')).toBe(true);
+    expect(connectionInspectorsFor(ENV)['fortnox']).toMatchObject({ scopeOwned: true });
+    const written: unknown[] = [];
+    const host = {
+      admin: {
+        listConnectorState: async () => [],
+        putConnectorState: async (_id: unknown, _key: string, value: unknown) => void written.push(value),
+      },
+    } as unknown as ScopeHost;
+    const owner = scopeId.parse(ulid());
+    const row = { id: connectionId.parse(ulid()), externalAccountRef: '111111', ownerScopeId: owner } as Parameters<
+      NonNullable<ReturnType<typeof connectionBindersFor>[string]['bindBeforeGrant']>
+    >[1];
+    const target = { tenantId: tenantId.parse(ulid()), scopeId: owner, vertical: 'stores', operation: 'stores/record-ledger', permission: 'ledger:record' };
+    await connectionBindersFor(ENV)['fortnox']!.bindBeforeGrant!(host, row, target);
+    expect(written).toEqual([expect.objectContaining({ scopeId: owner, externalAccountRef: '111111', ownerScopeId: owner })]);
+  });
+
   it('re-writes a Fortnox binding that does not carry its connection\'s company (#2316)', () => {
     const stale = connectionBindersFor(ENV)['fortnox']!.stale!;
     const binding = { scopeId: 's', operation: 'ledger/record-period', permission: 'ledger:record' };

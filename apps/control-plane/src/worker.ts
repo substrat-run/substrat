@@ -4195,6 +4195,12 @@ export default {
             ...(c.env.PLATFORM_CONNECT_URL ? { connectOrigin: c.env.PLATFORM_CONNECT_URL } : {}),
             ...(c.env.PLATFORM_SECRET ? { platformSecret: c.env.PLATFORM_SECRET } : {}),
             flows: connectFlowsFor(),
+            // #3410: a round asked for as the scope's own is held to the upsert relay's proof.
+            scopeOwned: {
+              proven: caller.proven,
+              scopeOwnable,
+              readLandings: (slug, versionId) => hostFor(c.env).versionConnectionLandings(slug, versionId),
+            },
           },
         );
         return c.json(result);
@@ -4457,6 +4463,8 @@ export default {
           binders: connectionBindersFor(env),
           binderFor: verticalConnectorBinderFor(env, apiHost, SERVICE_ACTOR),
         },
+        // #3410: verifies a scope's own consent round, which this plane signed at connect-url.
+        ...(env.PLATFORM_SECRET ? { connectStateSecret: env.PLATFORM_SECRET } : {}),
         // #2343: a mail connection's send test, through the senders the email relay uses.
         mailSenders: mailSendersFor(env),
         // #2611: a team's door to its apps' mail-in addresses (the dashboard's Integrations tab).

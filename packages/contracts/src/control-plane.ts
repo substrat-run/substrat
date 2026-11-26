@@ -1987,6 +1987,16 @@ export const connectUrlRelayRequest = z.object({
    * with a revocable row.)
    */
   ttlSeconds: z.number().int().positive().max(900).optional(),
+  /**
+   * Whose connection the round ends in (#3410). `tenant`, the default, is the round as it always
+   * was: the tenant's connection, landed wherever its declarations say. `scope` makes it the named
+   * scope's OWN connection, and binds it to that scope alone through the `on-request` landing its
+   * running version declares — the vertical never learns the connection's id, so the round does the
+   * binding the upsert relay's `owner: 'scope'` leaves to `/internal/connections/bind`. Held to the
+   * same proof as that relay: a proven caller, a provider whose connector opens a scope's own
+   * connection, and an `on-request` landing for it.
+   */
+  owner: z.enum(['tenant', 'scope']).default('tenant'),
 });
 export type ConnectUrlRelayRequest = z.infer<typeof connectUrlRelayRequest>;
 
