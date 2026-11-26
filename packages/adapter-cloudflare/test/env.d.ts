@@ -5,6 +5,9 @@ declare namespace Cloudflare {
     /** #1686: vertical-auth's identity directory — owner-claim.test.ts. */
     AUTH: DurableObjectNamespace<import('@substrat-run/vertical-auth').IdentityDO>;
     CONTROL_PLANE: DurableObjectNamespace;
+    /** K-68 (directory split), step 3a: the registry and the per-tenant directory object. */
+    DIRECTORY_REGISTRY: DurableObjectNamespace<import('../src/directory-objects.js').DirectoryRegistryDO>;
+    TENANT_DIRECTORY: DurableObjectNamespace<import('../src/directory-objects.js').TenantDirectoryDO>;
     /** #1899: the schedule suite's own directory — its sweep counts every active scope in it. */
     SCHED_CONTROL_PLANE: DurableObjectNamespace;
     /** …and its scopes, which read SCHED_CONTROL_PLANE as their directory. */
@@ -74,4 +77,10 @@ declare namespace Cloudflare {
     /** #2498: a real R2 bucket for the streamed upload — attachment-stream.test.ts. */
     STREAM_BUCKET: R2Bucket;
   }
+}
+
+/** Vite's `?raw` import: a file's text, for the source assertions in directory-split-inventory.test.ts. */
+declare module '*?raw' {
+  const text: string;
+  export default text;
 }

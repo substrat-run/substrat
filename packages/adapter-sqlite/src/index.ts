@@ -1013,6 +1013,12 @@ import {
   settlePlatformRequestIn,
   type PlatformRequestSettle,
 } from '@substrat-run/kernel';
+import {
+  DIRECTORY_CLAIMS_DDL,
+  DIRECTORY_CROSSINGS_DDL,
+  oneDatabaseDirectoryObjects,
+  type DirectoryObjects,
+} from '@substrat-run/kernel';
 import { canonicalInstant } from '@substrat-run/kernel';
 import {
   MARKUP_INSERT_SQL,
@@ -2419,6 +2425,29 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly owner: { release(): void };
   private readonly checker: PermissionChecker;
   private readonly directory: Database.Database;
+
+  /**
+   * K-68 (directory split), rfc/tenant-scale.md §11: the seam the directory crossing contract suite
+   * is written against, over THIS host's one directory database. Where the Cloudflare adapter has a
+   * registry object and one directory object per tenant, every port here reads and writes
+   * `_directory.sqlite`, and a crossing completes in one transaction (`runCrossingSync`). The two
+   * tables are created on first use, so a directory that never asks is unchanged. Step 3a: nothing in
+   * the host calls it yet.
+   */
+  directoryObjects(): DirectoryObjects {
+    this.directory.exec(DIRECTORY_CLAIMS_DDL);
+    this.directory.exec(DIRECTORY_CROSSINGS_DDL);
+    const sql = {
+      all: (q: string, ...p: (string | number | null)[]) => this.directory.prepare(q).all(...p) as Record<string, unknown>[],
+      run: (q: string, ...p: (string | number | null)[]) => {
+        this.directory.prepare(q).run(...p);
+      },
+    };
+    return oneDatabaseDirectoryObjects(sql, {
+      now: () => Date.parse(this.clock()),
+      transaction: (fn) => this.directory.transaction(fn)(),
+    });
+  }
 
   /** A private directory seam: module SQL and scope/directory exports never reach it. */
   private continuationStore(scopeId: ScopeId, writable: boolean): ContinuationStore {

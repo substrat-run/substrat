@@ -77,6 +77,10 @@ export const INDEX_VALUE_EXPORTS = [
   'DENIAL_WINDOW_QUERY',
   // RFC wire-signing §7: the capability record's directory table and its statements, shared by both adapters.
   'DEPLOYMENT_WIRE_AUTH_DDL',
+  // K-68 (directory split), step 3a: the registry's claims table, built by both adapters' directories.
+  'DIRECTORY_CLAIMS_DDL',
+  // K-68 (directory split), step 3a: the crossing ledger, built by both adapters' directories.
+  'DIRECTORY_CROSSINGS_DDL',
   // K-70: the backfill route's data set enum and the control plane's switch.
   'DIRECTORY_LAKE_DATASET_NAMES',
   // K-70: both adapters' directory DDL.
@@ -190,6 +194,8 @@ export const INDEX_VALUE_EXPORTS = [
   'REFUSE_UNCHECKED_OPERATIONS_KEY',
   // #2351: the static a `defineScopeDO` class exposes, read by the control plane from a bundle.
   'REGISTERED_MIGRATIONS',
+  // K-68 (directory split), step 3a: the registry's ledger owner, which the Cloudflare adapter's objects check.
+  'REGISTRY_OWNER',
   'REQUEST_ROLLUP_DDL',
   'REQUEST_ROLLUP_LIMIT_DEFAULT',
   'REQUEST_ROLLUP_LIMIT_MAX',
@@ -380,6 +386,8 @@ export const INDEX_VALUE_EXPORTS = [
   'checkHeldOperationsOf',
   'checkedWithin',
   'chooseAttachmentExtractor',
+  // K-68 (directory split), step 3a: the registry claim, run by the Cloudflare registry object.
+  'claimIn',
   'claimStoreDriverRebuildIn',
   'claimWireNonceIn',
   'clearCopyMarker',
@@ -389,6 +397,8 @@ export const INDEX_VALUE_EXPORTS = [
   'collectPeers',
   'condemnLicensedOrphanAttachments',
   'condemnOrphanAttachments',
+  // K-68 (directory split), step 3a: the registry confirm, run by the Cloudflare registry object.
+  'confirmClaimIn',
   'connectionsLiveIndexHasOwner',
   'connectorCallRecord',
   'connectorUploadBody',
@@ -420,6 +430,8 @@ export const INDEX_VALUE_EXPORTS = [
   'createTupleEvaluator',
   'createUlid',
   'crossVerticalHealth',
+  // K-68 (directory split), step 3a: a crossing's read, run by both directory objects.
+  'crossingIn',
   'cursorOf',
   // #2518: a connector call's bounds: the call's total, and a streamed body's idle window.
   'deadlineFetch',
@@ -597,6 +609,8 @@ export const INDEX_VALUE_EXPORTS = [
   'mapImpersonationRow',
   'mapRefusalRow',
   'markCopyOrigin',
+  // K-68 (directory split), step 3a: a crossing's claimed step, run by both directory objects.
+  'markCrossingClaimedIn',
   'markGuardRefusal',
   'markSwitchOwed',
   'markupRecordValues',
@@ -641,8 +655,12 @@ export const INDEX_VALUE_EXPORTS = [
   'observeFinding',
   'observeStoreCall',
   'onRequestLandingFor',
+  // K-68 (directory split), step 3a: adapter-sqlite's one-database seam.
+  'oneDatabaseDirectoryObjects',
   // #2514: both adapters open an attachment's bytes as a stream through it.
   'openAttachmentByteStream',
+  // K-68 (directory split), step 3a: what the safety net resumes, read by both directory objects.
+  'openCrossingsIn',
   'openSealed',
   'openVerticalOwnerRow',
   'operationKeyOf',
@@ -712,6 +730,8 @@ export const INDEX_VALUE_EXPORTS = [
   'readBecomeLinkStates',
   'readBoundedTenantStorageGauge',
   'readCapabilityPage',
+  // K-68 (directory split), step 3a: a claim's read, run by the Cloudflare registry object.
+  'readClaimIn',
   'readConnectLink',
   'readCostDirectory',
   'readDeadLetters',
@@ -748,6 +768,8 @@ export const INDEX_VALUE_EXPORTS = [
   'recordConnectorCall',
   'recordCostContainerRows',
   'recordCostDayRows',
+  // K-68 (directory split), step 3a: a crossing's intent, run by both directory objects.
+  'recordCrossingIn',
   'recordMeterDayRows',
   'recordOrphanSweepLicence',
   'recordOwnershipSteps',
@@ -787,6 +809,8 @@ export const INDEX_VALUE_EXPORTS = [
   'registryImportCandidates',
   // #2446: the reservation a pushed registry marks, and the promote's question of a scope it moves.
   'registryReservations',
+  // K-68 (directory split), step 3a: a claim release or tombstone, run by the Cloudflare registry object.
+  'releaseClaimIn',
   'releaseRoleSetRefusal',
   'releaseRolesAskScopes',
   'releaseStoreDriverHoldIn',
@@ -832,6 +856,8 @@ export const INDEX_VALUE_EXPORTS = [
   'runAttachmentExtractor',
   'runConnectorSweep',
   'runCrossVerticalFrom',
+  // K-68 (directory split), step 3a: drives a crossing across two objects; the Cloudflare seam calls it.
+  'runCrossing',
   'runDueJobRuns',
   'runJobPass',
   'runMigrationStatements',
@@ -875,6 +901,8 @@ export const INDEX_VALUE_EXPORTS = [
   'setFindingStatus',
   'settleConnectionUse',
   'settleCopiedWork',
+  // K-68 (directory split), step 3a: a crossing's settle, run by both directory objects.
+  'settleCrossingIn',
   'settleLifecycleAfterLoad',
   'settleOutcomeParamsOf',
   'settlePlatformRequestIn',
@@ -930,6 +958,8 @@ export const INDEX_VALUE_EXPORTS = [
   'tenantCoverage',
   'tenantHeldOf',
   'tenantHoldsGrant',
+  // K-68 (directory split), step 3a: a tenant directory object's ledger owner.
+  'tenantOwnerOf',
   'tenantSystemSwitchedOffMessage',
   'tooManyResultColumns',
   'tooManyTableColumns',

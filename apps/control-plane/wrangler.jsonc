@@ -164,7 +164,12 @@
 			{ "name": "PERSONA_ISSUER", "class_name": "PersonaIssuerDO" },
 			// #3365: one per scope — a kicked platform-intent drain runs from its alarm, and runs
 			// again while a backlog remains. A start time and a dirty bit, nothing else.
-			{ "name": "PLATFORM_DRAIN_KICK", "class_name": "PlatformDrainKickDO" }
+			{ "name": "PLATFORM_DRAIN_KICK", "class_name": "PlatformDrainKickDO" },
+			// K-68 (directory split), step 3a: the global registry and one directory object per tenant
+			// (rfc/tenant-scale.md §7.1). Bound and EMPTY: nothing addresses either yet, and the
+			// directory is still CONTROL_PLANE above. Steps 3b on dual-write into them.
+			{ "name": "DIRECTORY_REGISTRY", "class_name": "DirectoryRegistryDO" },
+			{ "name": "TENANT_DIRECTORY", "class_name": "TenantDirectoryDO" }
 		]
 	},
 	"migrations": [
@@ -201,6 +206,11 @@
 			// #3365: the per-scope platform-intent drain.
 			"tag": "v7",
 			"new_sqlite_classes": ["PlatformDrainKickDO"]
+		},
+		{
+			// K-68 (directory split), step 3a: the registry and the tenant directory object.
+			"tag": "v8",
+			"new_sqlite_classes": ["DirectoryRegistryDO", "TenantDirectoryDO"]
 		}
 	],
 	// Pushed verticals are reached through the WfP dispatch namespace, not static
@@ -387,7 +397,9 @@
 					{ "name": "COPY_JOBS", "class_name": "ScopeCopyJobDO" },
 					{ "name": "REVIEW_JOBS", "class_name": "ReviewJobDO" },
 					{ "name": "PERSONA_ISSUER", "class_name": "PersonaIssuerDO" },
-					{ "name": "PLATFORM_DRAIN_KICK", "class_name": "PlatformDrainKickDO" }
+					{ "name": "PLATFORM_DRAIN_KICK", "class_name": "PlatformDrainKickDO" },
+					{ "name": "DIRECTORY_REGISTRY", "class_name": "DirectoryRegistryDO" },
+					{ "name": "TENANT_DIRECTORY", "class_name": "TenantDirectoryDO" }
 				]
 			},
 			"migrations": [
@@ -397,7 +409,8 @@
 				{ "tag": "v4", "new_sqlite_classes": ["ScopeCopyJobDO"] },
 				{ "tag": "v5", "new_sqlite_classes": ["ReviewJobDO"] },
 				{ "tag": "v6", "new_sqlite_classes": ["PersonaIssuerDO"] },
-				{ "tag": "v7", "new_sqlite_classes": ["PlatformDrainKickDO"] }
+				{ "tag": "v7", "new_sqlite_classes": ["PlatformDrainKickDO"] },
+				{ "tag": "v8", "new_sqlite_classes": ["DirectoryRegistryDO", "TenantDirectoryDO"] }
 			],
 			// Own dispatch namespace — a test control plane must never push verticals
 			// into prod's `substrat-verticals`. Create: wrangler dispatch-namespace create substrat-verticals-test

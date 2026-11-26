@@ -75,6 +75,7 @@ export { sizeReadsContractSuite } from './size-reads-suite.js';
 export { wireNonceContractSuite } from './wire-nonce-suite.js';
 export { introspectionReadsContractSuite, introspectionReadsOf, introspectionReadCalls, type IntrospectionReads } from './introspection-reads-suite.js';
 export { findingsContractSuite } from './findings-suite.js';
+export { directoryCrossingContractSuite, type DirectoryCrossingFixture } from './directory-crossing-suite.js';
 export { scopeStoreContractSuite } from './scope-store-suite.js';
 // #2213: what a driver's own runner passes, and the trivial driver both suites run.
 export { scopeStoreRunnerContractSuite, type ScopeStoreRunnerFixture } from './scope-store-runner-suite.js';
