@@ -85,6 +85,7 @@ import {
   type FailingRun,
   parseDirectoryLakeCapture,
   type DirectoryLakeDataset,
+  type DirectoryLakeSweepReport,
 } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
@@ -507,9 +508,11 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   DIRECTORY_LAKE_STREAM?: { send(records: readonly Record<string, unknown>[]): Promise<unknown> };
   /**
-   * K-70: which directory data sets capture into the outbox, only with `DIRECTORY_LAKE_STREAM`.
-   * Unset, empty or `off` (the default) captures nothing; `all`, or a comma list of
-   * `DIRECTORY_LAKE_DATASET_NAMES`. A list with an unknown name is logged and read as `off`.
+   * K-70: an OVERRIDE of which directory data sets capture into the outbox, only with
+   * `DIRECTORY_LAKE_STREAM`. Normally unset: then the code's `DIRECTORY_LAKE_CAPTURE_DEFAULT` decides.
+   * `off` captures nothing (an emergency stop, and the reset after a directory lake is recreated);
+   * `all`, or a comma list of `DIRECTORY_LAKE_DATASET_NAMES`. A value it refuses is logged and read
+   * as `off`.
    */
   DIRECTORY_LAKE_CAPTURE?: string;
   /**
@@ -1872,11 +1875,22 @@ function capabilityDelegationFor(env: Env): CapabilityDelegation | undefined {
 }
 
 /**
- * K-70: the capture switch as the environment spells it. A value the kernel refuses is logged and
- * read as off rather than thrown: a typo must not stop the whole pass, and off is the state every
- * directory was in before the switch existed.
+ * K-70: the directory data sets captured wherever the directory lake's stream is bound. In code,
+ * not an environment variable, because the binding already says which environment ships (only
+ * prod's deploy binds the stream), and a variable here would be one more committed value to change
+ * in a PR all the same. The admin log first: small, and the data set whose history the lake serves
+ * (`DIRECTORY_LAKE_READS`). Another joins in a reviewed PR; the access log waits on #3326, since
+ * capturing it costs about two more directory row writes per row at ~720 rows a pass.
+ */
+const DIRECTORY_LAKE_CAPTURE_DEFAULT: readonly DirectoryLakeDataset[] = ['admin_log'];
+
+/**
+ * K-70: what the pass captures: the code's default, unless `DIRECTORY_LAKE_CAPTURE` overrides it. A
+ * value the kernel refuses is logged and read as off rather than thrown: a typo must not stop the
+ * whole pass, and off is the safe direction.
  */
 function directoryLakeCaptureOf(env: Env): DirectoryLakeDataset[] {
+  if (env.DIRECTORY_LAKE_CAPTURE === undefined || env.DIRECTORY_LAKE_CAPTURE.trim() === '') return [...DIRECTORY_LAKE_CAPTURE_DEFAULT];
   try {
     return parseDirectoryLakeCapture(env.DIRECTORY_LAKE_CAPTURE);
   } catch (err) {
@@ -1907,6 +1921,26 @@ function directoryLakeReadsOf(env: Env): DirectoryLakeReads {
     console.error('directory-lake: DIRECTORY_LAKE_READS refused, reads stay off:', (err as Error).message);
     return 'off';
   }
+}
+
+/**
+ * K-70: the directory outbox's part of the pass's log line, or null when there is nothing to say:
+ * capture unchanged, nothing shipped, and no prune result. `capturing` is the switch as it stands,
+ * so the line also says which data sets ship.
+ */
+function directoryLakeLogOf(dl: DirectoryLakeSweepReport | null | undefined): Record<string, unknown> | null {
+  if (!dl) return null;
+  const changed = dl.capture !== null && (dl.capture.enabled.length > 0 || dl.capture.disabled.length > 0 || dl.capture.rebuilt > 0);
+  const pruned = dl.pruned && Object.keys(dl.pruned).length > 0 ? dl.pruned : undefined;
+  if (!changed && dl.shipped === 0 && dl.acked === 0 && pruned === undefined) return null;
+  return {
+    capturing: dl.capture?.current.map((c) => c.dataset) ?? [],
+    ...(changed ? { enabled: dl.capture!.enabled, disabled: dl.capture!.disabled, rebuilt: dl.capture!.rebuilt } : {}),
+    shipped: dl.shipped,
+    acked: dl.acked,
+    ...(dl.ref ? { ref: dl.ref } : {}),
+    ...(pruned ? { pruned } : {}),
+  };
 }
 
 /** The control-plane API's ladder from a scope to its running deployment, outside a request. */
@@ -3233,8 +3267,9 @@ export default {
         ? { eventSink: createPipelinesEventSink(env.SUBSTRAT_OUTBOX_STREAM) }
         : {}),
       // K-70: the directory's own logs and meters, shipped through its outbox. Bound ⇒ the phase
-      // reconciles capture to DIRECTORY_LAKE_CAPTURE every pass (off by default, so it drops any
-      // trigger left on) and drains what is queued. Unbound ⇒ skipped.
+      // reconciles capture to DIRECTORY_LAKE_CAPTURE_DEFAULT (or the DIRECTORY_LAKE_CAPTURE override)
+      // every pass, so a data set taken off the list loses its triggers, and drains what is queued.
+      // Unbound ⇒ skipped.
       ...(env.DIRECTORY_LAKE_STREAM
         ? {
             directoryLake: {
@@ -3315,6 +3350,9 @@ export default {
     const snapshot = meterSnapshotLogOf(report.meterSnapshot);
     // #3316: object ids asked and recorded, and cost days read or failing.
     const costs = cloudflareCostsLogOf(report.scopeObjects, report.cloudflareCosts);
+    // K-70: the directory outbox, when the pass changed or shipped anything, or a prune listed in
+    // the switch did nothing for a standing reason (said on every pass while it lasts).
+    const directoryLake = directoryLakeLogOf(report.directoryLake);
     if (
       report.snapshotsReaped > 0 ||
       report.archivedScopesReaped > 0 ||
@@ -3332,7 +3370,8 @@ export default {
       orphansActive ||
       rollup !== null ||
       snapshot !== null ||
-      costs !== null
+      costs !== null ||
+      directoryLake !== null
     ) {
       console.log('platform-sweep', {
         snapshotsReaped: report.snapshotsReaped,
@@ -3362,6 +3401,7 @@ export default {
         ...(rollup ? { requestRollup: rollup } : {}),
         ...(snapshot ? { meterSnapshot: snapshot } : {}),
         ...(costs ? { cloudflareCosts: costs } : {}),
+        ...(directoryLake ? { directoryLake } : {}),
         errors: report.errors,
       });
     }

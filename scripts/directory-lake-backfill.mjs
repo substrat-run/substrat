@@ -12,9 +12,9 @@
  *
  * A DRY RUN BY DEFAULT: it walks each data set and prints how many rows a real run would ship
  * and the span of their times; it ships and records nothing. `--apply` ships. A real run needs the
- * data set's capture switched on first (`DIRECTORY_LAKE_CAPTURE` on the control plane, applied by
- * its next pass) and refuses otherwise, because rows written after the walk passed would reach
- * the lake only through the outbox.
+ * data set to be capturing (the control plane's DIRECTORY_LAKE_CAPTURE_DEFAULT, or its
+ * DIRECTORY_LAKE_CAPTURE override, applied by its next pass) and refuses otherwise, because rows
+ * written after the walk passed would reach the lake only through the outbox.
  *
  * Resumable and idempotent: a real run starts where the directory says the last recorded page
  * ended, so an interrupted run is finished by running it again; a data set already backfilled is
