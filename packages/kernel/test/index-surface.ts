@@ -7,6 +7,8 @@
  * should promise. Types are not listed; they are erased at run time and stay nameable.
  */
 export const INDEX_VALUE_EXPORTS = [
+  // K-73: the platform's bookkeeping reads as one access row a pass; both adapters write it.
+  'ACCESS_SUMMARY_METHOD',
   'ACTIVE_CONTENT_TYPES',
   'ADMIN_LOG_INDEXES_SQL',
   'ADMIN_LOG_INDEX_DDL',
@@ -27,6 +29,8 @@ export const INDEX_VALUE_EXPORTS = [
   'ATTACHMENT_TEXT_JOB',
   'ATTACHMENT_TEXT_MODULE',
   'AUDITED_CHANGE_ACTIONS',
+  // K-73: the summary both adapters keep while it is open.
+  'AccessSummary',
   'BACKFILL_MOVE_ID',
   'BILLING_ROLLUP_RETENTION_MONTHS',
   'BIND_EXPORT_BREAK_REFUSAL',
@@ -657,6 +661,8 @@ export const INDEX_VALUE_EXPORTS = [
   'onRequestLandingFor',
   // K-68 (directory split), step 3a: adapter-sqlite's one-database seam.
   'oneDatabaseDirectoryObjects',
+  // K-73: opening or nesting it, refusing a second actor.
+  'openAccessSummary',
   // #2514: both adapters open an attachment's bytes as a stream through it.
   'openAttachmentByteStream',
   // K-68 (directory split), step 3a: what the safety net resumes, read by both directory objects.

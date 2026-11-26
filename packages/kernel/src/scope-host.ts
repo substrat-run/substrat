@@ -247,6 +247,7 @@ import type { GrantedEntitiesPage } from './grant-scoped-read.js';
 import type { EntityVersion } from './entity-version.js';
 import type { UndrainedEvents } from './outbox-event.js';
 import type { PruneDrainedEventsInput } from './outbox-prune.js';
+import type { AccessSummaryResult } from './access-summary.js';
 import type {
   DirectoryLakeBackfillPage,
   DirectoryLakeCaptureResult,
@@ -4847,6 +4848,22 @@ export interface HostAdmin {
    * exists to prevent.
    */
   recordDelegatedRead(actor: PlatformActorId, record: DelegatedReadRecord): Promise<void>;
+
+  /**
+   * K-73 (amends K-24; #3326): from now until the matching `flushAccessSummary`, fold `actor`'s
+   * reads into one summary instead of writing an access-log row each (`access-summary.ts`). For the
+   * platform's own bookkeeping actor only; a person's reads are never summarized. Nests: the row is
+   * written when the outermost summary is flushed. Refuses a second actor while one is open.
+   * Optional, like every member a host may predate: without it, every read is recorded as before.
+   */
+  summarizeAccess?(actor: PlatformActorId): Promise<void>;
+
+  /**
+   * Close one level of `actor`'s summary. At the outermost, write ONE access-log row
+   * (`method: 'summarizedReads'`, no tenant, the counts in `params`, the total in `result_count`)
+   * when anything was read, and answer what it wrote; null otherwise, or while still nested.
+   */
+  flushAccessSummary?(actor: PlatformActorId): Promise<AccessSummaryResult | null>;
 
   /**
    * Record one phase of an owner hand-over (#1665) on the admin log, as `transferOwner`. The

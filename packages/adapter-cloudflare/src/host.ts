@@ -328,6 +328,7 @@ import {
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import { prePromoteSnapshotExpiresAt } from '@substrat-run/kernel';
+import { ACCESS_SUMMARY_METHOD, AccessSummary, openAccessSummary } from '@substrat-run/kernel';
 import type {
   DirectoryLakeBackfillPage,
   DirectoryLakeCaptureResult,
@@ -3464,6 +3465,8 @@ export class CloudflareScopeHost implements ScopeHost {
    * `attributed(…)` view answers it, so it cannot leak between requests.
    */
   private readonly onBehalfOf: OnBehalfOf | null = null;
+  /** K-73: the actor whose reads are being summarized, if any (`summarizeAccess`). */
+  private readonly accessSummary: { current: AccessSummary | null } = { current: null };
   private readonly withdrawn = new Map<string, string>(); // operation → module
   /** Operation → who binds it (module, SKU flag, its declared schedules) — the §4.3 gate's
    *  input, resolved per invoke by the kernel's `requiredEntitlementFor` (#1654). */
@@ -11246,6 +11249,37 @@ export class CloudflareScopeHost implements ScopeHost {
        * that helper's, so a delegated row and a co-located one are indistinguishable,
        * which is the point of the seam.
        */
+      /**
+       * K-73 (amends K-24; #3326): the platform's bookkeeping reads, one access-log row per pass.
+       * The slot is a box shared with every view of this host, so a view neither forks it nor
+       * shadows it.
+       */
+      summarizeAccess: async (actor) => {
+        this.accessSummary.current = openAccessSummary(this.accessSummary.current, actor, new Date().toISOString());
+      },
+      flushAccessSummary: async (actor) => {
+        const s = this.accessSummary.current;
+        if (!s || s.actor !== actor) return null;
+        s.depth -= 1;
+        if (s.depth > 0) return null;
+        this.accessSummary.current = null;
+        if (s.empty) return null;
+        const result = s.result();
+        // Straight to the directory, past `recordAccess`: the summary is not folded into itself, and
+        // its params carry their own, wider cap.
+        await this.cp.recordAccess({
+          id: ulid(),
+          actor,
+          method: ACCESS_SUMMARY_METHOD,
+          tenantId: null,
+          scopeId: null,
+          params: s.params(new Date().toISOString()),
+          resultCount: result.resultCount,
+          onBehalfOf: null,
+          at: new Date().toISOString(),
+        });
+        return result;
+      },
       recordDelegatedRead: async (actor, record) => {
         const parsed = delegatedReadRecord.parse(record);
         await this.recordAccess(
@@ -12054,6 +12088,12 @@ export class CloudflareScopeHost implements ScopeHost {
     params: unknown,
     resultCount: number,
   ): Promise<void> {
+    // K-73: an actor being summarized adds to its pass's one row instead of writing its own.
+    const summary = this.accessSummary.current;
+    if (summary && summary.actor === actor) {
+      summary.add(method, target, resultCount);
+      return;
+    }
     await this.cp.recordAccess({
       id: ulid(),
       actor,

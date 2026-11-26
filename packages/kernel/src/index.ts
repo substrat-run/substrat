@@ -1441,3 +1441,5 @@ export {
   type ReleaseInput,
   type SettleInput,
 } from './directory-crossing.js';
+// K-73 (amends K-24; #3326): the platform's bookkeeping reads, one access-log row per pass.
+export { ACCESS_SUMMARY_METHOD, AccessSummary, openAccessSummary, type AccessSummaryResult } from './access-summary.js';
