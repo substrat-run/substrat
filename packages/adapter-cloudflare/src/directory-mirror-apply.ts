@@ -22,6 +22,8 @@
  */
 import type { MirrorApplyResult, MirrorBatch, MirrorChange, MirrorValue } from './directory-mirror.js';
 import { mirrorKeyColumns } from './directory-mirror.js';
+import type { SwitchSql } from '@substrat-run/kernel';
+import { CLAIMING_TABLES, mirrorClaimWork, recordMirrorClaims } from './directory-mirror-claims.js';
 
 export const MIRROR_TARGET_DDL = [
   `CREATE TABLE IF NOT EXISTS directory_mirror_rows (
@@ -63,6 +65,8 @@ export interface MirrorTarget {
   /** The tables placed in this object; a change for any other is refused (parked). */
   tables: ReadonlySet<string>;
   now: () => number;
+  /** A tenant object: the registry's claims its rows make are recorded here (`directory-mirror-claims.ts`). */
+  claims?: { kernelSql: SwitchSql; owner: string };
 }
 
 export interface MirrorTargetStatus {
@@ -85,13 +89,23 @@ function keysOf(sql: SqlStorage, table: string): string[] {
   return keys;
 }
 
-/** Write one change (row or delete) into its table. Throws what the schema refuses. */
-function write(sql: SqlStorage, change: MirrorChange): number {
+function keyWhere(sql: SqlStorage, change: MirrorChange): { where: string; keyValues: MirrorValue[]; keys: string[] } {
   const keys = keysOf(sql, change.table);
   const keyValues = JSON.parse(change.key) as MirrorValue[];
   if (keyValues.length !== keys.length) throw new Error(`a key of ${keys.length} column(s) expected, got ${change.key}`);
+  return { keys, keyValues, where: keys.map((k) => (k === 'rowid' ? 'rowid = ?' : `${quoteIdent(k)} IS ?`)).join(' AND ') };
+}
+
+/** The object's row for a change's key, before the change. */
+function readRow(sql: SqlStorage, change: MirrorChange): Record<string, MirrorValue> | null {
+  const { where, keyValues } = keyWhere(sql, change);
+  return (sql.exec(`SELECT * FROM ${quoteIdent(change.table)} WHERE ${where}`, ...keyValues).toArray()[0] as Record<string, MirrorValue> | undefined) ?? null;
+}
+
+/** Write one change (row or delete) into its table. Throws what the schema refuses. */
+function write(sql: SqlStorage, change: MirrorChange): number {
+  const { where, keyValues } = keyWhere(sql, change);
   const table = quoteIdent(change.table);
-  const where = keys.map((k) => (k === 'rowid' ? 'rowid = ?' : `${quoteIdent(k)} IS ?`)).join(' AND ');
   if (change.row === null) return sql.exec(`DELETE FROM ${table} WHERE ${where}`, ...keyValues).rowsWritten;
   const columns = Object.keys(change.row);
   if (columns.length + keyValues.length > MAX_PARAMS) {
@@ -124,7 +138,11 @@ function applyOne(target: MirrorTarget, change: MirrorChange, version: number): 
         return { kind: 'stale', rowsWritten: dropped };
       }
       if (!target.tables.has(change.table)) throw new Error(`${change.table} is not placed in this object`);
+      const claims = target.claims && CLAIMING_TABLES.has(change.table) ? target.claims : null;
+      const before = claims ? readRow(sql, change) : null;
       let rowsWritten = write(sql, change);
+      // In the same transaction as the row: the crossing's intent, or the release (rfc §7.3).
+      if (claims) recordMirrorClaims({ sql, kernelSql: claims.kernelSql, owner: claims.owner, nowMs: target.now() }, change, before, version);
       rowsWritten += sql.exec(
         `INSERT INTO directory_mirror_rows (tbl, row_key, version, deleted, at) VALUES (?, ?, ?, ?, ?)
            ON CONFLICT (tbl, row_key) DO UPDATE SET version = excluded.version, deleted = excluded.deleted, at = excluded.at`,
@@ -177,6 +195,7 @@ export function applyMirrorBatch(target: MirrorTarget, batch: MirrorBatch): Mirr
       if (r.kind === 'applied') out.healed += 1;
     }
   }
+  if (target.claims) out.claims = mirrorClaimWork(target.sql, target.claims.kernelSql, target.claims.owner);
   return out;
 }
 

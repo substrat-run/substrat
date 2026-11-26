@@ -50,7 +50,8 @@ import {
 } from '@substrat-run/kernel';
 import { DIRECTORY_PLACEMENT, directoryObjectSchema, type DirectoryObjectKind } from './directory-placement.js';
 import { applyMirrorBatch, MIRROR_TARGET_DDL, mirrorTargetStatus, type MirrorTargetStatus } from './directory-mirror-apply.js';
-import type { MirrorApplyResult, MirrorBatch, MirrorSender } from './directory-mirror.js';
+import type { MirrorApplyResult, MirrorBatch, MirrorClaimReport, MirrorSender } from './directory-mirror.js';
+import { MIRROR_CLAIMS_DDL, settleMirrorReleaseIn, type MirrorClaimWork, type MirrorRelease } from './directory-mirror-claims.js';
 import { switchSqlOver } from './scope-do.js';
 
 /** The registry's object name. */
@@ -86,7 +87,7 @@ abstract class DirectoryObjectBase extends DurableObject {
   /** The directory tables placed in this object: the only ones the dual-write may write (step 3b). */
   private readonly placed: ReadonlySet<string>;
 
-  constructor(ctx: DurableObjectState, env: unknown, kind: DirectoryObjectKind) {
+  constructor(ctx: DurableObjectState, env: unknown, protected readonly kind: DirectoryObjectKind) {
     super(ctx, env as never);
     this.sql = ctx.storage.sql;
     this.kernelSql = switchSqlOver(this.sql);
@@ -102,6 +103,8 @@ abstract class DirectoryObjectBase extends DurableObject {
       this.sql.exec(DIRECTORY_SELF_DDL);
       // Step 3b: the per-key versions and parked changes of the directory's dual-write.
       for (const stmt of MIRROR_TARGET_DDL) this.sql.exec(stmt);
+      // A tenant object decides its claims (rfc §7.3), so it keeps the releases it owes the registry.
+      if (kind === 'tenant') for (const stmt of MIRROR_CLAIMS_DDL) this.sql.exec(stmt);
     });
   }
 
@@ -113,7 +116,10 @@ abstract class DirectoryObjectBase extends DurableObject {
   applyMirror(owner: string, jurisdiction: Jurisdiction, batch: MirrorBatch): MirrorApplyResult {
     this.ctx.storage.transactionSync(() => this.assertOwner(owner, jurisdiction, true));
     return applyMirrorBatch(
-      { sql: this.sql, transaction: (fn) => this.ctx.storage.transactionSync(fn), tables: this.placed, now: () => Date.now() },
+      {
+        sql: this.sql, transaction: (fn) => this.ctx.storage.transactionSync(fn), tables: this.placed, now: () => Date.now(),
+        ...(this.kind === 'tenant' ? { claims: { kernelSql: this.kernelSql, owner } } : {}),
+      },
       batch,
     );
   }
@@ -200,6 +206,14 @@ export class TenantDirectoryDO extends DirectoryObjectBase {
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env, 'tenant');
   }
+
+  /** Step 3b: the registry answered a release this object owes; drop it once it is done (`directory-mirror-claims.ts`). */
+  settleMirrorRelease(owner: string, jurisdiction: Jurisdiction, release: MirrorRelease, released: boolean): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      this.assertOwner(owner, jurisdiction, false);
+      return settleMirrorReleaseIn(this.sql, this.kernelSql, owner, release, released);
+    });
+  }
 }
 
 /** The registry's stub. */
@@ -273,7 +287,58 @@ export function durableMirrorSender(env: unknown): MirrorSender | null {
   const tenants = Reflect.get(env as object, 'TENANT_DIRECTORY');
   if (!isNamespace(registry) || !isNamespace(tenants)) return null;
   const tenantPrefix = tenantOwnerOf('');
+  const tenantIdOf = (owner: string): string => {
+    if (!owner.startsWith(tenantPrefix)) throw new Error(`directory mirror: not a tenant owner: ${owner}`);
+    return owner.slice(tenantPrefix.length);
+  };
+  const objects = durableDirectoryObjects({
+    registry: registry as DurableObjectNamespace<DirectoryRegistryDO>,
+    tenants: tenants as DurableObjectNamespace<TenantDirectoryDO>,
+  });
+  const claims = objects.registry();
   return {
+    // Every release first (a hostname handed from one tenant to another is freed before it is claimed
+    // again), then every crossing through `runCrossing`, then the releases still left (one whose claim
+    // a crossing of this round only just made, such as a tenant that arrived already reaped).
+    settleClaims: async (work: readonly { owner: string; claims: MirrorClaimWork }[]): Promise<MirrorClaimReport> => {
+      const out: MirrorClaimReport = { claimed: 0, refused: 0, released: 0, errors: 0 };
+      const settled = new Set<string>();
+      const releaseAll = async () => {
+        for (const { owner, claims: w } of work) {
+          const stub = tenantDirectoryStub(tenants as DurableObjectNamespace<TenantDirectoryDO>, tenantIdOf(owner), 'global');
+          for (const release of w.releases) {
+            const id = `${owner}\u0000${release.namespace}\u0000${release.key}\u0000${release.claimId}`;
+            if (settled.has(id)) continue;
+            try {
+              const { released } = await claims.releaseClaim(release);
+              if (await stub.settleMirrorRelease(owner, 'global', release, released)) {
+                settled.add(id);
+                if (released) out.released += 1;
+              }
+            } catch (err) {
+              console.error('directory mirror: a release failed, retried on the next send', err);
+              out.errors += 1;
+            }
+          }
+        }
+      };
+      await releaseAll();
+      for (const { owner, claims: w } of work) {
+        const ledger = objects.tenant(tenantIdOf(owner));
+        for (const crossingId of w.crossings) {
+          try {
+            const done = await objects.complete(ledger, crossingId);
+            if (done.state === 'done') out.claimed += 1;
+            else if (done.state === 'failed') out.refused += 1;
+          } catch (err) {
+            console.error('directory mirror: a claim failed, retried on the next send', err);
+            out.errors += 1;
+          }
+        }
+      }
+      await releaseAll();
+      return out;
+    },
     send: async (owner, batch) => {
       if (owner === REGISTRY_OWNER) return registryStub(registry as DurableObjectNamespace<DirectoryRegistryDO>).applyMirror(owner, 'global', batch);
       if (!owner.startsWith(tenantPrefix)) throw new Error(`directory mirror: not an owner: ${owner}`);

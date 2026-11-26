@@ -51,6 +51,7 @@
  */
 import { REGISTRY_OWNER, tenantOwnerOf } from '@substrat-run/kernel';
 import { DIRECTORY_PLACEMENT, type DirectoryObjectKind } from './directory-placement.js';
+import type { MirrorClaimWork } from './directory-mirror-claims.js';
 
 /** The tables this owns in the directory. Excluded from a dump, kept across a restore. */
 export const DIRECTORY_MIRROR_TABLE_GLOB = 'directory_mirror_*';
@@ -259,11 +260,25 @@ export interface MirrorApplyResult {
   healed: number;
   /** Rows the apply wrote in the object, as its cursors counted them. */
   rowsWritten: number;
+  /** A tenant object's open claim work (part 2, `directory-mirror-claims.ts`), retried after every send. */
+  claims?: MirrorClaimWork;
+}
+
+/** What one round of claim work did (`MirrorSender.settleClaims`). */
+export interface MirrorClaimReport {
+  /** Crossings driven to `done`, and to `failed` (a refusal: a difference for 3d, not a decision). */
+  claimed: number;
+  refused: number;
+  released: number;
+  /** Calls that threw; the work stays recorded in its object and is handed back on the next send. */
+  errors: number;
 }
 
 /** How the directory reaches the objects: an RPC stub per owner on Cloudflare. */
 export interface MirrorSender {
   send(owner: string, batch: MirrorBatch): Promise<MirrorApplyResult>;
+  /** Drive the claim work the objects handed back: every release, then every crossing, then the releases left. */
+  settleClaims?(work: readonly { owner: string; claims: MirrorClaimWork }[]): Promise<MirrorClaimReport>;
 }
 
 export interface MirrorFlush {
@@ -278,6 +293,8 @@ export interface MirrorFlush {
   healed: number;
   /** Rows the directory had no object for (a tenant-placed row without a tenant). */
   unplaced: number;
+  /** The registry claims the batches' objects handed back, driven after each batch. */
+  claims: MirrorClaimReport;
   /** Rows written by the flush itself, in the directory (version, acks) and in the objects. */
   rowsWrittenDirectory: number;
   rowsWrittenObjects: number;
@@ -313,6 +330,7 @@ interface ReadBatch {
 
 const emptyFlush = (): MirrorFlush => ({
   read: 0, acked: 0, sent: 0, applied: 0, stale: 0, parked: 0, healed: 0, unplaced: 0,
+  claims: { claimed: 0, refused: 0, released: 0, errors: 0 },
   rowsWrittenDirectory: 0, rowsWrittenObjects: 0, deferred: false, failed: [],
 });
 
@@ -491,6 +509,7 @@ export class DirectoryMirror {
       );
       const ack: number[] = [];
       const back: number[] = [];
+      const claimWork: { owner: string; claims: MirrorClaimWork }[] = [];
       for (const [owner, slot] of batch.byOwner) {
         const i = owners.indexOf(owner);
         const r = i >= 0 ? settled[i]! : null;
@@ -502,6 +521,8 @@ export class DirectoryMirror {
           out.parked += r.value.parked;
           out.healed += r.value.healed;
           out.rowsWrittenObjects += r.value.rowsWritten;
+          const claims = r.value.claims;
+          if (claims && (claims.crossings.length > 0 || claims.releases.length > 0)) claimWork.push({ owner, claims });
         } else {
           if (r && r.status === 'rejected') failed.set(owner, r.reason);
           back.push(...slot.ids);
@@ -517,6 +538,18 @@ export class DirectoryMirror {
           ).rowsWritten;
           return moved + this.sql.exec(`DELETE FROM ${OUTBOX} WHERE id IN (SELECT value FROM json_each(?))`, list).rowsWritten;
         });
+      }
+      // The rows are in; the claims they made are host code's (rfc §7.3), never inside a transaction.
+      // A failure here leaves the work recorded in its object, handed back on its next send.
+      if (claimWork.length > 0 && this.options.sender.settleClaims) {
+        const c = await this.options.sender.settleClaims(claimWork).catch((err: unknown) => {
+          console.error('directory mirror: claims failed, retried on the next send', err);
+          return { claimed: 0, refused: 0, released: 0, errors: claimWork.length };
+        });
+        out.claims.claimed += c.claimed;
+        out.claims.refused += c.refused;
+        out.claims.released += c.released;
+        out.claims.errors += c.errors;
       }
       if (ack.length > 0) {
         const deleted = this.sql.exec(`DELETE FROM ${OUTBOX} WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ack)).rowsWritten;

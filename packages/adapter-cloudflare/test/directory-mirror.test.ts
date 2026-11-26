@@ -152,6 +152,55 @@ describe('directory dual-write (K-68 step 3b)', () => {
     expect(triggers).toEqual([{ n: MIRRORED_TABLES.length * 3 }]);
   });
 
+  // Part 2: the registry's claims, through the intent-first crossing (rfc §7.3).
+  const bindHostname = (stub: Stub, hostname: string, tenant: string) =>
+    runInDurableObject(stub, (_i, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO hostnames (hostname, tenant_id, scope_id, surface, status, created_at) VALUES (?, ?, ?, 'app', 'active', ?)`,
+        hostname, tenant, ulid(), NOW,
+      );
+    });
+  const sqlIn = (stub: Stub, sql: string, ...params: unknown[]) =>
+    runInDurableObject(stub, (_i, state) => void state.storage.sql.exec(sql, ...params));
+
+  it('claims in the registry what the directory decided: id and slug on create, a hostname on bind, released on delete and reap', async () => {
+    const directory = mirrorDirectory();
+    const registry = registryStub(env.DIRECTORY_REGISTRY);
+    const t = ulid();
+    const slug = `m-${t.toLowerCase()}`;
+    const hostname = `${ulid().toLowerCase()}.mirror.test`;
+    await directory.createTenant(t, slug, 'Claims', NOW);
+    await bindHostname(directory, hostname, t);
+    await directory.settleDirectoryMirror();
+    for (const [namespace, key] of [['tenant-id', t], ['tenant-slug', slug], ['hostname', hostname]] as const) {
+      expect(await registry.readClaim(namespace, key)).toMatchObject({ holder: t, state: 'confirmed' });
+    }
+    await sqlIn(directory, `DELETE FROM hostnames WHERE hostname = ?`, hostname);
+    await directory.settleDirectoryMirror();
+    expect(await registry.readClaim('hostname', hostname)).toBeNull();
+    // A reap frees the slug and keeps the id for good, so it is never reused (rfc §7.3).
+    await sqlIn(directory, `UPDATE tenants SET status = 'reaped' WHERE tenant_id = ?`, t);
+    await directory.settleDirectoryMirror();
+    expect(await registry.readClaim('tenant-slug', slug)).toBeNull();
+    expect(await registry.readClaim('tenant-id', t)).toMatchObject({ holder: t, state: 'tombstone' });
+    expect(await runInDurableObject(tenantObject(t), (_i, state) => state.storage.sql.exec('SELECT COUNT(*) AS n FROM directory_mirror_releases').one())).toEqual({ n: 0 });
+  });
+
+  it('a claim the registry refuses is a difference, not a decision: the crossing fails and the row still applies', async () => {
+    const directory = mirrorDirectory();
+    const registry = registryStub(env.DIRECTORY_REGISTRY);
+    const [t, other] = [ulid(), ulid()];
+    const hostname = `${ulid().toLowerCase()}.mirror.test`;
+    const claimId = ulid();
+    await registry.claim({ namespace: 'hostname', key: hostname, claimId, holder: other, leaseMs: 60_000 });
+    await registry.confirmClaim({ namespace: 'hostname', key: hostname, claimId });
+    await bindHostname(directory, hostname, t);
+    const flush = await directory.settleDirectoryMirror();
+    expect(flush?.claims).toMatchObject({ refused: 1, errors: 0 });
+    expect(await registry.readClaim('hostname', hostname)).toMatchObject({ holder: other });
+    expect(await rowsOf(tenantObject(t), `SELECT tenant_id FROM hostnames WHERE hostname = ?`, hostname)).toEqual([{ tenant_id: t }]);
+  });
+
   // Opt-in (`SUBSTRAT_PROBE_DIRECTORY_MIRROR=1`): the rows the dual-write adds per directory write, by
   // write class: the trigger's outbox row in the directory's own transaction, then the flush's rows in
   // the directory (its version and ack) and in the object (the row, its indexes, its version row).
