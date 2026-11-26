@@ -1085,6 +1085,7 @@ export type {
   ConnectorSweeper,
   ConnectorSweepAnswer,
   ConnectorSweepOptions,
+  ConnectorSweepTarget,
   ConnectorSweepReport,
   MigrationSweepReport,
   PlatformSweepOptions,

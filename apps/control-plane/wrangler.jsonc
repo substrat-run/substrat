@@ -169,7 +169,10 @@
 			// (rfc/tenant-scale.md §7.1). Bound and EMPTY: nothing addresses either yet, and the
 			// directory is still CONTROL_PLANE above. Steps 3b on dual-write into them.
 			{ "name": "DIRECTORY_REGISTRY", "class_name": "DirectoryRegistryDO" },
-			{ "name": "TENANT_DIRECTORY", "class_name": "TenantDirectoryDO" }
+			{ "name": "TENANT_DIRECTORY", "class_name": "TenantDirectoryDO" },
+			// K-69, step 4.2 (#3376): one per connection, whose alarm runs that connection's sweep
+			// when CONNECTOR_SWEEP_OWNER is `connection`. Its address and its alarm, nothing else.
+			{ "name": "CONNECTION_SWEEP", "class_name": "ConnectionSweepDO" }
 		]
 	},
 	"migrations": [
@@ -211,6 +214,11 @@
 			// K-68 (directory split), step 3a: the registry and the tenant directory object.
 			"tag": "v8",
 			"new_sqlite_classes": ["DirectoryRegistryDO", "TenantDirectoryDO"]
+		},
+		{
+			// K-69, step 4.2 (#3376): the per-connection connector sweep.
+			"tag": "v9",
+			"new_sqlite_classes": ["ConnectionSweepDO"]
 		}
 	],
 	// Pushed verticals are reached through the WfP dispatch namespace, not static
@@ -407,7 +415,8 @@
 					{ "name": "PERSONA_ISSUER", "class_name": "PersonaIssuerDO" },
 					{ "name": "PLATFORM_DRAIN_KICK", "class_name": "PlatformDrainKickDO" },
 					{ "name": "DIRECTORY_REGISTRY", "class_name": "DirectoryRegistryDO" },
-					{ "name": "TENANT_DIRECTORY", "class_name": "TenantDirectoryDO" }
+					{ "name": "TENANT_DIRECTORY", "class_name": "TenantDirectoryDO" },
+					{ "name": "CONNECTION_SWEEP", "class_name": "ConnectionSweepDO" }
 				]
 			},
 			"migrations": [
@@ -418,7 +427,8 @@
 				{ "tag": "v5", "new_sqlite_classes": ["ReviewJobDO"] },
 				{ "tag": "v6", "new_sqlite_classes": ["PersonaIssuerDO"] },
 				{ "tag": "v7", "new_sqlite_classes": ["PlatformDrainKickDO"] },
-				{ "tag": "v8", "new_sqlite_classes": ["DirectoryRegistryDO", "TenantDirectoryDO"] }
+				{ "tag": "v8", "new_sqlite_classes": ["DirectoryRegistryDO", "TenantDirectoryDO"] },
+				{ "tag": "v9", "new_sqlite_classes": ["ConnectionSweepDO"] }
 			],
 			// Own dispatch namespace — a test control plane must never push verticals
 			// into prod's `substrat-verticals`. Create: wrangler dispatch-namespace create substrat-verticals-test

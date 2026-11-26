@@ -205,3 +205,36 @@ describe('a pass that leaves the connector sweep to its caller (#3324)', () => {
     expect(report.connectionsSwept).toBe(0);
   });
 });
+
+describe('a sweep of the connections it is handed (K-69, step 4.2)', () => {
+  it('lists nothing, and says when a waited-out connection is worth trying again', async () => {
+    // The poll interval is judged against the real clock, so this world starts at it.
+    const clock = { now: Date.now() };
+    const crashed = cid();
+    const polled = cid();
+    const w = world({ [crashed]: 'acme', [polled]: 'hourly' }, clock);
+    let listed = 0;
+    const host = { admin: { ...w.host.admin, listConnections: async () => { listed += 1; return []; } } } as unknown as ScopeHost;
+    const connection = (id: string, provider: string) => ({ id, provider, tenantId: T, vertical: 'v', revokedAt: null }) as never;
+    const swept: string[] = [];
+    const next = new Map<string, number>();
+    const opts = options(w, clock, { acme: async (_h, id) => void swept.push(id), hourly: async (_h, id) => void swept.push(id) }, {
+      sweepEveryMinutes: { hourly: 60 },
+      connections: [connection(crashed, 'acme'), connection(polled, 'hourly')],
+      onNextAttempt: (id, at) => void next.set(id, at),
+    });
+    diedIn(w, crashed);
+    await runConnectorSweep(host, opts);
+    expect(listed).toBe(0);
+    // Swept: not reported. Backing off: reported at the back-off's end, 30 minutes ±20% on.
+    expect(swept).toEqual([polled]);
+    expect(next.get(crashed)! - clock.now).toBeGreaterThanOrEqual(24 * MIN);
+    expect(next.get(crashed)! - clock.now).toBeLessThanOrEqual(36 * MIN);
+    expect(next.has(polled)).toBe(false);
+    // At once again, the hourly provider is inside its interval: reported at its end.
+    const polledAt = Date.parse(w.ledger.find((r) => r.kind === 'connector' && r.unit === polled)!.at);
+    await runConnectorSweep(host, opts);
+    expect(next.get(polled)).toBe(polledAt + 60 * MIN);
+    expect(swept).toEqual([polled]);
+  });
+});

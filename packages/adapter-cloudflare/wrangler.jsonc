@@ -72,6 +72,9 @@
       { "name": "KICK_SLOW", "class_name": "KickSlowDO" },
       // #3365: the coalescer that runs every pass from its alarm, and again while one says `more`.
       { "name": "KICK_ALARM", "class_name": "KickAlarmDO" },
+      // K-69, step 4.2: a connection's own sweep object, owned and handed back.
+      { "name": "CONNECTION_SWEEP_TEST", "class_name": "ConnectionSweepTestDO" },
+      { "name": "CONNECTION_SWEEP_UNOWNED", "class_name": "ConnectionSweepUnownedDO" },
       // #2450 step 2: the background copy's job object, over a step the test controls.
       { "name": "COPY_JOB_TEST", "class_name": "CopyJobTestDO" },
       { "name": "COPY_JOB_SHORT", "class_name": "CopyJobShortDO" },
@@ -220,6 +223,10 @@
     {
       "tag": "v27",
       "new_sqlite_classes": ["WakeScopeDO"]
+    },
+    {
+      "tag": "v28",
+      "new_sqlite_classes": ["ConnectionSweepTestDO", "ConnectionSweepUnownedDO"]
     }
   ],
   // #3395: the routing read model's namespace, seen by RoutesControlPlaneDO alone (as `ROUTES`).
