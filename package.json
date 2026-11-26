@@ -67,6 +67,7 @@
     "lake:check": "node scripts/lake-provision.mjs --dry-run",
     "lake:check:directory": "node scripts/lake-provision.mjs --dry-run --lake directory",
     "lake:redrain": "node scripts/lake-redrain.mjs",
+    "lake:smoke": "node scripts/lake-sql-smoke.mjs",
     "preview:repair-pins": "node scripts/repair-preview-pins.mjs",
     "scopes:mark-copies": "node scripts/mark-copies.mjs",
     "todo-demo": "pnpm --filter @substrat-run/demo-todo",

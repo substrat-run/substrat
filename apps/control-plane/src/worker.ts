@@ -592,16 +592,16 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   DIRECTORY_LAKE_PRUNE?: string;
   /**
-   * Reads the Tier-2 lake with R2 SQL (#1334), pushed by `scripts/secrets.mjs`. Provisioned as
-   * an R2 "Admin Read only" token scoped to the lake bucket; whether that permission set is
-   * enough for R2 SQL is part of the smoke test that turns the gateway on (`r2-sql-engine.ts`).
-   * The catalog's write token never reaches a worker.
+   * Reads the Tier-2 lake with R2 SQL (#1334), pushed by `scripts/secrets.mjs`. Minted by
+   * `scripts/env-provision.mjs` with read groups only, scoped to the lake bucket; that they are
+   * enough is what `pnpm lake:smoke` checks. The catalog's write token never reaches a worker.
    */
   R2_SQL_TOKEN?: string;
   /**
-   * The lake's bucket — `LAKE.bucket` in `scripts/lake-provision.mjs`. Deliberately NOT a
-   * checked-in var yet: the R2 SQL client has not been run against the real lake, so the
-   * gateway stays off (its route 501s) until an operator has smoke-tested it and sets this.
+   * The lake's bucket — `bucket` in `scripts/lake/lakes.mjs`. Deliberately NOT a checked-in var
+   * yet: the R2 SQL client has not been run against the real lake, so the engine stays off (the
+   * events gateway 501s, directory history reads stay off) until a person has run
+   * `pnpm lake:smoke` and a reviewed PR sets it in prod's vars (`secrets/README.md`).
    */
   LAKE_BUCKET?: string;
   /** Shared secret a connected vertical presents (x-service-token) to register. */

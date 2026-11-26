@@ -227,7 +227,7 @@ spells each out. The short version:
 | Credential | Permission | Who holds it |
 |---|---|---|
 | catalog | R2 **Admin Read & Write**, scoped to the lake bucket | Cloudflare Pipelines, in the pipeline config |
-| query | R2 **Admin Read only**, same bucket | control-plane, as `R2_SQL_TOKEN` |
+| query | **Workers R2 SQL Read** + **Data Catalog Read** + **Storage Bucket Item Read**, same bucket | control-plane, as `R2_SQL_TOKEN` |
 | send | **Workers Pipeline Send** | only a sender outside Workers |
 
 Two traps worth knowing before debugging one:
@@ -237,8 +237,25 @@ Two traps worth knowing before debugging one:
   first catalog commit — a setup that looks complete and a failure that arrives later.
 - **Catalog-vended R2 credentials inherit the token's storage permission.** A token with
   read-only catalog access but read-write storage access can still write objects. So the
-  reader is `Admin Read only`, which is read-only on both halves, rather than a
-  hand-assembled policy that is only half narrowed.
+  reader's three groups are all read groups, on both halves (`LAKE_TOKENS` in
+  `scripts/env-provision.mjs`, which mints it).
+
+**Turning lake queries on.** The token alone does not do it. The control plane builds its R2 SQL
+client only when its `LAKE_BUCKET` var is set too, and that var is deliberately absent from prod's
+`apps/control-plane/wrangler.jsonc` until a person has run the client against the real lake:
+
+```bash
+pnpm --filter @substrat-run/control-plane-api build
+pnpm lake:smoke                # every query shape the control plane compiles, matching no row
+pnpm lake:smoke --sample       # also the newest row of each directory data set, decoded (counts and types only)
+```
+
+When every line is ✓, a reviewed PR adds `"LAKE_BUCKET": "substrat-lake"` to prod's vars. Its
+release switches on both of the engine's readers: the staff events gateway
+(`GET /tenants/:id/lake/events`, 501 until then) and the directory's history reads (K-70), which
+still read nothing from the lake until `DIRECTORY_LAKE_READS` is `compare` or `on`. Reverting the
+PR switches both off again. A failing check names R2 SQL's own error: a permission missing from
+the token, a query shape it does not accept, or a table with nothing in it yet.
 
 `scripts/lake-provision.mjs` is where the lake's shape is declared — bucket, namespace,
 table, compression, rolling policy, and the pipeline SQL. It speaks to the Pipelines and
