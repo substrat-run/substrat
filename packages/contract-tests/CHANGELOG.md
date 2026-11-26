@@ -1,5 +1,18 @@
 # @substrat-run/contract-tests
 
+## 0.213.0
+
+### Minor Changes
+
+- 86b1995: K-68 (directory split), step 3a: the directory registry and per-tenant directory object classes, created empty beside the existing directory, with the intent-first crossing helper (`runCrossing`), its one-database seam (`SqliteScopeHost.directoryObjects()`) and the crossing contract suite. Nothing routes traffic to them yet.
+
+### Patch Changes
+
+- Updated dependencies [b6ac54e]
+- Updated dependencies [86b1995]
+  - @substrat-run/contracts@0.213.0
+  - @substrat-run/kernel@0.213.0
+
 ## 0.212.0
 
 ### Minor Changes

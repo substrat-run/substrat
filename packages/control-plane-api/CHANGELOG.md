@@ -1,5 +1,19 @@
 # @substrat-run/control-plane-api
 
+## 0.213.0
+
+### Minor Changes
+
+- b6ac54e: The directory can prune a captured data set to its 35-day window once the lake provably holds the rows (K-70), behind a switch that is off by default and only for data sets whose history is read from the lake.
+
+### Patch Changes
+
+- Updated dependencies [b6ac54e]
+- Updated dependencies [86b1995]
+  - @substrat-run/contracts@0.213.0
+  - @substrat-run/kernel@0.213.0
+  - @substrat-run/control-plane-client@0.9.13
+
 ## 0.212.0
 
 ### Minor Changes
