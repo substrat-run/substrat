@@ -21,6 +21,6 @@ import { handlePeerCall, type Env, type PeerCallOutcome } from './worker.js';
  */
 export class PeerCalls extends WorkerEntrypoint<Env> {
   invoke(caller: unknown, request: unknown, context?: unknown): Promise<PeerCallOutcome> {
-    return handlePeerCall(this.env, caller, request, context);
+    return handlePeerCall(this.env, caller, request, context, this.ctx);
   }
 }

@@ -10,6 +10,7 @@
   "include": ["src", "test"],
   // #2254's fixture workers import the router's and the kernel's source across this rootDir,
   // which tsc refuses here; vitest bundles them. Out until they import through packages.
-  // store-fence.model.test.ts does too, and tsconfig.store-entry.json typechecks it.
-  "exclude": ["test/store-hop-entry.ts", "test/store-fence.model.test.ts"]
+  // store-fence.model.test.ts does too, and tsconfig.store-entry.json typechecks it. So does the
+  // peer-hop probe's router (#3395 follow-up), which bundles the adapter's directory object.
+  "exclude": ["test/store-hop-entry.ts", "test/store-fence.model.test.ts", "test/peer-hop-entry.ts"]
 }

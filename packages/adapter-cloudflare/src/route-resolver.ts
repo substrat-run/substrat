@@ -9,8 +9,11 @@ import {
   type RouteTarget,
 } from '@substrat-run/contracts';
 import {
+  readModelPeerCallRead,
+  readModelPeerCallReader,
   readModelRouteRead,
   readModelRouteReader,
+  type PeerCallKey,
   type RouteKvReader,
   type RouteMemoryCache,
 } from './route-read-model.js';
@@ -21,8 +24,12 @@ export {
   ROUTE_MEMORY_TTL_MS,
   ROUTE_NEGATIVE_TTL_MS,
   assembleRouteRow,
+  assemblePeerCallRow,
+  peerCallKvKey,
   routeKvKey,
   servingPolicyKvKey,
+  type PeerCallEntry,
+  type PeerCallKey,
   type RefusedRouteEntry,
   type RouteEntry,
   type RouteKvReader,
@@ -270,11 +277,16 @@ export function createReadModelRouteResolver(opts: ReadModelResolverOptions): Ro
 
 /** The one method the peer resolver needs from the control-plane DO. */
 interface PeerCallReader {
+  /**
+   * `publish` (#3395 follow-up) asks the directory to publish a dispatchable answer to the read
+   * model. A directory that predates it ignores the argument and answers the same row.
+   */
   peerCallTarget(
     tenantId: string,
     callerScopeId: string,
     callerVertical: string,
     vertical: string,
+    opts?: { publish?: boolean },
   ): Promise<PeerCallTargetRowLike>;
 }
 
@@ -330,8 +342,36 @@ const jsonList = (raw: string | null | undefined): string[] | null => {
 };
 
 /**
- * Decide ONE peer call, over the directory (#1706). Pure but for the single read, so the
- * order of the gates is readable in one place — and each is a refusal a test can name:
+ * How the router reads peer-call answers (#3395 follow-up, K-72): its own switch, `PEER_READ_MODEL`,
+ * with the same three modes as routes. Off reads the directory on every call, as before.
+ */
+export interface PeerReadModelOptions {
+  kv: RouteKvReader;
+  /** Module-scope, shared across requests: it holds plain data only. */
+  cache: RouteMemoryCache;
+  mode: Exclude<RouteReadModelMode, 'off'>;
+  /** `compare` runs its read model half here, off the call's path. */
+  waitUntil?: (promise: Promise<unknown>) => void;
+  /** `compare`'s report of a disagreement. Defaults to one JSON log line. */
+  report?: (comparison: PeerReadModelComparison) => void;
+  now?: () => number;
+}
+
+/** One peer comparison's outcome, as `compare` logs it: the two DECISIONS, not the rows. */
+export interface PeerReadModelComparison {
+  key: PeerCallKey;
+  outcome: 'mismatch' | 'miss' | 'error';
+  directory: PeerCallDecision;
+  readModel: PeerCallDecision | undefined;
+}
+
+const logPeerComparison = (c: PeerReadModelComparison): void => {
+  console.log(JSON.stringify({ router: 'peer-read-model', ...c }));
+};
+
+/**
+ * Decide ONE peer call (#1706). Pure but for the single read, so the order of the gates is
+ * readable in one place — and each is a refusal a test can name:
  *
  * 1. **The depth**, first: a chain already at the bound is refused before any read, so a loop
  *    costs one dispatch rather than a directory round trip per hop.
@@ -344,10 +384,25 @@ const jsonList = (raw: string | null | undefined): string[] | null => {
  * 5. **The target resolves** to exactly one live primary instance in the SAME tenant, by the
  *    kernel's one rule. Never guessed when a tenant runs two.
  * 6. **The target has a script to dispatch.**
+ *
+ * Gates 1 and 2 read only the dispatch parameters. Gates 3 to 6 read the directory's answer, which
+ * with `readModel` may come from the routing read model (#3395 follow-up): there it is the
+ * directory's own answer as published, at most about four minutes old (K-72's split), and only an
+ * answer that dispatches is ever published — every refusal is the directory's, read at the call.
+ * Gates 1 and 2 never read the read model. What the peer may then DO is the target's door (#1714).
  */
 export function createPeerCallResolver(
   controlPlane: DurableObjectNamespace,
+  readModel?: PeerReadModelOptions,
 ): (caller: PeerCaller, target: string) => Promise<PeerCallDecision> {
+  // Per call, never held: a stub belongs to the request that created it (see above).
+  const directory = (publish: boolean) => (k: PeerCallKey): Promise<PeerCallTargetRowLike> => {
+    const cp = controlPlane.get(controlPlane.idFromName('control-plane')) as unknown as PeerCallReader;
+    return publish
+      ? cp.peerCallTarget(k.tenantId, k.callerScopeId, k.callerVertical, k.vertical, { publish: true })
+      : cp.peerCallTarget(k.tenantId, k.callerScopeId, k.callerVertical, k.vertical);
+  };
+  const read = peerCallRead(directory, readModel);
   return async (caller, target) => {
     if (caller.depth >= PEER_CALL_DEPTH_MAX) {
       return { outcome: 'refused', code: 'forbidden', message: callDepthMessage(caller.depth) };
@@ -359,74 +414,116 @@ export function createPeerCallResolver(
         message: undeclaredCallMessage(caller.vertical, target),
       };
     }
-    // Per request, never held: a stub belongs to the request that created it (see above).
-    const cp = controlPlane.get(controlPlane.idFromName('control-plane')) as unknown as PeerCallReader;
-    const row = await cp.peerCallTarget(caller.tenantId, caller.scopeId, caller.vertical, target);
-    if (row.caller.state === 'unknown') {
-      return {
-        outcome: 'refused',
-        code: 'forbidden',
-        message: `scope ${caller.scopeId} is not an instance of '${caller.vertical}' in this tenant`,
-      };
-    }
-    if (row.caller.state === 'not-primary') {
-      return { outcome: 'refused', code: 'forbidden', message: previewCallerMessage(caller.vertical) };
-    }
-    if (row.caller.state === 'inactive') {
-      return {
-        outcome: 'refused',
-        code: 'forbidden',
-        message:
-          `'${caller.vertical}' may not call other verticals from a ${row.caller.status ?? 'non-active'} ` +
-          'scope — only a live primary instance acts as its vertical',
-      };
-    }
-    // Ambiguity first: an ambiguous answer carries no target either, so testing for a missing
-    // target before the count would report "not installed" for a tenant that runs two.
-    if (row.outcome === 'ambiguous') {
-      return {
-        outcome: 'refused',
-        code: 'conflict',
-        message:
-          `this tenant runs ${row.count} instances of '${target}' — a call cannot pick one; ` +
-          'bind the instance first',
-      };
-    }
-    if (row.outcome === 'bound-unavailable') {
-      return {
-        outcome: 'refused',
-        code: 'conflict',
-        message: `the bound instance of '${target}' is unavailable; rebind or clear this app's peer binding`,
-      };
-    }
-    if (row.outcome === 'not-installed' || !row.target) {
-      return {
-        outcome: 'refused',
-        code: 'not_found',
-        message: `vertical '${target}' is not installed in this tenant`,
-      };
-    }
-    // A pinned caller's bare slug resolves to itself (#2252); a peer call names ANOTHER vertical.
-    if (row.target.scope_id === caller.scopeId) {
-      return { outcome: 'refused', code: 'forbidden', message: `'${caller.vertical}' cannot peer-call itself` };
-    }
-    if (!row.target.deployment_ref) {
-      return {
-        outcome: 'refused',
-        code: 'unavailable',
-        message: `vertical '${target}' has no deployed version in this tenant`,
-      };
-    }
+    const key: PeerCallKey = { tenantId: caller.tenantId, callerScopeId: caller.scopeId, callerVertical: caller.vertical, vertical: target };
+    return read(key, (row) => peerCallDecisionOf(caller, target, row));
+  };
+}
+
+/** The single read behind gates 3 to 6, by mode. `decide` is the gates, so `compare` compares decisions. */
+function peerCallRead(
+  directory: (publish: boolean) => (k: PeerCallKey) => Promise<PeerCallTargetRowLike>,
+  opts: PeerReadModelOptions | undefined,
+): (key: PeerCallKey, decide: (row: PeerCallTargetRowLike) => PeerCallDecision) => Promise<PeerCallDecision> {
+  if (!opts) return async (key, decide) => decide(await directory(false)(key));
+  const base = { kv: opts.kv, cache: opts.cache, ...(opts.now ? { now: opts.now } : {}) };
+  if (opts.mode === 'on') {
+    const read = readModelPeerCallRead({ ...base, directory: directory(true) });
+    return async (key, decide) => decide((await read(key)).row);
+  }
+  // `compare`: the directory serves. Unlike a route, an answer is published only once a router asked
+  // for it, so this mode asks too — otherwise it would compare against an empty namespace forever.
+  const fromModel = readModelPeerCallReader(base);
+  const report = opts.report ?? logPeerComparison;
+  return async (key, decide) => {
+    const served = decide(await directory(true)(key));
+    const compare = (async () => {
+      let modelled: PeerCallTargetRowLike | 'miss';
+      try {
+        modelled = await fromModel(key);
+      } catch {
+        report({ key, outcome: 'error', directory: served, readModel: undefined });
+        return;
+      }
+      if (modelled === 'miss') {
+        // Only a dispatch is published, so a miss beside a refusal is the agreement.
+        if (served.outcome === 'dispatch') report({ key, outcome: 'miss', directory: served, readModel: undefined });
+        return;
+      }
+      const readModel = decide(modelled);
+      if (JSON.stringify(readModel) !== JSON.stringify(served)) report({ key, outcome: 'mismatch', directory: served, readModel });
+    })();
+    if (opts.waitUntil) opts.waitUntil(compare);
+    else await compare;
+    return served;
+  };
+}
+
+/** Gates 3 to 6 over the directory's answer (or the read model's copy of it). */
+function peerCallDecisionOf(caller: PeerCaller, target: string, row: PeerCallTargetRowLike): PeerCallDecision {
+  if (row.caller.state === 'unknown') {
     return {
-      outcome: 'dispatch',
-      tenantId: row.target.tenant_id,
-      scopeId: row.target.scope_id,
-      vertical: row.target.vertical ?? target,
-      callerTenantSlug: row.caller.tenantSlug ?? null,
-      deploymentRef: row.target.deployment_ref,
-      outboundHosts: jsonList(row.target.outbound_json),
-      calls: jsonList(row.target.calls_json),
-      depth: caller.depth + 1,
+      outcome: 'refused',
+      code: 'forbidden',
+      message: `scope ${caller.scopeId} is not an instance of '${caller.vertical}' in this tenant`,
     };
+  }
+  if (row.caller.state === 'not-primary') {
+    return { outcome: 'refused', code: 'forbidden', message: previewCallerMessage(caller.vertical) };
+  }
+  if (row.caller.state === 'inactive') {
+    return {
+      outcome: 'refused',
+      code: 'forbidden',
+      message:
+        `'${caller.vertical}' may not call other verticals from a ${row.caller.status ?? 'non-active'} ` +
+        'scope — only a live primary instance acts as its vertical',
+    };
+  }
+  // Ambiguity first: an ambiguous answer carries no target either, so testing for a missing
+  // target before the count would report "not installed" for a tenant that runs two.
+  if (row.outcome === 'ambiguous') {
+    return {
+      outcome: 'refused',
+      code: 'conflict',
+      message:
+        `this tenant runs ${row.count} instances of '${target}' — a call cannot pick one; ` +
+        'bind the instance first',
+    };
+  }
+  if (row.outcome === 'bound-unavailable') {
+    return {
+      outcome: 'refused',
+      code: 'conflict',
+      message: `the bound instance of '${target}' is unavailable; rebind or clear this app's peer binding`,
+    };
+  }
+  if (row.outcome === 'not-installed' || !row.target) {
+    return {
+      outcome: 'refused',
+      code: 'not_found',
+      message: `vertical '${target}' is not installed in this tenant`,
+    };
+  }
+  // A pinned caller's bare slug resolves to itself (#2252); a peer call names ANOTHER vertical.
+  if (row.target.scope_id === caller.scopeId) {
+    return { outcome: 'refused', code: 'forbidden', message: `'${caller.vertical}' cannot peer-call itself` };
+  }
+  if (!row.target.deployment_ref) {
+    return {
+      outcome: 'refused',
+      code: 'unavailable',
+      message: `vertical '${target}' has no deployed version in this tenant`,
+    };
+  }
+  return {
+    outcome: 'dispatch',
+    tenantId: row.target.tenant_id,
+    scopeId: row.target.scope_id,
+    vertical: row.target.vertical ?? target,
+    callerTenantSlug: row.caller.tenantSlug ?? null,
+    deploymentRef: row.target.deployment_ref,
+    outboundHosts: jsonList(row.target.outbound_json),
+    calls: jsonList(row.target.calls_json),
+    depth: caller.depth + 1,
   };
 }

@@ -27,6 +27,11 @@
 // Turn it on only after the control plane publishes to the ROUTES namespace below and the
 // backfill has run (scripts/route-read-model-backfill.mjs).
 //
+// Optional (#3395 follow-up): how peer-call answers are read, on the same three values and off
+// unless set. Its own secret, so turning routes on never moves peer calls:
+//   wrangler secret put PEER_READ_MODEL         # `compare` (logs `router: 'peer-read-model'`), then `on`
+// No backfill: an answer is published the first time a router asks for it, in either mode.
+//
 // Then bind hostnames with `HostAdmin.bindHostname` (console, or the control-plane
 // API) and set them `active`. Until a hostname is bound and active, the router
 // answers 404 — a name it does not know is a name it will not serve.

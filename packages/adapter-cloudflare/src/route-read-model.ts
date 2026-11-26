@@ -22,7 +22,7 @@
  * This file is the router's half and depends on contracts alone, like the rest of the routing
  * entry. The control plane's half (what writes the entries) is `route-read-model-publisher.ts`.
  */
-import type { RouteRowLike } from './route-resolver.js';
+import type { PeerCallTargetRowLike, RouteRowLike } from './route-resolver.js';
 
 /** Bumped when an entry's shape changes incompatibly: a reader never meets an entry it cannot read. */
 export const ROUTE_READ_MODEL_VERSION = 1;
@@ -32,6 +32,26 @@ const PREFIX = `route/v${ROUTE_READ_MODEL_VERSION}/`;
 export const routeKvKey = (hostname: string): string => `${PREFIX}h/${hostname}`;
 /** The KV key of a vertical's serving policy. A slug may itself hold a `/` (`<tenant>/<slug>`). */
 export const servingPolicyKvKey = (slug: string): string => `${PREFIX}v/${slug}`;
+
+/** The four facts a peer-call answer is keyed by, as the router has them from the dispatch. */
+export interface PeerCallKey {
+  tenantId: string;
+  callerScopeId: string;
+  /** The caller's vertical as the dispatch named it: the answer is computed for this spelling. */
+  callerVertical: string;
+  /** The target as the call names it. */
+  vertical: string;
+}
+
+/**
+ * `<tenant>/<caller scope>/<caller vertical>/<target>`. A vertical may hold a `/` (`<tenant>/<slug>`),
+ * so the two names are percent-encoded; ids never need it. The tenant comes first, so every answer
+ * of one tenant is one key range: what the publisher's triggers re-dirty when the tenant changes.
+ */
+export const peerCallKeyPart = (k: PeerCallKey): string =>
+  `${k.tenantId}/${k.callerScopeId}/${encodeURIComponent(k.callerVertical)}/${encodeURIComponent(k.vertical)}`;
+/** The KV key of one peer-call answer (#3395 follow-up). */
+export const peerCallKvKey = (k: PeerCallKey): string => `${PREFIX}c/${peerCallKeyPart(k)}`;
 
 /** A version's dispatch parameters, as JSON text from its manifest (null = not declared). */
 export interface PolicyFields {
@@ -85,6 +105,33 @@ export interface RouteEntry {
     | { kind: 'none' };
 }
 
+/**
+ * `c/<tenant>/<caller scope>/<caller vertical>/<target>`: a peer call the directory would DISPATCH
+ * (#1706). Only that answer is published. Every refusal — a caller not live, not primary or not
+ * that vertical, a target not installed, ambiguous, bound to a gone instance, undeployed, or the
+ * caller itself — has no entry, so the directory answers it, and a suspension lifted or a target
+ * installed is never held up by a refusal cached at the edge.
+ *
+ * The target's dispatch is split like a route's: on a stable serving script its outbound hosts and
+ * calls are its vertical's serving policy (`v/<vertical>`), so a promote moves no peer entry; on its
+ * own version's script they ride inline.
+ */
+export interface PeerCallEntry {
+  v: typeof ROUTE_READ_MODEL_VERSION;
+  peer: true;
+  /** The directory's slug for the caller's tenant (#2252). */
+  caller_tenant_slug: string | null;
+  target: {
+    scope_id: string;
+    tenant_id: string;
+    /** Its REGISTERED vertical: the name the target runs under, and whose serving policy it takes. */
+    vertical: string;
+    dispatch:
+      | { kind: 'serving'; ref: string }
+      | { kind: 'version'; ref: string; outbound_json: string | null; calls_json: string | null };
+  };
+}
+
 const NULL_POLICY: PolicyFields = { outbound_json: null, calls_json: null, scope_stores_json: null };
 
 /**
@@ -132,6 +179,58 @@ export function assembleRouteRow(
     scope_hostnames: route.scope_hostnames,
   };
 }
+
+/**
+ * A peer-call entry and, for a serving target, its vertical's serving policy → the answer the
+ * directory's `peerCallTarget` would have given. `undefined` when the policy is needed and absent.
+ */
+export function assemblePeerCallRow(
+  entry: PeerCallEntry,
+  serving: ServingPolicyEntry | null | undefined,
+): PeerCallTargetRowLike | undefined {
+  const d = entry.target.dispatch;
+  let policy: { outbound_json: string | null; calls_json: string | null };
+  if (d.kind === 'serving') {
+    if (!serving) return undefined;
+    // `peerCallTarget`: a serving target dispatches under its vertical's serving version.
+    policy = { outbound_json: serving.outbound_json, calls_json: serving.calls_json };
+  } else {
+    policy = { outbound_json: d.outbound_json, calls_json: d.calls_json };
+  }
+  return {
+    caller: { state: 'ok', status: 'active', tenantSlug: entry.caller_tenant_slug },
+    outcome: 'resolved',
+    count: 0,
+    target: {
+      scope_id: entry.target.scope_id,
+      tenant_id: entry.target.tenant_id,
+      vertical: entry.target.vertical,
+      deployment_ref: d.ref,
+      ...policy,
+    },
+  };
+}
+
+export function isPeerCallEntry(value: unknown): value is PeerCallEntry {
+  if (typeof value !== 'object' || value === null) return false;
+  const e = value as Partial<PeerCallEntry>;
+  const t = e.target;
+  return (
+    e.v === ROUTE_READ_MODEL_VERSION &&
+    e.peer === true &&
+    typeof t === 'object' && t !== null &&
+    typeof t.scope_id === 'string' &&
+    typeof t.tenant_id === 'string' &&
+    typeof t.vertical === 'string' &&
+    typeof t.dispatch === 'object' && t.dispatch !== null &&
+    typeof t.dispatch.ref === 'string' &&
+    (t.dispatch.kind === 'serving' || t.dispatch.kind === 'version')
+  );
+}
+
+/** Whether a directory answer dispatches: kept in memory as long as a route, a refusal as briefly as a miss. */
+const peerRowDispatches = (row: PeerCallTargetRowLike): boolean =>
+  row.caller.state === 'ok' && row.outcome === 'resolved' && row.target !== null && !!row.target.deployment_ref;
 
 /** Structural checks only: an entry this code cannot read is a miss, never a wrong route. */
 export function isRouteEntry(value: unknown): value is RouteEntry {
@@ -305,6 +404,75 @@ export function readModelRouteRead(
       answerKey(hostname),
       row ?? null,
       at + (row ? (opts.memoryTtlMs ?? ROUTE_MEMORY_TTL_MS) : (opts.negativeTtlMs ?? ROUTE_NEGATIVE_TTL_MS)),
+    );
+    return { row, source: 'directory' };
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The router's peer-call read: memory → KV → the directory (#3395 follow-up)
+// ---------------------------------------------------------------------------
+
+/**
+ * The read model's answer for one peer call, from memory or KV alone: the directory's row, or
+ * `'miss'` when only the directory can answer — which is every refusal, since none is published.
+ */
+export function readModelPeerCallReader(opts: ReadModelRouteReaderOptions) {
+  const now = opts.now ?? Date.now;
+  const ttl = opts.memoryTtlMs ?? ROUTE_MEMORY_TTL_MS;
+  const cacheTtl = opts.kvCacheTtlSeconds ?? ROUTE_KV_CACHE_TTL_S;
+  const entry = async (key: string): Promise<unknown> => {
+    const at = now();
+    const hit = opts.cache.get(key, at);
+    if (hit) return hit.value;
+    const value = (await opts.kv.get(key, { type: 'json', cacheTtl })) ?? null;
+    if (value !== null) opts.cache.set(key, value, at + ttl);
+    return value;
+  };
+  return async (key: PeerCallKey): Promise<PeerCallTargetRowLike | 'miss'> => {
+    const found = await entry(peerCallKvKey(key));
+    if (!isPeerCallEntry(found)) return 'miss';
+    let serving: ServingPolicyEntry | undefined;
+    if (found.target.dispatch.kind === 'serving') {
+      const policy = await entry(servingPolicyKvKey(found.target.vertical));
+      if (!isServingPolicyEntry(policy)) return 'miss';
+      serving = policy;
+    }
+    return assemblePeerCallRow(found, serving) ?? 'miss';
+  };
+}
+
+/** The control-plane directory's peer-call read, as the resolver falls back to it. */
+export type DirectoryPeerCallRead = (key: PeerCallKey) => Promise<PeerCallTargetRowLike>;
+
+/**
+ * Memory → KV → the directory, for one peer call. The directory answers every miss and every
+ * refusal; its answer is kept in memory as `readModelRouteRead` keeps a route's (a dispatch as long
+ * as a route, a refusal as long as a negative answer), so a caller retrying a refused call in a loop
+ * asks the directory once per isolate per `negativeTtlMs`.
+ */
+export function readModelPeerCallRead(
+  opts: ReadModelRouteReaderOptions & { directory: DirectoryPeerCallRead },
+): (key: PeerCallKey) => Promise<{ row: PeerCallTargetRowLike; source: RouteReadSource }> {
+  const now = opts.now ?? Date.now;
+  const fromModel = readModelPeerCallReader(opts);
+  return async (key) => {
+    const answerKey = `answer:${peerCallKvKey(key)}`;
+    const remembered = opts.cache.get(answerKey, now());
+    if (remembered) return { row: remembered.value as PeerCallTargetRowLike, source: 'memory' };
+    let modelled: PeerCallTargetRowLike | 'miss';
+    try {
+      modelled = await fromModel(key);
+    } catch {
+      modelled = 'miss'; // KV unavailable is a slower call, never a refused one.
+    }
+    if (modelled !== 'miss') return { row: modelled, source: 'kv' };
+    const row = await opts.directory(key);
+    const at = now();
+    opts.cache.set(
+      answerKey,
+      row,
+      at + (peerRowDispatches(row) ? (opts.memoryTtlMs ?? ROUTE_MEMORY_TTL_MS) : (opts.negativeTtlMs ?? ROUTE_NEGATIVE_TTL_MS)),
     );
     return { row, source: 'directory' };
   };
