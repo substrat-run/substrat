@@ -1,5 +1,30 @@
 # @substrat-run/control-plane
 
+## 0.19.14
+
+### Patch Changes
+
+- 7506838: The directory gets an outbox to the lake for its own logs and meters (K-70): capture per data set, off by default, written in the same transaction as each row, drained by the scheduled pass, and a dry-run-first backfill of the rows it already holds.
+- f7dae19: The admin log and a tenant's export can read history before the directory's 35-day window from the lake (K-70), behind a switch that is off by default and has a compare mode; a staff read of the lake's directory table is recorded in the access log.
+- 4b60af0: The control plane binds the directory lake's stream (K-70), so the directory's outbox can ship once its capture is switched on.
+- Updated dependencies [7506838]
+- Updated dependencies [f7dae19]
+  - @substrat-run/kernel@0.212.0
+  - @substrat-run/contracts@0.212.0
+  - @substrat-run/adapter-cloudflare@0.212.0
+  - @substrat-run/control-plane-api@0.212.0
+  - @substrat-run/connector-bolagsverket@0.1.8
+  - @substrat-run/connector-fortnox@0.9.4
+  - @substrat-run/connector-mail-in@0.1.49
+  - @substrat-run/connector-microsoft365@0.0.73
+  - @substrat-run/connector-planima@0.2.109
+  - @substrat-run/connector-scrive@0.15.14
+  - @substrat-run/connector-shopify@0.0.8
+  - @substrat-run/connector-stripe@0.0.14
+  - @substrat-run/connector-woocommerce@0.0.18
+  - @substrat-run/vertical-host@0.212.0
+  - @substrat-run/model-providers@0.5.102
+
 ## 0.19.13
 
 ### Patch Changes
