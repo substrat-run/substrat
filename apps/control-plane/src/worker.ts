@@ -54,7 +54,7 @@ import {
   type StoreDriverRegistration,
   mailInRelayRequest,
 } from '@substrat-run/contracts';
-import type { ManifestImports, PlatformActorId, Scope, Tenant, TenantId, ScopeId } from '@substrat-run/contracts';
+import type { Connection, ManifestImports, PlatformActorId, Scope, Tenant, TenantId, ScopeId } from '@substrat-run/contracts';
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
 import {
   runPlatformSweep,
@@ -96,6 +96,7 @@ import {
   createR2BlobStores,
   defineScopeDO,
   defineKickCoalescerDO,
+  defineConnectionSweepDO,
   kickCoalescerName,
   type KickCoalescerDo,
   type KickOutcome,
@@ -280,6 +281,7 @@ import {
   type ConnectorEnv,
 } from './connectors.js';
 import { verticalConnectorBinderFor, verticalConnectorDepsFor, type ConnectorCallsBinding } from './vertical-connectors.js';
+import { checkConnectionSweeps, connectorSweepOwnerOf, sweepOwnConnection } from './connection-sweep.js';
 import {
   SCOPE_WAKE_CHECK_GRACE_MS,
   SCOPE_WAKE_EVENT_BATCH,
@@ -359,6 +361,27 @@ export const PlatformDrainKickDO = defineKickCoalescerDO<Env>({
   },
   onError: (err) => console.error('platform drain kick: the drain failed; the sweep is the backstop', err),
 });
+
+/**
+ * K-69, step 4.2 (#3376): one object per connection, whose alarm runs that connection's sweep when
+ * `CONNECTOR_SWEEP_OWNER` is `connection` (`connection-sweep.ts`). The sweep is the pass's own
+ * `runConnectorSweep` over the one connection, with the pass's options, so the object holds no
+ * authority; it decides only when.
+ */
+export const ConnectionSweepDO = defineConnectionSweepDO<Env>({
+  owned: (env) => connectorSweepOwnerFor(env) === 'connection',
+  run: (env, connection) => {
+    const host = hostFor(env);
+    const writes = pendingWrites();
+    return sweepOwnConnection({ host, actor: SWEEP_ACTOR, options: connectorSweepOptionsFor(env, host, writes), settle: () => writes.settle() }, connection);
+  },
+  onError: (err) => console.error('connection sweep: the run failed; the next is armed at the interval', err),
+});
+
+/** K-69, step 4.2: who sweeps the connections here (`CONNECTOR_SWEEP_OWNER`). */
+function connectorSweepOwnerFor(env: Env) {
+  return connectorSweepOwnerOf(env.CONNECTOR_SWEEP_OWNER, Boolean(env.CONNECTION_SWEEP));
+}
 
 /**
  * K-69: what a scope's kick is answered — which phases the scope's own wake owns here
@@ -728,6 +751,12 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   SCOPE_WAKE_PHASES?: string;
   /**
+   * K-69, step 4.2 (#3376): who sweeps the connections (`connection-sweep.ts`). `connection` hands
+   * each connection's sweep to its own object (`CONNECTION_SWEEP`), and the pass only checks that
+   * each is armed. Unset, the default, or `pass`: the pass sweeps them as before.
+   */
+  CONNECTOR_SWEEP_OWNER?: string;
+  /**
    * #3316: the daily Cloudflare cost rollup. `on` reads each closed day of the account's billed
    * Workers and Durable Objects analytics into the directory, attributed through it; anything else
    * (the default) skips it. Opt-in per environment because the analytics are the ACCOUNT's: only
@@ -770,6 +799,8 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * `PlatformDrainKickDO`). Absent, a kick drains inline, as it did before.
    */
   PLATFORM_DRAIN_KICK?: DurableObjectNamespace;
+  /** K-69, step 4.2: one Durable Object per connection, whose alarm runs its sweep (`ConnectionSweepDO`). */
+  CONNECTION_SWEEP?: DurableObjectNamespace;
   /**
    * #1877: where closed blocks of log counts are kept — one object per deployed script.
    * Absent, every aggregate read counts its span live (and a long window can time out).
@@ -3164,6 +3195,53 @@ export function pausedConnectionsOf(value: string | undefined): ReadonlySet<stri
 }
 
 /**
+ * The connector sweep's options (#3324), one builder for the pass and for a connection's own object
+ * (K-69, step 4.2), so both sweep with the same sweepers, landings, recorders and pause. Ledger
+ * writes are tracked on `writes`, which the caller settles before it returns.
+ */
+function connectorSweepOptionsFor(env: Env, host: CloudflareScopeHost, writes: ReturnType<typeof pendingWrites>): ConnectorSweepOptions {
+  const recordSweepRun = (e: SweepRunInput) => writes.track(host.admin.recordSweepRun(e).catch(() => undefined));
+  const recordFailure = (entry: Omit<OpsFailureInput, 'actor'>) =>
+    writes.track(
+      host.admin.recordOpsFailure({ actor: SWEEP_ACTOR, ...entry }).catch((err: unknown) =>
+        console.error('sweep-failure record failed', { reference: entry.reference, error: err instanceof Error ? err.message : String(err) }),
+      ),
+    );
+  return {
+    actor: SWEEP_ACTOR,
+    // Sanctioned egress for the connector sweepers below.
+    fetch: globalFetch,
+    // #574: the platform runs the connector pass FOR dispatch verticals — they are
+    // CP-less and cannot reach the connection directory. The sweep enumerates THIS
+    // directory's connections, opens each with the coordinator-held secret box, polls
+    // the provider, and writes back through the vertical's /internal/connector-*
+    // surface (the host's connectorDelegation). A connection whose secret cannot be
+    // opened (no CONNECTION_SEAL_KEY) fails its sweep loudly: its row says so under a
+    // reference, and the text is staff's ledger row under it (`recordFailure` below).
+    sweepers: connectorSweepersFor(env),
+    // A vertical-defined provider (vertical-connectors.md §6.4) is swept, and bound below, by
+    // calling into its vertical: one call per bound scope, to that scope's own deployment.
+    sweeperFor: (c) => (isVerticalConnectorProvider(c.provider) ? verticalConnectorSweeper(verticalConnectorDepsFor(env, host, SWEEP_ACTOR), c) : undefined),
+    sweepEveryMinutes: connectorSweepEveryMinutesFor(),
+    // #2316: each live connection is granted and bound from the landings its vertical's running
+    // version declares, before it is swept — so a company approved through a connect link lands
+    // without anyone running `substrat connection bind`.
+    connectionLandings: {
+      read: (slug, versionId) => host.versionConnectionLandings(slug, versionId),
+      binders: connectionBindersFor(env),
+      binderFor: verticalConnectorBinderFor(env, host, SWEEP_ACTOR),
+    },
+    recordSweepRun,
+    recordFailure,
+    // #3324: awaited, unlike the row above: the attempt must be on record before the sweep can
+    // take the isolate down, or a sweep that does is run again on every pass. A rejected write
+    // holds that connection back a pass.
+    recordSweepAttempt: (e) => host.admin.recordSweepRun(e),
+    pausedConnections: pausedConnectionsOf(env.CONNECTOR_SWEEP_PAUSED),
+  };
+}
+
+/**
  * The scheduled pass's ledger writes, fired without waiting so a slow or failing write never holds
  * up or sinks the phase that made it, and settled before `scheduled` returns. A write still in
  * flight when the handler returns is dropped by the runtime. After #3324 moved the connector sweep
@@ -3288,38 +3366,7 @@ export default {
       // #3324: the connector sweep, run LAST in this pass (below), after every phase that keeps the
       // fleet moving. A connection's sweep downloads a third party's data through this isolate; when
       // one exhausted it, the reset took every phase after it, on every pass, for three days.
-      const connectorSweep: ConnectorSweepOptions = {
-        actor: SWEEP_ACTOR,
-        // Sanctioned egress for the connector sweepers below.
-        fetch: globalFetch,
-        // #574: the platform runs the connector pass FOR dispatch verticals — they are
-        // CP-less and cannot reach the connection directory. The sweep enumerates THIS
-        // directory's connections, opens each with the coordinator-held secret box, polls
-        // the provider, and writes back through the vertical's /internal/connector-*
-        // surface (the host's connectorDelegation). A connection whose secret cannot be
-        // opened (no CONNECTION_SEAL_KEY) fails its sweep loudly: its row says so under a
-        // reference, and the text is staff's ledger row under it (`recordFailure` below).
-        sweepers: connectorSweepersFor(env),
-        // A vertical-defined provider (vertical-connectors.md §6.4) is swept, and bound below, by
-        // calling into its vertical: one call per bound scope, to that scope's own deployment.
-        sweeperFor: (c) => (isVerticalConnectorProvider(c.provider) ? verticalConnectorSweeper(verticalConnectorDepsFor(env, host, SWEEP_ACTOR), c) : undefined),
-        sweepEveryMinutes: connectorSweepEveryMinutesFor(),
-        // #2316: each live connection is granted and bound from the landings its vertical's running
-        // version declares, before it is swept — so a company approved through a connect link lands
-        // without anyone running `substrat connection bind`.
-        connectionLandings: {
-          read: (slug, versionId) => host.versionConnectionLandings(slug, versionId),
-          binders: connectionBindersFor(env),
-          binderFor: verticalConnectorBinderFor(env, host, SWEEP_ACTOR),
-        },
-        recordSweepRun,
-        recordFailure,
-        // #3324: awaited, unlike the row above: the attempt must be on record before the sweep can
-        // take the isolate down, or a sweep that does is run again on every pass. A rejected write
-        // holds that connection back a pass.
-        recordSweepAttempt: (e) => host.admin.recordSweepRun(e),
-        pausedConnections: pausedConnectionsOf(env.CONNECTOR_SWEEP_PAUSED),
-      };
+      const connectorSweep = connectorSweepOptionsFor(env, host, writes);
       const report = await runPlatformSweep(host, {
         actor: SWEEP_ACTOR,
         fetch: globalFetch,
@@ -3703,9 +3750,19 @@ export default {
       // rows (`recordFailure`), so the next pass's digest carries them. Contained like the steps
       // above: loud, never sunk.
       try {
-        const connectors = await runConnectorSweep(host, connectorSweep);
-        if (connectors.errors.length > 0 || connectors.connectionsPaused > 0 || connectors.connectionsBackingOff > 0) {
-          console.log('connector-sweep', connectors);
+        // K-69, step 4.2: where each connection's own object sweeps it, the pass checks that each is
+        // armed, and sweeps only a connection whose object it could not reach.
+        let only: Connection[] | undefined;
+        if (connectorSweepOwnerFor(env) === 'connection') {
+          const { check, fallback } = await checkConnectionSweeps(env.CONNECTION_SWEEP!, await host.admin.listConnections(SWEEP_ACTOR, {}));
+          console.log('connector-wake-check', check);
+          only = fallback;
+        }
+        if (only === undefined || only.length > 0) {
+          const connectors = await runConnectorSweep(host, only ? { ...connectorSweep, connections: only } : connectorSweep);
+          if (connectors.errors.length > 0 || connectors.connectionsPaused > 0 || connectors.connectionsBackingOff > 0) {
+            console.log('connector-sweep', connectors);
+          }
         }
       } catch (err) {
         console.error('connector-sweep failed', err instanceof Error ? err.message : String(err));

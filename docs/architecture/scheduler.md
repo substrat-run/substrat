@@ -161,6 +161,37 @@ Running each connection's sweep in its own invocation (a queue message per conne
 connector script per provider, `docs/rfc/connector-scripts.md`) would bound one connection's memory
 on its own. It is not done here; the PR for #3324 sets out its cost.
 
+### 3.2.2 Each connection's own alarm (K-69, step 4.2; #3376)
+
+Behind a switch, the connector sweep stops being a phase of the pass. `CONNECTOR_SWEEP_OWNER` on
+the control plane says who sweeps: unset (the default) or `pass` is §3.2.1 as written;
+`connection` hands each connection to its own Durable Object (`ConnectionSweepDO`, one per
+connection, `apps/control-plane/src/connection-sweep.ts`).
+
+- **The object decides only when.** Its alarm runs the pass's own `runConnectorSweep` for its one
+  connection, with the pass's options. The attempt rows, the crash back-off, the per-connection
+  budget, the landings and `CONNECTOR_SWEEP_PAUSED` all hold unchanged.
+- **One connection's sweep is its own invocation.** A slow or failing one holds no other behind it,
+  and the pass no longer carries any provider's download.
+- **It re-arms by its own clock.** The next run is the provider's interval (`sweepEveryMinutes`,
+  else 15 minutes) after this one ends, or the time the sweep itself said is worth another try: a
+  crash back-off's end, or a poll interval's. A waited-out connection does not wake to be waited
+  out again.
+- **Nothing at rest (D-79).** A revoked or missing connection clears its object and arms nothing.
+  So does every object when the switch is turned off: each clears on its next wake without
+  sweeping, and the pass sweeps again. That is the revert.
+- **The pass checks.** It calls each live connection's object once (`ensure`), which arms the alarm
+  if nothing is armed and never sweeps. The `connector-wake-check` log line, on every checked pass,
+  counts `held` (armed, on time), `started` (nothing was armed, so the check armed it), `overdue`
+  (armed for more than an hour ago, so armed for now) and `fallback` (the object could not be
+  reached, so the pass swept that connection itself, as in §3.2.1). After the first pass, `started`
+  should stay at the number of new connections.
+- **First runs are spread** over five minutes by connection id, so the pass that hands every
+  connection over does not start every sweep in the same second.
+
+The pass still walks the connections in this phase. Replacing the walk with the safety net's query
+over a due index (rfc/tenant-scale.md §7.4) is the follow-up, once `started` has been watched.
+
 ### 3.3 The CP-less vertical's own timer (#461) — landed
 
 A **CP-less dispatch vertical** (scope-local-permissions.md §8 stage 3 — what `substrat push`

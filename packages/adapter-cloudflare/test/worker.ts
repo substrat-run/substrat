@@ -41,6 +41,7 @@ import { CloudflareScopeHost } from './test-host.js';
 import { definePlatformSweeperDO } from '../src/platform-sweeper-do.js';
 import { defineScopeSweeperDO } from '../src/scope-sweeper-do.js';
 import { defineKickCoalescerDO } from '../src/kick-coalescer-do.js';
+import { defineConnectionSweepDO } from '../src/connection-sweep-do.js';
 import { defineCopyJobDO, type CopyJobDoRecord, type CopyJobStep } from '../src/copy-job-do.js';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
 import { createReadModelRouteResolver, RouteMemoryCache } from '../src/route-resolver.js';
@@ -861,3 +862,36 @@ export const CopyJobTestDO = defineCopyJobDO<unknown, TestCopyJob>({ retainMs: 6
 export const CopyJobShortDO = defineCopyJobDO<unknown, TestCopyJob>({ retainMs: 30, advance: testCopyStep, threwRetryMs: () => 40 });
 /** The short wait after a step that threw, with the long retention: a retried job stays done for the test to read. */
 export const CopyJobRetryDO = defineCopyJobDO<unknown, TestCopyJob>({ retainMs: 60_000, advance: testCopyStep, threwRetryMs: () => 40 });
+
+// -- K-69, step 4.2: one object per connection, whose alarm runs its sweep (connection-sweep-do.test.ts) --
+
+/**
+ * A connection's object whose run records `run:<id>` and answers what the test wrote for it
+ * (`answer:<id>=gone|throw|notBefore:<ms>`, the last one written wins; none, a plain run). Long
+ * delays, so the runtime never fires an alarm on its own and a test drives each with
+ * `runDurableObjectAlarm`.
+ */
+const connectionSweepRun = async (env: KickEnv, connection: { id: string }) => {
+  const log = kickLog(env) as unknown as { record(l: string): Promise<void>; lines(): Promise<string[]> };
+  await log.record(`run:${connection.id}`);
+  const answer = (await log.lines()).filter((l) => l.startsWith(`answer:${connection.id}=`)).at(-1)?.split('=')[1];
+  if (answer === 'throw') throw new Error('the sweep failed');
+  if (answer === 'gone') return { gone: true };
+  if (answer?.startsWith('notBefore:')) return { notBefore: Number(answer.slice('notBefore:'.length)) };
+  return {};
+};
+
+export const ConnectionSweepTestDO = defineConnectionSweepDO<KickEnv>({
+  owned: () => true,
+  run: connectionSweepRun,
+  intervalMs: 10 * 60_000,
+  firstDelayMs: () => 60_000,
+  onError: () => undefined,
+});
+
+/** The same, in a deployment that has handed the sweep back to the pass. */
+export const ConnectionSweepUnownedDO = defineConnectionSweepDO<KickEnv>({
+  owned: () => false,
+  run: connectionSweepRun,
+  firstDelayMs: () => 60_000,
+});

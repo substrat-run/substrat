@@ -4015,8 +4015,11 @@ export type ConnectorSweepReport = Pick<
   'connectionsSwept' | 'connectionsSkipped' | 'connectionsPaused' | 'connectionsBackingOff' | 'connectionLandings' | 'errors'
 >;
 
-/** The part of {@link PlatformSweepOptions} a connector sweep reads. */
-export type ConnectorSweepOptions = Pick<
+/**
+ * The part of {@link PlatformSweepOptions} a connector sweep reads, and two fields only a caller of
+ * `runConnectorSweep` sets (K-69, step 4.2: a connection swept by its own alarm, #3376).
+ */
+export type ConnectorSweepOptions = ConnectorSweepTarget & Pick<
   PlatformSweepOptions,
   | 'actor'
   | 'fetch'
@@ -4033,6 +4036,23 @@ export type ConnectorSweepOptions = Pick<
   | 'connectorBudget'
   | 'clock'
 >;
+
+/** K-69, step 4.2: what a caller sweeping some connections, not every one, hands the sweep. */
+export interface ConnectorSweepTarget {
+  /**
+   * Sweep exactly these connections instead of listing every one: a connection's own object sweeps
+   * its one, and the pass in check mode sweeps the ones whose object it could not reach. Unset, the
+   * sweep lists every live connection, as before.
+   */
+  connections?: readonly Connection[];
+  /**
+   * The earliest time, in epoch ms, the sweep's own rules say a connection is worth trying again:
+   * the end of a crash back-off or of a provider's poll interval, for a connection the sweep waited
+   * out rather than swept. Not called for a connection it swept. A connection's own alarm re-arms
+   * for it, so it does not wake to be waited out again.
+   */
+  onNextAttempt?: (connectionId: ConnectionId, atMs: number) => void;
+}
 
 /**
  * The connector sweep alone (#3324), for a caller that runs it after every other phase of its pass
@@ -4084,7 +4104,7 @@ async function sweepConnections(
     baseDelayMs: options.connectorCrashBackoff?.baseDelayMs ?? CONNECTOR_CRASH_BACKOFF.baseDelayMs,
     maxDelayMs: options.connectorCrashBackoff?.maxDelayMs ?? CONNECTOR_CRASH_BACKOFF.maxDelayMs,
   };
-  const connections = await host.admin.listConnections(options.actor, {});
+  const connections = options.connections ?? (await host.admin.listConnections(options.actor, {}));
   const landings = options.connectionLandings ? new LandingPass(host, options.actor, options.connectionLandings, concurrency, listScopes) : null;
   await mapBounded(connections, concurrency, async (c) => {
     // #1232: the connection's durable sweep record. A connection row carries no
@@ -4140,6 +4160,7 @@ async function sweepConnections(
         const retryAt = Date.parse(backoffAt(crashed.streak, crashBackoff, new Date(crashed.lastAt)));
         const said = `the last ${counted(crashed.streak, 'sweep')} of connection ${c.id} did not finish: the pass running ${crashed.streak === 1 ? 'it' : 'them'} ended first`;
         if (clock() < retryAt) {
+          options.onNextAttempt?.(c.id, retryAt);
           report.connectionsBackingOff += 1;
           report.connectionsSkipped += 1;
           report.errors.push({ kind: 'sweep', id: c.id, error: `${said}; next attempt after ${new Date(retryAt).toISOString()}` });
@@ -4223,6 +4244,7 @@ async function sweepConnections(
         const now = Date.now();
         const lastAttempt = Math.max(0, ...[ok[0], failed[0], unsupported[0]].filter((row) => row !== undefined).map((row) => Date.parse(row.at)).filter((at) => at <= now));
         if (now - lastAttempt < everyMinutes * 60_000) {
+          options.onNextAttempt?.(c.id, lastAttempt + everyMinutes * 60_000);
           if (landingFailed.length > 0) fail(landingSaid, landingFailures);
           report.connectionsSkipped += 1;
           return;

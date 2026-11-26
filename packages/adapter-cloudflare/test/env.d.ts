@@ -56,6 +56,9 @@ declare namespace Cloudflare {
     KICK_SLOW: DurableObjectNamespace;
     /** #3365: the coalescer that runs passes from its alarm only. */
     KICK_ALARM: DurableObjectNamespace;
+    /** K-69, step 4.2: a connection's own sweep object, owned and handed back — connection-sweep-do.test.ts. */
+    CONNECTION_SWEEP_TEST: DurableObjectNamespace;
+    CONNECTION_SWEEP_UNOWNED: DurableObjectNamespace;
     /** #2450 step 2: the background copy's job object (copy-job-do.test.ts). */
     COPY_JOB_TEST: DurableObjectNamespace;
     COPY_JOB_SHORT: DurableObjectNamespace;

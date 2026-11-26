@@ -53,6 +53,20 @@ export {
   type KickOutcome,
   type KickProducer,
 } from './kick-coalescer-do.js';
+// K-69, step 4.2 (#3376): one object per connection, whose alarm runs that connection's sweep.
+export {
+  defineConnectionSweepDO,
+  connectionSweepName,
+  spreadOf as connectionSweepSpreadOf,
+  CONNECTION_SWEEP_INTERVAL_MS,
+  CONNECTION_SWEEP_OVERDUE_MS,
+  CONNECTION_SWEEP_FIRST_SPREAD_MS,
+  type ConnectionSweepCheck,
+  type ConnectionSweepConfig,
+  type ConnectionSweepDo,
+  type ConnectionSweepRef,
+  type ConnectionSweepRun,
+} from './connection-sweep-do.js';
 export type { PlatformSweeperDoConfig, PlatformSweepOutcome } from './platform-sweeper-do.js';
 // #2450 step 2: one object per background scope copy, stepped by alarm.
 export { defineCopyJobDO, type CopyJobDo, type CopyJobDoConfig, type CopyJobDoRecord, type CopyJobStep } from './copy-job-do.js';
