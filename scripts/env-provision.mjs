@@ -34,6 +34,13 @@
  *   2. Resources. Read from each app's `wrangler.jsonc` for this env — the D1 databases, R2
  *      buckets and dispatch namespaces it binds, the wildcard zone route's proxied DNS record
  *      and ACM certificate. Declared once, there; this file adds no second list to drift.
+ *   2b. Lakes (prod only). The Tier-2 lakes the control plane's prod deploy binds
+ *      (apps/control-plane/wrangler.deploy.json → scripts/lake/lakes.mjs): the lake's two standing
+ *      tokens (R2_LAKE_CATALOG_TOKEN, R2_LAKE_SQL_TOKEN, scoped to its bucket), then each lake through
+ *      scripts/lake-provision.mjs under a 30-minute token minted for the step and deleted after it, and
+ *      each stream's id into the env file for the deploy and CI. A lake that differs from its
+ *      declaration stops the run: Cloudflare cannot update a stream or a sink, and a recreate drops
+ *      history, so that is a person's `pnpm lake:provision --recreate`. A test env binds no stream.
  *   3. Placeholder scripts. The platform workers bind each other in a cycle (the control plane
  *      binds the builder and the router, which bind it back), and Cloudflare refuses a binding
  *      to a script that does not exist — so a brand-new env cannot deploy any of them first. A
@@ -68,6 +75,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseJsonc } from '../tools/jsonc.mjs';
 import { GENERATABLE, MANIFEST, generateValue, parseEnvText } from './secrets.mjs';
+import { LAKES } from './lake/lakes.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const API = 'https://api.cloudflare.com/client/v4';
@@ -172,6 +180,41 @@ const TOKENS = [
     zones: 'saas',
   },
 ];
+
+/**
+ * The lake's two standing tokens, minted like TOKENS but scoped to the lake's bucket alone. Prod
+ * only: it is the one env whose deploy binds a stream (`lakesBound`). Cloudflare keeps the catalog
+ * token inside each lake's sink and commits to the Iceberg table with it (never pushed to a worker,
+ * STORE_ONLY in secrets.mjs); the SQL token is read-only on both halves and is pushed to the control
+ * plane as R2_SQL_TOKEN for the lake's query gateway. Groups and resource as Cloudflare documents them
+ * (r2/api/tokens, basin-catalog "create API token via API").
+ */
+const LAKE_TOKENS = [
+  {
+    key: 'R2_LAKE_CATALOG_TOKEN',
+    name: `substrat-${ENV}-lake-catalog`,
+    why: "the lakes' sinks commit to the Iceberg catalog with it",
+    account: [],
+    zone: [],
+    bucket: ['Workers R2 Data Catalog Write', 'Workers R2 Storage Bucket Item Write'],
+  },
+  {
+    key: 'R2_LAKE_SQL_TOKEN',
+    name: `substrat-${ENV}-lake-sql`,
+    why: "the control plane's lake query gateway, read-only",
+    account: [],
+    zone: [],
+    bucket: ['Workers R2 SQL Read', 'Workers R2 Data Catalog Read', 'Workers R2 Storage Bucket Item Read'],
+  },
+];
+
+/**
+ * What the short-lived token that provisions the lakes carries: the bucket, its catalog, and the
+ * streams, sinks and pipelines. Minted for the step and deleted after it, never stored: a standing
+ * credential able to drop the audit lake is what scripts/lake-provision.mjs exists not to need, and
+ * the deploy token (which CI holds) deliberately lacks the catalog half.
+ */
+const LAKE_ADMIN_GROUPS = ['Pipelines Write', 'Workers R2 Storage Write', 'Workers R2 Data Catalog Write'];
 
 /** wrangler binding kind → the account feature it cannot deploy without. */
 const FEATURE_BINDINGS = [
@@ -473,6 +516,13 @@ async function ensureToken(ctx, spec) {
     spec.zones === 'all'
       ? { [`com.cloudflare.api.account.${account}`]: { 'com.cloudflare.api.account.zone.*': '*' } }
       : { [`com.cloudflare.api.account.zone.${ctx.saasZoneId}`]: '*' };
+  // A group named for a bucket-scoped token is matched by name alone: an R2 bucket policy holds
+  // account-level groups too (the catalog's), as Cloudflare's own examples write it.
+  const resolveAny = (name) => {
+    const g = groups.find((x) => x.name.toLowerCase() === name.toLowerCase());
+    if (g) return { id: g.id };
+    fail(`permission group '${name}' does not exist`);
+  };
   const policies = [
     {
       effect: 'allow',
@@ -484,7 +534,13 @@ async function ensureToken(ctx, spec) {
       permission_groups: spec.zone.map((n) => resolve(n, 'com.cloudflare.api.account.zone')),
       resources: zoneResource,
     },
-  ];
+    {
+      effect: 'allow',
+      permission_groups: (spec.bucket ?? []).map(resolveAny),
+      // A bucket outside any jurisdiction is `default` (r2/api/tokens, "Bucket").
+      resources: { [`com.cloudflare.edge.r2.bucket.${account}_default_${spec.bucketName}`]: '*' },
+    },
+  ].filter((p) => p.permission_groups.length > 0);
 
   const found = tokens.filter((t) => t.name === spec.name);
   if (found.length > 1) fail(`${found.length} tokens are named ${spec.name} — delete the extras, then re-run`);
@@ -599,6 +655,48 @@ async function withProbeToken(ctx, needs, fn) {
 }
 
 /** Is every Cloudflare product this env binds switched on? Read-only; fails before anything is created. */
+/**
+ * The lakes this env's deploy binds: each `pipelines` entry of the control plane's deploy-only
+ * overlay names a stream id by its placeholder, and the lake that records that id is the one it
+ * needs. Declared once, there and in scripts/lake/lakes.mjs; this adds no third list.
+ */
+function lakesBound() {
+  const overlay = parseJsonc(readFileSync(join(ROOT, 'apps/control-plane/wrangler.deploy.json'), 'utf8'));
+  return (overlay.pipelines ?? []).map((p) => {
+    const idVar = /^\$\{(\w+)\}$/.exec(p.stream ?? '')?.[1];
+    const found = Object.entries(LAKES).find(([, l]) => l.idVar === idVar);
+    if (!found) {
+      fail(`apps/control-plane/wrangler.deploy.json binds ${p.binding} to ${p.stream}, which no lake in scripts/lake/lakes.mjs records`);
+    }
+    return { name: found[0], lake: found[1], binding: p.binding };
+  });
+}
+
+/**
+ * A short-lived token that can provision the lakes (LAKE_ADMIN_GROUPS), handed to `fn` and deleted
+ * when it returns; its expiry is the backstop for a run that dies first. A leftover is deleted on
+ * the way in, as the probe token's is.
+ */
+async function withLakeAdminToken(ctx, fn) {
+  const { bootstrap, base, account, groups, tokens } = ctx;
+  const name = `substrat-${ENV}-lake-admin`;
+  for (const t of tokens.filter((t) => t.name === name)) await cf(bootstrap, 'DELETE', `${base}/${t.id}`);
+  const permission_groups = LAKE_ADMIN_GROUPS.map((n) => {
+    const g = groups.find((x) => x.name.toLowerCase() === n.toLowerCase() && x.scopes.includes('com.cloudflare.api.account'));
+    if (!g) fail(`permission group '${n}' (account) does not exist`);
+    return { id: g.id };
+  });
+  const expires_on = new Date(Date.now() + 30 * 60_000).toISOString().replace(/\.\d+Z$/, 'Z');
+  const policies = [{ effect: 'allow', permission_groups, resources: { [`com.cloudflare.api.account.${account}`]: '*' } }];
+  const admin = (await cf(bootstrap, 'POST', base, { name, policies, expires_on })).result;
+  try {
+    if (!(await untilVerifies(base, admin.value, admin.id))) fail(`${name} never verified — re-run`);
+    return await fn(admin.value);
+  } finally {
+    await cf(bootstrap, 'DELETE', `${base}/${admin.id}`).catch((e) => warn(`could not delete ${name}: ${e.message}`));
+  }
+}
+
 async function checkFeatures(ctx, res) {
   section('Cloudflare features this env needs');
   const needs = new Set(['workers-paid', ...res.needs]);
@@ -761,6 +859,52 @@ async function main() {
     else {
       act(`create bucket ${name}`);
       if (!DRY) await cf(deploy, 'POST', `/accounts/${account}/r2/buckets`, { name });
+    }
+  }
+
+  // ── 2b. the lakes (prod) ──
+  section('Lakes (Tier-2 streams)');
+  if (ENV !== 'prod') {
+    note('none: only prod binds a stream (apps/control-plane/wrangler.deploy.json); a test plane gets inert ids, so it cannot write into the lake that answers audit');
+  } else {
+    const lakes = lakesBound();
+    const buckets = [...new Set(lakes.map((l) => l.lake.bucket))];
+    if (buckets.length !== 1) fail(`the lakes span ${buckets.length} buckets (${buckets.join(', ')}); LAKE_TOKENS is scoped to one`);
+    for (const spec of LAKE_TOKENS) await ensureToken(ctx, { ...spec, bucketName: buckets[0] });
+    const streamOf = async (token, name) =>
+      (await cfAll(token, `/accounts/${account}/pipelines/v1/streams?name=${encodeURIComponent(name)}`)).find((s) => s.name === name);
+    const record = (lake, live) => (setValue(lake.idVar, live.id) ? act(`${lake.idVar} written (${lake.stream})`) : ok(`${lake.idVar} is ${lake.stream}'s id`));
+    if (DRY) {
+      // Read with the deploy token, which holds Pipelines Write. The field-by-field comparison
+      // needs the catalog half too, so it waits for the real run's short-lived token.
+      for (const { name, lake } of lakes) {
+        const live = await streamOf(deploy, lake.stream);
+        if (live) record(lake, live);
+        else act(`provision lake ${name} → ${lake.namespace}.${lake.table} (scripts/lake-provision.mjs --lake ${name})`);
+      }
+      note('a dry run does not compare each lake with its declaration: a real run does, under a short-lived token');
+    } else {
+      await withLakeAdminToken(ctx, async (admin) => {
+        // The child acts as the short-lived token and nothing else: an API key pair in the
+        // environment would outrank it, and lake-provision refuses one.
+        const env = { ...process.env, CLOUDFLARE_API_TOKEN: admin };
+        delete env.CLOUDFLARE_API_KEY;
+        delete env.CLOUDFLARE_EMAIL;
+        for (const { name, lake } of lakes) {
+          const args = ['scripts/lake-provision.mjs', '--lake', name, '--file', FILE_REL, '--no-epilogue'];
+          console.log(`  $ node ${args.join(' ')}`);
+          const r = spawnSync('node', args, { cwd: ROOT, env, stdio: 'inherit' });
+          if (r.status !== 0) {
+            fail(
+              `lake ${name}: scripts/lake-provision.mjs stopped (above). A lake that DIFFERS from its declaration is a\n` +
+                `  person's call — Cloudflare has no update for a stream or a sink; \`pnpm lake:provision --lake ${name}\` explains it`,
+            );
+          }
+          const live = await streamOf(admin, lake.stream);
+          if (!live) fail(`lake ${name}: no stream ${lake.stream} after provisioning`);
+          record(lake, live);
+        }
+      });
     }
   }
 

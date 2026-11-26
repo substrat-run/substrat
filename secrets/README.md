@@ -172,12 +172,22 @@ first and prints ✓ or →, and `--dry-run` changes nothing.
 It mints `substrat-<env>-deploy` (`CF_DEPLOY_TOKEN`: deploys, migrations, provisioning, CI) and
 `substrat-<env>-control-plane` (`CF_API_TOKEN`), creates what each app's `wrangler.jsonc`
 binds for that env (D1, R2, dispatch namespace, the wildcard route's DNS and certificate,
-placeholder scripts for the first deploy), applies the D1 migrations, fills and pushes this
-file, and publishes the CI variables (through `secrets.mjs github`) plus the test deploy token
+placeholder scripts for the first deploy), and for prod the Tier-2 lakes the control plane binds
+(see below), applies the D1 migrations, fills and pushes this file, and publishes the CI variables (through `secrets.mjs github`) plus the test deploy token
 as `CLOUDFLARE_API_TOKEN_TEST`. For prod it leaves the shared `CLOUDFLARE_API_TOKEN` secret,
 which every release deploys with, for a person to replace. `--deploy` also builds and deploys
 every worker. A dry run skips the features check, which mints a short-lived probe token;
 `--check-features` runs it on its own.
+
+**The lakes, for prod.** Every lake the control plane's prod deploy binds
+(`apps/control-plane/wrangler.deploy.json`, declared in `scripts/lake/lakes.mjs`) is provisioned
+in the same run. It mints the lake's two standing tokens scoped to the lake's bucket —
+`substrat-prod-lake-catalog` (`R2_LAKE_CATALOG_TOKEN`, which each sink keeps) and
+`substrat-prod-lake-sql` (`R2_LAKE_SQL_TOKEN`, read-only, pushed to the control plane) — then runs
+`scripts/lake-provision.mjs` for each lake under a 30-minute token minted for that step and deleted
+after it, and writes each stream's id (`CF_PIPELINE_*_STREAM_ID`) into this file, which the deploy
+and `secrets.mjs github` read. A lake that differs from its declaration stops the run: that is a
+person's [rebuild](#rebuilding-a-lake-table). A test env gets no lake: its deploy binds no stream.
 
 A token value it cannot find in the file is **rolled**, because Cloudflare never returns one.
 A generatable secret blank in the file but live on a worker is **kept**, never regenerated,
@@ -196,7 +206,7 @@ heading; `push` excludes them by construction, since it only ever walks the mani
 
 | Key | Where it actually lives |
 |---|---|
-| `R2_LAKE_CATALOG_TOKEN` | the sink's own config, written once by `scripts/lake-provision.mjs` |
+| `R2_LAKE_CATALOG_TOKEN` | the sink's own config, written once by `scripts/lake-provision.mjs`; minted by `env-provision.mjs` |
 | `R2_LAKE_SEND_TOKEN` | nowhere by default — only a non-Workers sender needs it |
 | `CF_DEPLOY_TOKEN` | the deploy token `env-provision.mjs` mints; CI holds it as an Actions secret |
 
@@ -313,8 +323,9 @@ into the lake that answers audit is precisely what a test deploy should not be a
 
 ## Rebuilding a lake table
 
-`scripts/lake-provision.mjs` stores no Cloudflare token of its own: it acts as **your
-`wrangler login`**, fetched with `wrangler auth token`. Provisioning and recreating the lake
+`scripts/lake-provision.mjs` stores no Cloudflare token of its own: run by hand, it acts as **your
+`wrangler login`**, fetched with `wrangler auth token`; run by `env-provision.mjs`, as a 30-minute
+token that run mints and deletes. Provisioning and recreating the lake
 are rare, deliberate, human acts that can delete the audit lake, so a stored token with those
 rights is a standing capability used a handful of times ever — and `CF_API_TOKEN` is worse,
 since it lives inside the running control plane, which never needs them. A login expires on
