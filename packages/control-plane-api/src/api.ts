@@ -264,7 +264,16 @@ import { STORE_REBUILD_REQUEST_SUBREQUESTS, runStoreFleetRebuild, storeRebuildBu
 import { PUSH_HOLD_TTL_MS, STORE_RELEASE_STORED_MAX_BYTES, approveStoredDriverRelease, readStoreDriverApprovals, runStoreDriverRevoke, runStoreDriverRollout, storeDriverRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
 import { assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, listAllScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
-import { readAdminLogHistory, readWholeAdminLog, type DirectoryLakeReads } from './directory-lake-reads.js';
+import {
+  MODEL_USAGE_HISTORY,
+  OPS_FAILURE_HISTORY,
+  SWEEP_RUN_HISTORY,
+  historyPageOf,
+  readAdminLogHistoryPage,
+  readDirectoryHistory,
+  readWholeAdminLog,
+  type DirectoryLakeReads,
+} from './directory-lake-reads.js';
 import { DIRECTORY_LAKE_BACKFILL_PAGE_MAX, DirectoryLakeBackfillRefused, backfillDirectoryLake } from './directory-lake-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
 import type { PersonaIssuerSeam } from './persona-issuer.js';
@@ -9651,7 +9660,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     ));
   });
 
-  /** K-70: what a history read needs, per request. */
+  /** K-70: what a history read needs, per request (every data set's, not only the admin log's). */
   const adminLogHistoryDeps = (admin: HostAdmin, actor: PlatformActorId) => ({
     admin,
     actor,
@@ -14345,16 +14354,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       order: c.req.query('order'),
     });
     // K-70: the window from the directory, history before it from the lake when the switch says so.
-    const entries = await readAdminLogHistory(
+    const page = await readAdminLogHistoryPage(
       adminLogHistoryDeps(c.var.admin, c.get('actor')),
       filter as Parameters<typeof c.var.admin.auditLog>[1] & { limit: number },
     );
     // #2064: each audited change's row says the outcome its operation stands at — the latest
     // outcome row wins — beside the raw row, which is returned as written.
-    const resolved = await withAuditedOutcomes(c.var.admin, c.get('actor'), entries);
+    const resolved = await withAuditedOutcomes(c.var.admin, c.get('actor'), page.entries);
     // The cursor IS the last entry's id (ULID order is chronological), so the
     // page carries its own continuation and the console never assembles one.
-    return c.json(pageOf(resolved, filter.limit, (e) => e.id));
+    return c.json(historyPageOf({ entries: resolved, resume: page.resume }, filter.limit, (e) => e.id));
   });
 
   // The recorded operational failures (#559) — the console's failures view, and the
@@ -14378,13 +14387,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       cursor: c.req.query('cursor'),
       order: c.req.query('order'),
     });
-    const entries = await c.var.admin.listOpsFailures(c.get('actor'), {
-      ...(filter as Parameters<typeof c.var.admin.listOpsFailures>[1]),
-      // #2540: staff's `reference` also finds a pair by the upstream handle its staff row names.
-      // The text that matches is staff's, so a confined caller's search stays exact.
-      ...(staffCaller(c) ? { referenceInText: true } : {}),
-    });
-    return c.json(pageOf(entries, filter.limit, (e) => e.id));
+    // K-70: the window from the directory, history before it from the lake when the switch says so.
+    const page = await readDirectoryHistory(
+      adminLogHistoryDeps(c.var.admin, c.get('actor')),
+      OPS_FAILURE_HISTORY,
+      {
+        ...(filter as Parameters<typeof c.var.admin.listOpsFailures>[1] & { limit: number }),
+        // #2540: staff's `reference` also finds a pair by the upstream handle its staff row names.
+        // The text that matches is staff's, so a confined caller's search stays exact.
+        ...(staffCaller(c) ? { referenceInText: true } : {}),
+      },
+      (f) => c.var.admin.listOpsFailures(c.get('actor'), f),
+    );
+    return c.json(historyPageOf(page, filter.limit, (e) => e.id));
   });
 
   // -- builder turns: one summary per builder-studio turn, every team -------------
@@ -14438,11 +14453,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       cursor: c.req.query('cursor'),
       order: c.req.query('order'),
     });
-    const entries = await c.var.admin.listSweepRuns(
-      c.get('actor'),
-      filter as Parameters<typeof c.var.admin.listSweepRuns>[1],
+    // K-70: the window from the directory, history before it from the lake when the switch says so.
+    const page = await readDirectoryHistory(
+      adminLogHistoryDeps(c.var.admin, c.get('actor')),
+      SWEEP_RUN_HISTORY,
+      filter as Parameters<typeof c.var.admin.listSweepRuns>[1] & { limit: number },
+      (f) => c.var.admin.listSweepRuns(c.get('actor'), f),
     );
-    return c.json(pageOf(entries, filter.limit, (e) => e.id));
+    return c.json(historyPageOf(page, filter.limit, (e) => e.id));
   });
 
   // -- the replay lever (#1705 PR 3): move a consumer's watermark on one edge ----
@@ -14586,8 +14604,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       cursor: c.req.query('cursor'),
       order: c.req.query('order'),
     });
-    const entries = await c.var.admin.listModelUsage(c.get('actor'), filter as Parameters<typeof c.var.admin.listModelUsage>[1]);
-    return c.json(pageOf(entries, filter.limit, (e) => e.id));
+    // K-70: the window from the directory, history before it from the lake when the switch says so.
+    const page = await readDirectoryHistory(
+      adminLogHistoryDeps(c.var.admin, c.get('actor')),
+      MODEL_USAGE_HISTORY,
+      filter as Parameters<typeof c.var.admin.listModelUsage>[1] & { limit: number },
+      (f) => c.var.admin.listModelUsage(c.get('actor'), f),
+    );
+    return c.json(historyPageOf(page, filter.limit, (e) => e.id));
   });
 
   // The door for a model call that runs in no tenant's scope, so no intent can carry it to the
