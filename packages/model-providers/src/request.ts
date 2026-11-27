@@ -77,10 +77,11 @@ export interface BindingGateway {
 	 *
 	 * The HTTP path turns off only the PAYLOAD (`cf-aig-collect-log-payload`); the binding has
 	 * no option for that, and `collectLog` maps to `cf-aig-collect-log`, which drops the whole
-	 * entry. Checked on the platform's account (#3320): a binding call with `collectLog: false`
-	 * still passes the gateway and is still counted in `aiGatewayRequestsAdaptiveGroups` with
-	 * its metadata, which is the row the model reconciliation reads. What it loses is the log
-	 * line, which held nothing the reconciliation uses.
+	 * entry. Checked on the platform's account on 2026-11-27 (#3320): a binding call with
+	 * `collectLog: false` still passes the gateway — Workers AI reports it as `requestSource:
+	 * aig binding` — and is counted in `aiGatewayRequestsAdaptiveGroups` with its metadata
+	 * keys, which is the row the model reconciliation reads. What it gives up is the log line,
+	 * which holds nothing the reconciliation uses.
 	 */
 	readonly collectLog: false;
 }
