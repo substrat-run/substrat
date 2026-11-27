@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-153 decisions · 80 plan · 73 kernel
+154 decisions · 80 plan · 74 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -159,9 +159,10 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-78](decisions/D-078-a-directory-object-recovers-by-point-in-time-restore-and-an-incremental-export-not-a-daily-whole-copy.md) | 2026-11-25 | plan | A directory object recovers by point-in-time restore and an incremental export to R2, not by a daily whole copy <br>*awaiting ratification* | #3325, #40, #2868 |
 | [D-79](decisions/D-079-a-tenant-at-rest-costs-storage-only-and-every-platform-change-is-held-to-that.md) | 2026-11-25 | plan | A tenant at rest costs the platform storage only, and every platform change is held to that <br>*awaiting ratification* | #3316 |
 | [K-68](decisions/K-068-the-control-plane-directory-is-a-small-global-registry-and-one-directory-object-per-tenant.md) | 2026-11-25 | kernel | The control-plane directory is a small global registry and one directory object per tenant, and a change across them commits its intent first <br>*awaiting ratification* | #3325, #3326, #1343 |
-| [K-69](decisions/K-069-nothing-iterates-over-every-tenant-on-a-schedule-work-starts-from-an-event-or-the-owning-object-s-alarm.md) | 2026-11-25 | kernel | Nothing iterates over every tenant on a schedule: work starts from an event or the owning object's alarm, and a fleet-wide change is applied on each scope's next wake, warmed by a queue and counted <br>*awaiting ratification* <br>*amends K-33* | #3324, #3331, #3376, #3388, #3367, #3369, #1653 |
+| [K-69](decisions/K-069-nothing-iterates-over-every-tenant-on-a-schedule-work-starts-from-an-event-or-the-owning-object-s-alarm.md) | 2026-11-25 | kernel | Nothing iterates over every tenant on a schedule: work starts from an event or the owning object's alarm, and a fleet-wide change is applied on each scope's next wake, warmed by a queue and counted <br>*awaiting ratification* <br>*amends K-33* <br>*amended by K-74* | #3324, #3331, #3376, #3388, #3367, #3369, #1653 |
 | [K-70](decisions/K-070-data-that-grows-with-tenants-times-time-leaves-the-sqlite-objects-each-object-keeps-a-bounded-recent-window.md) | 2026-11-25 | kernel | Data that grows with tenants times time leaves the SQLite objects: each object keeps a bounded recent window, and the admin log is written where the change is made and shipped onward <br>*awaiting ratification* | #3326, #3325, #3316, #2501, #1232 |
 | [K-71](decisions/K-071-the-hosted-issuer-partitions-its-people-by-person-and-prunes-what-expires.md) | 2026-11-25 | kernel | A shared hosted issuer partitions its people by person, and prunes the sessions and tokens that expire <br>*awaiting ratification* |  |
 | [K-72](decisions/K-072-the-router-reads-routes-from-a-kv-read-model-the-directory-publishes.md) | 2026-11-25 | kernel | The router reads routes from a KV read model the directory publishes <br>*awaiting ratification* <br>*amends K-26* | #3395 |
 | [K-73](decisions/K-073-the-platform-s-own-bookkeeping-reads-are-recorded-as-one-access-log-row-per-pass.md) | 2026-11-26 | kernel | The platform's own bookkeeping reads are recorded as one access-log row per pass <br>*amends K-24* | #3326 |
 | [D-80](decisions/D-080-any-tenant-may-own-apps-a-host-it-depends-on-never-co-owns-them-and-a-managed-tenant-is-billed-through-its-manager.md) | 2026-11-27 | plan | Any tenant may own apps, a host it depends on never co-owns them, and a managed tenant is billed through its manager <br>*awaiting ratification* <br>*amends D-33* | #3439 |
+| [K-74](decisions/K-074-a-broker-per-tenant-and-app-owns-every-message-a-scope-sends-once-the-scope-has-handed-it-off.md) | 2026-11-27 | kernel | A broker per tenant and app owns every message a scope sends, once the scope has handed it off <br>*awaiting ratification* <br>*amends K-69* | #3463, #3467, #3468, #3469, #3470, #3471, #3472, #3473, #3474 |
