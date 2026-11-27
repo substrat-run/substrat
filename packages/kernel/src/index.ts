@@ -1043,6 +1043,7 @@ export type {
   JobRunClaim,
   JobRunFilter,
   JobRunKey,
+  SystemAttachments,
   JobRunPatch,
   JobRunRow,
   JobRunStatus,

@@ -57,7 +57,42 @@ The row and the event are written first, then the bytes are deleted from the blo
 schedule kill switch refuses the remove, as it refuses the module's other work.
 
 A schedule's operation decides which files are due. It cannot delete them itself: an operation
-holds `ctx`, not the host, so the call is made from host code.
+holds `ctx`, not the host, so the call is made from host code. On a deployed vertical that host
+code is a resumable job. Its pass has `pass.attachments()`, the same `open` and `remove` as the
+module, beside `pass.scope()`, so the job asks the module what is due and removes it, one step
+per file:
+
+```ts
+// In the host builder your worker's routes and sweeper share.
+host.registerJob(MODULE_ID, 'retire-agreements', async (pass) => {
+  const due = await pass.step('due', async () =>
+    (await pass.scope()).invoke<string[]>('orders/due-agreements'));
+  const files = await pass.attachments();
+  for (const id of due) {
+    await pass.step(`remove:${id}`, async () => (await files.remove(id))?.id ?? null);
+  }
+  return { done: true };
+});
+
+// Your own sweeper starts the walk once a day and drives it; the one the platform
+// supplies runs schedules only.
+export const SweeperDO = defineScopeSweeperDO<Env>({
+  intervalMs: 120_000,
+  host: hostFor,
+  runJobs: true,
+  jobStartIntervalMs: 24 * 60 * 60_000,
+  startJobs: async (host, tenantId, scopeId) => {
+    await host.startJobRun?.(tenantId, scopeId, { moduleId: MODULE_ID, job: 'retire-agreements' });
+  },
+});
+```
+
+A start while a walk is still running joins it rather than starting a second. A step can run twice
+if the pass stops at the wrong moment, and a second remove of a file already gone returns `null`,
+so the walk is safe to repeat. The module's keys are the same ones a system remove is checked
+against, and the kill switch holds a job as it holds a schedule: the pass waits, without spending
+its retries, until the switch is applied again. Return ids, not an opened file's bytes, from a
+step, since a step's result is stored as JSON.
 
 ## Serving files from a deployed worker
 
