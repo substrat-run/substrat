@@ -340,6 +340,8 @@ export const INDEX_VALUE_EXPORTS = [
   'assertRedrainWindow',
   'assertRowLimit',
   'assertRowOffset',
+  // #3434: a target's attachment gate, one rule both adapters register and remove by.
+  'assertSameAttachmentGate',
   'assertSessionUsable',
   'assertSpineTablesBuilt',
   // RFC wire-signing §7: a capability-record read's filter, judged before the read (and before the RPC).
@@ -347,6 +349,8 @@ export const INDEX_VALUE_EXPORTS = [
   'asyncInvocationId',
   'asyncLinePass',
   'attachmentBlobKey',
+  // #3434: see assertSameAttachmentGate.
+  'attachmentGateOf',
   'attachmentRecordOfRow',
   'attachmentSha256',
   'attachmentSweepFenceKey',
@@ -440,6 +444,8 @@ export const INDEX_VALUE_EXPORTS = [
   // #2518: a connector call's bounds: the call's total, and a streamed body's idle window.
   'deadlineFetch',
   // #3221: the landing a running version declares, read as the pass reads it, for the door choosing an install's connection.
+  // #3434: see assertSameAttachmentGate.
+  'decideAttachmentRemove',
   'declaredLandingFor',
   'delegatedRevokeSql',
   'delegationCeilingOf',
