@@ -151,6 +151,22 @@ export const vertical = z.object({
    */
   emailSender: z.boolean().default(false),
   /**
+   * The head sampling rate (0–1) the app's OWNER asked for on its serving script's Workers traces
+   * (#3358). Owner-managed, audited (`setVerticalTraceSampling`), never touched by a re-push. Read
+   * by the uploader at the next upload of the serving script, so a change takes effect at the
+   * app's next promote, not at once. The platform's default for the environment is a floor: the
+   * upload traces at whichever is higher, so an app can ask for more than the default and never
+   * for less. `0` asks for nothing beyond the default.
+   */
+  traceSampling: z.number().min(0).max(1).default(0),
+  /**
+   * The same, for the app's PREVIEW scripts — each version's own archive script, where its
+   * previews and their forks run (#3358). Separate because a preview has little traffic and is
+   * where an owner wants to see everything: `1` here costs little and leaves production alone.
+   * Read when a version is pushed, since that is the one upload its archive script gets.
+   */
+  previewTraceSampling: z.number().min(0).max(1).default(0),
+  /**
    * Holds the TENANT-PROVISIONER capability (#412, platform-intents.md) — this vertical's
    * scopes may enqueue `provision-tenant` / `set-entitlements` intents that the platform
    * executes (a manager console whose job is to add customer tenants). A directory-backed
@@ -193,6 +209,43 @@ export const verticalServingState = z.object({
   migrationTag: z.string().min(1),
 });
 export type VerticalServingState = z.infer<typeof verticalServingState>;
+
+/**
+ * An app's owner-set Workers trace rates (#3358): `serving` for its serving script, `previews` for
+ * each version's own archive script. Each is a head sampling rate in 0–1, and each is a request
+ * above the environment's default, never below it (`effectiveTraceSampling`).
+ */
+export const verticalTraceSampling = z.object({
+  serving: z.number().min(0).max(1),
+  previews: z.number().min(0).max(1),
+}).strict();
+export type VerticalTraceSampling = z.infer<typeof verticalTraceSampling>;
+
+/**
+ * `GET|POST /verticals/:slug/trace-sampling` (#3358): what the app's owner asked for, the
+ * environment's defaults, and what an upload would declare now (`effective`, the higher of the two;
+ * 0 is no `traces` block). The setting is stored, never applied at once: it reaches the serving
+ * script at the next promote and a preview script at the push that creates it.
+ */
+export const verticalTraceSamplingReading = z.object({
+  slug: z.string(),
+  asked: verticalTraceSampling,
+  defaults: verticalTraceSampling,
+  effective: verticalTraceSampling,
+});
+export type VerticalTraceSamplingReading = z.infer<typeof verticalTraceSamplingReading>;
+
+/**
+ * The rate an upload traces at (#3358): the higher of what the app's owner asked for and the
+ * environment's default, or undefined for no `traces` block at all, which is what a rate of 0
+ * uploads. A per-script figure because Cloudflare samples per script (`head_sampling_rate`), so
+ * it can follow an app but never a tenant: one serving script serves every tenant that installed
+ * the app (K-33).
+ */
+export function effectiveTraceSampling(asked: number, platformDefault: number | undefined): number | undefined {
+  const rate = Math.max(asked, platformDefault ?? 0);
+  return rate > 0 ? rate : undefined;
+}
 
 export const registerVerticalInput = vertical
   .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true, connectors: true, provisions: true, sendsEmail: true, lifecycle: true, surfaces: true, listed: true })

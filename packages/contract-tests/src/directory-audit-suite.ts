@@ -328,6 +328,23 @@ const CASES: DirectoryCase[] = [
   flagCase('setVerticalTenantProvisioner', 'tenantProvisioner'),
   flagCase('setVerticalEmailSender', 'emailSender'),
   {
+    action: 'setVerticalTraceSampling',
+    write: { table: 'verticals', verb: 'UPDATE' },
+    arrange: async (host, staff) => {
+      const slug = await newVertical(host, staff);
+      const rates = async () => {
+        const v = await verticalOf(host, staff, slug);
+        return { serving: v?.traceSampling, previews: v?.previewTraceSampling };
+      };
+      return {
+        call: () => host.admin.setVerticalTraceSampling(staff, slug, { serving: 0.1, previews: 1 }),
+        state: rates,
+        changed: { serving: 0.1, previews: 1 },
+        row: { before: { serving: 0, previews: 0 }, after: { serving: 0.1, previews: 1 } },
+      };
+    },
+  },
+  {
     action: 'deleteVertical',
     write: { table: 'verticals', verb: 'DELETE' },
     arrange: async (host, staff) => {

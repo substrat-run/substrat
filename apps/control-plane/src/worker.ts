@@ -936,14 +936,21 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   MODEL_RECONCILIATION?: string;
   /**
-   * Head sampling rate (0–1) for Workers automatic tracing on pushed verticals (#858).
-   * Unset ⇒ pushed scripts declare no `traces` block and emit logs only, which is every
-   * push to date. Set to `1` on TEST to answer whether tracing reaches dispatch-namespace
-   * user workers at all, and whether `durable_object_subrequest` spans see the DO-originated
-   * egress D-46 cannot police. A malformed or out-of-range value is IGNORED rather than
-   * clamped — a typo that silently samples 1% would make an absent span unfalsifiable.
+   * The environment's DEFAULT head sampling rate (0–1) for Workers traces on a vertical's serving
+   * script (#858, #3358). An app's owner can ask for more (`setVerticalTraceSampling`), never for
+   * less, so this is a floor: TEST sets `1` and traces everything, production sets nothing and
+   * traces only the apps that asked. Unset ⇒ 0, and an app that asked for nothing uploads with no
+   * `traces` block. A malformed or out-of-range value is IGNORED rather than clamped — a typo that
+   * silently samples 1% would make an absent span unfalsifiable. Logs are not this dial: they stay
+   * at 100% (owner decision 2026-11-24).
    */
   VERTICAL_TRACE_SAMPLING?: string;
+  /**
+   * The same default for each version's own archive script, where its previews run (#3358).
+   * Unset ⇒ `VERTICAL_TRACE_SAMPLING`'s, so an environment that traces serving scripts traces its
+   * previews too. A preview has little traffic, so `1` here costs little.
+   */
+  VERTICAL_PREVIEW_TRACE_SAMPLING?: string;
   /**
    * #3316: the Analytics Engine dataset pushed scripts' scope objects count their own rows into, by
    * origin. Unset ⇒ the uploader binds none and no scope object counts anything.
@@ -1089,16 +1096,23 @@ interface DispatchNamespace {
 }
 
 /**
- * The tracing sample rate for pushed verticals (#858), or undefined for "declare no
- * `traces` block". Refuses anything that is not a finite 0–1 number: an unparseable rate
- * must read as *off*, never as *some*, because the experiment this exists for concludes
- * from an ABSENCE of spans and a silently-clamped typo would make that absence meaningless.
+ * One trace-rate variable (#858), or undefined when it is unset. Refuses anything that is not a
+ * finite 0–1 number: an unparseable rate must read as *off*, never as *some*, because the egress
+ * report concludes from an ABSENCE of spans and a silently-clamped typo would make that absence
+ * meaningless.
  */
-function traceSamplingFor(env: Env): number | undefined {
-  const raw = env.VERTICAL_TRACE_SAMPLING?.trim();
-  if (!raw) return undefined;
-  const rate = Number(raw);
+function traceRateOf(raw: string | undefined): number | undefined {
+  const text = raw?.trim();
+  if (!text) return undefined;
+  const rate = Number(text);
   return Number.isFinite(rate) && rate >= 0 && rate <= 1 ? rate : undefined;
+}
+
+/** The environment's default trace rates (#3358): serving scripts, and previews, which follow serving unless set. */
+function traceSamplingDefaultsFor(env: Pick<Env, 'VERTICAL_TRACE_SAMPLING' | 'VERTICAL_PREVIEW_TRACE_SAMPLING'>): { serving?: number; previews?: number } {
+  const serving = traceRateOf(env.VERTICAL_TRACE_SAMPLING);
+  const previews = env.VERTICAL_PREVIEW_TRACE_SAMPLING?.trim() ? traceRateOf(env.VERTICAL_PREVIEW_TRACE_SAMPLING) : serving;
+  return { ...(serving !== undefined ? { serving } : {}), ...(previews !== undefined ? { previews } : {}) };
 }
 
 /** The WfP uploader, when the platform's CF credential is configured (self-serve-deploy.md). */
@@ -1121,7 +1135,6 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
     // `env.AI` on every pushed vertical (#1054): the desk picks WHICH model, the platform
     // pays for it, and no credential exists on the script to be read or rotated.
     bindAi: true,
-    traceSampling: traceSamplingFor(env),
     scopeWorkDataset: env.SCOPE_WORK_DATASET?.trim() || undefined,
   });
 }
@@ -4673,6 +4686,7 @@ export default {
         ...(env.DIRECTORY_LAKE_STREAM ? { directoryLakeSink: createPipelinesDirectoryLakeSink(env.DIRECTORY_LAKE_STREAM) } : {}),
         platformScopeStores: platformStoresFor(env),
         deployVertical: deployVerticalFor(env),
+        traceSampling: traceSamplingDefaultsFor(env),
         sourceBuilds: sourceBuildService(env.SOURCE_BUILDER, env.SERVICE_TOKEN),
         builderTurns: builderTurnsService(env.SOURCE_BUILDER, env.SERVICE_TOKEN),
         builderSandboxObjects: builderSandboxObjectsService(env.SOURCE_BUILDER, env.SERVICE_TOKEN),

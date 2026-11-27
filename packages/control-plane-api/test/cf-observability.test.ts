@@ -120,3 +120,38 @@ describe('cf observability serviceMetricsSeries (#1236) — the page ceiling', (
     ]);
   });
 });
+
+describe('cf observability observedEgress (#3358) — a script with no spans is not observed', () => {
+  it('asks the span probe only of scripts with no fetch span, in `otel`, and reports those it found nothing for', async () => {
+    type Query = { queryId: string; parameters: { datasets?: string[]; filters: Array<{ key: string; operation: string; value: unknown }> } };
+    const asked: Query[] = [];
+    const event = (service: string, spanName: string) => ({
+      $metadata: { service, spanName },
+      source: { url: { full: 'https://api.example/x' }, server: { address: 'api.example' }, cloudflare: { script_name: service } },
+      timestamp: 1,
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: unknown, init: { body?: string }) => {
+        const q = JSON.parse(init.body ?? '{}') as Query;
+        asked.push(q);
+        const service = q.parameters.filters.find((f) => f.key === '$metadata.service')!.value as string;
+        // `fetching` called out; `quiet` was traced and called nothing; `dark` recorded no span at all.
+        const events =
+          q.queryId === 'substrat-observed-egress'
+            ? service === 'fetching' ? [event(service, 'fetch')] : []
+            : service === 'quiet' ? [event(service, 'durable_object_subrequest')] : [];
+        return Response.json({ success: true, result: { events: { events } } });
+      }),
+    );
+    const report = await reader().observedEgress!({ services: ['fetching', 'quiet', 'dark'], hours: 24, limit: 100 });
+    expect(report.rows.map((r) => r.service)).toEqual(['fetching']);
+    expect(report.unobserved).toEqual(['dark']);
+    const probes = asked.filter((q) => q.queryId === 'substrat-observed-spans');
+    expect(probes.map((q) => q.parameters.filters[0]!.value)).toEqual(['quiet', 'dark']);
+    expect(probes[0]!.parameters).toMatchObject({
+      datasets: ['otel'],
+      filters: [expect.anything(), { key: '$metadata.spanName', operation: 'regex', value: '.' }],
+    });
+  });
+});

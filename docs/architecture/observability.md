@@ -705,6 +705,40 @@ Declared-vs-observed checks remain read-time dashboard derivations. Turning one 
 Invariant finding needs a recorded evaluation at a defined cadence, so the detector has a
 writer and an occurrence to attach to; a page view is not that occurrence.
 
+**4.9 Traces are a per-app setting, and the egress report says when nothing was watched (#3358).**
+
+Workers traces are switched on per **script**, at upload (`observability.traces.head_sampling_rate`),
+so the dial follows the unit Cloudflare samples: an **app**, never a tenant. One serving script
+serves every tenant that installed the app (K-33), so a per-tenant rate is only expressible for a
+private app with one tenant, and is not offered.
+
+- **The setting.** Two rates on the registry row, `traceSampling` (the serving script) and
+  `previewTraceSampling` (each version's archive script, where its previews and forks run), set by
+  the app's owner (`POST /verticals/:slug/trace-sampling`, the dashboard's Settings → Tracing) and
+  audited as `setVerticalTraceSampling`. A push never touches them.
+- **The default is a floor.** The control plane's `VERTICAL_TRACE_SAMPLING` (serving) and
+  `VERTICAL_PREVIEW_TRACE_SAMPLING` (previews; unset follows serving) are the environment's
+  defaults, and an upload declares the **higher** of the app's rate and the default
+  (`effectiveTraceSampling`). TEST sets `1`, so every TEST script traces everything whatever an app
+  asks for (owner decision 2026-11-24). Production sets neither, so a production script traces
+  only when its owner asked. A rate of 0 uploads no `traces` block at all.
+- **When it applies.** The rate is read by the upload, in `deployVerticalScript`: the serving
+  script at its next promote, a preview script at the push that creates it. Nothing re-uploads a
+  script when the setting changes.
+- **Logs are not this dial.** Workers Logs stay at 100% (owner decision 2026-11-24): head sampling
+  drops whole requests, and the request a customer is looking for is the one that must be there.
+
+**The egress report (D-61) needs the spans, and says when it has none.** `observedEgress` reads
+`fetch` spans only, so an untraced script answers with no rows, which used to render as "reached
+nothing undeclared". The reader now asks one more question of each script whose fetch read came
+back empty: did it record **any** span in the window (`anySpan`, one event in the `otel` dataset
+with a span name)? A script with none is listed in `unobserved`, its `byService` row carries
+`spansRecorded: false` and no `unused` hosts, and the console says "not observed" instead of
+showing a clean cell. Both narrowings in that probe err toward *not observed*: a wrong dataset
+name answers empty, which reads as "no spans", never as clean. The report also asks about the
+**serving script** first, which it did not before: since #286 that is what production serves, so a
+production call was never compared with the declaration at all.
+
 ## 5. What each audience gets, in build order
 
 | # | View | Source | Cost |

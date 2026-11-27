@@ -3243,6 +3243,7 @@ const SETTINGS_SECTIONS = [
   { value: 'integrations', label: 'Integrations' },
   { value: 'members', label: 'Members' },
   { value: 'permissions', label: 'Permissions' },
+  { value: 'tracing', label: 'Tracing' },
 ];
 
 /**
@@ -3261,6 +3262,7 @@ function Settings({ teamId, app, section, onSection, onDeleted, authServers }: {
       {section === 'integrations' && <AppIntegrations teamId={teamId} app={app} />}
       {section === 'members' && <AppMembers teamId={teamId} app={app} />}
       {section === 'permissions' && <><EmailSenderPermission key={`${teamId}/${app.app_scope_id}`} teamId={teamId} app={app} /><AppPermissions teamId={teamId} app={app} /></>}
+      {section === 'tracing' && <AppTracing key={`${teamId}/${app.app_scope_id}`} teamId={teamId} app={app} />}
     </div>
   );
 }
@@ -3303,6 +3305,78 @@ export function EmailSenderPermission({ teamId, app }: { teamId: string; app: Ap
         onChange={toggle}
       />
     </div>
+    {error && <div role="alert" style={{ fontSize: 13, color: 'var(--status-danger-fg)' }}>{error}</div>}
+  </div>;
+}
+
+/** The rates the Tracing section offers: off, a sample, everything. */
+const TRACE_RATES = [0, 0.01, 0.05, 0.1, 0.25, 1];
+const traceRateLabel = (rate: number) => (rate === 0 ? 'Off' : rate === 1 ? 'Every request (100%)' : `${Math.round(rate * 1000) / 10}% of requests`);
+
+/**
+ * Tracing (Settings tab, #3358): how many requests the app's Workers traces record, for production
+ * and for previews. A setting of the app, not of one installation: one deployment serves every team
+ * that installed it. The platform's default is a floor, and a change reaches a script at its next
+ * upload — a promote for production, a push for previews — so the card says both. Logs are not
+ * this dial: they are always kept in full.
+ */
+export function AppTracing({ teamId, app }: { teamId: string; app: AppRow }) {
+  type Reading = { asked: { serving: number; previews: number }; defaults: { serving: number; previews: number }; effective: { serving: number; previews: number } };
+  const [reading, setReading] = useState<Reading | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setReading(null);
+    setError(null);
+    if (DEV_MOCK) { setReading({ asked: { serving: 0, previews: 1 }, defaults: { serving: 0, previews: 0 }, effective: { serving: 0, previews: 1 } }); return; }
+    teamApi(teamId).appTraceSampling({ scopeId: app.app_scope_id })
+      .then((v) => { if (live) setReading(v); })
+      .catch((e) => { if (live) setError(e instanceof Error ? e.message : String(e)); });
+    return () => { live = false; };
+  }, [teamId, app.app_scope_id]);
+  const save = async (next: { serving: number; previews: number }) => {
+    setBusy(true);
+    setError(null);
+    try {
+      setReading(DEV_MOCK ? { ...reading!, asked: next, effective: { serving: Math.max(next.serving, reading!.defaults.serving), previews: Math.max(next.previews, reading!.defaults.previews) } }
+        : await teamApi(teamId).setAppTraceSampling({ scopeId: app.app_scope_id, ...next }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally { setBusy(false); }
+  };
+  const row = (kind: 'serving' | 'previews', title: string, note: string) => {
+    const asked = reading?.asked[kind] ?? 0;
+    const floor = reading?.defaults[kind] ?? 0;
+    const rates = [...new Set([...TRACE_RATES, asked])].sort((a, b) => a - b);
+    return <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+      <div style={{ flex: 1 }}>
+        <div>{title}</div>
+        <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 6 }}>{note}</div>
+        {reading && floor > 0 && <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 6 }}>The platform traces {traceRateLabel(floor).toLowerCase()} here whatever you choose; a lower choice has no effect.</div>}
+      </div>
+      <Select
+        size="sm"
+        ariaLabel={`${title} trace rate`}
+        options={rates.map((r) => ({ value: String(r), label: traceRateLabel(r) }))}
+        value={String(asked)}
+        disabled={reading === null || busy}
+        onChange={(e) => reading && void save({ ...reading.asked, [kind]: Number(e.target.value) })}
+        style={{ width: 200 }}
+      />
+    </div>;
+  };
+  const serving = reading?.effective.serving ?? 0;
+  return <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <Eyebrow>Tracing</Eyebrow>
+    <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+      A trace records each step of a request — every database statement and every outbound call — so you can see where time went and what the app reached. Logs are separate and always kept in full. This applies to every installation of this app, and takes effect at its next deploy: the next promote for production, the next push for previews.
+    </div>
+    {row('serving', 'Production', 'The deployment every installation is served from.')}
+    {row('previews', 'Previews', 'Each pushed version’s own deployment, where previews run. Little traffic, so tracing every request costs little.')}
+    {serving > 0 && <div role="note" style={{ fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
+      Traces are billed by volume, like logs. A request records about 20 spans, so tracing every production request comes to roughly 20–40 GB per million requests — an estimate, not a measurement. Sample a share of requests on a busy app.
+    </div>}
     {error && <div role="alert" style={{ fontSize: 13, color: 'var(--status-danger-fg)' }}>{error}</div>}
   </div>;
 }

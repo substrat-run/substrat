@@ -7672,6 +7672,19 @@ export function scopeHostContractSuite(
       await expectRefusal(host.admin.setVerticalEmailSender(staff, 'no-such-vertical', true), 'not_found');
     });
 
+    it('stores an app’s trace rates (setVerticalTraceSampling) — the owner’s setting, which a re-push leaves (#3358)', async () => {
+      const at = (slug: string) => host.admin.listVerticals(staff).then((vs) => vs.find((v) => v.slug === slug));
+      await host.admin.registerVertical(staff, { slug: 'traced', name: 'Traced', source: 'cli', ownerTenant: t2 });
+      expect(await at('traced')).toMatchObject({ traceSampling: 0, previewTraceSampling: 0 });
+
+      await host.admin.setVerticalTraceSampling(staff, 'traced', { serving: 0.05, previews: 1 });
+      await host.admin.registerVertical(staff, { slug: 'traced', name: 'Traced', source: 'cli', ownerTenant: t2 });
+      expect(await at('traced')).toMatchObject({ traceSampling: 0.05, previewTraceSampling: 1 });
+
+      await expectRefusal(host.admin.setVerticalTraceSampling(staff, 'traced', { serving: 1.5, previews: 0 }), 'validation_failed');
+      await expectRefusal(host.admin.setVerticalTraceSampling(staff, 'no-such-vertical', { serving: 0, previews: 0 }), 'not_found');
+    });
+
     it('deletes a vertical — refused while a scope is bound, total once nothing is', async () => {
       // 'callout' still backs s1 (bound above): the refusal that stops a delete from
       // stranding a live scope's version pin and routing. Pinned by the CODE (#113

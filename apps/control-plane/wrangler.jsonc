@@ -390,12 +390,11 @@
 				"SUPPORT_DESK_ORIGIN": "https://ticket0.substrat.net", // same desk; console-test.substrat.net must be on its origin list
 				// #1904: TEST's router has written blobs 6–9 since 2026-09-29T06:52:47Z.
 				"REQUESTS_FROM_ROUTER_SINCE": "2026-09-29T07:05:00Z",
-				// #858: pushed verticals declare Workers automatic tracing at 100%, on TEST
-				// only. Prod sets nothing, so prod scripts keep emitting logs and no spans.
-				// 100% because the question is whether spans appear AT ALL for a
-				// dispatch-namespace user worker — a sampled absence proves nothing. Turn
-				// this off, or down, once #858 reports; beta pricing ends 2026-10-01 and
-				// every span is an observability event sharing quota with Workers Logs.
+				// #858, #3358: the environment's default Workers trace rate, a floor under each app's
+				// own setting. TEST traces everything (owner decision 2026-11-24: little traffic, and
+				// where we want to see everything); previews follow it, since
+				// VERTICAL_PREVIEW_TRACE_SAMPLING is unset. Prod sets neither, so a prod script traces
+				// only when its app's owner asked for it.
 				"VERTICAL_TRACE_SAMPLING": "1",
 				// Must match the test `dispatch_namespaces` binding below — see its hazard note.
 				"DISPATCH_NAMESPACE": "substrat-verticals-test",

@@ -210,6 +210,7 @@ import type {
   CheckSubject,
   EntityGrantShape,
   NotedTransition,
+  VerticalTraceSampling,
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { ScopeDelegation } from './delegation-ceiling.js';
@@ -2472,6 +2473,16 @@ export interface HostAdmin {
    * flipping it never touches running scopes. Staff-only, idempotent, audited.
    */
   setVerticalEmailSender(actor: PlatformActorId, slug: string, granted: boolean): Promise<void>;
+
+  /**
+   * Set the app's Workers trace rates (#3358) — the head sampling rate its serving script and its
+   * preview scripts are uploaded with, each a request above the environment's default. A setting
+   * of the app, not of a tenant: one serving script serves every tenant that installed it (K-33).
+   * Owner-managed (the edge checks ownership), audited, idempotent, and never touched by a push.
+   * Stored only: it reaches a script at that script's next upload, so flipping it touches nothing
+   * running. Refuses (`not_found`) an unknown vertical.
+   */
+  setVerticalTraceSampling(actor: PlatformActorId, slug: string, rates: VerticalTraceSampling): Promise<void>;
 
   /**
    * Delete a vertical from the registry — its row, its versions, its channels.

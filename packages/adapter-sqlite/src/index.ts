@@ -232,6 +232,8 @@ import {
   SCOPE_TABLE_PAGE_MAX,
   SCOPE_QUERY_ROW_MAX,
   verticalServingState,
+  verticalTraceSampling,
+  type VerticalTraceSampling,
   deploymentWireAuth,
   callsOfManifestJson,
   outboundOfManifestJson,
@@ -1934,6 +1936,9 @@ interface VerticalRow {
   tenant_provisioner: number;
   /** Email-sender capability (0/1, #303) — staff grant; never touched by a re-push. */
   email_sender: number;
+  /** The owner's Workers trace rates (0–1, #3358) — serving and preview scripts; NULL reads as 0. Never touched by a re-push. */
+  trace_sampling: number | null;
+  preview_trace_sampling: number | null;
   /** The stable serving script (#286): name, current version, DO-class/tag delta base. */
   serving_ref: string | null;
   serving_version_id: string | null;
@@ -2912,6 +2917,10 @@ export class SqliteScopeHost implements ScopeHost {
         -- plane's /internal/email/send relay and have transactional mail sent for them. A staff
         -- grant (set_vertical_email_sender), never set on insert or re-push.
         email_sender INTEGER NOT NULL DEFAULT 0,
+        -- The owner's Workers trace rates (#3358), 0–1, for the serving script and for each
+        -- version's archive (preview) script, NULL read as 0. Read at upload; set_vertical_trace_sampling only.
+        trace_sampling REAL,
+        preview_trace_sampling REAL,
         -- The ONE stable serving script (#286): the name every new scope's data DO
         -- lives in, the version it currently runs, and the DO-class/migration-tag
         -- base the next in-place upload diffs against.
@@ -9114,6 +9123,8 @@ export class SqliteScopeHost implements ScopeHost {
         installsBlocked: !!r.installs_blocked,
         tenantProvisioner: !!r.tenant_provisioner,
         emailSender: !!r.email_sender,
+        traceSampling: r.trace_sampling ?? 0,
+        previewTraceSampling: r.preview_trace_sampling ?? 0,
         ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
         ...(r.serving_version_id ? { servingVersionId: r.serving_version_id } : {}),
         createdAt: r.created_at,
@@ -10832,6 +10843,11 @@ export class SqliteScopeHost implements ScopeHost {
       setVerticalEmailSender: async (actor, slug: string, granted: boolean) => {
         updateVertical(actor, 'setVerticalEmailSender', slug, 'email_sender = ?', [granted ? 1 : 0],
           (existing) => ({ emailSender: existing.emailSender }), { emailSender: granted });
+      },
+      setVerticalTraceSampling: async (actor, slug: string, input: VerticalTraceSampling) => {
+        const rates = verticalTraceSampling.parse(input);
+        updateVertical(actor, 'setVerticalTraceSampling', slug, 'trace_sampling = ?, preview_trace_sampling = ?', [rates.serving, rates.previews],
+          (existing) => ({ serving: existing.traceSampling, previews: existing.previewTraceSampling }), rates);
       },
       deleteVertical: async (actor, slug: string) => {
         // Deployed dispatch scripts are NOT reaped here — they become orphans for the
@@ -15003,6 +15019,9 @@ export class SqliteScopeHost implements ScopeHost {
     // #412: the tenant-provisioner capability — a staff grant on the registry row.
     this.ensureColumn(this.directory, 'verticals', 'tenant_provisioner', 'tenant_provisioner INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn(this.directory, 'verticals', 'email_sender', 'email_sender INTEGER NOT NULL DEFAULT 0');
+    // #3358: the owner's Workers trace rates.
+    this.ensureColumn(this.directory, 'verticals', 'trace_sampling', 'trace_sampling REAL');
+    this.ensureColumn(this.directory, 'verticals', 'preview_trace_sampling', 'preview_trace_sampling REAL');
     // #286: the stable serving script + what the next in-place upload diffs against.
     this.ensureColumn(this.directory, 'verticals', 'serving_ref', 'serving_ref TEXT');
     this.ensureColumn(this.directory, 'verticals', 'serving_version_id', 'serving_version_id TEXT');

@@ -677,6 +677,13 @@ export interface DashboardClient {
   appScopes(input: { scopeId: string }): Promise<{ scopeId: string; name: string; status: string; isDefault: boolean }[]>;
 
   /**
+   * Read the Workers trace rates of a vertical owned by this team: asked, the platform default, and what its next upload declares
+   *
+   * `GET /apps/{scopeId}/trace-sampling` — `dashboard/app-trace-sampling`
+   */
+  appTraceSampling(input: { scopeId: string }): Promise<{ slug: string; asked: { serving: number; previews: number }; defaults: { serving: number; previews: number }; effective: { serving: number; previews: number } }>;
+
+  /**
    * Ask the dashboard assistant a question about this team, read-only, as the assistant stream protocol
    *
    * `POST /assistant/ask` — `dashboard/ask`
@@ -1526,6 +1533,13 @@ export interface DashboardClient {
   setAppPeerBinding(input: { scopeId: string; vertical: string; targetScopeId: string | null }): Promise<{ changed: boolean; previous: string | null; operationId: string; auditWarning?: string }>;
 
   /**
+   * Set the Workers trace rates of this team’s vertical, for its serving script and its previews; applied at the next upload
+   *
+   * `POST /apps/{scopeId}/trace-sampling` — `dashboard/set-app-trace-sampling`
+   */
+  setAppTraceSampling(input: { scopeId: string; serving: number; previews: number }): Promise<{ slug: string; asked: { serving: number; previews: number }; defaults: { serving: number; previews: number }; effective: { serving: number; previews: number } }>;
+
+  /**
    * Acknowledge, resolve or reopen one of this team's findings
    *
    * `PUT /findings/{id}/status` — `dashboard/set-finding-status`
@@ -1731,6 +1745,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/requests/list`, "GET", undefined, omit(input, ["scopeId"])),
     appScopes: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/scopes`, "GET", undefined, omit(input, ["scopeId"])),
+    appTraceSampling: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/trace-sampling`, "GET", undefined, omit(input, ["scopeId"])),
     ask: (input: Args) =>
       send("/assistant/ask", "POST", input, undefined),
     bindInstalledApp: (input: Args) =>
@@ -1973,6 +1989,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/mail-in`, "POST", omit(input, ["scopeId"]), undefined),
     setAppPeerBinding: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/peers/binding`, "PUT", omit(input, ["scopeId"]), undefined),
+    setAppTraceSampling: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/trace-sampling`, "POST", omit(input, ["scopeId"]), undefined),
     setFindingStatus: (input: Args) =>
       send(`/findings/${encodeURIComponent(String(input.id))}/status`, "PUT", omit(input, ["id"]), undefined),
     setupGithubCi: (input: Args) =>

@@ -78,6 +78,7 @@ import {
   importCursorMoved,
   versionOrigin,
   verticalSlug,
+  verticalTraceSamplingReading,
   z,
 } from '@substrat-run/contracts';
 import { LOGS_INCOMPLETE_HEADER } from '@substrat-run/control-plane-api/browser';
@@ -1763,6 +1764,18 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().min(1), granted: z.boolean() }),
     output: z.object({ slug: z.string(), emailSender: z.boolean() }),
     http: { method: 'POST', path: '/apps/{scopeId}/email-sender' },
+  },
+  'dashboard/app-trace-sampling': {
+    summary: 'Read the Workers trace rates of a vertical owned by this team: asked, the platform default, and what its next upload declares',
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: verticalTraceSamplingReading,
+    http: { method: 'GET', path: '/apps/{scopeId}/trace-sampling' },
+  },
+  'dashboard/set-app-trace-sampling': {
+    summary: 'Set the Workers trace rates of this team’s vertical, for its serving script and its previews; applied at the next upload',
+    input: z.object({ scopeId: z.string().min(1), serving: z.number().min(0).max(1), previews: z.number().min(0).max(1) }),
+    output: verticalTraceSamplingReading,
+    http: { method: 'POST', path: '/apps/{scopeId}/trace-sampling' },
   },
 
   // -- settings danger zone (#2170) ------------------------------------------

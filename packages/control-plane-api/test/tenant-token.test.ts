@@ -233,6 +233,20 @@ describe('tenant tokens', () => {
       expect(malformed.status).toBe(400);
     });
 
+    it('lets a tenant read and set its own app’s trace rates, refusing a foreign one (#3358)', async () => {
+      const rates = { serving: 0.05, previews: 1 };
+      const own = await app.request('/verticals/acme%2Fapp/trace-sampling', { method: 'POST', headers: asA, body: JSON.stringify(rates) });
+      expect(own.status).toBe(200);
+      expect(await own.json()).toMatchObject({ slug: 'acme/app', asked: rates });
+      for (const method of ['GET', 'POST']) {
+        const foreign = await app.request('/verticals/rival%2Fapp/trace-sampling', {
+          method, headers: asA, ...(method === 'POST' ? { body: JSON.stringify(rates) } : {}),
+        });
+        expect(foreign.status).toBe(403);
+      }
+      expect((await host.admin.listVerticals(staff)).find((v) => v.slug === 'rival/app')?.traceSampling).toBe(0);
+    });
+
     // -- the property: the plane refuses, not the dashboard ------------------
 
     it('REFUSES a request naming another tenant in the path — and allows its own', async () => {

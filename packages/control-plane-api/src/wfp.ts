@@ -66,26 +66,6 @@ export interface WfpUploaderOptions {
    */
   bindAi?: boolean;
   /**
-   * Head sampling rate (0–1) for Workers **automatic tracing** on pushed scripts (#858).
-   * Absent ⇒ no `traces` block, which is what every push has sent until now.
-   *
-   * Separate from `observability.enabled` because Cloudflare says it is: *"While automatic
-   * tracing is in early beta, this setting will not enable tracing by default, and will only
-   * enable logs."* So the `enabled: true` below has been buying logs and nothing else, and a
-   * `traces` block is the only thing that turns spans on.
-   *
-   * A **rate rather than a boolean** on purpose. Tracing instruments every I/O operation, each
-   * span is one observability event sharing quota with Workers Logs, and beta pricing ends
-   * 2026-10-01 — so the fleet-wide question was never "on or off" but "how much", and a dial
-   * lets TEST run at 1 while prod stays dark or samples. Undefined and 0 are NOT the same:
-   * undefined omits the block, 0 declares tracing and samples none of it.
-   *
-   * Why this is worth the option at all: the DO-originated subrequests D-46 documents as
-   * unenforceable are also, today, unobservable — and `durable_object_subrequest` spans are
-   * the first mechanism that sees them.
-   */
-  traceSampling?: number;
-  /**
    * #3316: the Analytics Engine dataset every pushed script's scope objects count their own rows
    * into, by origin (the vertical's operation or a platform verb), bound as `SUBSTRAT_SCOPE_WORK`.
    * Undefined binds nothing, and a scope object with no binding counts nothing. Per environment, so
@@ -326,8 +306,11 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
       // builder's only debugging tool is asking staff to redeploy with it on.
       //
       // `traces` is a SEPARATE switch (#858) — `enabled: true` alone yields logs only
-      // while automatic tracing is in beta. Omitted unless the platform sets a sampling
-      // rate, so a deploy of this code changes nothing about what prod emits.
+      // while automatic tracing is in beta. The rate is the BUNDLE's (#3358): decided per
+      // upload from the app's setting and the environment's default, and omitted when that
+      // comes to nothing. A rate, not a boolean: each span is an observability event billed
+      // per GB with Workers Logs, so the question per app is "how much", not "on or off".
+      // Logs are never sampled (owner decision 2026-11-24): this dial is traces only.
       //
       // Invocation logs are OFF. The runtime's own record of each request carries the request's
       // headers, and the platform's calls into a vertical present the platform credential in one
@@ -337,8 +320,8 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
       observability: {
         enabled: true,
         logs: { enabled: true, invocation_logs: false },
-        ...(opts.traceSampling !== undefined
-          ? { traces: { enabled: true, head_sampling_rate: opts.traceSampling } }
+        ...(bundle.traceSampling !== undefined
+          ? { traces: { enabled: true, head_sampling_rate: bundle.traceSampling } }
           : {}),
       },
       // The static files uploaded above, plus how the runtime routes paths against them

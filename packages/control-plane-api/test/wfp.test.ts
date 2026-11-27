@@ -23,7 +23,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 async function metadataOf(
   injectSecrets: Record<string, string | undefined>,
-  extra: { traceSampling?: number; bundle?: VerticalBundle; scopeWorkDataset?: string } = {},
+  extra: { bundle?: VerticalBundle; scopeWorkDataset?: string } = {},
 ): Promise<Record<string, unknown>> {
   let body: FormData | undefined;
   vi.stubGlobal(
@@ -38,7 +38,6 @@ async function metadataOf(
     namespace: 'ns',
     apiToken: 'tok',
     injectSecrets,
-    ...(extra.traceSampling !== undefined ? { traceSampling: extra.traceSampling } : {}),
     ...(extra.scopeWorkDataset !== undefined ? { scopeWorkDataset: extra.scopeWorkDataset } : {}),
   });
   await upload('callout-01k', extra.bundle ?? bundle);
@@ -48,32 +47,20 @@ async function metadataOf(
 
 const LOGS = { enabled: true, invocation_logs: false };
 
-describe('createWfpUploader — tracing (#858)', () => {
-  it('declares no traces block by default, so a deploy changes nothing prod emits', async () => {
+describe('createWfpUploader — tracing (#858, #3358)', () => {
+  it('declares no traces block for a bundle that carries no rate, so a deploy changes nothing prod emits', async () => {
     const meta = await metadataOf({});
     // `enabled: true` must survive — it is what makes builder logs queryable at all — and
     // invocation logs stay off: the runtime's record carries the platform credential's header.
     expect(meta['observability']).toEqual({ enabled: true, logs: LOGS });
   });
 
-  it('declares traces at the given head sampling rate when the platform sets one', async () => {
-    const meta = await metadataOf({}, { traceSampling: 1 });
+  it('declares traces at the rate the bundle carries, and logs unsampled beside them', async () => {
+    const meta = await metadataOf({}, { bundle: { ...bundle, traceSampling: 0.25 } });
     expect(meta['observability']).toEqual({
       enabled: true,
       logs: LOGS,
-      traces: { enabled: true, head_sampling_rate: 1 },
-    });
-  });
-
-  it('treats 0 as "declared, sampling none" — not as absent', async () => {
-    // The distinction is the whole reason the option is a rate and not a boolean: a
-    // declared-but-unsampled script is configured, an undeclared one never was, and
-    // an experiment that concludes from missing spans has to tell them apart.
-    const meta = await metadataOf({}, { traceSampling: 0 });
-    expect(meta['observability']).toEqual({
-      enabled: true,
-      logs: LOGS,
-      traces: { enabled: true, head_sampling_rate: 0 },
+      traces: { enabled: true, head_sampling_rate: 0.25 },
     });
   });
 });

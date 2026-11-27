@@ -1358,6 +1358,12 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       // API's filters are single-valued equality, and an OR across script names is not
       // a filter it offers.
       const pages = await Promise.all(services.map((s) => querySpans(s, hours, limit)));
+      // #3358: a service with no fetch span either reached nothing or recorded nothing. Only a
+      // second read can tell them apart, so it is asked of exactly those services, and only for
+      // one span of any name.
+      const unobserved = (
+        await Promise.all(services.map(async (s, i) => (pages[i]!.spans.length === 0 && !(await anySpan(s, hours)) ? s : null)))
+      ).filter((s): s is string => s !== null);
 
       // Aggregate to (service, host, origin). A vertical calling one host from both a
       // worker and a DO is TWO rows on purpose — the enforcement story differs per
@@ -1394,6 +1400,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         // the query API reports back. Saying `null` (unknown coverage) is the honest
         // answer; claiming 1 would assert every call was seen.
         samplingRate: null,
+        unobserved,
         hours,
       };
     },
@@ -2278,6 +2285,43 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // Row-cap detection: a full page means there may be more. Reported rather than
     // swallowed — an egress report that silently drops hosts is worse than none (#859).
     return { spans, truncated: fetched >= limit };
+  }
+
+  /**
+   * Did `service` record any span at all in the window (#3358)? One event of any span name: a
+   * traced script that served a request has at least its entry spans, so none means it was not
+   * traced or served nothing, and its egress was not observed.
+   *
+   * Narrowed to the `otel` dataset, where #858 found the spans, and to events that carry a span
+   * name. Both narrow toward NOT observed: a wrong dataset name answers empty and successful
+   * (`querySpans` says why), which reads here as "no spans", so the one way this read can be wrong
+   * is to call a watched script unwatched, never to call an unwatched one clean.
+   */
+  async function anySpan(service: string, hours: number): Promise<boolean> {
+    const to = Date.now();
+    const res = await authed(
+      `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/observability/telemetry/query`,
+      {
+        queryId: 'substrat-observed-spans',
+        view: 'events',
+        timeframe: { from: to - hours * 3_600_000, to },
+        parameters: {
+          datasets: ['otel'],
+          filters: [
+            { key: '$metadata.service', operation: 'eq', type: 'string', value: service },
+            { key: '$metadata.spanName', operation: 'regex', type: 'string', value: '.' },
+          ],
+          limit: 1,
+        },
+        limit: 1,
+      },
+    );
+    const json = (await res.json()) as { success?: boolean; errors?: Array<{ message?: string }>; result?: unknown };
+    if (!res.ok || json.success === false) {
+      const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
+      throw new Error(`Cloudflare span query failed: ${message}`);
+    }
+    return telemetryPage(json.result as Parameters<typeof telemetryPage>[0]).fetched > 0;
   }
 }
 

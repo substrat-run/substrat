@@ -223,6 +223,15 @@ its own URL (`settings/environment` …) so deep links survive:
   version-to-version diff when an update is available. It only displays: approving a widened role
   is the [permission-diff checkpoint](/concepts/permissions), and it happens when you press
   *Update* on Deployments, not here.
+- **Tracing** — how many requests record a trace: each step of a request, every database statement
+  and every outbound call. Two rates, one for **production** (the deployment every installation is
+  served from) and one for **previews** (each pushed version's own deployment). Off by default.
+  The rate belongs to the app, not to one installation, because one deployment serves every team
+  that installed it. The platform may trace more than you ask for in an environment (a floor), never
+  less. A change takes effect at the next deploy: the next promote for production, the next push for
+  previews. Traces are billed by volume, like logs; at 100% a request records about 20 spans, which
+  is roughly 20–40 GB per million requests (an estimate), so sample a share on a busy app. Logs are
+  not this setting: they are always kept in full.
 
 ## Billing: what the team has used {#billing}
 

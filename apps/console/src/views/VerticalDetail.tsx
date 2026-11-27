@@ -591,9 +591,14 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
         // What this version was OBSERVED reaching (#859), beside what it DECLARED. The
         // two belong in one cell: the admit decision is about the difference, and a
         // reader comparing two columns by eye is how drift gets missed.
-        const observed = egress?.rows.filter((r) => r.service === v.deploymentRef) ?? [];
+        // #3358: a version runs on its own preview script and, while it is the one served, on the
+        // serving script too, so both are this version's.
+        const scripts = egress?.byService.filter((b) => b.versionId === v.id) ?? [];
+        const observed = egress?.rows.filter((r) => scripts.some((b) => b.service === r.service)) ?? [];
         const undeclared = observed.filter((r) => r.undeclared);
-        const unused = egress?.byService.find((b) => b.service === v.deploymentRef)?.unused ?? [];
+        const watched = scripts.filter((b) => b.spansRecorded);
+        // Declared and seen by NO watched script. Only a watched script's silence counts.
+        const unused = (v.outbound ?? []).filter((h) => watched.length > 0 && watched.every((b) => b.unused.includes(h)));
         return (
           <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 4 }}>
             {v.outbound == null ? (
@@ -613,6 +618,13 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                     <Tag mono>{h}</Tag>
                   </span>
                 ))}
+              </span>
+            )}
+            {/* #3358: no span of any kind, so nothing it called could have been seen. Said here,
+                because an empty cell would read as "reached nothing it should not". */}
+            {scripts.length > 0 && watched.length === 0 && (
+              <span style={{ color: 'var(--text-placeholder)', fontSize: 12 }} title="This version's scripts recorded no spans in the window: tracing is off for them, or they served nothing. Its egress was not observed.">
+                egress not observed — no spans recorded
               </span>
             )}
             {undeclared.length > 0 && (
@@ -963,6 +975,10 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
               {egress.samplingRate === null
                 ? ', sampling rate unknown — absence of a host is not proof it was never called'
                 : `, sampled at ${Math.round(egress.samplingRate * 100)}%`}
+              {egress.unobserved.length > 0 &&
+                (egress.unobserved.length === egress.byService.length
+                  ? ' · NOT OBSERVED: no script recorded a span, so an empty list is not a clean result'
+                  : ` · ${egress.unobserved.length} of ${egress.byService.length} scripts recorded no spans and were not observed`)}
               {egress.truncated && ' · TRUNCATED: the host list is a floor, not the whole set'}
               {egress.servicesTruncated &&
                 ` · only ${egress.versionsConsidered} of ${egress.versionsTotal} deployed versions were queried`}

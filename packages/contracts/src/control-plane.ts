@@ -81,6 +81,7 @@ export const adminAction = z.enum([
   'setVerticalInstallsBlocked', // the staff kill-switch — block/unblock NEW installs of a vertical
   'setVerticalTenantProvisioner', // #412 — grant/revoke the tenant-provisioner capability (manager verticals)
   'setVerticalEmailSender', // #303 — grant/revoke the email-sender capability (relay-sends transactional mail)
+  'setVerticalTraceSampling', // #3358 — the owner's Workers trace rate for the app's serving and preview scripts
   'deleteVertical', // remove a vertical + its versions/channels; refused while any scope is bound
   'bindScopeVersion',
   // #1172 — the receipt that a scope's provision hook ran against a given version. Its

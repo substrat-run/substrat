@@ -379,6 +379,7 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
       'POST /apps/{scopeId}/rewind dashboard/rewind-app',
       'POST /apps/{scopeId}/snapshots dashboard/create-app-snapshot',
       'POST /apps/{scopeId}/subjects/{subjectId}/access dashboard/subject-access',
+      'POST /apps/{scopeId}/trace-sampling dashboard/set-app-trace-sampling',
       'POST /apps/{scopeId}/update dashboard/update-installed-app',
       'PUT /apps/{scopeId}/auth dashboard/set-app-auth',
       'PUT /apps/{scopeId}/env dashboard/set-app-env',
