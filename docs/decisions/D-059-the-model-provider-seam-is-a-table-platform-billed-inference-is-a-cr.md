@@ -64,6 +64,13 @@ for anything it likes. **No gateway is named on that path** — the binding tran
 headers above are the HTTP row's, keyed on a `CLOUDFLARE_AI_GATEWAY_ID` read from the env the
 *vertical* hands the host and set nowhere in the push path; so the gateway spend limit named
 above as the second guard beneath the host's own budget is not in force under the binding.
+(Amended 2026-11-27, [#3320](https://github.com/substrat-run/substrat/issues/3320): the binding
+transport now names one — `gateway: { id, metadata, collectLog: false }` from the row's
+`bindingGatewayFor`, the account's `default` gateway unless `CLOUDFLARE_AI_GATEWAY_ID` names
+another — so a binding call carries the five attribution keys into the gateway's analytics as
+the HTTP call does, and the gateway keeps no log entry of it. A vertical picks this up by
+upgrading `@substrat-run/vertical-host` and re-pushing; one that calls `env.AI.run()` itself
+still bypasses it.)
 **`guard` and `record` are optional constructor hooks** — the budget therefore runs *inside*
 the vertical or nowhere, and ticket0, the first consumer, passes neither, so with the second
 guard absent too nothing on this path enforces one; what bounds a desk today is its widget's

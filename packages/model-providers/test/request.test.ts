@@ -3,7 +3,7 @@
  * and for no other; the five-key limit is refused, never truncated.
  */
 import { describe, expect, it } from 'vitest';
-import { requestHeadersFor } from '../src/index.js';
+import { bindingGatewayFor, requestHeadersFor } from '../src/index.js';
 
 const attribution = { tenant: 't', scope: 's', vertical: 'v', version: '1', operation: 'o' };
 
@@ -26,8 +26,27 @@ describe('requestHeadersFor', () => {
 	});
 
 	it('refuses a sixth key rather than letting the gateway drop it silently', () => {
-		expect(() => requestHeadersFor('cloudflare', { attribution: { ...attribution, install: 'i' }, env: {} })).toThrow(
-			/five metadata keys/,
-		);
+		const six = { attribution: { ...attribution, install: 'i' }, env: {} };
+		expect(() => requestHeadersFor('cloudflare', six)).toThrow(/five metadata keys/);
+		expect(() => bindingGatewayFor('cloudflare', six)).toThrow(/five metadata keys/);
+	});
+});
+
+describe('bindingGatewayFor (#3320)', () => {
+	it('names the gateway, carries the attribution as metadata, and keeps no log entry', () => {
+		expect(bindingGatewayFor('cloudflare', { attribution, env: {} })).toEqual({
+			id: 'default',
+			metadata: attribution,
+			collectLog: false,
+		});
+		expect(bindingGatewayFor('cloudflare', { attribution, env: { CLOUDFLARE_AI_GATEWAY_ID: 'substrat' } })).toMatchObject({
+			id: 'substrat',
+		});
+	});
+
+	it('is absent for every row with no binding transport', () => {
+		for (const p of ['anthropic', 'scaleway', 'qwen', 'ollama', 'compat', 'nope', 'constructor', '__proto__']) {
+			expect(bindingGatewayFor(p, { attribution, env: {} })).toBeUndefined();
+		}
 	});
 });

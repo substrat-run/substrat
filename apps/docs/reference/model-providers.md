@@ -93,7 +93,11 @@ which is why `ModelAttribution` is fixed there and a sixth is refused rather tha
 `cf-aig-collect-log-payload: false` (the gateway logs counts, model, cost and duration but
 never the prompt or the answer), and `cf-aig-gateway-id` when the platform named one
 (`CLOUDFLARE_AI_GATEWAY_ID`). Every other row returns nothing, and the host never learns
-which case it was in. A gateway **spend limit** is operator configuration keyed on the same
+which case it was in. The same row reached through the Workers AI **binding** has no
+headers to carry: `bindingGatewayFor(provider, { attribution, env })` is its `gateway`
+option instead — the same five keys as `metadata`, the gateway `CLOUDFLARE_AI_GATEWAY_ID`
+names (the account's `default` one otherwise), and `collectLog: false`, so the gateway
+counts the call with its attribution and keeps no log entry of it. A gateway **spend limit** is operator configuration keyed on the same
 metadata — a second guard beneath the host's own budget, never the only one.
 
 ## The rate card and list price

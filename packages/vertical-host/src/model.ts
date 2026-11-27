@@ -34,6 +34,7 @@ import {
   normalizeModelSpec,
   parseModelSpec,
   ProviderError,
+  bindingGatewayFor,
   requestHeadersFor,
   type CredentialEnv,
   type DirectFactories,
@@ -195,6 +196,9 @@ export interface ModelHost {
 
 const DESCRIBE_MISSING = (envVar: string) => `${envVar} is not set on the platform`;
 
+/** The row `aiBinding` is the transport of: the one whose `binding` is `workers-ai`. */
+const WORKERS_AI = 'cloudflare';
+
 /** The AI SDK's usage shape → the rate card's, with "reported" kept honest. */
 export interface ReportedTokens extends StepTokens {
   readonly reported: boolean;
@@ -221,12 +225,22 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
   // One place decides which providers this host can build. The binding, when present,
   // joins the same `factories` map the direct rows use — so `createModel` reaches it
   // through the seam it already had rather than a Cloudflare-shaped special case.
-  const factories: DirectFactories = {
+  //
+  // Built per call, because the binding's gateway is per call: the attribution rides on
+  // `gateway.metadata`, where the HTTP transport carries it as a header. Without a gateway
+  // the binding call passes none, and nothing outside the vertical can attribute it (#3320).
+  const factoriesFor = (attribution: ModelAttribution | undefined): DirectFactories => ({
     ...(options.factories ?? {}),
     ...(options.aiBinding
-      ? { cloudflare: () => (modelId: string) => createWorkersAI({ binding: options.aiBinding as never })(modelId) }
+      ? {
+          [WORKERS_AI]: () => (modelId: string) => {
+            const gateway = attribution ? bindingGatewayFor(WORKERS_AI, { attribution, env: options.env }) : undefined;
+            return createWorkersAI({ binding: options.aiBinding as never, ...(gateway ? { gateway } : {}) })(modelId);
+          },
+        }
       : {}),
-  };
+  });
+  const factories = factoriesFor(undefined);
 
   const status = (spec: string): ModelStatus => {
     const { provider, modelId } = parseModelSpec(spec);
@@ -269,7 +283,7 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
     // guard is consulted, so a budget is never charged for a call that could not have
     // happened.
     const resolved = createModel(request.spec, options.env, {
-      factories,
+      factories: factoriesFor(attribution),
       hosted: true,
       describeMissing: DESCRIBE_MISSING,
     });
