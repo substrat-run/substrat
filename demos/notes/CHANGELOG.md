@@ -1,5 +1,16 @@
 # @substrat-run/demo-notes
 
+## 0.2.18
+
+### Patch Changes
+
+- Updated dependencies [40c58f5]
+- Updated dependencies [84ad789]
+  - @substrat-run/kernel@0.216.0
+  - @substrat-run/demo-todo@1.0.29
+  - @substrat-run/adapter-sqlite@0.216.0
+  - @substrat-run/vertical-host@0.216.0
+
 ## 0.2.17
 
 ### Patch Changes

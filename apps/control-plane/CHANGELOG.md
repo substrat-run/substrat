@@ -1,5 +1,32 @@
 # @substrat-run/control-plane
 
+## 0.19.18
+
+### Patch Changes
+
+- 40c58f5: A connection's connector sweep can now run from that connection's own alarm instead of the scheduled pass (K-69, step 4.2 of the tenant-scale RFC). `defineConnectionSweepDO` is one object per connection that holds only its address and its alarm: each run sweeps the one connection and arms the next at its provider's interval, or at the time a crash back-off or poll interval ends. A revoked connection clears its object. The control plane's `CONNECTOR_SWEEP_OWNER` (`connection`, unset by default) hands the sweep to these objects. The pass then only checks that each live connection's object is armed (logged as `connector-wake-check`) and sweeps a connection itself only when its object cannot be reached. Attempt rows, crash back-off, per-connection budgets, landings and the operator's pause are unchanged. `runConnectorSweep` takes `connections`, to sweep only those, and `onNextAttempt`, which reports when a connection the sweep waited out is worth trying again.
+- d23b8c9: The control plane's daily directory copy succeeds again. A copy that outgrew one scheduled pass was cut off and left its snapshot behind, and every later attempt then failed while dropping it and resetting the directory. The leftover is now dropped in its own steps, a copy longer than its budget pauses and the next pass resumes it, and a failed or cut-off copy is recorded as an ops failure. `DirectoryBackupStore.lastAttempt` now returns the attempt record, which can carry a paused copy.
+- 84ad789: The directory lake's capture override can add data sets to the default (`+ops_failures,+sweep_runs`) instead of replacing it, so capturing one more data set for its backfill cannot stop a default's capture (K-70); a contract case holds every data set's capture and backfill on both adapters.
+- 6da4d11: Ops failures, sweep runs and the model-usage ledger can read history before the directory's 35-day window from the lake (K-70), on the same switch as the admin log (`DIRECTORY_LAKE_READS`, off by default, with a compare mode).
+- d6cd1a3: Ops failures and sweep runs may be pruned to the directory's 35-day window once the lake holds them (K-70), now that their history readers read the lake; the prune stays off unless `DIRECTORY_LAKE_PRUNE` names them and reads are on.
+- c8e820f: A directory copy cut off part-way no longer makes every later copy fail and reset the control plane's directory. The snapshot it left behind was dropped inside the next copy's own transaction, which doubled that transaction until it failed. It is now dropped in separate steps before the next snapshot is taken.
+- ccb4f66: K-68 (directory split), step 3b part 2: the dual-write also copies the registry's claims — a tenant's id and slug on create, a hostname on bind, released on delete, the slug freed and the id tombstoned on reap — through the intent-first crossing, recorded in the tenant's object beside the row that makes them. Still off unless `DIRECTORY_MIRROR` is set.
+- f2b4111: K-68 (directory split), step 3b: the directory can dual-write every row to the object it is placed in after the split — its tenant's directory object or the registry — from an outbox the directory's own triggers fill, applied once per key and never backwards. Off unless `DIRECTORY_MIRROR` is set; nothing reads the objects yet.
+- 44ba8aa: Peer-call answers can be read from the routing read model: the directory publishes an answer that dispatches once a router asks for it, and the router reads it memory → KV → the directory under its own `PEER_READ_MODEL` switch, off by default.
+- Updated dependencies [40c58f5]
+- Updated dependencies [d23b8c9]
+- Updated dependencies [84ad789]
+- Updated dependencies [6da4d11]
+- Updated dependencies [d6cd1a3]
+- Updated dependencies [c8e820f]
+- Updated dependencies [ccb4f66]
+- Updated dependencies [f2b4111]
+- Updated dependencies [44ba8aa]
+  - @substrat-run/kernel@0.216.0
+  - @substrat-run/adapter-cloudflare@0.216.0
+  - @substrat-run/control-plane-api@0.216.0
+  - @substrat-run/vertical-host@0.216.0
+
 ## 0.19.17
 
 ### Patch Changes
