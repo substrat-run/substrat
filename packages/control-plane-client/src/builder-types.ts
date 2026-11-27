@@ -13,6 +13,17 @@ export interface Whoami {
   tenants: { id: string; slug: string; name: string }[];
 }
 
+/**
+ * `POST /model-access` (#3420) — short-lived Workers AI access for `substrat dev`, issued to a
+ * signed-in member of one workspace. `token` authorizes OpenAI-compatible model calls at
+ * `{control-plane URL}/model-access/{tenant.id}/v1` for that workspace alone, until `expiresAt`.
+ */
+export interface ModelAccess {
+  token: string;
+  expiresAt: string;
+  tenant: { id: string; slug: string };
+}
+
 export interface VersionRow {
   id: string;
   version: string;

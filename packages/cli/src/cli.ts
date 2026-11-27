@@ -162,7 +162,10 @@ Usage:
   substrat review <id> [--wait]                print your review in the checklist's report
                                                shape; --wait polls until it has run (10 min)
   substrat review list                         list your reviews (a builder: its workspace's)
-  substrat dev      [dir] [--no-trace]         run the project's dev script with local request traces
+  substrat dev      [dir] [--no-trace] [--no-models] [--tenant <slug>]
+                                               run the project's dev script with local request traces;
+                                               a project with substrat.usesModels reaches Workers AI
+                                               through your login's workspace (no Cloudflare token)
   substrat push     [dir] [--promote prod]     push a vertical (slug/name/version default
                                                from package.json; version auto-bumps);
                                                --promote prod points the serving channel at
@@ -1694,7 +1697,12 @@ async function main(): Promise<void> {
   const command = argv[0];
   switch (command) {
     case 'dev':
-      process.exitCode = await dev({ dir: positional(0, ['no-trace']), trace: !argv.includes('--no-trace') });
+      process.exitCode = await dev({
+        dir: positional(0, ['no-trace', 'no-models']),
+        trace: !argv.includes('--no-trace'),
+        models: !argv.includes('--no-models'),
+        ...(flag('tenant') ? { tenant: flag('tenant') } : {}),
+      });
       return;
     case 'login':
       return cmdLogin();

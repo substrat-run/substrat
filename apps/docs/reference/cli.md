@@ -43,6 +43,7 @@ whatever the setting says.
 | `substrat login` | Sign in via the browser (per-human), or store a CI service token with `--token`. |
 | `substrat doctor [dir]` | Check that this machine and project can push: Node, the project's wrangler and, on Windows, long paths. `--fix` turns long paths on. |
 | `substrat whoami` | Print who you are and the workspaces you can build for. |
+| `substrat dev [dir]` | Run the project's dev script with local request traces, and — for a project that uses models — real Workers AI through your login's workspace, with no Cloudflare token. |
 | `substrat push [dir]` | Build the vertical and push a version — **admitted** for a private vertical, **pending** for a listed one. No flags needed from inside the project. |
 | `substrat promote <slug> --version <id>` | Point **`prod`** (the only channel) at a version. `--channel` defaults to `prod`. |
 | `substrat versions <slug>` | List a vertical's versions + whether `prod` points at each. |
@@ -258,6 +259,56 @@ has wrangler installed, and on Windows whether long paths are on. `--fix` change
 setting. It is machine-wide and needs an administrator, so Windows shows its own permission
 prompt once, and `doctor` reads the setting back before it says it worked. Programs that were
 already running keep the old limit until you restart them.
+
+### `dev`
+
+```bash
+substrat dev                      # the project's `dev` script, with local request traces
+substrat dev --tenant acme-co     # model calls for this workspace instead
+substrat dev --no-models          # leave model access out
+substrat dev --no-trace           # leave the trace preload out
+```
+
+It runs `pnpm run dev` in the project and stops the whole process tree on Ctrl-C.
+
+**Workers AI without a Cloudflare token.** A project that declares `"usesModels": true` under
+`substrat` in its `package.json` reaches real Workers AI locally through your `substrat login`.
+Before the dev script starts, the CLI asks the control plane for model access for one workspace:
+`--tenant`, else `SUBSTRAT_TENANT`, else the project's pinned `substrat.tenant`, else your login's
+default. The control plane checks that you belong to that workspace, then issues a token that
+lasts 15 minutes and is good for model calls in that workspace only. The CLI keeps the token and
+starts a relay on `127.0.0.1`, then hands the app two variables, the ones the model host's
+`cloudflare` row reads:
+
+| Variable | Set to |
+|---|---|
+| `CLOUDFLARE_AI_BASE_URL` | the relay, `http://127.0.0.1:<port>/v1` |
+| `CLOUDFLARE_AI_API_TOKEN` | a random key that works at that relay only, for this run only |
+
+The relay asks for a new token before the old one expires. Each call goes to the control plane,
+which makes the Workers AI call with the platform's own credentials. Your app's process never
+holds a Cloudflare credential, your login session or the model token, so `createModelHost({ env:
+process.env })` in a local server works as it is. The model must be a Workers AI model (`@cf/…`);
+a request asking for more than 8192 output tokens is refused.
+
+**Where the usage goes.** Each call is a line on **that workspace's** model usage ledger (the
+dashboard's Billing page), at list price, as any model call the platform serves is. The line
+carries the workspace and a scope of its own (`01JZ0000000000000000DEV001`), with version
+`substrat-dev`. The vertical and operation come from what your app's model host sent, such as
+`@acme/shop` and `shop/ask`. So local usage is always told apart from what a deployed version
+spends. The control plane sets the workspace and scope itself: a workspace or scope the app sends
+in its attribution is replaced.
+
+Model access is skipped, with one line saying why, when:
+
+- the project does not declare `usesModels`, or you passed `--no-models`;
+- `CLOUDFLARE_AI_BASE_URL` or `CLOUDFLARE_AI_API_TOKEN` is already in your environment or in the
+  project's `.env`, so a key you brought keeps working;
+- you are not signed in, or the stored credential is a service token: model access is for a
+  person, so sign in with `substrat login`;
+- you do not belong to the workspace, or the control plane offers no model access.
+
+In every case the dev script still starts.
 
 ### `whoami`
 

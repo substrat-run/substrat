@@ -744,6 +744,14 @@ worker as `env.AI`, versioned with the code like `outbound`; without the declara
 binding. The Cloudflare row then runs with no credential on the script, and the platform's own
 account pays. `demos/ticket0/src/worker.ts` (`modelHostFor`) is a worked example.
 
+**Locally, under `substrat dev`.** A local Node server has no `env.AI`, so it reaches the same
+`cloudflare` row over HTTP: `createModelHost({ env: process.env })`. For a project that declares
+`usesModels`, [`substrat dev`](/reference/cli#dev) sets `CLOUDFLARE_AI_BASE_URL` and
+`CLOUDFLARE_AI_API_TOKEN` to a relay on `127.0.0.1`. The relay reaches Workers AI through the
+control plane on your `substrat login`, for one workspace you belong to. No Cloudflare token is
+set anywhere on your machine, and each call is a line on that workspace's model usage ledger with
+version `substrat-dev`.
+
 What it does, in order: resolve the spec against **platform-held** credentials (only the
 row's own variables — never a per-install token); consult `guard`; run; turn the AI SDK's
 usage into one `ModelUsageLine` — token counts as the provider reported them

@@ -111,6 +111,10 @@
 		// connector point in the router's dataset would count as tenant traffic. Stated per
 		// env and defaulted nowhere, like the router's. Unset ⇒ the connector-calls read 501s.
 		"CONNECTOR_ANALYTICS_DATASET": "substrat_connector_calls",
+		// #3420: `substrat dev` reaches Workers AI through this plane (POST /api/model-access), over
+		// the gateway keys the review reader uses, with each call on the caller's workspace ledger.
+		// The kill switch: anything but "on", and both routes answer 501.
+		"DEV_MODEL_ACCESS": "on",
 		// #1054: the scheduled pass reconciles each closed UTC day of the model usage ledger against
 		// AI Gateway and Workers AI analytics, and files the gaps for staff (sweep.model-reconcile).
 		// Production only: the environments share one Cloudflare account, so the account-wide
@@ -401,7 +405,9 @@
 				"ROUTER_ANALYTICS_DATASET": "substrat_router_test", // differs
 				"SCOPE_WORK_DATASET": "substrat_scope_work_test", // differs: test counts stay out of prod's
 				// #1691: TEST's own connector-call dataset — see the prod entry.
-				"CONNECTOR_ANALYTICS_DATASET": "substrat_connector_calls_test" // differs
+				"CONNECTOR_ANALYTICS_DATASET": "substrat_connector_calls_test", // differs
+				// #3420: see the prod entry.
+				"DEV_MODEL_ACCESS": "on"
 				// MODEL_RECONCILIATION is deliberately absent: see the prod entry. // differs
 			}, // differs
 			"durable_objects": {

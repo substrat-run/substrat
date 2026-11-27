@@ -34,6 +34,7 @@ import type {
   StoreDriverRebuildPassView,
   StoreDriverRebuildView,
   VersionRow,
+  ModelAccess,
   Whoami,
 } from './builder-types.js';
 import { TENANT_HEADER } from './headers.js';
@@ -118,6 +119,14 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
   /** The `substrat login` code→token exchange. Unauthenticated: the code is the credential. */
   exchangeLoginCode(code: string, verifier: string): Promise<{ token?: string }> {
     return this.read('/auth/cli/token', this.write('POST', { code, verifier }));
+  }
+
+  /**
+   * Short-lived model access for the selected workspace (#3420): the plane checks the session's
+   * membership before it issues anything. A browser session only; a service token is refused.
+   */
+  issueModelAccess(): Promise<ModelAccess> {
+    return this.read('/model-access', this.write('POST', {}));
   }
 
   // -- the registry -----------------------------------------------------------

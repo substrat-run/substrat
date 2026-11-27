@@ -6,11 +6,42 @@ import { resolve } from 'node:path';
 export interface DevOptions {
   dir?: string;
   trace?: boolean;
+  /** false (`--no-models`): never reach models through the signed-in workspace. */
+  models?: boolean;
+  /** The workspace model calls are made for (`--tenant`); else SUBSTRAT_TENANT, the project's pin, the login's default. */
+  tenant?: string;
+}
+
+/** The relay `dev-models.ts` starts, as far as `dev` needs it. */
+interface DevModelRelay {
+  readonly baseUrl: string;
+  readonly key: string;
+  close(): Promise<void>;
+}
+
+/**
+ * Model access, loaded on demand: like the trace preload, a missing or broken piece of the CLI
+ * must not stop the project's own dev script, so a failure to load it is one warning.
+ */
+async function devModelRelay(project: string, env: NodeJS.ProcessEnv, options: DevOptions): Promise<DevModelRelay | undefined> {
+  const log = (line: string) => process.stderr.write(`${line}\n`);
+  try {
+    const { modelAccessFor } = await import('./dev-models.js');
+    return await modelAccessFor(project, env, options, log);
+  } catch (error) {
+    log(`warning: model access unavailable: ${String(error)}`);
+    return undefined;
+  }
 }
 
 export async function dev(options: DevOptions = {}): Promise<number> {
   const project = resolve(options.dir ?? '.');
   const env = { ...process.env };
+  const relay = await devModelRelay(project, env, options);
+  if (relay) {
+    env.CLOUDFLARE_AI_BASE_URL = relay.baseUrl;
+    env.CLOUDFLARE_AI_API_TOKEN = relay.key;
+  }
   if (options.trace !== false) {
     delete env.SUBSTRAT_DEV_TRACE_WARNED;
     // A missing/broken CLI preload must not stop the project's own dev script. The tiny
@@ -64,5 +95,6 @@ export async function dev(options: DevOptions = {}): Promise<number> {
   } finally {
     process.off('SIGINT', onInt);
     process.off('SIGTERM', onTerm);
+    await relay?.close();
   }
 }

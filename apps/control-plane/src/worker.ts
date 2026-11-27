@@ -266,6 +266,7 @@ import { fileNotHeld, undrainedOrNotHeld } from './event-drain-not-held.js';
 import { oidcStaffSessionReader, oidcStaffBearerReader, staffRefusalOf, type StaffAuthEnv } from './staff-auth.js';
 import { d1StaffRoster, grantStaff, listStaff, revokeStaff } from './staff-roster.js';
 import { mountCliAuthRoutes } from './cli-auth.js';
+import { mountModelAccessRoutes } from './model-access.js';
 import { builderTenantsFor, studioTenantsFor, oidcBuilderReader, resolveWhoami } from './builder-auth.js';
 import { mountPersonaIssuer, PersonaIssuerDO } from './persona-issuer.js';
 import { dispatchNamespaceOf } from './dispatch-namespace.js';
@@ -838,6 +839,16 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
   REVIEW_MODEL?: string;
   /** The platform's own team tenant the reader half's usage lines are filed under. Unset: no line is written. */
   REVIEW_PLATFORM_TENANT?: string;
+  /**
+   * The gateway pair the review reader and `substrat dev`'s model access (#3420) call Workers AI
+   * over. Secrets (scripts/secrets.mjs); absent, neither reaches a model.
+   */
+  CLOUDFLARE_AI_BASE_URL?: string;
+  CLOUDFLARE_AI_API_TOKEN?: string;
+  /** The AI Gateway calls name; absent, the account's `default` gateway serves them. */
+  CLOUDFLARE_AI_GATEWAY_ID?: string;
+  /** #3420: `on` opens `substrat dev`'s model access (model-access.ts); anything else answers 501. */
+  DEV_MODEL_ACCESS?: string;
   /** Overrides for the reader half's caps (defaults 256 KiB of changed text, 120k input and 8k output tokens). */
   REVIEW_MAX_DIFF_BYTES?: string;
   REVIEW_MAX_INPUT_TOKENS?: string;
@@ -3855,6 +3866,22 @@ export default {
     // A loopback OAuth flow that reuses the AuthHero round-trip above and hands the CLI
     // the same signed session as a bearer. Also before the /api router.
     mountCliAuthRoutes(app);
+
+    // #3420: Workers AI for `substrat dev`. A signed-in person gets a short-lived token for one
+    // workspace they belong to, and the local app's calls run over this plane's gateway keys,
+    // each one a line on that workspace's model usage ledger. Before the /api router too.
+    mountModelAccessRoutes(app, {
+      member: async (e, request) => await oidcBuilderReader(hostFor(e), e)(request),
+      gateway: (e) =>
+        e.DEV_MODEL_ACCESS === 'on' && e.CLOUDFLARE_AI_BASE_URL && e.CLOUDFLARE_AI_API_TOKEN
+          ? {
+              CLOUDFLARE_AI_BASE_URL: e.CLOUDFLARE_AI_BASE_URL,
+              CLOUDFLARE_AI_API_TOKEN: e.CLOUDFLARE_AI_API_TOKEN,
+              ...(e.CLOUDFLARE_AI_GATEWAY_ID ? { CLOUDFLARE_AI_GATEWAY_ID: e.CLOUDFLARE_AI_GATEWAY_ID } : {}),
+            }
+          : null,
+      record: (e, input) => hostFor(e).admin.recordModelUsage(input),
+    });
 
     // #3108: the persona issuer a seeded preview signs in through, at /persona/<preview scope>.
     // Outside /api: a preview's deployment discovers and exchanges here, and a person picks here
