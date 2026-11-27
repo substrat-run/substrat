@@ -5226,6 +5226,24 @@ export function scopeHostContractSuite(
         expect(await host.admin.getScopeRecord(staff, t1, previewId)).toBeUndefined();
       });
 
+      it('the GC sweep reaps an expired fork still stuck in provisioning (#3314)', async () => {
+        // A snapshot that crashes mid-copy leaves its directory row, expiry included, in
+        // `provisioning`: the row is written before the copy and only activated after it. Every
+        // other sweep phase lists `active` scopes alone, so this one listing every status is what
+        // keeps a half-made copy of a tenant's data from staying forever.
+        const past = new Date(Date.now() - 60_000).toISOString();
+        const halfMade = scopeId.parse(ulid());
+        await host.provisionScope(staff, {
+          tenantId: t1, scopeId: halfMade, kind: 'archive', forkedFrom: s1, forkedAt: past, expiresAt: past,
+        });
+        expect((await host.admin.getScopeRecord(staff, t1, halfMade))?.status).toBe('provisioning');
+
+        const report = await runPlatformSweep(host, { actor: staff, fetch: connectorTestFetch, sweepers: {}, drainRetries: false });
+
+        expect(report.errors.filter((e) => e.id === halfMade)).toEqual([]);
+        expect(await host.admin.getScopeRecord(staff, t1, halfMade)).toBeUndefined();
+      });
+
       it('a fork pinned after the sweep listed it survives the reap, and the pass says why (#3314)', async () => {
         const past = new Date(Date.now() - 60_000).toISOString();
         const snap = await host.snapshotScope(staff, t1, s1, { expiresAt: past });
