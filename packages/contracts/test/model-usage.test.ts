@@ -79,6 +79,23 @@ describe('modelUsageLine', () => {
     expect(modelUsageLine.safeParse({ ...line, listUsd: 0.5 }).success).toBe(false);
   });
 
+  it('takes a unit line whole: unit and quantity together, no tokens beside them (#3321)', () => {
+    const unitLine = { ...line, inputTokens: 0, outputTokens: 0, unit: 'audio-byte', quantity: 320_000, listUsd: '0.00015' };
+    expect(modelUsageLine.safeParse(unitLine).success).toBe(true);
+    // A token line from before #3321 carries neither field, or both as null from a ledger row.
+    expect(modelUsageLine.safeParse({ ...line, unit: null, quantity: null }).success).toBe(true);
+    for (const [why, bad] of [
+      ['a quantity with no unit', { ...unitLine, unit: null }],
+      ['a unit with no quantity', { ...unitLine, quantity: undefined }],
+      ['tokens beside a unit', { ...unitLine, inputTokens: 1 }],
+      ['an unknown unit', { ...unitLine, unit: 'audio-minute' }],
+      ['a fractional quantity', { ...unitLine, quantity: 1.5 }],
+      ['a quantity on an unreported line', { ...unitLine, reported: false, listUsd: null }],
+    ] as const) {
+      expect(modelUsageLine.safeParse(bad).success, why).toBe(false);
+    }
+  });
+
   it('still refuses negative counts and a malformed instant', () => {
     expect(modelUsageLine.safeParse({ ...line, inputTokens: -1 }).success).toBe(false);
     expect(modelUsageLine.safeParse({ ...line, at: 'yesterday' }).success).toBe(false);

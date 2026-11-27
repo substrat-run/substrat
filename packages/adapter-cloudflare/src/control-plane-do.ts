@@ -749,6 +749,9 @@ export interface ModelUsageRow {
   list_usd: string | null;
   at: string;
   elapsed_ms: number;
+  /** #3321: NULL on a token line. */
+  unit: string | null;
+  quantity: number | null;
 }
 
 /** The model-usage filter, flattened for the RPC hop (#1054). */
@@ -2217,6 +2220,9 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('vertical_version_migrations', 'declarations TEXT');
     // #2444: existing role rows retain NULL and the old key-only door decision.
     this.addColumn('_substrat_roles', 'holder TEXT');
+    // #3321: a line counting something other than tokens; NULL on every token line.
+    this.addColumn('_substrat_model_usage', 'unit TEXT');
+    this.addColumn('_substrat_model_usage', 'quantity INTEGER');
   }
 
   /**
@@ -7675,8 +7681,9 @@ export class ControlPlaneDO extends DurableObject {
     const cursor = this.sql.exec(
       `INSERT OR IGNORE INTO _substrat_model_usage
          (id, request_id, tenant_id, scope_id, vertical, version, operation, model, provider, model_id,
-          reported, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, list_usd, at, elapsed_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          reported, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, list_usd, at, elapsed_ms,
+          unit, quantity)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       row.id,
       row.request_id,
       row.tenant_id,
@@ -7695,6 +7702,8 @@ export class ControlPlaneDO extends DurableObject {
       row.list_usd,
       row.at,
       row.elapsed_ms,
+      row.unit,
+      row.quantity,
     );
     const recorded = cursor.rowsWritten > 0;
     const horizon = new Date(Date.now() - MODEL_USAGE_RETENTION_DAYS * 86_400_000).toISOString();

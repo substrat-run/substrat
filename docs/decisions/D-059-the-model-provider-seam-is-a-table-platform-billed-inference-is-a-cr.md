@@ -71,6 +71,14 @@ another — so a binding call carries the five attribution keys into the gateway
 the HTTP call does, and the gateway keeps no log entry of it. A vertical picks this up by
 upgrading `@substrat-run/vertical-host` and re-pushing; one that calls `env.AI.run()` itself
 still bypasses it.)
+(Amended 2026-11-27, [#3321](https://github.com/substrat-run/substrat/issues/3321): a call the
+host could not carry — speech-to-text — was metered nowhere, because the line counted only
+tokens. The line now takes `unit` and `quantity` beside them, both or neither, and a unit line
+counts no tokens; the ledger stores both. `createModelHost(...).transcribe` runs on the Workers AI
+binding through the same gateway, counts the bytes of audio it sent (`unit: 'audio-byte'`), and
+prices them from `unit-rate-card.generated.ts` at a stated bytes-per-second basis: an estimate of
+the duration the provider bills, decided by the owner over leaving such calls unpriced, since not
+every model reports its duration. A vertical calling `env.AI.run()` for speech still bypasses it.)
 **`guard` and `record` are optional constructor hooks** — the budget therefore runs *inside*
 the vertical or nowhere, and ticket0, the first consumer, passes neither, so with the second
 guard absent too nothing on this path enforces one; what bounds a desk today is its widget's

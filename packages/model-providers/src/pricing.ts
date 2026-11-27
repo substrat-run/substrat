@@ -28,8 +28,9 @@
  * pre-divided to a per-token rate ($0.19/1M per-token would be 1.9e-7, below
  * the 6 dp floor).
  */
-import { addDecimal, mulDecimal } from '@substrat-run/contracts';
+import { addDecimal, mulDecimal, mulDivDecimal, type ModelUsageUnit } from '@substrat-run/contracts';
 import { RATE_CARD } from './rate-card.generated.js';
+import { UNIT_RATE_CARD } from './unit-rate-card.generated.js';
 import { parseModelSpec } from './spec.js';
 
 export interface RateTier {
@@ -137,4 +138,42 @@ export function listCostOfSteps(model: string, steps: readonly StepTokens[]): st
  */
 export function listCostOf(model: string, inputTokens: number, outputTokens: number): string | null {
 	return listCostOfSteps(model, [{ inputTokens, outputTokens }]);
+}
+
+/**
+ * A model billed by something other than tokens (#3321) — speech-to-text so far. The provider
+ * bills per second of audio; the host counts the bytes it sent (`unit: 'audio-byte'`), and the
+ * price is an estimate of the duration at `bytesPerSecond`, a basis the generator states and a
+ * reviewer reads beside the rate.
+ */
+export interface UnitRate {
+	readonly provider: string;
+	/** Exact model id — never a prefix, so a sibling model is unpriced rather than mispriced. */
+	readonly modelId: string;
+	readonly label: string;
+	readonly unit: ModelUsageUnit;
+	/** Provider list price in USD per 1M seconds of audio, a decimal string. */
+	readonly perMillionAudioSeconds: string;
+	/** Bytes of audio taken as one second when the price is estimated from bytes. */
+	readonly bytesPerSecond: number;
+	readonly sources: readonly string[];
+}
+
+/** The unit card entry for a `provider:model`, by exact id; null = unpriced. */
+export function unitRateFor(model: string): UnitRate | null {
+	if (model.indexOf(':') === -1) return null;
+	const { provider, modelId } = parseModelSpec(model);
+	return UNIT_RATE_CARD.find((r) => r.provider === provider && r.modelId === modelId) ?? null;
+}
+
+/**
+ * USD list price of `quantity` of `unit` on `model`, half-up at 6 dp and rounded once: bytes ×
+ * (USD per 1M seconds) ÷ (bytes per second × 1M). null when the card has no row for the model,
+ * or its row counts another unit — unpriced, never guessed.
+ */
+export function listCostOfUnits(model: string, unit: ModelUsageUnit, quantity: number): string | null {
+	const rate = unitRateFor(model);
+	if (!rate || rate.unit !== unit) return null;
+	if (!Number.isInteger(quantity) || quantity < 0) throw new RangeError(`quantity must be a non-negative integer, got ${quantity}`);
+	return mulDivDecimal(String(quantity), rate.perMillionAudioSeconds, BigInt(rate.bytesPerSecond) * 1_000_000n);
 }

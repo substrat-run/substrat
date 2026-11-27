@@ -11732,6 +11732,8 @@ export class CloudflareScopeHost implements ScopeHost {
           list_usd: l.listUsd,
           at: l.at,
           elapsed_ms: l.elapsedMs,
+          unit: l.unit ?? null,
+          quantity: l.quantity ?? null,
         });
       },
       listModelUsage: async (actor, filter?: ModelUsageFilter): Promise<ModelUsageEntry[]> => {
@@ -14233,5 +14235,7 @@ function modelUsageEntryOf(r: ModelUsageRow): ModelUsageEntry {
     listUsd: r.list_usd,
     at: r.at,
     elapsedMs: r.elapsed_ms,
+    unit: r.unit ?? null,
+    quantity: r.quantity ?? null,
   });
 }

@@ -269,6 +269,9 @@ export const DIRECTORY_COLUMNS_ADDED: readonly (readonly [table: string, column:
 const COLUMNS_ADDED_AFTER_HELD: readonly (readonly [string, string])[] = [
   ['vertical_version_migrations', 'declarations TEXT'],
   ['_substrat_roles', 'holder TEXT'],
+  // #3321: a model-usage line counting something other than tokens.
+  ['_substrat_model_usage', 'unit TEXT'],
+  ['_substrat_model_usage', 'quantity INTEGER'],
 ];
 /** The indexes `ensureDirectoryColumns` creates after its columns (a copy, held as the columns are). */
 const INDEXES_ADDED: readonly string[] = [

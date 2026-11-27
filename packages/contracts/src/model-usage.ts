@@ -31,6 +31,21 @@ export const modelAttribution = z
   .strict();
 export type ModelAttribution = z.infer<typeof modelAttribution>;
 
+/**
+ * What a non-token line counts (#3321). A model that is not a language model is billed by
+ * something other than tokens: Workers AI bills speech-to-text per minute of input audio,
+ * embeddings per input token of another kind, images per image.
+ *
+ * - `audio-byte` — the bytes of audio the host SENT to a speech-to-text model. A count the
+ *   host made of its own request, exact; the duration the provider bills for is not reported
+ *   by every model (`@cf/openai/whisper` reports none), so the price is an ESTIMATE made from
+ *   the bytes at a bytes-per-second basis the rate card states beside the rate.
+ *
+ * Additive: a new unit is a new value, never a renamed one.
+ */
+export const modelUsageUnit = z.enum(['audio-byte']);
+export type ModelUsageUnit = z.infer<typeof modelUsageUnit>;
+
 const modelUsageLineFields = z.object({
   attribution: modelAttribution,
   /** Normalized `provider:modelId`. */
@@ -60,6 +75,13 @@ const modelUsageLineFields = z.object({
   /** ISO 8601, from the host's clock. */
   at: instant,
   elapsedMs: z.number().int().nonnegative(),
+  /**
+   * A line that counts something other than tokens (#3321): the unit, and how many of it. Both
+   * absent (or null) on a token line, the only kind before #3321, so a line written before then
+   * parses unchanged; both present on a unit line, whose token counts are then all zero.
+   */
+  unit: modelUsageUnit.nullable().optional(),
+  quantity: z.number().int().nonnegative().nullable().optional(),
 });
 
 /**
@@ -77,17 +99,32 @@ export const unreportedIsEmpty = (line: z.infer<typeof modelUsageLineFields>): b
     line.outputTokens === 0 &&
     line.cachedInputTokens === 0 &&
     line.cacheWriteTokens === 0 &&
+    (line.quantity ?? 0) === 0 &&
     line.listUsd === null);
 
 export const UNREPORTED_MESSAGE =
-  'reported: false means the provider reported no usage — every token count must be 0 and listUsd null';
+  'reported: false means the provider reported no usage — every token count and the quantity must be 0 and listUsd null';
+
+/**
+ * A unit line is one thing counted: `unit` and `quantity` together or neither, and a line that
+ * counts a unit counts no tokens. Without it a line could carry a quantity nothing says the unit
+ * of, or bill the same call twice, once by tokens and once by its unit.
+ */
+export const unitIsWhole = (line: z.infer<typeof modelUsageLineFields>): boolean => {
+  const unit = line.unit ?? null;
+  const quantity = line.quantity ?? null;
+  if (unit === null || quantity === null) return unit === null && quantity === null;
+  return line.inputTokens === 0 && line.outputTokens === 0 && line.cachedInputTokens === 0 && line.cacheWriteTokens === 0;
+};
+
+export const UNIT_MESSAGE = 'unit and quantity come together or not at all, and a unit line counts no tokens';
 
 /** The line's own fields, unrefined — for schemas that extend it (a refined schema cannot). */
 export { modelUsageLineFields };
 
-export const modelUsageLine = modelUsageLineFields.refine(unreportedIsEmpty, {
-  message: UNREPORTED_MESSAGE,
-});
+export const modelUsageLine = modelUsageLineFields
+  .refine(unreportedIsEmpty, { message: UNREPORTED_MESSAGE })
+  .refine(unitIsWhole, { message: UNIT_MESSAGE });
 export type ModelUsageLine = z.infer<typeof modelUsageLine>;
 
 /**
@@ -110,7 +147,8 @@ export const modelUsageEntry = modelUsageLineFields
   // Extends the FIELDS, not `modelUsageLine`: a refined schema cannot be extended. The
   // same invariant is re-applied so it also holds on the way back OUT of the ledger —
   // a row written before the check existed cannot be read as a priced one.
-  .refine(unreportedIsEmpty, { message: UNREPORTED_MESSAGE });
+  .refine(unreportedIsEmpty, { message: UNREPORTED_MESSAGE })
+  .refine(unitIsWhole, { message: UNIT_MESSAGE });
 export type ModelUsageEntry = z.infer<typeof modelUsageEntry>;
 
 /**

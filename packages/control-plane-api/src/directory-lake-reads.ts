@@ -504,6 +504,7 @@ export function modelUsageEntryOfLakeRow(row: Record<string, unknown>): ModelUsa
     model: row['model'], provider: row['provider'], modelId: row['model_id'], reported: row['reported'] === 1 || row['reported'] === true,
     inputTokens: row['input_tokens'], outputTokens: row['output_tokens'], cachedInputTokens: row['cached_input_tokens'],
     cacheWriteTokens: row['cache_write_tokens'], listUsd: row['list_usd'] ?? null, at: row['at'], elapsedMs: row['elapsed_ms'],
+    unit: row['unit'] ?? null, quantity: row['quantity'] ?? null,
   });
 }
 

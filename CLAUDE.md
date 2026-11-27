@@ -866,6 +866,7 @@ bullet above gives.
 **The one exception, stated rather than hidden:** a file generated from a *remote* source
 cannot be re-emitted hermetically in CI, so it gets marks 1 and 2 plus a `GENERATED_AT`
 stamp instead of mark 3 — `packages/model-providers/src/rate-card.generated.ts` (models.dev),
+`packages/model-providers/src/unit-rate-card.generated.ts` (LiteLLM, #3321),
 `packages/psl/src/data.generated.ts` (the public suffix list). And one accepted shape, not a
 category: a **JSON** artifact cannot carry a comment, so `model.json`, `openapi.json` and
 `.claude/launch.json` have mark 3 only — their producer is named in the gate list above and

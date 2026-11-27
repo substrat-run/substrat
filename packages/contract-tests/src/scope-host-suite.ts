@@ -5426,6 +5426,36 @@ export function scopeHostContractSuite(
           new Date(endMs - 1).toISOString(),
         ].sort());
       });
+
+      it('keeps a unit line its unit and quantity, and folds its price like any other (#3321)', async () => {
+        const tenant = tenantId.parse(ulid());
+        const base = line(day(3, 10));
+        const transcription = line(day(3, 10), {
+          attribution: { ...base.attribution, tenant },
+          model: 'cloudflare:@cf/openai/whisper',
+          provider: 'cloudflare',
+          modelId: '@cf/openai/whisper',
+          inputTokens: 0,
+          outputTokens: 0,
+          unit: 'audio-byte',
+          quantity: 960_000,
+          listUsd: '0.00045',
+        });
+        await host.admin.recordModelUsage({ requestId: 'req-model-usage-unit', line: transcription });
+        // A token line beside it reads back with neither field: the columns are NULL for it.
+        await host.admin.recordModelUsage({
+          requestId: 'req-model-usage-unit-tokens',
+          line: line(day(3, 11), { attribution: { ...base.attribution, tenant }, listUsd: '0.5' }),
+        });
+
+        const listed = await host.admin.listModelUsage(staff, { tenantId: tenant, since: day(0) });
+        expect(listed.map((e) => [e.model, e.unit ?? null, e.quantity ?? null])).toEqual([
+          ['anthropic:claude-opus-5', null, null],
+          ['cloudflare:@cf/openai/whisper', 'audio-byte', 960_000],
+        ]);
+        const summary = await host.admin.summarizeModelUsage(staff, { tenantId: tenant, since: day(0), until: day(30) }, 20);
+        expect(summary.totals).toMatchObject({ calls: 2, unpriced: 0, listUsd: '0.50045' });
+      });
     });
 
     describe('build usage (#2946)', () => {

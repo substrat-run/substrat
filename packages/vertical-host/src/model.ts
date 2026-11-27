@@ -20,17 +20,28 @@
  * vertical calls this from its harness — the way ticket0's assistant already runs —
  * and records the result through its own operations.
  *
- * Nothing in this file names a provider. Cloudflare's gateway extras (per-request
+ * Nothing in `run` names a provider. Cloudflare's gateway extras (per-request
  * metadata, spend limits) are layered on that row by the provider package when the
- * host asks for them; the line this produces is the same for every row.
+ * host asks for them; the line this produces is the same for every row. `transcribe`
+ * (#3321) runs on the Workers AI binding only, the one transport it has today.
  */
-import { generateText, stepCountIs, streamText, tool, zodSchema, type LanguageModelUsage, type ToolSet } from 'ai';
+import {
+  transcribe as transcribeAudio,
+  generateText,
+  stepCountIs,
+  streamText,
+  tool,
+  zodSchema,
+  type LanguageModelUsage,
+  type ToolSet,
+} from 'ai';
 import {
   createModel,
   credentialsFrom,
   hostingInfo,
   providerRow,
   listCostOfSteps,
+  listCostOfUnits,
   normalizeModelSpec,
   parseModelSpec,
   ProviderError,
@@ -128,6 +139,37 @@ export interface ModelRun {
   readonly steps: readonly ModelRunStep[];
 }
 
+/**
+ * Speech to text, governed like `run` (#3321): one call, one line, priced on our side.
+ *
+ * The line counts the bytes of audio sent (`unit: 'audio-byte'`), not tokens. Not every model
+ * reports the duration its provider bills for (`@cf/openai/whisper` reports none), so the price
+ * is an estimate of the duration from the bytes at the rate card's stated basis.
+ */
+export interface TranscriptionRequest extends ModelIntent {
+  /** The audio, whole. A URL is not taken: the host sends what it can count. */
+  readonly audio: Uint8Array;
+  /** An ISO-639-1 hint (`'sv'`); the model detects the language when absent. */
+  readonly language?: string;
+  /** As `ModelRequest.abortSignal`: an aborted call records nothing, and may still be billed. */
+  readonly abortSignal?: AbortSignal;
+  /** As `ModelRequest.maxRetries`. Default 2; 0 makes one request one call. */
+  readonly maxRetries?: number;
+}
+
+export interface Transcription {
+  readonly text: string;
+  readonly segments: ReadonlyArray<{ readonly text: string; readonly startSecond: number; readonly endSecond: number }>;
+  /** The language the model reports, when it reports one. */
+  readonly language?: string;
+  /** The duration the model reports, when it reports one. The line does not depend on it. */
+  readonly durationInSeconds?: number;
+  /** `provider/modelId`. */
+  readonly label: string;
+  /** The one governance fact this call produced; already handed to `record`. */
+  readonly line: ModelUsageLine;
+}
+
 /** What a settings screen shows for a spec before anyone runs it. */
 export interface ModelStatus {
   readonly spec: string;
@@ -192,6 +234,12 @@ export interface ModelHostOptions {
 export interface ModelHost {
   status(spec: string): ModelStatus;
   run(request: ModelRequest): Promise<ModelRun>;
+  /**
+   * Speech to text (#3321). Runs on the Workers AI binding only — the transport a vertical
+   * already holds, and the one a call made around this host would take — and refuses any other
+   * row before the guard, so nothing is spent on a call that could not have run.
+   */
+  transcribe(request: TranscriptionRequest): Promise<Transcription>;
 }
 
 const DESCRIBE_MISSING = (envVar: string) => `${envVar} is not set on the platform`;
@@ -352,7 +400,69 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
     return { text: result.text, finishReason: result.finishReason, label: resolved.label, line, steps };
   };
 
-  return { status, run };
+  const transcribe = async (request: TranscriptionRequest): Promise<Transcription> => {
+    // The same order as `run`: everything that can be refused for free is refused before the guard.
+    const attribution = modelAttribution.parse(request.attribution);
+    if (!(request.audio instanceof Uint8Array) || request.audio.byteLength === 0) {
+      throw new TypeError('a transcription request takes the audio as a non-empty Uint8Array');
+    }
+    const { provider, modelId } = parseModelSpec(request.spec);
+    if (provider !== WORKERS_AI || !options.aiBinding) {
+      throw new TypeError(
+        `transcription runs on the Workers AI binding, and ${options.aiBinding ? `'${provider}' is not that row` : 'this host has none'}`,
+      );
+    }
+    const model = normalizeModelSpec(request.spec);
+    await options.guard?.({ spec: model, attribution });
+
+    // The binding's own transcription model, through the gateway `run` uses (#3320), so the call
+    // carries the five keys into the gateway's analytics and leaves no log there.
+    const gateway = bindingGatewayFor(WORKERS_AI, { attribution, env: options.env });
+    const transcriber = createWorkersAI({ binding: options.aiBinding as never, ...(gateway ? { gateway } : {}) }).transcription(
+      modelId,
+      request.language ? { language: request.language } : {},
+    );
+    const bytes = request.audio.byteLength;
+    const started = now();
+    const result = await transcribeAudio({
+      model: transcriber,
+      audio: request.audio,
+      ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
+      ...(request.maxRetries !== undefined ? { maxRetries: request.maxRetries } : {}),
+    });
+    const finished = now();
+
+    // The bytes are the host's own count of what it sent, so the line is reported whether or not
+    // the model reports anything. The price is the estimate, and the card states its basis.
+    const line = modelUsageLine.parse({
+      attribution,
+      model,
+      provider,
+      modelId,
+      reported: true,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      unit: 'audio-byte',
+      quantity: bytes,
+      listUsd: listCostOfUnits(model, 'audio-byte', bytes),
+      at: finished.toISOString(),
+      elapsedMs: Math.max(0, finished.getTime() - started.getTime()),
+    });
+    await options.record?.(line);
+
+    return {
+      text: result.text,
+      segments: result.segments.map((sg) => ({ text: sg.text, startSecond: sg.startSecond, endSecond: sg.endSecond })),
+      ...(result.language !== undefined ? { language: result.language } : {}),
+      ...(result.durationInSeconds !== undefined ? { durationInSeconds: result.durationInSeconds } : {}),
+      label: `${provider}/${modelId}`,
+      line,
+    };
+  };
+
+  return { status, run, transcribe };
 }
 
 /**

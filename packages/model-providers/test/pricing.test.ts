@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { addDecimal } from '@substrat-run/contracts';
-import { listCostOf, listCostOfSteps, normalizeModelSpec, rateFor } from '../src/index.js';
+import { listCostOf, listCostOfSteps, listCostOfUnits, normalizeModelSpec, rateFor } from '../src/index.js';
 
 describe('rateFor', () => {
 	it('longest-prefix matches dated snapshots to their base model', () => {
@@ -104,5 +104,20 @@ describe('listCostOf — legacy totals fallback', () => {
 		expect(listCostOf('qwen:qwen3.8-max', 1_000_000, 100_000)).toBe(
 			listCostOfSteps('qwen:qwen3.8-max', [{ inputTokens: 1_000_000, outputTokens: 100_000 }]),
 		);
+	});
+});
+
+describe('listCostOfUnits (#3321)', () => {
+	it('prices audio bytes as an estimated duration, rounded once, and leaves an unknown model unpriced', () => {
+		// 16 000 B/s at $7.5 per 1M seconds: one minute of 128 kb/s audio is $0.00045, Cloudflare's per-minute list price.
+		expect(listCostOfUnits('cloudflare:@cf/openai/whisper', 'audio-byte', 960_000)).toBe('0.00045');
+		expect(listCostOfUnits('cloudflare:@cf/openai/whisper-large-v3-turbo', 'audio-byte', 960_000)).toBe('0.00051');
+		// A 10 KB clip is 0.625 s, $0.0000046875: half-up at 6 dp, never truncated to zero.
+		expect(listCostOfUnits('cloudflare:@cf/openai/whisper', 'audio-byte', 10_000)).toBe('0.000005');
+		expect(listCostOfUnits('cloudflare:@cf/openai/whisper', 'audio-byte', 0)).toBe('0');
+		// Exact id, not prefix: a sibling the card does not list is unpriced, never priced as whisper.
+		expect(listCostOfUnits('cloudflare:@cf/openai/whisper-tiny-en', 'audio-byte', 960_000)).toBeNull();
+		expect(listCostOfUnits('cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast', 'audio-byte', 960_000)).toBeNull();
+		expect(() => listCostOfUnits('cloudflare:@cf/openai/whisper', 'audio-byte', 1.5)).toThrow(RangeError);
 	});
 });

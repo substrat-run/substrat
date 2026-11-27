@@ -2109,6 +2109,9 @@ interface ModelUsageRow {
   list_usd: string | null;
   at: string;
   elapsed_ms: number;
+  /** #3321: NULL on a token line. */
+  unit: string | null;
+  quantity: number | null;
 }
 
 /** A ledger row → the wire entry, the attribution re-nested. Shared by both adapters' shape. */
@@ -2134,6 +2137,8 @@ function modelUsageEntryOf(r: ModelUsageRow): ModelUsageEntry {
     listUsd: r.list_usd,
     at: r.at,
     elapsedMs: r.elapsed_ms,
+    unit: r.unit ?? null,
+    quantity: r.quantity ?? null,
   });
 }
 
@@ -14456,8 +14461,9 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare(
             `INSERT OR IGNORE INTO _substrat_model_usage
                (id, request_id, tenant_id, scope_id, vertical, version, operation, model, provider, model_id,
-                reported, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, list_usd, at, elapsed_ms)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                reported, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, list_usd, at, elapsed_ms,
+                unit, quantity)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             ulid(),
@@ -14478,6 +14484,8 @@ export class SqliteScopeHost implements ScopeHost {
             l.listUsd,
             l.at,
             l.elapsedMs,
+            l.unit ?? null,
+            l.quantity ?? null,
           );
         const horizon = new Date(Date.now() - MODEL_USAGE_RETENTION_DAYS * 86_400_000).toISOString();
         this.directory.prepare('DELETE FROM _substrat_model_usage WHERE at < ?').run(horizon);
@@ -14981,6 +14989,9 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, '_substrat_tenant_tuples', 'revoked_at', 'revoked_at TEXT');
     // #2444: old role rows keep NULL and retain the key-only platform door decision.
     this.ensureColumn(this.directory, '_substrat_roles', 'holder', 'holder TEXT');
+    // #3321: a line counting something other than tokens; NULL on every token line.
+    this.ensureColumn(this.directory, '_substrat_model_usage', 'unit', 'unit TEXT');
+    this.ensureColumn(this.directory, '_substrat_model_usage', 'quantity', 'quantity INTEGER');
     // builder-plane.md Phase 1b: who owns a vertical (NULL = platform-owned).
     this.ensureColumn(this.directory, 'verticals', 'owner_tenant', 'owner_tenant TEXT');
     this.ensureColumn(this.directory, 'verticals', 'env_spec', 'env_spec TEXT');
