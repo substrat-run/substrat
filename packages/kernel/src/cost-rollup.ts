@@ -194,6 +194,12 @@ export interface CostDirectory {
    * the ledger never names, so one tenant's copy there says nothing about its other objects.
    */
   copyTenantByScript: ReadonlyMap<string, string | null>;
+  /**
+   * #3358: every scope the directory holds → its tenant, so a log line's own `tenantId` and `scopeId`
+   * fields are believed only as a pair the directory recorded. Optional: a directory read for
+   * containers alone has no lines to judge.
+   */
+  tenantByScope?: ReadonlyMap<string, string>;
 }
 
 interface ScriptInfo {
@@ -364,15 +370,18 @@ export function attributeCostDay(usage: CloudflareUsageDay, dir: CostDirectory):
     add(row, 'container_egress_bytes', c.txBytes);
   }
 
-  // Observability volume (#3358): a script's log lines and spans. A line that named its own tenant
-  // on a vertical's script is that installation's (`line`); the rest is the script's, as CPU is —
-  // the vertical's owner, or the platform for its own scripts. The line's own scope id is kept only
-  // when it is one, so a malformed field never lands in the scope column.
+  // Observability volume (#3358): a script's log lines and spans. A line on a vertical's script is
+  // that installation's (`line`) only when it names a scope the directory holds AND that scope's own
+  // tenant: both are fields a line carries, so neither is believed alone, and a vertical's own line
+  // cannot charge a tenant by naming it. Everything else is the script's, as CPU is: the vertical's
+  // owner, or the platform for its own scripts. So a row's key (script, scope) decides its tenant and
+  // attribution, and rows summed under one key never mix two of either: a `line` row always names
+  // its scope, and a script row never does.
   for (const o of usage.observability ?? []) {
     const base = scriptRow(o.script, null);
-    const tenant = o.tenantId !== null && ULID_PATTERN.test(o.tenantId) ? (o.tenantId as TenantId) : null;
-    const row = base.attribution === 'script' && tenant !== null
-      ? { ...base, attribution: 'line' as const, tenantId: tenant, scopeId: o.scopeId !== null && ULID_PATTERN.test(o.scopeId) ? (o.scopeId as ScopeId) : null }
+    const scopeTenant = o.scopeId !== null ? dir.tenantByScope?.get(o.scopeId) : undefined;
+    const row = base.attribution === 'script' && scopeTenant !== undefined && scopeTenant === o.tenantId
+      ? { ...base, attribution: 'line' as const, tenantId: scopeTenant as TenantId, scopeId: o.scopeId as ScopeId }
       : base;
     add(row, o.signal === 'logs' ? 'log_events' : 'span_events', o.events);
     if (o.bytes !== null) add(row, o.signal === 'logs' ? 'log_bytes' : 'span_bytes', o.bytes);
@@ -450,7 +459,11 @@ export function readCostDirectory(sql: RedactionSql, day: string): CostDirectory
   for (const r of sql(COPY_TENANTS_SQL, []) as { script_ref: string; tenant_id: string; tenants: number }[]) {
     copyTenantByScript.set(r.script_ref, r.tenants === 1 ? r.tenant_id : null);
   }
-  return { objects, slugByScript, versionByScript, versionById, ownerBySlug, liveScripts, copyTenantByScript };
+  const tenantByScope = new Map<string, string>();
+  for (const r of sql('SELECT scope_id, tenant_id FROM scopes', []) as { scope_id: string; tenant_id: string }[]) {
+    tenantByScope.set(r.scope_id, r.tenant_id);
+  }
+  return { objects, slugByScript, versionByScript, versionById, ownerBySlug, liveScripts, copyTenantByScript, tenantByScope };
 }
 
 /** Each script the copy ledger names, with one of its tenants and how many there are. */

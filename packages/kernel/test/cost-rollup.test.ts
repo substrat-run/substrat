@@ -167,36 +167,43 @@ describe('the Cloudflare cost rollup', () => {
     expect(new Set(rows.map((r) => `${r.script} ${r.objectClass}`))).toEqual(new Set(['container:app-1 Container']));
   });
 
-  it('charges an installation its own stamped lines, and the rest of a script’s lines and spans to its owner (#3358)', () => {
+  it('charges an installation only the lines naming its own scope and tenant; every other line and span is the owner’s (#3358)', () => {
     const { sql } = directory();
+    const dir = readCostDirectory(sql, DAY);
     const lines = (o: Partial<NonNullable<CloudflareUsageDay['observability']>[number]>) =>
-      ({ signal: 'logs' as const, script: STABLE, tenantId: null, scopeId: null, events: 10, bytes: 4000, ...o });
-    const rows = attributeCostDay(
-      {
-        day: DAY, workers: [], doInvocations: [], doObjects: [], namespaces: [],
-        observability: [
-          lines({ tenantId: INSTALLER, scopeId: LIVE }),
-          lines({ events: 3, bytes: 900 }),
-          // A tenant field that is not a tenant id names no one; its scope is not kept either.
-          lines({ tenantId: 'not-a-tenant', scopeId: LIVE, events: 1, bytes: 300 }),
-          // A span carries no tenant, and a size the backend did not report is no bytes row, never 0.
-          lines({ signal: 'spans', script: PER_VERSION, events: 40, bytes: null }),
-          // The platform's own scripts stay the platform's, whoever's request a line was about.
-          lines({ script: 'substrat-router', tenantId: INSTALLER, events: 2, bytes: 500 }),
-        ],
-      },
-      readCostDirectory(sql, DAY),
-    );
-    expect(rows.map((r) => [r.script, r.scopeId ?? '-', r.dimension, r.attribution, r.tenantId ?? '-', r.vertical ?? '-', r.kind, r.quantity].join(' '))).toEqual([
-      `${STABLE} ${LIVE} log_events line ${INSTALLER} tenant-a/crm live 10`,
-      `${STABLE} ${LIVE} log_bytes line ${INSTALLER} tenant-a/crm live 4000`,
-      // The unstamped line and the malformed one land on one script-grain row: the owner's.
-      `${STABLE} - log_events script ${OWNER} tenant-a/crm live 4`,
-      `${STABLE} - log_bytes script ${OWNER} tenant-a/crm live 1200`,
-      `${PER_VERSION} - span_events script ${OWNER} tenant-a/crm preview 40`,
-      'substrat-router - log_events platform - - live 2',
+      ({ signal: 'logs' as const, script: STABLE, tenantId: null, scopeId: null, events: 1, bytes: 100, ...o });
+    const observability = [
+      lines({ tenantId: INSTALLER, scopeId: LIVE, events: 10, bytes: 4000 }),
+      // The same installation again: one identity, so one row.
+      lines({ tenantId: INSTALLER, scopeId: LIVE, events: 5, bytes: 1000 }),
+      // A tenant with no scope, two tenants with no scope, a scope paired with another tenant, a
+      // malformed tenant, and an unstamped line: none is a pair the directory recorded, so all are
+      // the script's — whatever order they arrive in.
+      lines({ tenantId: INSTALLER }),
+      lines({ tenantId: OWNER }),
+      lines({ tenantId: OWNER, scopeId: LIVE }),
+      lines({ tenantId: 'not-a-tenant', scopeId: LIVE }),
+      lines({}),
+      // A span carries no tenant, and a size the backend did not report is no bytes row, never 0.
+      lines({ signal: 'spans', script: PER_VERSION, events: 40, bytes: null }),
+      // The platform's own scripts stay the platform's, whoever's request a line was about.
+      lines({ script: 'substrat-router', tenantId: INSTALLER, scopeId: LIVE, events: 2, bytes: 500 }),
+    ];
+    const attributed = (order: typeof observability) =>
+      attributeCostDay({ day: DAY, workers: [], doInvocations: [], doObjects: [], namespaces: [], observability: order }, dir)
+        .map((r) => [r.script, r.scopeId ?? '-', r.dimension, r.attribution, r.tenantId ?? '-', r.vertical ?? '-', r.kind, r.quantity].join(' '))
+        .sort();
+    const rows = attributed(observability);
+    expect(rows).toEqual([
       'substrat-router - log_bytes platform - - live 500',
+      'substrat-router - log_events platform - - live 2',
+      `${STABLE} - log_bytes script ${OWNER} tenant-a/crm live 500`,
+      `${STABLE} - log_events script ${OWNER} tenant-a/crm live 5`,
+      `${STABLE} ${LIVE} log_bytes line ${INSTALLER} tenant-a/crm live 5000`,
+      `${STABLE} ${LIVE} log_events line ${INSTALLER} tenant-a/crm live 15`,
+      `${PER_VERSION} - span_events script ${OWNER} tenant-a/crm preview 40`,
     ]);
+    expect(attributed([...observability].reverse())).toEqual(rows);
   });
 
   it('attributes a day read before its scopes were known once their object ids are recorded', async () => {

@@ -2503,10 +2503,12 @@ export type CostDimension = z.infer<typeof costDimension>;
  *   names the scopes copied into a script, not which object is which, so the row names no scope. A
  *   preview script holds only copies, each written to the ledger before its data, so this is a fact
  *   the directory recorded even after the script is reaped. A recorded object id replaces it (`scope`).
- * - `line` (#3358): log lines on a vertical's script that named their own tenant and scope — the
- *   stamped request line a vertical writes for each request, with the tenant the router asserted.
- *   The installation's tenant, as `scope` is, which for a listed vertical is not its owner. A line
- *   naming no tenant, and every span (a span carries none), is `script`: the vertical's owner.
+ * - `line` (#3358): log lines on a vertical's script that named a scope the directory holds and that
+ *   scope's own tenant — the stamped request line a vertical writes for each request. The
+ *   installation's tenant, as `scope` is, which for a listed vertical is not its owner. Both fields
+ *   are a line's own, so only the pair the directory recorded counts; any other line, and every span
+ *   (a span carries none), is `script`: the vertical's owner. A row's (script, scope) therefore
+ *   decides its tenant and attribution.
  */
 export const costAttribution = z.enum(['scope', 'script', 'unmapped', 'platform', 'unknown', 'container', 'copy', 'line']);
 export type CostAttribution = z.infer<typeof costAttribution>;

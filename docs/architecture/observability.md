@@ -752,9 +752,10 @@ rollup (#3316) also reads each closed day the telemetry still holds whole (7 day
   weighted by the sample interval, as the API weights them; Workers Logs run at 100%.
 - **Spans**: the same read of `otel`, grouped by script alone.
 - **Attribution**: the stamped request line names its tenant and scope (§4.3), so a vertical's
-  lines that name a tenant are that installation's (`line`). Lines naming none, and every span,
-  are the script's (`script`: the vertical's owner on the day), as CPU is; the platform's own
-  scripts stay `platform`.
+  line is that installation's (`line`) when it names a scope the directory holds and that scope's
+  own tenant. Both are fields of the line, so neither is believed alone, and a vertical's own line
+  cannot charge a tenant by naming it. Every other line, and every span, is the script's (`script`:
+  the vertical's owner on the day), as CPU is; the platform's own scripts stay `platform`.
 - **A day is whole or absent.** A full answer (2,000 groups) or a timed-out one is split by time
   and the halves added. A one-hour span still full leaves that day without observability
   (absent, never zero). A failure throws, so the day is read again, and once the day leaves the
