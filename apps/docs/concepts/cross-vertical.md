@@ -18,7 +18,8 @@ up to date when the CRM announces a change. Those needs use different paths.
 
 Every path stays inside one tenant. Preview and fork scopes cannot be either end. A peer
 acts as the calling **app**, not as the person using that app: the person's session and
-permissions do not cross the boundary. Neither app gets SQL access to the other's tables.
+permissions do not cross the boundary. The one exception is an app calling its own plugin as the
+signed-in person ([identity](/concepts/identity#calling-a-plugin-as-the-person)). Neither app gets SQL access to the other's tables.
 
 Engines composed inside **one** scope are a different case: a vertical can call their
 functions in its own transaction. See [engine composition](/engines/#star-topology-engines-never-talk-to-each-other).
@@ -120,8 +121,9 @@ needs its instance topology corrected, not a retry of the peer-binding UI.
 
 Promoting a version that removes or re-versions an export used by an installed consumer
 requires export-break acknowledgement. Schema compatibility checks also reject incompatible
-payload changes at an unchanged version. Individual `bindScopeVersion` changes do not yet
-have the export-break gate, so check affected consumers before using that path.
+payload changes at an unchanged version. Binding one installation to such a version
+(`bindScopeVersion`) asks the same question of that installation, and is refused the same way
+unless the break is acknowledged.
 
 See [export/import declarations](/guide/architecture#between-verticals-exports-and-imports),
 [peer permissions](/concepts/permissions#another-app-of-the-same-tenant-peers), and the

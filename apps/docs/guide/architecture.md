@@ -94,9 +94,10 @@ bundles:
 - **schedules** — recurring work, fired by the deployment's own sweeper under a system actor
   rather than by a cron the module holds.
 
-An authored operation that declares a permission must still call `ctx.check`. The host
-records a finding when such a handler completes without checking; strict test runs can
-refuse that completion. The declaration alone does not grant access.
+An authored operation that declares a permission must still call `ctx.check`. When such a
+handler completes without asking, the host writes a warning to the app's logs (finding
+`unchecked-operation`); a test run can be set to refuse that completion instead, and the
+platform's own runs do. The declaration alone does not grant access.
 
 A vertical increasingly does not *write* most of that. It declares its entities, operations
 and permissions once in [the model](/concepts/model), and the manifest's entity fragments,
@@ -132,7 +133,9 @@ system beside the kernel. Instead, the platform says which app is calling:
   [peers](/concepts/permissions#another-app-of-the-same-tenant-peers).
 - **The caller acts as itself**, recorded as `{ vertical, scope }`: the calling app and the
   instance that called. Checks inside the operation are ordinary, no person comes along, and
-  the caller holds no credential of its own.
+  the caller holds no credential of its own. The one exception is a **plugin**: the app that
+  owns a plugin's people can call it as the person signed in to it, within keys the plugin
+  declares. See [calling a plugin as the person](/concepts/identity#calling-a-plugin-as-the-person).
 - **Same tenant only.** The target is found by slug, as the tenant's one primary, active
   instance of that vertical. It is never found by hostname or in another tenant, it is never a
   preview, and it is never guessed when a tenant runs two instances.
@@ -409,7 +412,8 @@ The hosted transport, router kick, replay/skip controls, edge-health view and ex
 checks are implemented. A routed response can trigger delivery within seconds; events from
 schedules, peer calls and imports wait for the sweep. A replay deliberately runs handlers
 again. A promote dropping or re-versioning an export a running consumer uses requires
-acknowledgement. Individual `bindScopeVersion` changes do not yet have that export-break gate.
+acknowledgement, and so does binding one installation to such a version (`bindScopeVersion`),
+judged for that installation alone.
 
 The event resolver still requires unique primary instances at both ends. The caller-instance
 binding used by peer calls does not select an event-stream target. Chapter 7's
