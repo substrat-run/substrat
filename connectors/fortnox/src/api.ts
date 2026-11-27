@@ -235,6 +235,42 @@ export type FortnoxSupplierInvoice = z.infer<typeof fortnoxSupplierInvoice>;
 /** One entry of `GET /3/supplierinvoices/{GivenNumber}/commentlog`. */
 const fortnoxSupplierInvoiceComment = z.object({ Comment: fortnoxText() });
 
+/**
+ * One supplier invoice accrual (a periodised invoice), as `GET /3/supplierinvoiceaccruals/{SupplierInvoiceNumber}`
+ * returns it. Fortnox books such an invoice on the accrual account and keeps the cost account, the
+ * period and the cadence here, so without this read a landing sees only the accrual account. Only
+ * the fields the invoice landing carries are read; `Period` stays text so a value Fortnox adds
+ * lands instead of failing the invoice. Shape per the published spec (apidocs, 2026-11-27):
+ * the accounts, dates, `Period`, `Times`, `Total` and the rows are required, `Description` and
+ * `VATIncluded` are not, and the read answers 404 when the invoice has no accrual.
+ */
+const fortnoxSupplierInvoiceAccrual = z.object({
+  AccrualAccount: fortnoxNumber,
+  CostAccount: fortnoxNumber,
+  StartDate: fortnoxText(),
+  EndDate: fortnoxText(),
+  /** MONTHLY, BIMONTHLY, QUARTERLY, SEMIANNUALLY, ANNUALLY — or the spec's `1_MONTHS` … `12_MONTHS` spellings. */
+  Period: fortnoxText(),
+  /** How many periods the total is spread over. Required by the spec; read as optional so a missing one lands rather than fails. */
+  Times: fortnoxOptionalNumber,
+  Total: fortnoxNumber,
+  VATIncluded: fortnoxFlag,
+  Description: fortnoxText(),
+  SupplierInvoiceAccrualRows: z
+    .array(
+      z.object({
+        Account: fortnoxNumber,
+        CostCenter: fortnoxText(),
+        Project: fortnoxText(),
+        TransactionInformation: fortnoxText(),
+        Debit: fortnoxNumber.default('0'),
+        Credit: fortnoxNumber.default('0'),
+      }),
+    )
+    .default([]),
+});
+export type FortnoxSupplierInvoiceAccrual = z.infer<typeof fortnoxSupplierInvoiceAccrual>;
+
 /** One file connected to a supplier invoice, as `GET /3/supplierinvoicefileconnections` lists it. */
 const fortnoxSupplierInvoiceFile = z.object({
   /** The id `GET /3/archive/{id}` reads the bytes by. */
@@ -577,6 +613,22 @@ export class FortnoxApi {
       SupplierInvoice?: unknown;
     };
     return fortnoxSupplierInvoice.parse(raw.SupplierInvoice ?? raw);
+  }
+
+  /**
+   * The invoice's accrual, or null when Fortnox has none for it — Fortnox answers that read 404.
+   * Covered by the `supplierinvoice` scope, like the invoice itself.
+   */
+  async supplierInvoiceAccrual(givenNumber: string): Promise<FortnoxSupplierInvoiceAccrual | null> {
+    try {
+      const raw = (await this.getJson(`/supplierinvoiceaccruals/${encodeURIComponent(givenNumber)}`)) as {
+        SupplierInvoiceAccrual?: unknown;
+      };
+      return fortnoxSupplierInvoiceAccrual.parse(raw.SupplierInvoiceAccrual ?? raw);
+    } catch (err) {
+      if (err instanceof FortnoxApiError && err.status === 404) return null;
+      throw err;
+    }
   }
 
   /** Sets or clears the invoice's payment block. Fortnox changes only the fields a `PUT` names. */
