@@ -26,6 +26,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "update-rate-card": "node scripts/update-rate-card.mjs",
+    "update-unit-rate-card": "node scripts/update-unit-rate-card.mjs",
     "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
   "dependencies": {

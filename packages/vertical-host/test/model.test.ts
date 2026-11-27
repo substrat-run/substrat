@@ -395,3 +395,88 @@ describe('run with tools (#2283)', () => {
     expect(guarded).toBe(0);
   });
 });
+
+describe('transcribe (#3321)', () => {
+  const spec = 'cloudflare:@cf/openai/whisper';
+  /** 960 000 bytes: one minute at the card's 16 000 B/s basis, $0.00045 on whisper. */
+  const audio = new Uint8Array(960_000);
+  /** A stand-in for `env.AI` that answers as `@cf/openai/whisper` does: words, no duration. */
+  function binding(seen: unknown[] = []) {
+    return {
+      run: async (model: string, inputs: { audio: unknown }, options: unknown) => {
+        seen.push({ model, options, audioLength: (inputs.audio as unknown[]).length });
+        return { text: 'hello there', words: [{ word: 'hello', start: 0, end: 0.4 }, { word: 'there', start: 0.5, end: 0.9 }] };
+      },
+    };
+  }
+
+  it('counts the bytes it sent, prices them from the unit card, and records one line through the gateway', async () => {
+    const seen: unknown[] = [];
+    const lines: ModelUsageLine[] = [];
+    let tick = 0;
+    const host = createModelHost({
+      env: {},
+      aiBinding: binding(seen),
+      now: () => new Date(1_700_000_000_000 + 250 * tick++),
+      record: (line) => void lines.push(line),
+    });
+    const out = await host.transcribe({ spec, attribution, audio, maxRetries: 0 });
+
+    expect(out.text).toBe('hello there');
+    expect(out.segments).toEqual([
+      { text: 'hello', startSecond: 0, endSecond: 0.4 },
+      { text: 'there', startSecond: 0.5, endSecond: 0.9 },
+    ]);
+    expect(out.durationInSeconds).toBeUndefined();
+    expect(out.label).toBe('cloudflare/@cf/openai/whisper');
+    expect(lines).toEqual([out.line]);
+    expect(out.line).toMatchObject({
+      model: spec,
+      reported: true,
+      inputTokens: 0,
+      outputTokens: 0,
+      unit: 'audio-byte',
+      quantity: 960_000,
+      listUsd: '0.00045',
+      attribution,
+      elapsedMs: 250,
+    });
+    expect(seen).toEqual([
+      {
+        model: '@cf/openai/whisper',
+        audioLength: 960_000,
+        options: expect.objectContaining({ gateway: { id: 'default', metadata: { ...attribution }, collectLog: false } }),
+      },
+    ]);
+  });
+
+  it('records a model the unit card does not list as unpriced, never as $0', async () => {
+    const host = createModelHost({ env: {}, aiBinding: binding() });
+    const out = await host.transcribe({ spec: 'cloudflare:@cf/openai/whisper-tiny-en', attribution, audio, maxRetries: 0 });
+    expect(out.line).toMatchObject({ reported: true, unit: 'audio-byte', quantity: 960_000, listUsd: null });
+  });
+
+  it('refuses what cannot run before the guard, and a guard refusal sends nothing and records nothing', async () => {
+    let guarded = 0;
+    const seen: unknown[] = [];
+    const lines: ModelUsageLine[] = [];
+    const host = createModelHost({ env: {}, aiBinding: binding(seen), guard: () => void guarded++, record: (l) => void lines.push(l) });
+    await expect(host.transcribe({ spec: 'anthropic:claude-opus-5', attribution, audio })).rejects.toThrow(/Workers AI binding/);
+    await expect(createModelHost({ env: {} }).transcribe({ spec, attribution, audio })).rejects.toThrow(/has none/);
+    await expect(host.transcribe({ spec, attribution, audio: new Uint8Array(0) })).rejects.toThrow(TypeError);
+    await expect(host.transcribe({ spec, attribution: { ...attribution, extra: 'x' } as never, audio })).rejects.toThrow();
+    expect(guarded).toBe(0);
+
+    const refusing = createModelHost({
+      env: {},
+      aiBinding: binding(seen),
+      guard: () => {
+        throw new Error('over budget');
+      },
+      record: (l) => void lines.push(l),
+    });
+    await expect(refusing.transcribe({ spec, attribution, audio })).rejects.toThrow('over budget');
+    expect(seen).toEqual([]);
+    expect(lines).toEqual([]);
+  });
+});

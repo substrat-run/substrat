@@ -83,6 +83,7 @@ const EMITS_THE_HEADER = [
   /^tools\/[^/]+\.(mjs|mts)$/,
   /^packages\/psl\/scripts\/build-data\.mjs$/,
   /^packages\/model-providers\/scripts\/update-rate-card\.mjs$/,
+  /^packages\/model-providers\/scripts\/update-unit-rate-card\.mjs$/,
   /^packages\/model-emit\/src\/emit-client\.ts$/,
   /^packages\/model-emit\/test\/emit-client\.test\.ts$/,
   /^apps\/docs\/\.vitepress\/headers\.mts$/,
