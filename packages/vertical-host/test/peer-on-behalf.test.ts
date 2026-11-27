@@ -202,6 +202,7 @@ describe('/internal/vertical-invoke for a person (#3161)', () => {
     ['invited', 403],
     ['blocked', 403],
     ['unavailable', 503],
+    ['master-conflict', 409],
   ] as const)('refused as %s: %i, a body that does not say why, and the reason on the operator’s line', async (reason, status) => {
     answer = { admitted: false, reason };
     const res = await post(door, call('peer/note', { id: `refused-${reason}`, body: 'x' }));
@@ -211,7 +212,9 @@ describe('/internal/vertical-invoke for a person (#3161)', () => {
     expect(await res.json()).toMatchObject(
       status === 403
         ? { code: 'forbidden', detail: 'this call for a person was refused' }
-        : { code: 'unavailable', detail: 'this call for a person cannot be answered now; retry' },
+        : status === 409
+          ? { code: 'conflict', detail: expect.stringContaining('a tenant admin binds the instance') }
+          : { code: 'unavailable', detail: 'this call for a person cannot be answered now; retry' },
     );
     expect(peerCalls).toHaveLength(0);
     expect(await actorOf(`refused-${reason}`)).toBeUndefined();

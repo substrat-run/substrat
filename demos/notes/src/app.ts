@@ -44,13 +44,19 @@ export function createApp({ host, login, people, vouch }: AppOptions): Hono {
   // The relying-party endpoints. Accounts live at the issuer, and people in the other app.
   app.on(['GET', 'POST'], '/api/auth/*', (c) => login.handle(c.req.raw));
 
-  /** 401 for nobody, 403 for a login the other app does not let in, 503 when it did not answer. */
+  /**
+   * 401 for nobody, 403 for a login the other app does not let in, 503 when it did not answer, 409
+   * when the platform cannot tell which instance of it to ask (#3436).
+   */
   const callerOf = async (headers: Headers): Promise<DevCaller> => {
     const answer = await people.caller(headers);
     if (answer === null) throw new HTTPException(401, { message: 'unauthorized' });
     if ('refused' in answer) {
       if (answer.refused === 'unavailable') {
         throw new HTTPException(503, { message: 'the workspace this plugin belongs to did not answer' });
+      }
+      if (answer.refused === 'master-conflict') {
+        throw new HTTPException(409, { message: 'this tenant runs more than one workspace and this plugin is bound to none that is live' });
       }
       throw new HTTPException(403, { message: REFUSED });
     }

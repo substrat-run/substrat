@@ -250,7 +250,13 @@ export function createLocalVerticalBroker(
               console.warn(JSON.stringify({ host: 'peer-on-behalf-refused', ...at, caller: caller.vertical, reason: answer.reason }));
               throw answer.reason === 'unavailable'
                 ? substratError('unavailable', 'this call for a person cannot be answered now; retry')
-                : substratError('forbidden', 'this call for a person was refused');
+                : answer.reason === 'master-conflict'
+                  ? substratError(
+                      'conflict',
+                      'this call for a person cannot be answered: the tenant runs more than one instance of the app this one takes ' +
+                        "its people from, and this app is not bound to one that is live; a tenant admin binds the instance on this app's page",
+                    )
+                  : substratError('forbidden', 'this call for a person was refused');
             }
             // `via`: the target's peer admission for the caller, inside the scope on every invoke.
             const stub = await targetHost!.getScope(answer.principal, at.tenantId, at.scopeId, {
