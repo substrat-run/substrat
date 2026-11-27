@@ -62,6 +62,7 @@ import {
   UPL_WRITE,
   attachmentBytesContractSuite,
   attachmentRefusalContractSuite,
+  systemAttachmentRemoveContractSuite,
   attachmentTextContractSuite,
   type AttachmentTextHostOptions,
   billedMod,
@@ -485,6 +486,8 @@ uploadLinkReplayContractSuite('adapter-cloudflare', orphanSweepFixture);
 
 // #113: an attachment refusal crosses the ScopeDO hop as data, so it reaches the caller typed.
 attachmentRefusalContractSuite('adapter-cloudflare', attachmentHostFixture);
+// #3434: a module's system principal removes a file, gated by the write or remove key.
+systemAttachmentRemoveContractSuite('adapter-cloudflare', attachmentHostFixture);
 
 // #2501: a scope's attachment bytes, from the upload to the storage gauge.
 attachmentBytesContractSuite('adapter-cloudflare', attachmentHostFixture);

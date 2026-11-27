@@ -42,6 +42,7 @@ import { stampsMod } from './stamps-module.js';
 import { erasureMod, erasureOtherMod } from './erasure-module.js';
 import { bindMod } from './bind-module.js';
 import { uploadLinkMod } from './upload-link-module.js';
+import { retentionMod } from './system-remove-module.js';
 import { manyMigrationsMod } from './many-migrations.js';
 import { commentedDdlMod } from './migration-comments.js';
 import { moduleObjectsMod } from './module-objects.js';
@@ -3158,6 +3159,9 @@ export const contractTestModules: ModuleRegistration[] = [
   // Upload links: the fixture's attachment targets. Inert for every other suite — only
   // `uploadLinkContractSuite` grants its entitlement or invokes a `upl/*` operation.
   uploadLinkMod,
+  // #3434: a target with a `removePermission`, for `systemAttachmentRemoveContractSuite`. Inert
+  // for every other suite — only that suite grants its entitlement.
+  retentionMod,
   scheduleMod,
   // #1525: the failed-schedule fixture. A Durable Object bakes its operations in at
   // define time (this array), so registering it on a coordinator mid-test is not

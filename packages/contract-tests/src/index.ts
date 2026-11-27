@@ -21,6 +21,8 @@ export { orphanSweepContractSuite, type OrphanSweepFixture } from './orphan-swee
 export { BIND_INVITE, BIND_MEMBER, BIND_SHAPE, bindMod } from './bind-module.js';
 export { capabilityAttachmentContractSuite } from './capability-attachment-suite.js';
 export { attachmentRefusalContractSuite } from './attachment-refusal-suite.js';
+export { systemAttachmentRemoveContractSuite } from './system-attachment-remove-suite.js';
+export { retentionMod, retentionModManifest, RET_PURGE, RET_READ, RET_WRITE } from './system-remove-module.js';
 export { attachmentTextContractSuite } from './attachment-text-suite.js';
 export { attachmentBytesContractSuite } from './attachment-bytes-suite.js';
 export type { AttachmentTextHostFixture, AttachmentTextHostOptions } from './attachment-text-suite.js';

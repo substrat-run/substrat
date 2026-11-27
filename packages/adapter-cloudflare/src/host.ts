@@ -2096,6 +2096,15 @@ interface ScopeStubRpc {
     /** #1834: the instance the system door's gate read; on any other it answers `SystemDoorMoved`. */
     systemDoorInstance?: string,
   ): Promise<DoReply<AttachmentRecord | null | SystemDoorMoved>>;
+  /** #3434: remove as a registered module's system principal — the write or remove key, the system door's pin. */
+  systemAttachmentRemoveReply(
+    attachmentId: string,
+    moduleId: ModuleId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    /** #1834: the instance the system door's gate read; on any other it answers `SystemDoorMoved`. */
+    systemDoorInstance?: string,
+  ): Promise<DoReply<AttachmentRecord | null | SystemDoorMoved>>;
   attachmentRemoveReply(
     attachmentId: string,
     principal: PrincipalId,
@@ -5531,10 +5540,12 @@ export class CloudflareScopeHost implements ScopeHost {
     moduleId: ModuleId,
     tenantId: TenantId,
     scopeId: ScopeId,
-  ): Promise<Pick<ScopeAttachments, 'open'>> {
+  ): Promise<Pick<ScopeAttachments, 'open' | 'remove'>> {
     // Reuse the system invoke door's module, tenant and lifecycle gate, and its rewind gate
     // (#1834). The DO authorizes each open against the attachment target's read permission as
-    // system:<moduleId>; the worker reads bytes only after that gate succeeds.
+    // system:<moduleId>; the worker reads bytes only after that gate succeeds. A remove (#3434)
+    // is decided and committed in the DO (row + event, attributed to the module), and the bytes
+    // are deleted here after it, as a person's remove deletes them.
     const door = await this.openSystemDoor(moduleId, tenantId, scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     const stub = this.scopeStub(scopeId);
@@ -5544,6 +5555,14 @@ export class CloudflareScopeHost implements ScopeHost {
           unwrapReply(await stub.systemAttachmentAuthorizeReply(attachmentId, moduleId, tenantId, scopeId, instance)),
         );
         return record ? this.openAttachmentBytes(store, scopeId, record) : null;
+      },
+      remove: async (attachmentId) => {
+        const removed = await door.through<AttachmentRecord | null>(async (instance) =>
+          unwrapReply(await stub.systemAttachmentRemoveReply(attachmentId, moduleId, tenantId, scopeId, instance)),
+        );
+        // Row (and event) first, bytes second: at worst an orphaned object, never a dangling row.
+        if (removed) await store.delete(attachmentBlobKey(scopeId, removed.id)).catch(() => {});
+        return removed;
       },
     };
   }

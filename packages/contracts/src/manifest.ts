@@ -379,6 +379,12 @@ export const moduleManifest = z.object({
       // check `readPermission` — the pre-#473 declarations keep parsing and get the
       // conservative-enough default; an engine tightens it by declaring one.
       writePermission: permissionKey.optional(),
+      // A key that may REMOVE an attachment but not upload one (#3434). A remove is admitted
+      // by the write gate above OR by this key, whoever asks: a retention schedule can then
+      // delete a file without holding the uploader's key. Declared `holder: 'system'` on its
+      // permission entry, it is a key no person can hold. Optional + additive (D-28): absent,
+      // a remove checks the write gate alone, as it always has.
+      removePermission: permissionKey.optional(),
       // Opt-in to `ctx.attachments.mintUploadUrl` for this target, and the policy a link
       // redeemed against it is held to. Optional + additive (D-28): absent, a mint on this
       // entity type is refused and every existing declaration parses unchanged.

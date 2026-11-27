@@ -496,6 +496,7 @@ import {
   type UndrainedRead,
   type ConsumerDelivery,
 } from '@substrat-run/kernel';
+import { assertSameAttachmentGate, attachmentGateOf, decideAttachmentRemove, type AttachmentGate } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, copyRestoreFenceLapsed, orphanSweepVersionRefusal, type CopyRestoreFence } from '@substrat-run/kernel';
 import type {
   DrainedEvent,
@@ -1803,8 +1804,8 @@ export function defineScopeDO(
     private readonly updatedStampPlans = new Map<string, UpdatedStampPlan>();
     /** #2068: each registered module's erasure, in registration order — what `redactSubject` runs. */
     private readonly erasurePlans: ModuleErasurePlan[] = [];
-    /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
-    private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
+    /** entityType → the declared attachment gate (#473): read key, write key (default: read), remove key (#3434). */
+    private readonly attachmentTargets = new Map<string, AttachmentGate>();
     /** entityType → the `uploadLinks` policy its `attachmentTargets` entry declares; absent = no links. */
     private readonly uploadLinkPolicies = new Map<string, UploadLinkPolicy>();
     /**
@@ -2038,17 +2039,8 @@ export function defineScopeDO(
       // ambiguous authority must not depend on registration order (mirror of the pure
       // adapter, which validates the same way).
       for (const target of manifest.attachmentTargets) {
-        const gate = {
-          read: target.readPermission,
-          write: target.writePermission ?? target.readPermission,
-        };
-        const existing = this.attachmentTargets.get(target.entityType);
-        if (existing && (existing.read !== gate.read || existing.write !== gate.write)) {
-          throw new Error(
-            `conflicting attachmentTargets for '${target.entityType}': ` +
-              `(${existing.read}/${existing.write}) vs (${gate.read}/${gate.write})`,
-          );
-        }
+        const gate = attachmentGateOf(target);
+        assertSameAttachmentGate(target.entityType, this.attachmentTargets.get(target.entityType), gate);
         this.attachmentTargets.set(target.entityType, gate);
         if (target.uploadLinks) {
           const known = this.uploadLinkPolicies.get(target.entityType);
@@ -4757,7 +4749,7 @@ export function defineScopeDO(
     // serialization and transactional (row + spine event) semantics as an invoke.
     // Bytes never cross this boundary — only the small record does.
 
-    private attachmentGate(entityType: string): { read: PermissionKey; write: PermissionKey } {
+    private attachmentGate(entityType: string): AttachmentGate {
       const gate = this.attachmentTargets.get(entityType);
       if (!gate) {
         throw new Error(
@@ -4997,6 +4989,18 @@ export function defineScopeDO(
 
     attachmentRemoveReply(...args: Parameters<ScopeDO['removeAttachment']>): Promise<DoReply<AttachmentRecord | null>> {
       return replyOf(() => this.removeAttachment(...args));
+    }
+
+    systemAttachmentRemove(
+      ...args: Parameters<ScopeDO['removeSystemAttachment']>
+    ): Promise<AttachmentRecord | null | SystemDoorMoved> {
+      return thrownForRpc(() => this.removeSystemAttachment(...args));
+    }
+
+    systemAttachmentRemoveReply(
+      ...args: Parameters<ScopeDO['removeSystemAttachment']>
+    ): Promise<DoReply<AttachmentRecord | null | SystemDoorMoved>> {
+      return replyOf(() => this.removeSystemAttachment(...args));
     }
 
     /** Record an uploaded attachment: write gate + row + `attachment.added`, one txn. */
@@ -5269,7 +5273,8 @@ export function defineScopeDO(
               principal, tenantId, scopeId, undefined, connectionId,
               undefined, undefined, undefined, 'attachments.remove',
             );
-            assertAllowed(await ctx.check(gate.write, record.entity));
+            // #3434: the write key, or the target's remove key when it declares one.
+            assertAllowed(await decideAttachmentRemove((p, e) => ctx.check(p, e), gate, record.entity));
             this.sql.exec('DELETE FROM _substrat_attachments WHERE id = ?', attachmentId);
             kernelEmit(ctx, {
               type: ATTACHMENT_REMOVED,
@@ -5287,6 +5292,65 @@ export function defineScopeDO(
         }
         // #1525: null. An attachment RPC carries no invocation, exactly as its denial
         // records none — so the deliveries it drains name no call rather than a wrong one.
+        await this.settleCommitted(tenantId, scopeId, liveSince, null);
+        return record;
+      });
+    }
+
+    /**
+     * #3434: remove an attachment's metadata fact as a registered module's system principal — a
+     * retention schedule deleting a file it never uploaded. The system door's pin first, exactly
+     * as `authorizeSystemAttachment` and a system invoke take it; then the gate a person's remove
+     * meets (the write key, or the declared remove key), checked as `system:<moduleId>`, so the
+     * kill switch and the purge-only withholding apply as they do to any system check. The row
+     * and `attachment.removed` commit together, the event attributed to the module.
+     */
+    private async removeSystemAttachment(
+      attachmentId: string,
+      moduleId: ModuleId,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      /** #1834: the instance the system door's gate read; see `invoke`. */
+      systemDoorInstance?: string,
+    ): Promise<AttachmentRecord | null | SystemDoorMoved> {
+      await this.ensureMigrations();
+      let systemDoor: SystemDoorPass;
+      try {
+        systemDoor = this.assertSystemDoor(moduleId, systemDoorInstance)!;
+      } catch (err) {
+        if (err instanceof SystemDoorMovedError) return SYSTEM_DOOR_MOVED;
+        throw err;
+      }
+      if (!this.modules.has(moduleId)) {
+        throw substratError('not_found', `module not registered in this scope: ${moduleId}`);
+      }
+      return this.queue.enqueue(async () => {
+        const record = this.attachmentRow(attachmentId);
+        if (!record) return null;
+        const gate = this.attachmentGate(record.entity.entityType);
+        const liveSince = this.liveHighWaterMark();
+        try {
+          await this.revision.transaction(async () => {
+            const ctx = this.operationContext(
+              this.systemPrincipal, tenantId, scopeId, undefined, undefined,
+              systemDoor, undefined, undefined, 'attachments.remove',
+            );
+            assertAllowed(await decideAttachmentRemove((p, e) => ctx.check(p, e), gate, record.entity));
+            this.sql.exec('DELETE FROM _substrat_attachments WHERE id = ?', attachmentId);
+            kernelEmit(ctx, {
+              type: ATTACHMENT_REMOVED,
+              schemaVersion: 1,
+              entity: record.entity,
+              piiClass: 'none',
+              payload: { attachment: record },
+            });
+          });
+        } catch (err) {
+          if (err instanceof PermissionDenied) {
+            this.recordDenial({ kind: 'system', id: moduleId }, tenantId, 'attachments.remove', err, null);
+          }
+          throw err;
+        }
         await this.settleCommitted(tenantId, scopeId, liveSince, null);
         return record;
       });

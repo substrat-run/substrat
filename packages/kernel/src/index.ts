@@ -469,6 +469,8 @@ export {
   orphanSweepVersionRefusal,
 } from './attachment-sweep.js';
 export type { OrphanSweepOptions, OrphanSweepReport, OrphanSweepRequest, OrphanSweepScope } from './attachment-sweep.js';
+export { assertSameAttachmentGate, attachmentGateOf, decideAttachmentRemove } from './attachment-gate.js';
+export type { AttachmentGate, AttachmentTargetKeys } from './attachment-gate.js';
 export {
   ATTACHMENT_SEARCH_OWNER_MAX,
   ATTACHMENT_SEARCH_OWNERS_SQL,

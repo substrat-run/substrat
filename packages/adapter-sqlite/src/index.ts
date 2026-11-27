@@ -1017,6 +1017,12 @@ import {
   type PlatformRequestSettle,
 } from '@substrat-run/kernel';
 import {
+  assertSameAttachmentGate,
+  attachmentGateOf,
+  decideAttachmentRemove,
+  type AttachmentGate,
+} from '@substrat-run/kernel';
+import {
   DIRECTORY_CLAIMS_DDL,
   DIRECTORY_CROSSINGS_DDL,
   oneDatabaseDirectoryObjects,
@@ -2531,7 +2537,7 @@ export class SqliteScopeHost implements ScopeHost {
   /** #2068: each registered module's erasure, in registration order — what `shredSubject` runs. */
   private readonly erasurePlans: ModuleErasurePlan[] = [];
   /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
-  private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
+  private readonly attachmentTargets = new Map<string, AttachmentGate>();
   /** entityType → the `uploadLinks` policy its `attachmentTargets` entry declares; absent = no links. */
   private readonly uploadLinkPolicies = new Map<string, UploadLinkPolicy>();
   /** operation name → who binds it: the owning module, its entitlementKey and its declared
@@ -3732,17 +3738,8 @@ export class SqliteScopeHost implements ScopeHost {
     // tolerated (idempotent); with different gates it is refused — ambiguous authority
     // over who may read an entity's attachments must not depend on registration order.
     for (const target of manifest.attachmentTargets) {
-      const gate = {
-        read: target.readPermission,
-        write: target.writePermission ?? target.readPermission,
-      };
-      const existing = this.attachmentTargets.get(target.entityType);
-      if (existing && (existing.read !== gate.read || existing.write !== gate.write)) {
-        throw new Error(
-          `conflicting attachmentTargets for '${target.entityType}': ` +
-            `(${existing.read}/${existing.write}) vs (${gate.read}/${gate.write})`,
-        );
-      }
+      const gate = attachmentGateOf(target);
+      assertSameAttachmentGate(target.entityType, this.attachmentTargets.get(target.entityType), gate);
       this.attachmentTargets.set(target.entityType, gate);
       if (target.uploadLinks) {
         const known = this.uploadLinkPolicies.get(target.entityType);
@@ -4433,9 +4430,10 @@ export class SqliteScopeHost implements ScopeHost {
     moduleId: ModuleId,
     tenantId: TenantId,
     scopeId: ScopeId,
-  ): Promise<Pick<ScopeAttachments, 'open'>> {
-    // The same registered-module and lifecycle gate as a system invoke. The
-    // attachment surface checks the target's read key as system:<moduleId>.
+  ): Promise<Pick<ScopeAttachments, 'open' | 'remove'>> {
+    // The same registered-module and lifecycle gate as a system invoke. The attachment
+    // surface checks the target's keys as system:<moduleId>: the read key for `open`, the
+    // write or remove key for `remove` (#3434), whose event is attributed to the module.
     await this.getSystemScope(moduleId, tenantId, scopeId);
     const rt = this.runtime(tenantId, scopeId);
     const row = this.directory
@@ -4446,7 +4444,7 @@ export class SqliteScopeHost implements ScopeHost {
       { kind: 'system', id: moduleId },
       this.attachmentStore(tenantId, row?.vertical ?? null),
     );
-    return { open: surface.open };
+    return { open: surface.open, remove: surface.remove };
   }
 
   /**
@@ -4482,7 +4480,7 @@ export class SqliteScopeHost implements ScopeHost {
           }
         : authority;
     const node = { tenantId: rt.tenantId, scopeId: rt.scopeId };
-    const targetGate = (entityType: string): { read: PermissionKey; write: PermissionKey } => {
+    const targetGate = (entityType: string): AttachmentGate => {
       const gate = this.attachmentTargets.get(entityType);
       if (!gate) {
         throw new Error(
@@ -4732,9 +4730,13 @@ export class SqliteScopeHost implements ScopeHost {
             );
           }
           if (!row) return null;
-          const gate = targetGate(row.entity_type);
+          // #3434: the write key, or the target's remove key when it declares one.
           assertAllowed(
-            await ctx.check(gate.write, { entityType: row.entity_type, entityId: row.entity_id }),
+            await decideAttachmentRemove(
+              (permission, entity) => ctx.check(permission, entity),
+              targetGate(row.entity_type),
+              { entityType: row.entity_type, entityId: row.entity_id },
+            ),
           );
           rt.db.prepare('DELETE FROM _substrat_attachments WHERE id = ?').run(attachmentId);
           const record = attachmentRecordOfRow(row);
