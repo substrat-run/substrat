@@ -6547,6 +6547,8 @@ describe('control-plane API — observability proxy', () => {
         ],
         truncated: false,
         samplingRate: null,
+        // #3358: only the version script the rows above came from recorded spans.
+        unobserved: input.services.filter((s) => s !== 'egress-vert-v1'),
         hours: input.hours,
       };
     },
@@ -6751,6 +6753,28 @@ describe('control-plane API — observability proxy', () => {
     const res = await app.request(`/verticals/${slug}/egress`, { headers: asStaff });
     const body = (await res.json()) as { byService: Array<{ unused: string[] }> };
     expect(body.byService[0]!.unused).toEqual(['never.example']);
+  });
+
+  it('asks about the serving script first, and reports a script with no spans as not observed rather than clean (#3358)', async () => {
+    const app = appWith(reader);
+    const slug = await seedEgressVertical(app, ['api.declared.example', 'never.example']);
+    const [version] = await host.admin.listVersions(staff, slug);
+    await host.admin.setVerticalServing(staff, slug, { ref: 'egress-vert-serving', versionId: version!.id, doClasses: ['ScopeDO'], migrationTag: 'v1' });
+    const res = await app.request(`/verticals/${slug}/egress`, { headers: asStaff });
+    const body = (await res.json()) as {
+      byService: Array<{ service: string; kind: string; versionId: string; spansRecorded: boolean; declared: string[]; unused: string[] }>;
+      unobserved: string[];
+      versionsConsidered: number;
+    };
+    expect(seen.egress.at(-1)).toMatchObject({ services: ['egress-vert-serving', 'egress-vert-v1'] });
+    // The serving script declares what its version declared, and recorded nothing: none of its
+    // declared hosts is "unused", because a script nobody watched proves nothing either way.
+    expect(body.byService).toEqual([
+      expect.objectContaining({ service: 'egress-vert-serving', kind: 'serving', versionId: version!.id, spansRecorded: false, declared: ['api.declared.example', 'never.example'], unused: [] }),
+      expect.objectContaining({ service: 'egress-vert-v1', kind: 'preview', spansRecorded: true, unused: ['never.example'] }),
+    ]);
+    expect(body.unobserved).toEqual(['egress-vert-serving']);
+    expect(body.versionsConsidered).toBe(1);
   });
 
   it('passes the window through and bounds it like every other input', async () => {

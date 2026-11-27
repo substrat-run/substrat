@@ -166,9 +166,14 @@ export interface EgressReport {
   rows: ObservedEgressRow[];
   byService: {
     service: string;
-    versionId: string;
-    version: string;
+    /** #3358: the serving script (what production serves) or a version's own preview script. */
+    kind: 'serving' | 'preview';
+    /** Null for a serving script whose version the registry no longer names. */
+    versionId: string | null;
+    version: string | null;
     declared: string[] | null;
+    /** #3358: false ⇒ no span of any kind in the window, so this script's egress was NOT observed. */
+    spansRecorded: boolean;
     /** Declared but never seen in the window. Not a fault — a quiet window proves nothing. */
     unused: string[];
   }[];
@@ -179,6 +184,8 @@ export interface EgressReport {
   versionsTotal: number;
   /** Head sampling rate, or null for "coverage unknown" — not the same as 1. */
   samplingRate: number | null;
+  /** #3358: the scripts with no span at all in the window. Every script ⇒ nothing was observed. */
+  unobserved: string[];
   hours: number;
 }
 

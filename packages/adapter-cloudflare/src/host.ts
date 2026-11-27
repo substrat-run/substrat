@@ -68,6 +68,8 @@ import {
   registerVerticalInput,
   vertical as verticalSchema,
   verticalServingState,
+  verticalTraceSampling,
+  type VerticalTraceSampling,
   deploymentWireAuth,
   type DeploymentWireAuth,
   verticalChannel,
@@ -1061,6 +1063,7 @@ interface ControlPlaneStub {
   updateVerticalInstallsBlocked(slug: string, blocked: number, audit: AdminEntry): Promise<void>;
   updateVerticalTenantProvisioner(slug: string, granted: number, audit: AdminEntry): Promise<void>;
   updateVerticalEmailSender(slug: string, granted: number, audit: AdminEntry): Promise<void>;
+  updateVerticalTraceSampling(slug: string, serving: number, previews: number, audit: AdminEntry): Promise<void>;
   deleteVertical(slug: string, audit: AdminEntry, until?: string): Promise<void>;
   listVerticals(page?: ListPage): Promise<VerticalRow[]>;
   readVersion(id: string): Promise<VersionRow | undefined>;
@@ -7787,6 +7790,8 @@ export class CloudflareScopeHost implements ScopeHost {
         installsBlocked: !!r.installs_blocked,
         tenantProvisioner: !!r.tenant_provisioner,
         emailSender: !!r.email_sender,
+        traceSampling: r.trace_sampling ?? 0,
+        previewTraceSampling: r.preview_trace_sampling ?? 0,
         ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
         ...(r.serving_version_id ? { servingVersionId: r.serving_version_id } : {}),
         createdAt: r.created_at,
@@ -9265,6 +9270,11 @@ export class CloudflareScopeHost implements ScopeHost {
       setVerticalEmailSender: async (actor, slug: string, granted: boolean) => {
         await this.directory('updateVerticalEmailSender', slug, granted ? 1 : 0,
           this.adminEntry(actor, 'setVerticalEmailSender', { tenantId: null }, null, { emailSender: granted }));
+      },
+      setVerticalTraceSampling: async (actor, slug: string, input: VerticalTraceSampling) => {
+        const rates = verticalTraceSampling.parse(input);
+        await this.directory('updateVerticalTraceSampling', slug, rates.serving, rates.previews,
+          this.adminEntry(actor, 'setVerticalTraceSampling', { tenantId: null }, null, rates));
       },
       deleteVertical: async (actor, slug: string) => {
         // Refused while any restorable scope is bound (the DO counts them in the delete's unit).

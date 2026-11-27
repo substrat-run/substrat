@@ -148,6 +148,13 @@ export interface ObservedEgressReport {
    * "every call was seen", the other is "unknown coverage".
    */
   samplingRate: number | null;
+  /**
+   * The services that recorded NO span of any kind in the window (#3358): the script was uploaded
+   * without tracing, or traced and served nothing. Either way nothing about its egress was seen, so
+   * an empty row set for it is "not observed", never "clean". A service with any span at all is not
+   * here, even when none of them was a `fetch`: that one was watched and reached nothing.
+   */
+  unobserved: string[];
   /** The trailing window actually queried, in hours. */
   hours: number;
 }

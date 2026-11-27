@@ -565,6 +565,9 @@ export interface VerticalRow {
   tenant_provisioner: number;
   /** Email-sender capability (0/1, #303) — staff grant; never touched by a re-push. */
   email_sender: number;
+  /** The owner's Workers trace rates (0–1, #3358) — serving and preview scripts; NULL reads as 0. Never touched by a re-push. */
+  trace_sampling: number | null;
+  preview_trace_sampling: number | null;
   /** The stable serving script's name (#286); null = no serving script yet. */
   serving_ref: string | null;
   /** The version whose bundle the serving script currently runs (may trail prod). */
@@ -1121,6 +1124,10 @@ const DIRECTORY_DDL = `
     -- Email-sender capability (#303). 1 = this vertical's scopes may relay transactional
     -- mail through the control plane. A staff grant, never set on insert or by a re-push.
     email_sender INTEGER NOT NULL DEFAULT 0,
+    -- The owner's Workers trace rates (#3358), 0–1, for the serving script and for each
+    -- version's archive (preview) script, NULL read as 0. Read at upload, never set on insert or by a re-push.
+    trace_sampling REAL,
+    preview_trace_sampling REAL,
     -- The ONE stable serving script (#286) and what it currently runs. serving_ref is
     -- the script name every new scope's data DO lives in; serving_version_id is the
     -- version whose bundle was last uploaded onto it (may trail the prod channel if a
@@ -1727,6 +1734,7 @@ export const REPLIED_METHODS = [
   'updateVerticalInstallsBlocked',
   'updateVerticalTenantProvisioner',
   'updateVerticalEmailSender',
+  'updateVerticalTraceSampling',
   'deleteVertical',
   'admitVersion',
   'rejectVersion',
@@ -2459,6 +2467,9 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('verticals', 'tenant_provisioner INTEGER NOT NULL DEFAULT 0');
     // #303: the email-sender capability — a staff grant on the registry row.
     this.addColumn('verticals', 'email_sender INTEGER NOT NULL DEFAULT 0');
+    // #3358: the owner's Workers trace rates.
+    this.addColumn('verticals', 'trace_sampling REAL');
+    this.addColumn('verticals', 'preview_trace_sampling REAL');
     this.addColumn('verticals', 'serving_ref TEXT');
     this.addColumn('verticals', 'serving_version_id TEXT');
     this.addColumn('verticals', 'serving_do_classes TEXT');
@@ -4471,6 +4482,12 @@ export class ControlPlaneDO extends DurableObject {
   /** Grant/revoke the email-sender capability (#303, staff grant). */
   updateVerticalEmailSender(slug: string, granted: number, audit?: AdminEntryInput): void {
     this.updateVertical(slug, 'email_sender = ?', [granted], (r) => ({ emailSender: !!r.email_sender }), audit);
+  }
+
+  /** Set the owner's Workers trace rates (#3358). */
+  updateVerticalTraceSampling(slug: string, serving: number, previews: number, audit?: AdminEntryInput): void {
+    this.updateVertical(slug, 'trace_sampling = ?, preview_trace_sampling = ?', [serving, previews],
+      (r) => ({ serving: r.trace_sampling ?? 0, previews: r.preview_trace_sampling ?? 0 }), audit);
   }
 
   /**

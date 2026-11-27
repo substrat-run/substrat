@@ -79,6 +79,11 @@ export interface VerticalBundle {
    *  as `env.AI`. Travels with the version, so who holds the capability is a property of
    *  the code that shipped rather than of the fleet's config. */
   usesModels?: boolean;
+  /** The head sampling rate (0–1) this upload declares for Workers traces (#3358), or undefined for
+   *  no `traces` block. Decided per upload from the app's own setting and the environment's default
+   *  (`effectiveTraceSampling`), because Cloudflare samples per script: a serving script and each
+   *  version's preview script can differ, and no setting can follow a tenant. */
+  traceSampling?: number;
   /** Carry the platform's scope sweeper (#1902) — the decision the push made and the
    *  version records (`platformSweeper`), never re-made by an upload. */
   supplySweeper?: boolean;

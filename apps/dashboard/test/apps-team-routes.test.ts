@@ -178,7 +178,7 @@ describe('the Apps read routes take their team from the path (#2170)', () => {
       'dashboard/list-apps', 'dashboard/get-app-install-steps', 'dashboard/get-app-concept',
       'dashboard/list-app-events',
       'dashboard/list-app-audit', 'dashboard/list-team-audit', 'dashboard/list-domains',
-      'dashboard/list-app-hostnames', 'dashboard/list-members', 'dashboard/app-email-sender',
+      'dashboard/list-app-hostnames', 'dashboard/list-members', 'dashboard/app-email-sender', 'dashboard/app-trace-sampling',
       'dashboard/observability-metrics', 'dashboard/observability-logs',
       'dashboard/app-observability-metrics', 'dashboard/tenant-metrics-series',
       'dashboard/connector-calls', 'dashboard/business-volumes', 'dashboard/team-traffic',

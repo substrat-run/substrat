@@ -1,4 +1,4 @@
-import { addDecimal, deliveryRedriveInput, platformRequestId as platformRequestIdSchema, sourceBuildRequest, type SourceBuildRequest, type SourceBuildService, type BuiltSource, type VerticalChange, type VerticalChanges } from '@substrat-run/contracts';
+import { addDecimal, deliveryRedriveInput, effectiveTraceSampling, verticalTraceSampling, platformRequestId as platformRequestIdSchema, sourceBuildRequest, type SourceBuildRequest, type SourceBuildService, type BuiltSource, type VerticalChange, type VerticalChanges } from '@substrat-run/contracts';
 import type { BuilderTurnsService } from './builder-turns.js';
 import type { BuilderSandboxObjectsService } from './builder-sandbox-objects.js';
 import { SourceBuildInterrupted } from './source-builds.js';
@@ -718,6 +718,13 @@ export interface ControlPlaneApiOptions {
    * 501s. See `deploy.ts`.
    */
   deployVertical?: DeployVerticalFn;
+  /**
+   * The environment's default Workers trace rates (#3358), each a head sampling rate in 0–1: for a
+   * vertical's serving script, and for each version's own archive script, where its previews run.
+   * An app's owner can ask for more on either (`setVerticalTraceSampling`), never for less, so the
+   * default is a floor. Absent ⇒ 0: an app that asked for nothing uploads with no `traces` block.
+   */
+  traceSampling?: { serving?: number; previews?: number };
   /** Hosted deployments accept source only. The private build service returns release parts. */
   sourceBuilds?: SourceBuildService;
   /** The builder studio's turn summaries, read for the console. Absent ⇒ its routes 501. */
@@ -1902,6 +1909,9 @@ type TenantPin = 'path' | 'query' | 'catalog' | 'body' | 'owner';
 const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] = [
   { method: 'GET', re: /\/verticals\/[^/]+\/email-sender$/, pin: 'owner' },
   { method: 'POST', re: /\/verticals\/[^/]+\/email-sender$/, pin: 'owner' },
+  // #3358: the app's Workers trace rates, which its owner pays for.
+  { method: 'GET', re: /\/verticals\/[^/]+\/trace-sampling$/, pin: 'owner' },
+  { method: 'POST', re: /\/verticals\/[^/]+\/trace-sampling$/, pin: 'owner' },
   // One tenant's own path, route by route (#977). It used to be ONE catch-all entry per
   // method — `/tenants/<pin>/…` cannot address another tenant's row, so it looked safe —
   // but a path that is confined is not a route that is harmless: it reached entitlement
@@ -10727,6 +10737,42 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json({ slug, emailSender: granted });
   });
 
+  /**
+   * The app's Workers trace rates (#3358): what its owner asked for, the environment's defaults,
+   * and what an upload would declare now. Owner-managed from the dashboard, because the owner is
+   * who the volume is billed to. A setting of the APP: one serving script serves every tenant that
+   * installed it (K-33), so no tenant can be traced apart. Stored only — it reaches the serving
+   * script at the next promote and a preview script at the push that creates it, which whoever
+   * shows it must say, so nobody reads a change as live.
+   */
+  const traceSamplingOf = (v: { slug: string; traceSampling?: number; previewTraceSampling?: number }) => {
+    const asked = { serving: v.traceSampling ?? 0, previews: v.previewTraceSampling ?? 0 };
+    const defaults = { serving: options.traceSampling?.serving ?? 0, previews: options.traceSampling?.previews ?? 0 };
+    return {
+      slug: v.slug,
+      asked,
+      defaults,
+      effective: {
+        serving: effectiveTraceSampling(asked.serving, defaults.serving) ?? 0,
+        previews: effectiveTraceSampling(asked.previews, defaults.previews) ?? 0,
+      },
+    };
+  };
+  app.get('/verticals/:slug/trace-sampling', async (c) => {
+    const slug = c.req.param('slug');
+    if (await notOwned(c.get('principal'), slug)) return refuse(c, 'forbidden', 'forbidden');
+    const vertical = await verticalOf(c.var.admin, c.get('actor'), slug);
+    if (!vertical) return refuse(c, 'not_found', 'vertical not found');
+    return c.json(traceSamplingOf(vertical));
+  });
+  app.post('/verticals/:slug/trace-sampling', async (c) => {
+    const slug = c.req.param('slug');
+    if (await notOwned(c.get('principal'), slug)) return refuse(c, 'forbidden', 'forbidden');
+    const rates = verticalTraceSampling.parse(await c.req.json());
+    await c.var.admin.setVerticalTraceSampling(c.get('actor'), slug, rates);
+    return c.json(traceSamplingOf({ slug, traceSampling: rates.serving, previewTraceSampling: rates.previews }));
+  });
+
   // Delete a vertical + its versions and channels. Refused below the seam while any
   // scope is still bound — surfaces as a 4xx via mapError, naming the count. Dispatch
   // scripts become orphans for cleanup (#248).
@@ -10900,12 +10946,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   const deployVerticalScript = async (
     deploy: DeployVerticalFn,
+    admin: HostAdmin,
     actor: PlatformActorId,
     slug: string,
     ref: string,
+    kind: 'serving' | 'preview',
     bundle: VerticalBundle,
     inPlace?: InPlaceUpload,
   ): Promise<WireUpload> => {
+    // #3358: the trace rate is decided here, per upload, so both uploads of a script read it the
+    // same way: the app's own request for this kind of script, floored at the environment's default.
+    const app = await verticalOf(admin, actor, slug);
+    const traceSampling = effectiveTraceSampling(
+      (kind === 'serving' ? app?.traceSampling : app?.previewTraceSampling) ?? 0,
+      kind === 'serving' ? options.traceSampling?.serving : options.traceSampling?.previews,
+    );
+    if (traceSampling !== undefined) bundle = { ...bundle, traceSampling };
     const wire = await wireUploadFor(options.wireUpload, { vertical: slug, deploymentRef: ref, bundle });
     if (wire.refusal !== null) {
       console.error(JSON.stringify({ substrat: 'wire-upload', vertical: slug, deploymentRef: ref, withheld: wire.record.withheld, reason: wire.refusal }));
@@ -11057,9 +11113,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     await ensureScopeStoresOf(admin, actor, 'serve', slug, manifest.scopeStores, async () => (await ownerOf(admin, actor, slug)) ?? null);
     const wire = await deployVerticalScript(
       options.deployVertical,
+      admin,
       actor,
       slug,
       ref,
+      'serving',
       {
         entry: manifest.entry,
         compatibilityDate: manifest.compatibilityDate,
@@ -11933,7 +11991,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const pushed = await ensureScopeStoresOf(c.var.admin, c.get('actor'), 'deploy', slug, manifest.scopeStores, async () => ownerTenant ?? null, async (renew) => {
       let wire: WireUpload;
       try {
-        wire = await deployVerticalScript(deployVertical, c.get('actor'), slug, deploymentRef, {
+        wire = await deployVerticalScript(deployVertical, c.var.admin, c.get('actor'), slug, deploymentRef, 'preview', {
           entry: manifest.entry,
           compatibilityDate: manifest.compatibilityDate,
           compatibilityFlags: manifest.compatibilityFlags,
@@ -12542,17 +12600,30 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const versions = (await c.var.admin.listVersions(c.get('actor'), slug)).filter(
       (v) => v.deploymentRef,
     );
+    // #3358: the serving script first. Since #286 it is what production serves (each version's
+    // own script runs its previews), and it was missing from this report, so a production call
+    // was never compared with anything. What it may reach is what its serving version declared.
+    const vertical = await verticalOf(c.var.admin, c.get('actor'), slug);
+    const servingVersion = vertical?.servingVersionId ? versions.find((v) => v.id === vertical.servingVersionId) : undefined;
+    const scripts = [
+      ...(vertical?.servingRef
+        ? [{ service: vertical.servingRef, kind: 'serving' as const, versionId: vertical.servingVersionId ?? null, version: servingVersion?.version ?? null, declared: servingVersion?.outbound ?? null }]
+        : []),
+      ...versions
+        .filter((v) => v.deploymentRef !== vertical?.servingRef)
+        .map((v) => ({ service: v.deploymentRef!, kind: 'preview' as const, versionId: v.id, version: v.version, declared: v.outbound ?? null })),
+    ];
     // Cap the fan-out — each service is another backend query. Truncating the SERVICE list
     // is exactly the silent-drop #859 calls a defect, so it is reported, not swallowed.
     const MAX_SERVICES = 20;
-    const considered = versions.slice(0, MAX_SERVICES);
-    const servicesTruncated = versions.length > MAX_SERVICES;
+    const considered = scripts.slice(0, MAX_SERVICES);
+    const servicesTruncated = scripts.length > MAX_SERVICES;
 
     const declaredByService = new Map<string, string[] | null>();
-    for (const v of considered) declaredByService.set(v.deploymentRef!, v.outbound ?? null);
+    for (const v of considered) declaredByService.set(v.service, v.declared);
 
     const report = await options.observability.observedEgress({
-      services: considered.map((v) => v.deploymentRef!),
+      services: considered.map((v) => v.service),
       hours,
       limit,
     });
@@ -12569,16 +12640,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       };
     });
 
+    const unobserved = new Set(report.unobserved);
     const byService = considered.map((v) => {
-      const service = v.deploymentRef!;
-      const declared = declaredByService.get(service) ?? null;
-      const observed = report.rows.filter((r) => r.service === service).map((r) => r.host);
+      const observed = report.rows.filter((r) => r.service === v.service).map((r) => r.host);
       return {
-        service,
-        versionId: v.id,
+        service: v.service,
+        kind: v.kind,
+        versionId: v.versionId,
         version: v.version,
-        declared,
-        unused: declared?.filter((d) => !observed.some((h) => matchesOutboundHost(h, [d]))) ?? [],
+        declared: v.declared,
+        // #3358: no span of any kind in the window, so nothing it called could have been seen.
+        // `unused` below then says nothing either, and a reader must show "not observed".
+        spansRecorded: !unobserved.has(v.service),
+        unused: unobserved.has(v.service) ? [] : (v.declared?.filter((d) => !observed.some((h) => matchesOutboundHost(h, [d]))) ?? []),
       };
     });
 
@@ -12590,9 +12664,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // way this answer can be partial travels with it.
       truncated: report.truncated || servicesTruncated,
       servicesTruncated,
-      versionsConsidered: considered.length,
+      versionsConsidered: considered.filter((v) => v.kind === 'preview').length,
       versionsTotal: versions.length,
       samplingRate: report.samplingRate,
+      // #3358: the scripts with no span at all in the window. When it names every script considered,
+      // the report observed nothing, and an empty `rows` is not a clean bill of health.
+      unobserved: considered.filter((v) => unobserved.has(v.service)).map((v) => v.service),
       hours,
     });
   });

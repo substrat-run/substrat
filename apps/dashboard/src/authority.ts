@@ -86,7 +86,7 @@ export interface ConnectionChoice {
 }
 import type { MeteredUsageOut } from './routes.js';
 import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
-import type { MailInAddress, MailInAddressAct, MailInStanding, SubjectAccessBody, SubjectAccessReceipt } from '@substrat-run/contracts';
+import type { VerticalTraceSampling, VerticalTraceSamplingReading, MailInAddress, MailInAddressAct, MailInStanding, SubjectAccessBody, SubjectAccessReceipt } from '@substrat-run/contracts';
 import { FINDINGS_LIMIT_DEFAULT, LIST_PAGE_MAX, denialQuery, manifestDelegation, substratError, type BindAcknowledgement, type ExportBreak, type ManifestDelegation, type VerticalConnectorDeclaration } from '@substrat-run/contracts';
 import { z } from 'zod';
 import {
@@ -1041,6 +1041,15 @@ export class TenantNarrowedControlPlane {
 
   setEmailSender(slug: string, granted: boolean): Promise<{ slug: string; emailSender: boolean }> {
     return this.post(`/verticals/${encodeURIComponent(slug)}/email-sender`, { granted });
+  }
+
+  /** #3358: the app's Workers trace rates — asked, the environment's defaults, and effective. */
+  traceSampling(slug: string): Promise<VerticalTraceSamplingReading> {
+    return this.call(`/verticals/${encodeURIComponent(slug)}/trace-sampling`);
+  }
+
+  setTraceSampling(slug: string, rates: VerticalTraceSampling): Promise<VerticalTraceSamplingReading> {
+    return this.post(`/verticals/${encodeURIComponent(slug)}/trace-sampling`, rates);
   }
 
   /** A vertical's versions (admission state + deploymentRef). `[]` if it has none/unknown. */

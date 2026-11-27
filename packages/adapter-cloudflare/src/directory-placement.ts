@@ -249,6 +249,8 @@ export const DIRECTORY_COLUMNS_ADDED: readonly (readonly [table: string, column:
   ['verticals', 'installs_blocked INTEGER NOT NULL DEFAULT 0'],
   ['verticals', 'tenant_provisioner INTEGER NOT NULL DEFAULT 0'],
   ['verticals', 'email_sender INTEGER NOT NULL DEFAULT 0'],
+  ['verticals', 'trace_sampling REAL'],
+  ['verticals', 'preview_trace_sampling REAL'],
   ['verticals', 'serving_ref TEXT'],
   ['verticals', 'serving_version_id TEXT'],
   ['verticals', 'serving_do_classes TEXT'],
