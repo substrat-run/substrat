@@ -293,6 +293,22 @@ labels are quoted in English. Nothing was changed, approved, booked or paid.
   the invoice**: Fortnox lets a person clear the block after booking, and does not let an
   integration.
 
+## An approval flow with named approvers, seen and not measured
+
+A third setting, "Attest via attestflöde", was met in production on 2026-11-27 (#3452), not in the
+sandbox. Neither answer below has been measured, and their codes are unknown: the failure row then
+kept only the message. Since #3452 the row carries the code.
+
+| Call | Answer |
+|---|---|
+| `PUT /supplierinvoices/{n}` `{"SupplierInvoice":{"DisablePaymentFile":true}}` on an unbooked invoice | `Endast aktuell attestant får ändra på leverantörsfakturan.` |
+| `PUT /supplierinvoices/{n}/bookkeep` | `Fakturan måste vara slutattesterad.` |
+
+The connector does not branch on either answer yet. It treats a refused hold as any refusal in
+Fortnox's words: the refusal is remembered on the invoice's note, fails one pass, and is not asked
+again until a decision on the invoice has a receipt. A refused booking is a `failed` receipt, and the
+row names the step it stopped at.
+
 ## What a person has to check
 
 Still open, in the sandbox's web UI:
@@ -300,3 +316,8 @@ Still open, in the sandbox's web UI:
 1. **The payment-file view**, once someone decides to finish the supplier-invoice setup wizard. Is
    blocked 33, 25, 29 or 30 missing from a payment file, where 32, 27 and 31 are not?
 2. **Which scope admits `/supplierinvoicepayments`?** The current consent does not hold it.
+3. **The approval flow** ("Attest via attestflöde", above). With it switched on in the sandbox and
+   the API user not the current approver, measure the codes of both answers, what `approvalbookkeep`
+   answers, and whether an unbooked invoice in the flow can be selected for payment. Those answers
+   decide whether the write-back skips the hold in such a company and lets Fortnox's approvers
+   decide.

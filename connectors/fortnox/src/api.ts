@@ -325,12 +325,16 @@ export function fortnoxErrorCode(err: unknown): number | null {
 /**
  * Fortnox's error envelope. Two shapes in the wild, and a caller wants the message
  * from whichever arrived rather than a bare status.
+ *
+ * The envelope's numeric code follows the message (#3452): it is what a reader can look up, and the
+ * failure row a sweep writes carries only the message, so a refusal this connector does not branch
+ * on would otherwise reach staff as Swedish prose alone.
  */
 function errorMessage(body: string, status: number): string {
   try {
     const parsed: unknown = JSON.parse(body);
     const e = parsed as {
-      ErrorInformation?: { message?: string; Message?: string; error?: string };
+      ErrorInformation?: { message?: string; Message?: string; error?: string; code?: unknown };
       error_description?: string;
       error?: string;
       message?: string;
@@ -341,7 +345,8 @@ function errorMessage(body: string, status: number): string {
       e.error_description ??
       e.message ??
       (typeof e.error === 'string' ? e.error : undefined);
-    if (found) return found;
+    const code = e.ErrorInformation?.code;
+    if (found) return typeof code === 'number' ? `${found} (code ${code})` : found;
   } catch {
     // Not JSON — fall through to the raw slice, which is more use than nothing.
   }

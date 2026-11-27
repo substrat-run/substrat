@@ -1274,7 +1274,11 @@ describe('fortnox connector — inbound sync', () => {
         const first = await sweepFortnoxLedger(host, connId, at(NOW));
         const second = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
 
-        expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('write-back of supplier invoice 12:') }]);
+        expect(first.failed).toEqual([{
+          scopeId: s,
+          error: expect.stringContaining('write-back of supplier invoice 12 failed at the receipt:'),
+          said: 'write-back of supplier invoice 12 failed at the receipt',
+        }]);
         expect(second.failed).toEqual([]);
         expect(fortnox.writes).toEqual([BOOK, COMMENT]);
         expect(receipts).toHaveLength(1);
@@ -1294,7 +1298,11 @@ describe('fortnox connector — inbound sync', () => {
 
         expect(fortnox.writes).toEqual([HOLD, BOOK]);
         expect(receipts).toEqual([{ key: 'decision-12', status: 'failed', error: expect.stringContaining('Perioden är låst') }]);
-        expect(result.failed).toEqual([{ scopeId: s, error: expect.stringContaining('write-back of supplier invoice 12:') }]);
+        expect(result.failed).toEqual([{
+          scopeId: s,
+          error: expect.stringContaining('write-back of supplier invoice 12 failed at the booking: Fortnox PUT /supplierinvoices/12/bookkeep failed: Perioden är låst'),
+          said: 'write-back of supplier invoice 12 failed at the booking: Fortnox answered 400',
+        }]);
       });
 
       // A company that books only approved invoices, as the Fortnox sandbox did with "Simple approve"
@@ -1348,7 +1356,11 @@ describe('fortnox connector — inbound sync', () => {
         const second = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
 
         expect(fortnox.writes).toEqual([HOLD]);
-        expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('approved in Fortnox before it could be held') }]);
+        expect(first.failed).toEqual([{
+          scopeId: s,
+          error: expect.stringMatching(/approved in Fortnox before it could be held.*\(code 2003576\)$/),
+          said: 'supplier invoice 12 was approved in Fortnox before it could be held: Fortnox answered 400 (code 2003576)',
+        }]);
         expect(second.failed).toEqual([]);
       });
 
@@ -1404,7 +1416,7 @@ describe('fortnox connector — inbound sync', () => {
         };
 
         const first = await sweepFortnoxLedger(host, connId, { ...at(NOW), fetch: lost });
-        expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('hold of supplier invoice 12:') }]);
+        expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('hold of supplier invoice 12 failed:'), said: 'hold of supplier invoice 12 failed: Fortnox answered 503' }]);
         await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
         expect(fortnox.writes).toEqual([HOLD]);
 
@@ -1436,8 +1448,74 @@ describe('fortnox connector — inbound sync', () => {
         const first = await sweepFortnoxLedger(host, connId, { ...at(NOW), fetch: down });
         const second = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
 
-        expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('hold of supplier invoice 12:') }]);
+        expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('hold of supplier invoice 12 failed:'), said: 'hold of supplier invoice 12 failed: Fortnox answered 503' }]);
         expect(second.invoices).toEqual([{ scopeId: s, landed: 0, files: 0, held: 1, written: 0, pending: false }]);
+      });
+
+      // #3452: a company whose approval flow names its approvers. Fortnox's codes for these answers are
+      // not measured yet, so the envelopes carry only the message, as the production row did.
+      const refusedBy = (message: string) =>
+        ({ ok: false, status: 400, text: async () => JSON.stringify({ ErrorInformation: { error: 1, message } }), headers: { get: () => null } }) as unknown as Awaited<ReturnType<typeof fortnox.fetch>>;
+
+      it('remembers a hold Fortnox refuses, fails one pass for it, and asks again once the invoice is decided', async () => {
+        await bindWriteback();
+        unbooked('12');
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [] };
+        let refusing = true;
+        let asked = 0;
+        const flow: typeof fortnox.fetch = (input, init) => {
+          if (String(input).endsWith('/supplierinvoices/12') && init?.method === 'PUT' && String(init.body).includes('"DisablePaymentFile":true')) {
+            asked += 1;
+            if (refusing) return Promise.resolve(refusedBy('Endast aktuell attestant får ändra på leverantörsfakturan.'));
+          }
+          return fortnox.fetch(input, init);
+        };
+        const pass = (n: number) => sweepFortnoxLedger(host, connId, { ...at(NOW + n * 15 * 60_000), fetch: flow });
+
+        const first = await pass(0);
+        const second = await pass(1);
+
+        expect(first.failed).toEqual([{
+          scopeId: s,
+          error: expect.stringContaining('Endast aktuell attestant'),
+          said: 'hold of supplier invoice 12 was refused, and is not asked again until the invoice is decided: Fortnox answered 400',
+        }]);
+        expect(second.failed).toEqual([]);
+        expect(asked).toBe(1);
+
+        waiting = { hold: [], decisions: [decided('12')] };
+        await pass(2);
+        expect(fortnox.writes).toEqual([BOOK, COMMENT]);
+
+        refusing = false;
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [] };
+        const back = await pass(3);
+        expect(asked).toBe(2);
+        expect(back.invoices).toEqual([expect.objectContaining({ held: 1 })]);
+      });
+
+      it('names the step a decision stopped at, so a refused booking after approval reads apart from the first', async () => {
+        fortnox.requireAttest = true;
+        await bindWriteback();
+        unbooked('12');
+        waiting = { hold: [], decisions: [decided('12')] };
+        let bookings = 0;
+        const flow: typeof fortnox.fetch = (input, init) => {
+          if (String(input).endsWith('/bookkeep') && init?.method === 'PUT' && ++bookings === 2) {
+            return Promise.resolve(refusedBy('Fakturan måste vara slutattesterad.'));
+          }
+          return fortnox.fetch(input, init);
+        };
+
+        const result = await sweepFortnoxLedger(host, connId, { ...at(NOW), fetch: flow });
+
+        expect(fortnox.writes).toEqual([BOOK, APPROVE]);
+        expect(result.failed).toEqual([{
+          scopeId: s,
+          error: expect.stringContaining('write-back of supplier invoice 12 failed at the booking after approval: Fortnox PUT /supplierinvoices/12/bookkeep failed: Fakturan måste vara slutattesterad.'),
+          said: 'write-back of supplier invoice 12 failed at the booking after approval: Fortnox answered 400',
+        }]);
+        expect(receipts).toEqual([{ key: 'decision-12', status: 'failed', error: expect.stringContaining('slutattesterad') }]);
       });
     });
 
