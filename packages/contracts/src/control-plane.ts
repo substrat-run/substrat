@@ -2458,6 +2458,11 @@ export const costQuantity = z.string().regex(/^\d+(\.\d{1,6})?$/);
  *   `containersUsageAdaptiveGroups`, the figures Cloudflare bills Containers on, per instance.
  *   Memory and disk are converted from the byte-seconds Cloudflare reports to the units it prices
  *   them in (GiB-s and GB-s), so no stored figure outgrows a safe integer.
+ * - `log_events`, `log_bytes`, `span_events`, `span_bytes` (#3358): Workers Logs lines and Workers
+ *   traces' spans a script wrote, and their stored size in bytes (`$metadata.eventSize`, what
+ *   Cloudflare's per-GB observability ingestion is measured in: the uncompressed event with the
+ *   attributes Cloudflare adds). From the telemetry query, which keeps 7 days
+ *   (`OBSERVABILITY_RETENTION_DAYS`); sampling-weighted, as that API's counts and sums are.
  */
 export const costDimension = z.enum([
   'worker_cpu_us',
@@ -2470,6 +2475,10 @@ export const costDimension = z.enum([
   'container_memory_gib_s',
   'container_disk_gb_s',
   'container_egress_bytes',
+  'log_events',
+  'log_bytes',
+  'span_events',
+  'span_bytes',
 ]);
 export type CostDimension = z.infer<typeof costDimension>;
 
@@ -2494,8 +2503,14 @@ export type CostDimension = z.infer<typeof costDimension>;
  *   names the scopes copied into a script, not which object is which, so the row names no scope. A
  *   preview script holds only copies, each written to the ledger before its data, so this is a fact
  *   the directory recorded even after the script is reaped. A recorded object id replaces it (`scope`).
+ * - `line` (#3358): log lines on a vertical's script that named a scope the directory holds and that
+ *   scope's own tenant — the stamped request line a vertical writes for each request. The
+ *   installation's tenant, as `scope` is, which for a listed vertical is not its owner. Both fields
+ *   are a line's own, so only the pair the directory recorded counts; any other line, and every span
+ *   (a span carries none), is `script`: the vertical's owner. A row's (script, scope) therefore
+ *   decides its tenant and attribution.
  */
-export const costAttribution = z.enum(['scope', 'script', 'unmapped', 'platform', 'unknown', 'container', 'copy']);
+export const costAttribution = z.enum(['scope', 'script', 'unmapped', 'platform', 'unknown', 'container', 'copy', 'line']);
 export type CostAttribution = z.infer<typeof costAttribution>;
 
 /**
@@ -2608,8 +2623,35 @@ export const cloudflareUsageDay = z.object({
    * container usage (`CONTAINER_USAGE_RETENTION_DAYS`): a day without it says nothing of containers.
    */
   containers: z.array(cloudflareContainerUsage).optional(),
+  /**
+   * #3358: Workers Logs lines (`logs`) and traces' spans (`spans`) per script, from the telemetry
+   * query, with the tenant and scope a line named (null for a span, and for a line that named
+   * none). Absent for a day read before they were, older than the telemetry keeps
+   * (`OBSERVABILITY_RETENTION_DAYS`), or whose answer could not be read whole: a day without it
+   * says nothing of observability volume, never that there was none. `bytes` is null when the
+   * backend reported no size for the group.
+   */
+  observability: z
+    .array(
+      z.object({
+        signal: z.enum(['logs', 'spans']),
+        script: z.string().min(1),
+        tenantId: z.string().min(1).nullable(),
+        scopeId: z.string().min(1).nullable(),
+        events: z.number().nonnegative(),
+        bytes: z.number().nonnegative().nullable(),
+      }),
+    )
+    .optional(),
 });
 export type CloudflareUsageDay = z.infer<typeof cloudflareUsageDay>;
+
+/**
+ * How many days back the Workers telemetry query answers (#3358): Workers Logs and traces keep
+ * 7 days on a paid plan. A cost day is read with observability volume only while the whole day is
+ * inside them.
+ */
+export const OBSERVABILITY_RETENTION_DAYS = 7;
 
 /**
  * `POST /meters/cloudflare-costs/containers` (#3316): container usage for days the cost rollup read

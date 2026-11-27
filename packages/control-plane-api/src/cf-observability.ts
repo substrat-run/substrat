@@ -4,10 +4,12 @@ import { cachedSource, cutOverSource, type AggregateSource, type CubeQuery, type
 import { stableDeploymentRefFor } from './deploy.js';
 import { aggregateReads } from './aggregate-reads.js';
 import { serviceFamilyPattern } from './service-family.js';
+import { createObservabilityVolumeReader } from './observability-volume.js';
 import {
   CONTAINER_APP_LABEL,
   CONTAINER_TENANT_LABEL,
   CONTAINER_USAGE_RETENTION_DAYS,
+  OBSERVABILITY_RETENTION_DAYS,
   ENTITY_TYPES_SEPARATOR,
   FIELD_COVERAGE_ID_FIELD,
   PLATFORM_SECRET_HEADER,
@@ -2470,8 +2472,18 @@ export function createCloudflareUsageDayReader(opts: {
   pageSize?: number;
   /** The clock container usage's retention is judged against. `Date.now` otherwise. */
   now?: () => number;
+  /**
+   * #3358: also read each day's Workers observability volume (`createObservabilityVolumeReader`)
+   * while the whole day is inside the telemetry's retention. Off unless the host turns it on: it
+   * adds telemetry reads to the cost pass, and needs a permission the telemetry query endpoint
+   * accepts (`Workers Observability Write` or `Observability Write`, per Cloudflare's API reference).
+   */
+  observabilityVolume?: boolean;
 }): (day: string) => Promise<CloudflareUsageDay> {
   const now = opts.now ?? Date.now;
+  const volumeOf = opts.observabilityVolume
+    ? createObservabilityVolumeReader({ accountId: opts.accountId, apiToken: opts.apiToken, ...(opts.fetch ? { fetch: opts.fetch } : {}) })
+    : null;
   const pageSize = opts.pageSize ?? COST_USAGE_PAGE;
   const send: FetchFn = opts.fetch ?? ((input, init) => fetch(input, init));
   const headers = { authorization: `Bearer ${opts.apiToken}`, 'content-type': 'application/json' };
@@ -2586,6 +2598,12 @@ export function createCloudflareUsageDayReader(opts: {
             day,
           )
         : null;
+    // #3358: only a day the telemetry still holds whole, so a part of a day is never read as all of it.
+    const oldestVolumeDay = new Date(now() - (OBSERVABILITY_RETENTION_DAYS - 1) * 86_400_000).toISOString().slice(0, 10);
+    const volume = volumeOf !== null && day >= oldestVolumeDay ? await volumeOf(day) : null;
+    if (volume !== null && 'saturated' in volume) {
+      console.error(JSON.stringify({ substrat: 'cost-rollup.observability-saturated', day }));
+    }
     namespaces ??= listNamespaces().catch((err: unknown) => {
       // A failed list is not kept: the next day's read asks again.
       namespaces = undefined;
@@ -2628,6 +2646,7 @@ export function createCloudflareUsageDayReader(opts: {
               txBytes: num(at(r, 'sum', 'txBytes')),
             })),
           }),
+      ...(volume !== null && 'rows' in volume ? { observability: volume.rows } : {}),
     });
   };
 }

@@ -6,6 +6,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
 import { platformActorId, type CloudflareUsageDay } from '@substrat-run/contracts';
 import { createCloudflareUsageDayReader, createControlPlaneApi, DEV_ACTOR_HEADER, UNSAFE_devPlatformActorAuth } from '../src/index.js';
+import { createObservabilityVolumeReader, OBSERVABILITY_MIN_SPLIT_MS } from '../src/observability-volume.js';
 
 /**
  * The Cloudflare cost rollup's reader and routes (#3316). The reader runs against a small stand-in
@@ -51,9 +52,31 @@ const DATASETS: Record<string, { key: string; rows: Row[] }> = {
 /** The reader's clock: 2026-11-20 is inside container usage's retention, 2026-10-01 is not. */
 const NOW = () => Date.parse('2026-11-21T12:00:00Z');
 
-function cloudflare(opts: { refuse?: string } = {}) {
+/** One telemetry `calculations` ask (#3358), as the volume reader sends it. */
+type TelemetryAsk = { timeframe: { from: number; to: number }; parameters: { datasets: string[]; groupBys: Array<{ value: string }> } };
+/** A telemetry answer: per group, its key values and the two figures, under the reader's aliases. */
+const telemetryAnswer = (groups: Array<{ keys: Record<string, string>; events: number; bytes?: number }>) =>
+  Response.json({
+    success: true,
+    result: {
+      calculations: [
+        { alias: 'events', aggregates: groups.map((g) => ({ value: g.events, groups: Object.entries(g.keys).map(([key, value]) => ({ key, value })) })) },
+        {
+          alias: 'bytes',
+          aggregates: groups.filter((g) => g.bytes !== undefined).map((g) => ({ value: g.bytes, groups: Object.entries(g.keys).map(([key, value]) => ({ key, value })) })),
+        },
+      ],
+    },
+  });
+
+function cloudflare(opts: { refuse?: string; telemetry?: (ask: TelemetryAsk) => Response } = {}) {
   const calls: string[] = [];
   const fetch = async (url: string, init?: RequestInit): Promise<Response> => {
+    if (url.includes('/telemetry/query')) {
+      const ask = JSON.parse(String(init?.body)) as TelemetryAsk;
+      calls.push(`telemetry:${ask.parameters.datasets[0]}`);
+      return opts.telemetry ? opts.telemetry(ask) : telemetryAnswer([]);
+    }
     if (url.includes('/durable_objects/namespaces')) {
       calls.push('namespaces');
       return Response.json({ result: [{ id: 'ns-1', script: 'tenant-a-crm', class: 'ScopeDO', name: 'x' }] });
@@ -106,6 +129,50 @@ describe('the cost rollup reader', () => {
     expect(day.containers).toBeUndefined();
     expect(day.workers).toHaveLength(2);
     expect(cf.calls.some((c) => c.startsWith('containersUsageAdaptiveGroups'))).toBe(false);
+  });
+
+  it('reads observability volume when turned on, only for a day the telemetry still holds whole (#3358)', async () => {
+    const cf = cloudflare({
+      telemetry: (ask) =>
+        ask.parameters.datasets[0] === 'otel'
+          ? telemetryAnswer([{ keys: { '$metadata.service': 'tenant-a-crm' }, events: 40 }])
+          : telemetryAnswer([
+              { keys: { '$metadata.service': 'tenant-a-crm', tenantId: '01JZ0000000000000000TEN001', scopeId: '01JZ0000000000000000SCP001' }, events: 10, bytes: 4000 },
+              // A line naming no tenant: the backend leaves the group's value empty.
+              { keys: { '$metadata.service': 'tenant-a-crm', tenantId: '', scopeId: '' }, events: 3, bytes: 900 },
+            ]),
+    });
+    const read = (on: boolean) => createCloudflareUsageDayReader({ accountId: 'acct', apiToken: 't', fetch: cf.fetch, now: NOW, observabilityVolume: on });
+    expect((await read(true)('2026-11-20')).observability).toEqual([
+      { signal: 'logs', script: 'tenant-a-crm', tenantId: '01JZ0000000000000000TEN001', scopeId: '01JZ0000000000000000SCP001', events: 10, bytes: 4000 },
+      { signal: 'logs', script: 'tenant-a-crm', tenantId: null, scopeId: null, events: 3, bytes: 900 },
+      // No size reported for the spans: kept as unmeasured, never as 0 bytes.
+      { signal: 'spans', script: 'tenant-a-crm', tenantId: null, scopeId: null, events: 40, bytes: null },
+    ]);
+    cf.calls.length = 0;
+    // Seven days back the telemetry no longer holds the whole day; off, it is never asked.
+    expect((await read(true)('2026-11-14')).observability).toBeUndefined();
+    expect((await read(false)('2026-11-20')).observability).toBeUndefined();
+    expect(cf.calls.filter((c) => c.startsWith('telemetry'))).toEqual([]);
+  });
+
+  it('splits a full or timed-out volume answer by time and adds the halves; a span still full leaves the day without it (#3358)', async () => {
+    const HOUR = OBSERVABILITY_MIN_SPLIT_MS;
+    const line = (n: number) => ({ keys: { '$metadata.service': `s-${n}`, tenantId: '', scopeId: '' }, events: 1, bytes: 10 });
+    const reader = (answer: (ask: TelemetryAsk) => Response) =>
+      createObservabilityVolumeReader({ accountId: 'acct', apiToken: 't', groupLimit: 2, fetch: cloudflare({ telemetry: answer }).fetch });
+    const width = (ask: TelemetryAsk) => ask.timeframe.to - ask.timeframe.from;
+    // The whole day times out; each half then answers the same script, and the halves add.
+    const split = await reader((ask) => {
+      if (ask.parameters.datasets[0] === 'otel') return telemetryAnswer([]);
+      if (width(ask) === 86_400_000) return new Response('timeout', { status: 504 });
+      return telemetryAnswer([line(1)]);
+    })('2026-11-20');
+    expect(split).toEqual({ rows: [{ signal: 'logs', script: 's-1', tenantId: null, scopeId: null, events: 2, bytes: 20 }] });
+    // Full at every width down to an hour: the day cannot be read whole.
+    expect(await reader((ask) => telemetryAnswer(ask.parameters.datasets[0] === 'otel' ? [] : [line(1), line(2)]))('2026-11-20')).toEqual({ saturated: true });
+    // Still timing out at an hour is a failure, so the cost day is read again later.
+    await expect(reader((ask) => (width(ask) <= HOUR ? new Response('', { status: 524 }) : new Response('', { status: 504 })))('2026-11-20')).rejects.toThrow(/timed out/);
   });
 
   it('fails the day on a GraphQL refusal, rather than reading it as a day without usage', async () => {

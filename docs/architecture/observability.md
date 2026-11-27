@@ -739,6 +739,34 @@ name answers empty, which reads as "no spans", never as clean. The report also a
 **serving script** first, which it did not before: since #286 that is what production serves, so a
 production call was never compared with the declaration at all.
 
+**4.10 Log and trace volume, measured per app and installation (#3358).** Cloudflare bills
+observability for the account (from 2026-12-01: per GB ingested, the uncompressed event with the
+attributes it adds, plus storage), so the volume is measured here before anyone can be charged
+for it. With `OBSERVABILITY_VOLUME_ROLLUP=on` (and `CLOUDFLARE_COST_ROLLUP=on`) the daily cost
+rollup (#3316) also reads each closed day the telemetry still holds whole (7 days,
+`OBSERVABILITY_RETENTION_DAYS`):
+
+- **Logs**: one `calculations` read of `cloudflare-workers`, grouped by script, `tenantId` and
+  `scopeId`, answering a count and `sum($metadata.eventSize)` — "size of the stored telemetry event
+  in bytes", so volume is **measured in bytes**, not estimated from counts. Both figures are
+  weighted by the sample interval, as the API weights them; Workers Logs run at 100%.
+- **Spans**: the same read of `otel`, grouped by script alone.
+- **Attribution**: the stamped request line names its tenant and scope (§4.3), so a vertical's
+  line is that installation's (`line`) when it names a scope the directory holds and that scope's
+  own tenant. Both are fields of the line, so neither is believed alone, and a vertical's own line
+  cannot charge a tenant by naming it. Every other line, and every span, is the script's (`script`:
+  the vertical's owner on the day), as CPU is; the platform's own scripts stay `platform`.
+- **A day is whole or absent.** A full answer (2,000 groups) or a timed-out one is split by time
+  and the halves added. A one-hour span still full leaves that day without observability
+  (absent, never zero). A failure throws, so the day is read again, and once the day leaves the
+  7 days it is read without observability and its other rows land.
+- **Not billed yet.** The four dimensions map to no billed dimension (`COST_DIMENSION_BILLED`):
+  who pays for a listed app's lines, its publisher or the installing tenant, is a pricing
+  decision still open. Each row carries both the installing tenant and the vertical, so either
+  answer can be priced from the rows already kept.
+
+If volume ever needs reducing, trim what our own code writes; never head-sample logs.
+
 ## 5. What each audience gets, in build order
 
 | # | View | Source | Cost |

@@ -191,7 +191,10 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   platform's price, by app and live or preview. It carries the price only, never the platform's cost or
   markup, and `chargedUsd` is `0`: nothing is charged yet. `state` is `not-read` while the daily
   cost rollup has read no day of the window, `empty` when it has and the team used nothing,
-  else `partial` or `complete`; a day not read yet carries nulls, never zeros.
+  else `partial` or `complete`; a day not read yet carries nulls, never zeros. Workers Logs and
+  traces volume is measured per app and installation (the staff `GET /meters/cloudflare-costs`
+  rows `log_events`, `log_bytes`, `span_events`, `span_bytes`) but is not part of this answer yet:
+  it is not priced until the platform decides who pays for a listed app's lines.
 - **Tenant metered usage** — `GET /tenants/:tenantId/metered-usage` is a path-pinned,
   read-only answer for that tenant's dashboard owner or admin (the dashboard's **Billing**
   view). It meters usage and does not charge: it carries no prices, person or scope identifiers.

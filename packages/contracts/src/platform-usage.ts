@@ -90,7 +90,8 @@ export function listRatesOn(day: string): readonly ListRate[] {
 /**
  * The billed dimension each rollup dimension is charged as, or null for one Cloudflare does not
  * bill on SQLite-backed objects: their writes are billed as rows written, so the storage write
- * units the analytics also report would count them twice.
+ * units the analytics also report would count them twice. The observability dimensions (#3358) are
+ * null too, for another reason: not billed yet, said beside them.
  */
 export const COST_DIMENSION_BILLED: Readonly<Record<CostDimension, PlatformUsageDimension | null>> = {
   worker_cpu_us: 'cpu',
@@ -103,6 +104,13 @@ export const COST_DIMENSION_BILLED: Readonly<Record<CostDimension, PlatformUsage
   container_memory_gib_s: 'container-memory',
   container_disk_gb_s: 'container-disk',
   container_egress_bytes: 'container-egress',
+  // #3358: measured and attributed, and NOT yet billed. Who pays for a listed app's lines (its
+  // publisher, or the tenant that installed it) is a pricing decision still open, so these map to
+  // no billed dimension until it is taken; the rows carry both the installing tenant and the vertical.
+  log_events: null,
+  log_bytes: null,
+  span_events: null,
+  span_bytes: null,
 };
 
 /** A rollup quantity in its billed unit: CPU µs become ms; every other unit is kept. */

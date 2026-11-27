@@ -944,6 +944,15 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   MODEL_RECONCILIATION?: string;
   /**
+   * #3358: `on` makes the cost rollup also read each day's Workers observability volume — log lines
+   * and spans per script, with the tenant and scope a line named, and their stored bytes — while the
+   * day is inside the telemetry's 7 days. Needs `CLOUDFLARE_COST_ROLLUP=on`, and a token the
+   * telemetry query endpoint accepts: Cloudflare's API reference lists `Workers Observability Write`
+   * or `Observability Write`, the permission the dashboard's log reads already need on this same
+   * token. Unset ⇒ the rollup reads what it read before.
+   */
+  OBSERVABILITY_VOLUME_ROLLUP?: string;
+  /**
    * The environment's DEFAULT head sampling rate (0–1) for Workers traces on a vertical's serving
    * script (#858, #3358). An app's owner can ask for more (`setVerticalTraceSampling`), never for
    * less, so this is a floor: TEST sets `1` and traces everything, production sets nothing and
@@ -1422,13 +1431,20 @@ export function modelCostReaderFor(env: Pick<Env, 'CF_API_TOKEN' | 'CF_ACCOUNT_I
 
 /**
  * #3316: the daily Cloudflare cost rollup's reader, or undefined when the environment has not opted
- * in (`CLOUDFLARE_COST_ROLLUP=on`) or holds no Cloudflare credential.
+ * in (`CLOUDFLARE_COST_ROLLUP=on`) or holds no Cloudflare credential. #3358: with
+ * `OBSERVABILITY_VOLUME_ROLLUP=on` it reads observability volume too.
  */
 export function cloudflareCostsFor(
-  env: Pick<Env, 'CF_API_TOKEN' | 'CF_ACCOUNT_ID' | 'CLOUDFLARE_COST_ROLLUP'>,
+  env: Pick<Env, 'CF_API_TOKEN' | 'CF_ACCOUNT_ID' | 'CLOUDFLARE_COST_ROLLUP' | 'OBSERVABILITY_VOLUME_ROLLUP'>,
 ): CostRollupSweepOptions | undefined {
   if (env.CLOUDFLARE_COST_ROLLUP !== 'on' || !env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
-  return { read: createCloudflareUsageDayReader({ accountId: env.CF_ACCOUNT_ID, apiToken: env.CF_API_TOKEN }) };
+  return {
+    read: createCloudflareUsageDayReader({
+      accountId: env.CF_ACCOUNT_ID,
+      apiToken: env.CF_API_TOKEN,
+      observabilityVolume: env.OBSERVABILITY_VOLUME_ROLLUP === 'on',
+    }),
+  };
 }
 
 /**
