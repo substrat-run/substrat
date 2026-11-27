@@ -56,7 +56,9 @@ export function createApp({ host, login, people, vouch }: AppOptions): Hono {
         throw new HTTPException(503, { message: 'the workspace this plugin belongs to did not answer' });
       }
       if (answer.refused === 'master-conflict') {
-        throw new HTTPException(409, { message: 'this tenant runs more than one workspace and this plugin is bound to none that is live' });
+        throw new HTTPException(409, {
+          message: 'this tenant runs more than one workspace and this plugin is bound to none that is live; a tenant admin binds the instance',
+        });
       }
       throw new HTTPException(403, { message: REFUSED });
     }
