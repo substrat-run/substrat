@@ -345,7 +345,9 @@ reference is the [todo demo](https://github.com/substrat-run/substrat/tree/main/
 Use the platform model host: `createModelHost` from `@substrat-run/vertical-host/model`,
 called from `worker.ts` outside any operation. Set `"usesModels": true` under `substrat` in
 `package.json` so a push binds `env.AI`, and pass it as `aiBinding`. It runs on platform-held
-credentials, so **never add a provider key** to a vertical. Reference:
+credentials, so **never add a provider key** to a vertical. Locally, `substrat dev` gives the
+same declaration real Workers AI through your `substrat login`, so a local server passes
+`env: process.env` and needs no Cloudflare token either. Reference:
 <https://substrat.net/reference/vertical-host> (the `createModelHost` section).
 
 ## The gates — run them, believe them

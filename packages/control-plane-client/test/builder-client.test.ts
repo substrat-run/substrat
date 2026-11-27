@@ -42,6 +42,7 @@ const WIRE: Record<string, [(c: ControlPlaneBuilderClient) => Promise<unknown>, 
   listConnectionBindings: [(c) => c.listConnectionBindings(T, 'connection/1'), undefined, `/tenants/${T}/connections/connection%2F1/bindings`, undefined],
   whoami: [(c) => c.whoami(), undefined, '/auth/whoami', undefined],
   exchangeLoginCode: [(c) => c.exchangeLoginCode('c', 'v'), 'POST', '/auth/cli/token', '{"code":"c","verifier":"v"}'],
+  issueModelAccess: [(c) => c.issueModelAccess(), 'POST', '/model-access', '{}'],
   listVerticals: [(c) => c.listVerticals({ limit: 200 }), undefined, '/verticals?limit=200', undefined],
   listVersions: [
     (c) => c.listVersions('acme/my app', { limit: 200, cursor: 'a b' }),
