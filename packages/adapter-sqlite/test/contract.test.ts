@@ -28,6 +28,7 @@ import {
   type OrphanSweepFixture,
   attachmentBytesContractSuite,
   attachmentRefusalContractSuite,
+  systemAttachmentRemoveContractSuite,
   attachmentTextContractSuite,
   capabilityContractSuite,
   becomeMintContractSuite,
@@ -793,6 +794,8 @@ uploadLinkReplayContractSuite('adapter-sqlite', orphanSweepFixture);
 
 // #113: an attachment refusal reaches the caller typed — the pure adapter's half of the parity.
 attachmentRefusalContractSuite('adapter-sqlite', attachmentHostFixture);
+// #3434: a module's system principal removes a file, gated by the write or remove key.
+systemAttachmentRemoveContractSuite('adapter-sqlite', attachmentHostFixture);
 
 // #2501: a scope's attachment bytes, from the upload to the storage gauge.
 attachmentBytesContractSuite('adapter-sqlite', attachmentHostFixture);

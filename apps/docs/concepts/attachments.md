@@ -16,8 +16,9 @@ attachmentTargets: [
 ```
 
 `readPermission` gates list and open. `writePermission` gates upload and remove, and defaults to
-the read key. Both are checked **on the owning entity**, so an entity-narrowed grant resolves
-exactly as it does for `ctx.check`.
+the read key. An optional `removePermission` also admits a remove, and only a remove: whoever holds
+it can delete a file on that entity but cannot upload one. All of them are checked **on the owning
+entity**, so an entity-narrowed grant resolves exactly as it does for `ctx.check`.
 
 The attachment surface is on the host, not on `ctx`: `host.attachments(principal, tenantId,
 scopeId)` returns `upload`, `list`, `open`, `openStream`, `remove` and `search`. **The platform ships no
@@ -25,6 +26,38 @@ upload route.** A vertical mounts its own, calls `upload` with the bytes, and de
 platform does not: the size cap, which file types it accepts, any scanning. The kernel itself
 checks the write key and records the file. For a link share's read-only door, see
 [Permissions](./permissions.md#files-through-a-link).
+
+## Deleting a file when its retention period ends
+
+A file you must keep for a fixed period and then delete, such as a signed agreement kept as proof
+for twelve months, is deleted by your module, not by a person. Host code calls
+`host.getSystemAttachments(moduleId, tenantId, scopeId)`, which acts as the module's system
+principal and has `open` and `remove`:
+
+```ts
+attachmentTargets: [
+  {
+    entityType: 'order_line',
+    readPermission: 'orders:review',
+    writePermission: 'orders:place',
+    removePermission: 'orders:purge-agreement',
+  },
+],
+schedules: [
+  { operation: 'orders/retention', cadence: { everyMinutes: 60 }, permissions: ['orders:purge-agreement'] },
+],
+```
+
+The remove is checked as the module, against the write key or the `removePermission`. The module
+holds a key only through a schedule's `permissions`, so its grant shows in the permission diff.
+With a `removePermission`, it does not need the key people upload with. Declared
+`holder: 'system'`, that key cannot be given to a person at all. The `attachment.removed` event
+names the module as its actor, so the file's history does not say that its uploader deleted it.
+The row and the event are written first, then the bytes are deleted from the blob store. The
+schedule kill switch refuses the remove, as it refuses the module's other work.
+
+A schedule's operation decides which files are due. It cannot delete them itself: an operation
+holds `ctx`, not the host, so the call is made from host code.
 
 ## Serving files from a deployed worker
 
@@ -43,7 +76,7 @@ const door = workerDoor<Env>({ directory, nodeFor, hostFor, envSpec, attachments
 | `DELETE /api/attachments/:attachmentId` | 204 |
 
 Each runs as the signed-in person, so a read is gated by the target's `readPermission` and a
-removal by its `writePermission`, on the entity the file hangs on. On the `GET`, an id the person
+removal by its `writePermission` (or its `removePermission`), on the entity the file hangs on. On the `GET`, an id the person
 cannot read is the same 404 as an id that does not exist, and the refusal is still recorded in the
 denial log. A `DELETE` of a file they may not remove is a 403.
 

@@ -100,6 +100,7 @@ export const SCOPE_WORK_ORIGINS = {
     'attachmentAdd', 'attachmentAddReply', 'attachmentList', 'attachmentListReply', 'attachmentRedeemUploadLinkReply',
     'uploadLinkInspectReply', 'downloadLinkResolveReply', 'attachmentAuthorize', 'attachmentAuthorizeReply',
     'systemAttachmentAuthorize', 'systemAttachmentAuthorizeReply', 'attachmentRemove', 'attachmentRemoveReply',
+    'systemAttachmentRemove', 'systemAttachmentRemoveReply',
     'attachmentCheckWriteReply', 'attachmentSearch', 'attachmentTextSource', 'attachmentTextRecord',
     'attachmentTextBackfillStart', 'attachmentTextBackfillBatch', 'capabilityAttachmentList', 'capabilityAttachmentOpen',
     'capabilityAttachmentSearch', 'capabilityAttachmentRefuseWrite',

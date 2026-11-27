@@ -900,8 +900,8 @@ inside the scope database under that serialization, transactional with an
 like any scope fact; the bytes go to a **platform-minted per-tenant blob store** (a
 `blobStoreNeed` in `runtimeNeeds.blobStores` — R2 on Cloudflare, a per-tenant directory on
 the pure adapter; self-serve-deploy.md §4, the `tenantStoreNeed` sibling). Every read is
-gated by the target's `readPermission` and every mutation by its `writePermission` (proof
-path included, per-entity) — the read gate the issue's hand-rolled route handler could not
+gated by the target's `readPermission` and every mutation by its `writePermission` (a declared
+`removePermission` also admits a remove, #3434; proof path included, per-entity) — the read gate the issue's hand-rolled route handler could not
 prove now runs where `ctx.check` does. Keys are platform-derived (`scope/<scopeId>/att/<id>`),
 so per-scope isolation inside a per-tenant store is construction, not a key-prefix convention;
 and because bytes are write-once under a fresh ULID key with their SHA-256 recorded, a PITR

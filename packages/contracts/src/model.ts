@@ -767,6 +767,8 @@ type EntityRefs<T extends Record<string, EntityDef>, M> = {
       string;
     readonly readPermission: string;
     readonly writePermission?: string;
+    /** Admits a remove (not an upload) beside the write key (#3434). */
+    readonly removePermission?: string;
     readonly uploadLinks?: { readonly maxBytes: number; readonly contentTypes?: readonly string[] };
   }[];
   /**

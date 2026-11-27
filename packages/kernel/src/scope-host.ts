@@ -5247,7 +5247,8 @@ export type RedeemedUploadLink = AttachmentRecord & {
  * finally consumed (#473). Every method is gated INSIDE the platform by the declared
  * target's permission, checked as the ambient principal with the owning entity as the
  * per-entity ref (so entity-narrowed grants resolve): `readPermission` for list/open,
- * `writePermission` (default: the read key) for upload/remove. The metadata fact lands in
+ * `writePermission` (default: the read key) for upload/remove, and a declared
+ * `removePermission` admits a remove beside it (#3434). The metadata fact lands in
  * `_substrat_attachments` inside the scope's own database — under scope serialization,
  * with an `attachment.added`/`attachment.removed` spine event in the same transaction —
  * while bytes go straight to the per-tenant blob store, never through the scope pipe.
@@ -5267,7 +5268,10 @@ export interface ScopeAttachments {
    * says what was served (`openAttachmentByteStream` says how a slice is held to the record).
    */
   openStream(attachmentId: string, options?: AttachmentOpenOptions): Promise<OpenedAttachmentStream | null>;
-  /** Delete row (and event) first, then bytes; returns the removed record, null if unknown. */
+  /**
+   * Delete row (and event) first, then bytes; returns the removed record, null if unknown.
+   * Gated by the target's write key, or its `removePermission` when it declares one (#3434).
+   */
   remove(attachmentId: string): Promise<AttachmentRecord | null>;
   /**
    * Attachments whose EXTRACTED TEXT matches `term` (#1575), newest first, as records the
@@ -5743,16 +5747,26 @@ export interface ScopeHost {
   ): Promise<ScopeAttachments>;
 
   /**
-   * Read attachment bytes as a registered module's system principal. Jobs need
-   * the same attachment target gate as a person, without borrowing a person's
-   * identity or sending bytes through invoke. Only open is exposed: a background
-   * extraction job has no reason to mutate attachment metadata or bytes.
+   * Attachments as a registered module's system principal, `system:<moduleId>`: host code (a
+   * job, a vertical's harness) reaching files with the same target gate a person meets, without
+   * borrowing a person's identity or sending bytes through invoke.
+   *
+   * - `open` is gated by the target's `readPermission`.
+   * - `remove` (#3434) is gated as a person's remove is: the target's write key, or its
+   *   `removePermission` when it declares one. A retention schedule deletes a file this way,
+   *   and the `attachment.removed` event is attributed to the module rather than to a person
+   *   who removed nothing. The row and the event commit first, then the bytes are deleted.
+   *
+   * The module holds keys only through `schedules[].permissions` (`grantToSystem`), so what it
+   * may remove shows in the permission diff. The schedule kill switch refuses both verbs, as it
+   * refuses a system invoke. Upload and list are not exposed: a file has an author, and a module
+   * picks the file it acts on by id.
    */
   getSystemAttachments(
     moduleId: ModuleId,
     tenantId: TenantId,
     scopeId: ScopeId,
-  ): Promise<Pick<ScopeAttachments, 'open'>>;
+  ): Promise<Pick<ScopeAttachments, 'open' | 'remove'>>;
 
   /**
    * Open the attachment a DOWNLOAD link names (#3139), as the principal who minted it: the link is
