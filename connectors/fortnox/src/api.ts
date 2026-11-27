@@ -240,16 +240,18 @@ const fortnoxSupplierInvoiceComment = z.object({ Comment: fortnoxText() });
  * returns it. Fortnox books such an invoice on the accrual account and keeps the cost account, the
  * period and the cadence here, so without this read a landing sees only the accrual account. Only
  * the fields the invoice landing carries are read; `Period` stays text so a value Fortnox adds
- * lands instead of failing the invoice.
+ * lands instead of failing the invoice. Shape per the published spec (apidocs, 2026-11-27):
+ * the accounts, dates, `Period`, `Times`, `Total` and the rows are required, `Description` and
+ * `VATIncluded` are not, and the read answers 404 when the invoice has no accrual.
  */
 const fortnoxSupplierInvoiceAccrual = z.object({
   AccrualAccount: fortnoxNumber,
   CostAccount: fortnoxNumber,
   StartDate: fortnoxText(),
   EndDate: fortnoxText(),
-  /** MONTHLY, BIMONTHLY, QUARTERLY, SEMIANNUALLY or ANNUALLY. */
+  /** MONTHLY, BIMONTHLY, QUARTERLY, SEMIANNUALLY, ANNUALLY — or the spec's `1_MONTHS` … `12_MONTHS` spellings. */
   Period: fortnoxText(),
-  /** How many periods the total is spread over. Null when Fortnox leaves it unset. */
+  /** How many periods the total is spread over. Required by the spec; read as optional so a missing one lands rather than fails. */
   Times: fortnoxOptionalNumber,
   Total: fortnoxNumber,
   VATIncluded: fortnoxFlag,

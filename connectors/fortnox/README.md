@@ -228,11 +228,14 @@ to bind time rather than disappearing.
    in `GET /3/supplierinvoiceaccruals/{n}`, so the rows alone would show a reader an interim account
    and never the cost it stands for. The landing reads the accrual after every invoice (a 404 is
    `accrual: null`) and carries it as `accrual` on the page: accounts, dates, `period` as Fortnox's
-   own word, `times`, `total`, `vatIncluded`, `description` and Fortnox's accrual rows. That halves
-   what one pass lands (100 changed invoices, not 200). When Fortnox refuses the accrual reads, the
-   invoices land without the field, no more accruals are asked for that pass, and the sweep's row
-   names the refusal. Whether an edited accrual bumps the invoice's `lastmodified` is not measured;
-   if it does not, a re-pointed accrual reaches the landing when the invoice itself next changes.
+   own word (the spec lists ten: `MONTHLY` … `ANNUALLY` and `1_MONTHS` … `12_MONTHS`), `times`,
+   `total`, `vatIncluded`, `description` and Fortnox's accrual rows. That halves what one pass lands
+   (100 changed invoices, not 200). When Fortnox refuses the accrual reads, the invoices land without
+   the field, no more accruals are asked for that pass, and the sweep's row names the refusal. The
+   shape is the published spec's, not yet a live company's: whether an edited accrual bumps the
+   invoice's `lastmodified` is not measured; if it does not, a re-pointed accrual reaches the landing
+   when the invoice itself next changes (the list, `GET /3/supplierinvoiceaccruals`, is paged and
+   unfiltered, and carries every field, so a per-pass diff of it is the follow-up if needed).
 
 ## Testing
 

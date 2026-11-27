@@ -447,8 +447,9 @@ export const fortnoxSupplierInvoicePage = z.object({
          * The invoice's accrual (periodisering), when Fortnox has one: the invoice is booked on
          * `accrualAccount`, and the cost moves to `costAccount` period by period between the two
          * dates. `period` is Fortnox's own word (MONTHLY, BIMONTHLY, QUARTERLY, SEMIANNUALLY,
-         * ANNUALLY), carried as text. `null` says Fortnox has none for the invoice; absent only from
-         * a connector older than the field, or a pass Fortnox refused the accrual reads in.
+         * ANNUALLY, or its `1_MONTHS` … `12_MONTHS` spellings), carried as text. `null` says Fortnox
+         * has none for the invoice; absent only from a connector older than the field, or a pass
+         * Fortnox refused the accrual reads in.
          */
         accrual: z
           .object({
