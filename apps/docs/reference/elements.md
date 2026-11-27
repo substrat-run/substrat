@@ -47,6 +47,9 @@ items, then "Switch user" and "Sign out".
   "Switch user".
 - `sub-sign-out` and `sub-switch-user` are cancelable: `preventDefault()` keeps the navigation
   from happening, so an app can confirm first or sign out its own way.
+- **Words.** "Sign in", "Manage account", "Switch user", "Sign out" and the trigger's accessible
+  name ("Account: Ada") are `labels`, a partial `UserMenuLabels`, resolved like the table's
+  below. `registerUserMenuLabels('sv', {…})` registers them for a language.
 
 ## `<sub-avatar>`
 
@@ -108,6 +111,28 @@ table.actions = [{ id: 'archive', label: 'Archive', views: ['active'], bulk: tru
   Lit template. `mount(cell, row)` hands you a light-DOM element for React, Vue or plain DOM, and
   your page's CSS applies inside it. It can return `{ update, unmount }`.
 - **Column width.** `width` takes a CSS width, for a column narrower than its share of the row.
+- **Words.** Everything the table shows or announces, its `aria-*` and `title` text included, can
+  be replaced with `labels`, a partial `EntityTableLabels` (a function where the words carry a
+  value; `ENTITY_TABLE_LABELS` holds the English). Each word resolves as: the table's own
+  `labels`, then the words registered for its language, then English. `empty`, `forbidden-text`
+  and `search-label` still work, and win over `labels` when set. The language is the nearest
+  `lang` up from the table, then the page's; it also formats numbers, money and dates, and the
+  table hands it to the Web Awesome components inside it. Six words are Web Awesome's own
+  (`columns`, `rowsPerPage`, `search`, `loading`, `resetColumns`, and `columnMoved`, which is its
+  `columnMovedToPosition`), so its translation file covers them:
+
+  ```ts
+  import '@awesome.me/webawesome/dist/translations/sv.js';
+  import { registerEntityTableLabels } from '@substrat-run/elements/entity-table';
+
+  registerEntityTableLabels('sv', {
+    clear: 'Rensa',
+    selected: (n) => `${n} valda`,
+    range: (from, to, total) => `${from}–${to}${total === null ? '' : ` av ${total}`}`,
+    // …
+  });
+  // <html lang="sv">
+  ```
 - **Row click.** `row-click` makes a whole row clickable: a click anywhere but a control in the row
   fires `sub-row-click` with `{ row }`. It's a pointer shortcut, so what it opens should also be
   reachable through a link or a button in the row.
@@ -174,7 +199,7 @@ table.actions = [{ id: 'archive', label: 'Archive', views: ['active'], bulk: tru
   `query` property. `sub-action-done` fires with `{ action, rows }` after an action succeeds.
 - **Choosing columns (opt-in).** `column-picker` adds a Columns button to the toolbar: a
   checkbox per column to show or hide it, and a drag handle plus Move up / Move down buttons to
-  reorder it, so a keyboard or a screen reader can do anything a drag can. Reset to default
+  reorder it, so a keyboard or a screen reader can do anything a drag can. Reset columns
   goes back to the declared columns. The first column names the row and is always shown. The
   choice is a `layout` (`{ order, hidden }` by column key), kept apart from the query because it
   changes nothing the server is asked. `layout-key` keeps it in this browser. A screen that

@@ -20,8 +20,11 @@
  *   `layout`  — `{ order, hidden }` by column key: which columns show, in what order
  *   `detail`  — `(cell, row)`, drawing the open row's detail, as `mount` draws a cell
  *   `expanded` — the key of the row whose `detail` is open, or null: the screen owns it
- * Attributes: `label` (the table's accessible name), `empty`, `forbidden-text`,
- *   `search-label`, `selectable`, `density="compact"`, `paging` (`pages`, the default —
+ *   `labels`  — `Partial<EntityTableLabels>`: any of the words the table shows or says, in
+ *               place of the registered language's or English (`ENTITY_TABLE_LABELS`). See
+ *               "Words" below.
+ * Attributes: `label` (the table's accessible name), `empty`, `forbidden-text` and
+ *   `search-label` (each wins over its word in `labels` when set), `selectable`, `density="compact"`, `paging` (`pages`, the default —
  *   Previous / Next with "21–40 of 132" — or `more`, one "Load more" that appends), and
  *   `page-size` (25). `pageSizes` is the property behind the rows-per-page picker.
  *   `column-picker` adds a "Columns" button: show, hide and reorder the columns. Opt-in;
@@ -29,6 +32,7 @@
  *   in this browser under that key; a screen that would rather keep it on the account
  *   listens for `sub-layout-change` and hands it back through `layout`. `row-click` makes a
  *   row answer a click anywhere that is not a control of its own, with `sub-row-click`.
+ * Function: `registerEntityTableLabels(code, labels)` — the table's words for a language.
  * Slot: `empty` — what an empty view says, in place of `empty` (a "Create" button, say).
  * Events: `sub-action-done` `{ action, rows }` after an action succeeded on some rows;
  *   `sub-query-change` `{ query }` whenever the person changes the view, sort, filters or search;
@@ -95,6 +99,17 @@
  *     or refused child read shows in that row's level. Selecting a parent does not select its
  *     children; a selection is exactly the rows picked.
  *
+ * ## Words
+ *
+ * Every word the table shows or announces — its `aria-*`, `title` and live-region text too —
+ * resolves as: its own `labels`, then the words registered for its language in Web Awesome's
+ * translation registry, then English. Its language is the nearest `lang` up from it, then the
+ * page's, then the browser's; it formats numbers, money and dates (`cellText`'s locale), and it
+ * is set on the Web Awesome components the table draws, which would otherwise read only their
+ * own or the page's. Six words are Web Awesome's (`SHARED` below), read from its keys, so a page
+ * in Swedish imports Web Awesome's `translations/sv.js` and calls
+ * `registerEntityTableLabels('sv', {…})` for the rest. A message from the server is the server's.
+ *
  * ## Cells a vertical draws itself
  *
  * `render(row)` returns a Lit template or a string, drawn in the table's shadow root. A
@@ -128,6 +143,8 @@ import '@awesome.me/webawesome/dist/components/skeleton/skeleton.js';
 import '@awesome.me/webawesome/dist/components/spinner/spinner.js';
 import { css, html, nothing, svg, type PropertyValues, type TemplateResult } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
+import { LabelsController, ownWords, registerLabels } from './internal/labels.js';
+import { langOf } from './internal/lang.js';
 import SubstratElement from './internal/substrat-element.js';
 import {
   BULK,
@@ -140,7 +157,9 @@ import {
   layoutEntries,
   moveColumn,
   toggleColumn,
+  type BulkOutcome,
   type ColumnSpec,
+  type Problem,
   type RowAction,
   type TableEntry,
   type TableLayout,
@@ -175,6 +194,173 @@ export interface TableFilter {
   label: string;
   options: readonly { value: string; label: string }[];
 }
+
+/**
+ * Every word the table shows or announces, its `aria-*` and `title` text included. A word that
+ * carries a value is a function, so plurals and word order work in any language. `column` and
+ * `row` arguments are already names (a column's `label`, the row's first cell); `action` is a
+ * `RowAction`'s `label`; `position` counts from 1.
+ *
+ * Six of them are Web Awesome's own words, read from its keys rather than duplicated:
+ * `columns`, `rowsPerPage`, `search`, `loading`, `resetColumns` and `columnMoved`
+ * (`columnMovedToPosition`). Their English is Web Awesome's, and its `translations/sv.js`
+ * translates them.
+ */
+export interface EntityTableLabels {
+  /** The bulk bar's accessible name, and how many rows are selected in it. */
+  selection: string;
+  selected(count: number): string;
+  /** Clears a selection, or the search and filters that matched nothing. */
+  clear: string;
+  /** The views switch's accessible name. */
+  view: string;
+  /** The search field's label and placeholder, when `search-label` is not set. */
+  search: string;
+  /** A filter's placeholder, while it filters nothing. */
+  anyValue: string;
+  /** On a filter, while a search is on. */
+  searchNotFiltered: string;
+  /** The columns button, and the menu's accessible name. */
+  columns: string;
+  alwaysShown: string;
+  hiddenWhileNarrow: string;
+  moveUp(column: string): string;
+  moveDown(column: string): string;
+  resetColumns: string;
+  /** Announced in the columns menu. */
+  columnsReset: string;
+  columnShown(column: string): string;
+  columnHidden(column: string): string;
+  columnMoved(column: string, position: number, total: number): string;
+  /** An empty view, when `empty` is not set. */
+  empty: string;
+  /** A 403 wall, when `forbidden-text` is not set. */
+  forbidden: string;
+  noMatches: string;
+  noMatchesFor(term: string): string;
+  /** A read that failed, followed by its message. */
+  couldNotLoad: string;
+  tryAgain: string;
+  /** Leads an action's refusal or failure, followed by its message. */
+  notAllowed: string;
+  somethingWentWrong: string;
+  /** An action found the row changed somewhere else, and the view was read again. */
+  changedElsewhere: string;
+  /** A bulk action's tally, e.g. "Archive: 3 of 5 done; 2 not allowed." */
+  bulkOutcome(outcome: BulkOutcome): string;
+  /** An open row's children, while they load. */
+  loading: string;
+  selectAllShown: string;
+  selectRow(row: string): string;
+  /** The actions column's accessible name. */
+  actions: string;
+  /** An icon action's accessible name. */
+  actionOn(action: string, row: string): string;
+  moreActions(row: string): string;
+  /** A `boolean` cell. */
+  yes: string;
+  no: string;
+  /** A drag preview carrying several rows, when `dragLabel` is not set. */
+  dragging(count: number): string;
+  loadMore: string;
+  /** A search's footer: how many matched, or that the first `count` are shown. */
+  matches(count: number): string;
+  firstMatches(count: number): string;
+  /** The footer of `paging="more"` / `"scroll"`, without and with a total. */
+  shown(count: number): string;
+  shownOf(count: number, total: number): string;
+  /** A single short page's footer. */
+  inAll(total: number): string;
+  /** The pager's place, "21–40 of 132"; `total` is null when the read gives none. */
+  range(from: number, to: number, total: number | null): string;
+  rowsPerPage: string;
+  perPage(size: number): string;
+  previous: string;
+  next: string;
+}
+
+/** The table's English words: the last fallback, and a start for a translation. */
+export const ENTITY_TABLE_LABELS: Readonly<EntityTableLabels> = {
+  selection: 'Selection',
+  selected: (count) => `${count} selected`,
+  clear: 'Clear',
+  view: 'View',
+  search: 'Search',
+  anyValue: 'Any',
+  searchNotFiltered: 'A search is ranked, not filtered: clear it to filter',
+  columns: 'Columns',
+  alwaysShown: 'Always shown',
+  hiddenWhileNarrow: 'Hidden while narrow',
+  moveUp: (column) => `Move ${column} up`,
+  moveDown: (column) => `Move ${column} down`,
+  resetColumns: 'Reset columns',
+  columnsReset: 'Columns reset.',
+  columnShown: (column) => `${column} shown.`,
+  columnHidden: (column) => `${column} hidden.`,
+  columnMoved: (column, position, total) => `${column} moved to position ${position} of ${total}`,
+  empty: 'Nothing here.',
+  forbidden: 'You do not have access to this.',
+  noMatches: 'Nothing matches these filters.',
+  noMatchesFor: (term) => `Nothing matches “${term}”.`,
+  couldNotLoad: 'Could not load.',
+  tryAgain: 'Try again',
+  notAllowed: 'Not allowed.',
+  somethingWentWrong: 'Something went wrong.',
+  changedElsewhere: 'This changed somewhere else. The view was refreshed.',
+  bulkOutcome: ({ action, done, total, refused, changed, failed, error }) => {
+    const parts = [
+      refused ? `${refused} not allowed` : '',
+      changed ? `${changed} changed somewhere else` : '',
+      failed ? `${failed} failed${error ? ` (${error})` : ''}` : '',
+    ].filter(Boolean);
+    return `${action}: ${done} of ${total} done${parts.length ? `; ${parts.join(', ')}` : ''}.`;
+  },
+  loading: 'Loading',
+  selectAllShown: 'Select all shown',
+  selectRow: (row) => `Select ${row}`,
+  actions: 'Actions',
+  actionOn: (action, row) => `${action} ${row}`,
+  moreActions: (row) => `More actions for ${row}`,
+  yes: 'Yes',
+  no: 'No',
+  dragging: (count) => `${count} items`,
+  loadMore: 'Load more',
+  matches: (count) => `${count} ${count === 1 ? 'match' : 'matches'}`,
+  firstMatches: (count) => `The first ${count} matches. Add a word to narrow the search.`,
+  shown: (count) => `${count} shown`,
+  shownOf: (count, total) => `${count} of ${total}`,
+  inAll: (total) => `${total} in all`,
+  range: (from, to, total) => `${from}–${to}${total === null ? '' : ` of ${total}`}`,
+  rowsPerPage: 'Rows per page',
+  perPage: (size) => `${size} per page`,
+  previous: 'Previous',
+  next: 'Next',
+};
+
+const PREFIX = 'sub-entity-table';
+
+/** The words Web Awesome already has, by its key. */
+const SHARED = {
+  columns: 'columns',
+  rowsPerPage: 'rowsPerPage',
+  search: 'search',
+  loading: 'loading',
+  resetColumns: 'resetColumns',
+  columnMoved: 'columnMovedToPosition',
+} as const satisfies Partial<Record<keyof EntityTableLabels, string>>;
+
+/**
+ * Register the table's words for a language (`'sv'`, or a region such as `'sv-FI'`) in Web
+ * Awesome's translation registry, beside its own components' words. Every table whose language
+ * is that one uses them, unless the table's own `labels` says otherwise. Call it again to add
+ * or replace words; the ones not given fall back to English. A word Web Awesome already has
+ * (`SHARED` above) goes under its key, so its own components in that language say it too.
+ */
+export function registerEntityTableLabels(code: string, labels: Partial<EntityTableLabels>): void {
+  registerLabels(PREFIX, code, labels, SHARED);
+}
+
+registerLabels(PREFIX, 'en', ownWords(ENTITY_TABLE_LABELS, SHARED));
 
 /** How long a typed term waits before it is searched, so a word is one read, not five. */
 const SEARCH_DEBOUNCE_MS = 250;
@@ -291,6 +477,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     empty: {},
     forbiddenText: { attribute: 'forbidden-text' },
     searchLabel: { attribute: 'search-label' },
+    labels: { attribute: false },
     selectable: { type: Boolean, reflect: true },
     density: { reflect: true },
     paging: { reflect: true },
@@ -327,9 +514,11 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   declare columnPicker: boolean;
   declare layoutKey: string | undefined;
   declare label: string;
-  declare empty: string;
-  declare forbiddenText: string;
-  declare searchLabel: string;
+  /** Unset, the `empty` word of `labels` or the language. Set, it wins over both. */
+  declare empty: string | undefined;
+  declare forbiddenText: string | undefined;
+  declare searchLabel: string | undefined;
+  declare labels: Partial<EntityTableLabels> | undefined;
   declare selectable: boolean;
   declare density: 'comfortable' | 'compact';
   declare paging: 'pages' | 'more' | 'scroll';
@@ -345,6 +534,10 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   #drop: '2' | '3' | null = null;
   #dragging: string | null = null;
   #announce = '';
+  #translations = new LabelsController<EntityTableLabels>(this, PREFIX, ENTITY_TABLE_LABELS, SHARED);
+  /** The words and language of the render under way, for the parts it draws and the handlers it binds. */
+  #w: EntityTableLabels = ENTITY_TABLE_LABELS;
+  #l = 'en';
   /** A single click waiting to see whether it becomes a double-click. */
   #pendingClick: { key: string; timer: ReturnType<typeof setTimeout>; fire: () => void } | null = null;
   /** The entry holding the one tabindex="0". */
@@ -397,9 +590,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     this.rowDraggable = false;
     this.rowClick = false;
     this.label = '';
-    this.empty = 'Nothing here.';
-    this.forbiddenText = 'You do not have access to this.';
-    this.searchLabel = 'Search';
+    this.labels = undefined;
     this.selectable = false;
     this.columnPicker = false;
     this.density = 'comfortable';
@@ -426,6 +617,20 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     this.#sentinel = null;
     this.#watchedRows = -1;
     for (const slot of [...this.#mounted.keys()]) this.#unmount(slot);
+  }
+
+  /**
+   * The table's language: the nearest `lang` up from it, then the page's, then the browser's
+   * (as Web Awesome's own components fall back). Set on the Web Awesome components it draws,
+   * which read only their own `lang` or the page's, so the two never disagree.
+   */
+  get #lang(): string {
+    return langOf(this) ?? (typeof navigator === 'undefined' ? 'en' : navigator.language);
+  }
+
+  /** Its own `labels`, then the words registered for its language, then English. */
+  get #words(): EntityTableLabels {
+    return this.#translations.resolve(this.#lang, this.labels);
   }
 
   /** The columns on screen: the given ones, arranged by the layout. */
@@ -828,8 +1033,9 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   /** What a drag's preview says: the row, or how many. */
   #dragText(rows: T[]) {
     if (this.dragLabel) return this.dragLabel(rows);
-    if (rows.length !== 1 || !this.columns[0]) return `${rows.length} items`;
-    return cellText(this.columns[0], rows[0]!, new Date()).text;
+    const words = this.#words;
+    if (rows.length !== 1 || !this.columns[0]) return words.dragging(rows.length);
+    return cellText(this.columns[0], rows[0]!, new Date(), this.#lang, words).text;
   }
 
   #makePreview(rows: T[]) {
@@ -1421,6 +1627,8 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   render() {
     const state = this.view;
     if (!state) return nothing;
+    this.#w = this.#words;
+    this.#l = this.#lang;
     return html`<div part="frame" class="frame" aria-busy=${state.phase === 'loading' || state.refreshing ? 'true' : 'false'}>
       ${this.#toolbar(state)} ${this.#problem(state)} ${this.#body(state)}
     </div>`;
@@ -1428,13 +1636,16 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
 
   #toolbar(state: TableState<T, S>) {
     const model = this.#model!;
+    const words = this.#w;
+    const lang = this.#l;
     const bulk = actionsIn(this.actions, state.query.view, true);
     // A click on a row selects it, so without a bulk action to offer the bar would only be in the way.
     if ((this.selectable || (this.rowSelect && bulk.length > 0)) && state.selected.size > 0) {
-      return html`<div part="toolbar bulk-bar" class="toolbar bulk" role="toolbar" aria-label="Selection">
-        <strong>${state.selected.size} selected</strong>
+      return html`<div part="toolbar bulk-bar" class="toolbar bulk" role="toolbar" aria-label=${words.selection}>
+        <strong>${words.selected(state.selected.size)}</strong>
         ${bulk.map(
           (a) => html`<wa-button
+            lang=${lang}
             size="s"
             appearance="outlined"
             variant=${a.tone === 'danger' ? 'danger' : 'neutral'}
@@ -1444,8 +1655,8 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
             >${a.label}</wa-button
           >`,
         )}
-        <wa-button size="s" appearance="plain" ?disabled=${state.busy !== null} @click=${() => model.clearSelection()}
-          >Clear</wa-button
+        <wa-button lang=${lang} size="s" appearance="plain" ?disabled=${state.busy !== null} @click=${() => model.clearSelection()}
+          >${words.clear}</wa-button
         >
       </div>`;
     }
@@ -1455,41 +1666,44 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     return html`<div part="toolbar" class="toolbar">
       ${views
         ? html`<wa-radio-group
+            lang=${lang}
             size="s"
             orientation="horizontal"
             .value=${state.query.view}
             @change=${(e: Event) => this.#changed(model.setQuery({ view: (e.target as HTMLInputElement).value }))}
           >
-            <span slot="label" class="vh">View</span>
-            ${this.views.map((v) => html`<wa-radio appearance="button" value=${v.id}>${v.label}</wa-radio>`)}
+            <span slot="label" class="vh">${words.view}</span>
+            ${this.views.map((v) => html`<wa-radio lang=${lang} appearance="button" value=${v.id}>${v.label}</wa-radio>`)}
           </wa-radio-group>`
         : nothing}
       ${search
         ? html`<wa-input
+            lang=${lang}
             class="grow"
             size="s"
             type="search"
             with-clear
-            placeholder=${this.searchLabel}
+            placeholder=${this.searchLabel ?? words.search}
             .value=${state.query.q}
             @input=${(e: Event) => this.#onSearch(e)}
           >
-            <span slot="label" class="vh">${this.searchLabel}</span>
+            <span slot="label" class="vh">${this.searchLabel ?? words.search}</span>
           </wa-input>`
         : nothing}
       ${this.filters.map(
         (f) => html`<wa-select
+          lang=${lang}
           size="s"
           with-clear
-          placeholder="Any"
+          placeholder=${words.anyValue}
           .value=${state.query.filters[f.key] ?? ''}
           ?disabled=${state.mode === 'search'}
-          title=${state.mode === 'search' ? 'A search is ranked, not filtered: clear it to filter' : nothing}
+          title=${state.mode === 'search' ? words.searchNotFiltered : nothing}
           @change=${(e: Event) => this.#changed(model.filter(f.key, (e.target as HTMLSelectElement).value || null))}
         >
           <span slot="label" class="vh">${f.label}</span>
           <span slot="start" class="filter-name" aria-hidden="true">${f.label}</span>
-          ${f.options.map((o) => html`<wa-option value=${o.value}>${o.label}</wa-option>`)}
+          ${f.options.map((o) => html`<wa-option lang=${lang} value=${o.value}>${o.label}</wa-option>`)}
         </wa-select>`,
       )}
       ${this.columnPicker ? this.#picker() : nothing}
@@ -1504,6 +1718,8 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   #picker() {
     const first = this.columns[0];
     if (!first) return nothing;
+    const words = this.#w;
+    const lang = this.#l;
     const entries = layoutEntries(this.columns, this.layout);
     const plain = JSON.stringify(arrange(this.columns, this.layout).map((c) => c.key)) ===
       JSON.stringify(this.columns.map((c) => c.key));
@@ -1512,7 +1728,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     const move = (key: string, label: string, by: number) => {
       const next = moveColumn(this.columns, this.layout, key, { by });
       const at = layoutEntries(this.columns, next).findIndex((e) => e.column.key === key);
-      this.#setLayout(next, `${label} moved ${by < 0 ? 'up' : 'down'}, ${at + 1} of ${entries.length}.`);
+      this.#setLayout(next, this.#w.columnMoved(label, at + 1, entries.length));
       // Focus follows the column. At an edge the button pressed is disabled now, and focus
       // would fall to the page; the other one is where a keyboard wants to be.
       void this.updateComplete.then(() => {
@@ -1521,13 +1737,13 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
         (pressed && !pressed.hasAttribute('disabled') ? pressed : moves[by < 0 ? 1 : 0])?.focus();
       });
     };
-    return html`<wa-button id="columns" class="columns-button" size="s" appearance="outlined">Columns</wa-button>
-      <wa-popover for="columns" placement="bottom-end" class="picker">
-        <div class="picker-body" role="group" aria-label="Columns">
+    return html`<wa-button lang=${lang} id="columns" class="columns-button" size="s" appearance="outlined">${words.columns}</wa-button>
+      <wa-popover lang=${lang} for="columns" placement="bottom-end" class="picker">
+        <div class="picker-body" role="group" aria-label=${words.columns}>
           <div class="picker-row fixed">
             <span class="grip" aria-hidden="true"></span>
-            <wa-checkbox size="s" checked disabled>${first.label}</wa-checkbox>
-            <span class="hint">Always shown</span>
+            <wa-checkbox lang=${lang} size="s" checked disabled>${first.label}</wa-checkbox>
+            <span class="hint">${words.alwaysShown}</span>
           </div>
           <ol class="picker-list">
             ${repeat(
@@ -1552,7 +1768,9 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
                   this.#dragging = null;
                   if (key && key !== c.key) {
                     const label = this.columns.find((x) => x.key === key)?.label ?? key;
-                    this.#setLayout(moveColumn(this.columns, this.layout, key, { to: c.key }), `${label} moved.`);
+                    const next = moveColumn(this.columns, this.layout, key, { to: c.key });
+                    const at = layoutEntries(this.columns, next).findIndex((e) => e.column.key === key);
+                    this.#setLayout(next, this.#w.columnMoved(label, at + 1, entries.length));
                   } else this.requestUpdate();
                 }}
                 @dragend=${() => {
@@ -1562,23 +1780,25 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
               >
                 <span class="grip" aria-hidden="true">⠿</span>
                 <wa-checkbox
+                  lang=${lang}
                   size="s"
                   .checked=${shown}
                   @change=${() =>
-                    this.#setLayout(toggleColumn(this.columns, this.layout, c.key), `${c.label} ${shown ? 'hidden' : 'shown'}.`)}
+                    this.#setLayout(toggleColumn(this.columns, this.layout, c.key), shown ? this.#w.columnHidden(c.label) : this.#w.columnShown(c.label))}
                   >${c.label}</wa-checkbox
                 >
-                ${shown && narrow(c) ? html`<span class="hint">Hidden while narrow</span>` : html`<span></span>`}
+                ${shown && narrow(c) ? html`<span class="hint">${words.hiddenWhileNarrow}</span>` : html`<span></span>`}
                 <span class="moves">
-                  <wa-button size="xs" appearance="plain" ?disabled=${i === 0} @click=${() => move(c.key, c.label, -1)}
-                    >↑<span class="vh">Move ${c.label} up</span></wa-button
+                  <wa-button lang=${lang} size="xs" appearance="plain" ?disabled=${i === 0} @click=${() => move(c.key, c.label, -1)}
+                    >↑<span class="vh">${words.moveUp(c.label)}</span></wa-button
                   >
                   <wa-button
+                    lang=${lang}
                     size="xs"
                     appearance="plain"
                     ?disabled=${i === entries.length - 1}
                     @click=${() => move(c.key, c.label, 1)}
-                    >↓<span class="vh">Move ${c.label} down</span></wa-button
+                    >↓<span class="vh">${words.moveDown(c.label)}</span></wa-button
                   >
                 </span>
               </li>`,
@@ -1586,11 +1806,12 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
           </ol>
           <div class="picker-foot">
             <wa-button
+              lang=${lang}
               size="s"
               appearance="plain"
               ?disabled=${plain && !this.layout?.hidden.length}
-              @click=${() => this.#setLayout(defaultLayout(this.columns), 'Columns reset.')}
-              >Reset to default</wa-button
+              @click=${() => this.#setLayout(defaultLayout(this.columns), this.#w.columnsReset)}
+              >${words.resetColumns}</wa-button
             >
           </div>
           <span class="vh" aria-live="polite">${this.#announce}</span>
@@ -1601,11 +1822,19 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   #problem(state: TableState<T, S>) {
     const p = state.problem;
     if (!p || state.phase === 'error') return nothing;
+    const words = this.#w;
     const variant = p.kind === 'refused' ? 'warning' : p.kind === 'stale' ? 'neutral' : 'danger';
-    const lead = p.kind === 'refused' ? 'Not allowed.' : p.kind === 'stale' ? '' : 'Something went wrong.';
-    return html`<wa-callout variant=${variant} size="s" role="status">
-      ${lead ? html`<strong>${lead}</strong> ` : nothing}${p.message}
+    const lead = p.kind === 'refused' ? words.notAllowed : p.kind === 'stale' ? '' : words.somethingWentWrong;
+    return html`<wa-callout lang=${this.#l} variant=${variant} size="s" role="status">
+      ${lead ? html`<strong>${lead}</strong> ` : nothing}${this.#said(p)}
     </wa-callout>`;
+  }
+
+  /** A problem in the table's words when the model wrote it, else the server's message. */
+  #said(p: Problem) {
+    if (p.said?.kind === 'changed') return this.#w.changedElsewhere;
+    if (p.said?.kind === 'bulk') return this.#w.bulkOutcome(p.said.outcome);
+    return p.message;
   }
 
   #body(state: TableState<T, S>) {
@@ -1613,11 +1842,11 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
       case 'loading':
         return this.#skeleton();
       case 'forbidden':
-        return html`<wa-callout variant="warning" size="s">${this.forbiddenText}</wa-callout>`;
+        return html`<wa-callout lang=${this.#l} variant="warning" size="s">${this.forbiddenText ?? this.#w.forbidden}</wa-callout>`;
       case 'error':
-        return html`<wa-callout variant="danger" size="s">
-          <strong>Could not load.</strong> ${state.problem?.message ?? ''}
-          <wa-button size="s" appearance="outlined" @click=${() => this.reload()}>Try again</wa-button>
+        return html`<wa-callout lang=${this.#l} variant="danger" size="s">
+          <strong>${this.#w.couldNotLoad}</strong> ${state.problem ? this.#said(state.problem) : ''}
+          <wa-button lang=${this.#l} size="s" appearance="outlined" @click=${() => this.reload()}>${this.#w.tryAgain}</wa-button>
         </wa-callout>`;
       case 'ready':
         return state.rows.length === 0 ? this.#empty(state) : this.#table(state);
@@ -1632,7 +1861,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
           ${[0, 1, 2].map(
             () => html`<tr>
               ${this.#shown.map(
-                (c, i) => html`<td class=${this.#cellClass(c, i)}><wa-skeleton effect="sheen"></wa-skeleton></td>`,
+                (c, i) => html`<td class=${this.#cellClass(c, i)}><wa-skeleton lang=${this.#l} effect="sheen"></wa-skeleton></td>`,
               )}
             </tr>`,
           )}
@@ -1644,11 +1873,11 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   #empty(state: TableState<T, S>) {
     if (emptyReason(state) === 'no-matches') {
       return html`<div part="empty" class="note">
-        <div>${state.mode === 'search' ? `Nothing matches “${state.query.q.trim()}”.` : 'Nothing matches these filters.'}</div>
-        <wa-button size="s" appearance="outlined" @click=${() => this.#clear()}>Clear</wa-button>
+        <div>${state.mode === 'search' ? this.#w.noMatchesFor(state.query.q.trim()) : this.#w.noMatches}</div>
+        <wa-button lang=${this.#l} size="s" appearance="outlined" @click=${() => this.#clear()}>${this.#w.clear}</wa-button>
       </div>`;
     }
-    return html`<div part="empty" class="note"><slot name="empty">${this.empty}</slot></div>`;
+    return html`<div part="empty" class="note"><slot name="empty">${this.empty ?? this.#w.empty}</slot></div>`;
   }
 
   #clear() {
@@ -1678,11 +1907,11 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   #cell(c: Column<T, S>, row: T, key: string, state: TableState<T, S>, now: Date) {
     if (c.mount) return html`<slot name=${slotOf(c.key, key)}></slot>`;
     if (c.render) return c.render(row);
-    const cell = cellText(c, row, now);
+    const cell = cellText(c, row, now, this.#l, this.#w);
     const href = cell.blank ? null : c.href?.(row, state.query);
     const body =
       c.kind === 'badge' && !cell.blank
-        ? html`<wa-badge variant=${cell.tone ?? 'neutral'} appearance="filled">${cell.text}</wa-badge>`
+        ? html`<wa-badge lang=${this.#l} variant=${cell.tone ?? 'neutral'} appearance="filled">${cell.text}</wa-badge>`
         : c.kind === 'code' && !cell.blank
           ? html`<code>${cell.text}</code>`
           : cell.text;
@@ -1726,16 +1955,17 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
               ${this.selectable
                 ? html`<th scope="col" class="pick">
                     <wa-checkbox
+                      lang=${this.#l}
                       size="s"
                       .checked=${picked > 0 && picked === keys.length}
                       .indeterminate=${picked > 0 && picked < keys.length}
                       @change=${() => model.toggleAll()}
-                      ><span class="vh">Select all shown</span></wa-checkbox
+                      ><span class="vh">${this.#w.selectAllShown}</span></wa-checkbox
                     >
                   </th>`
                 : nothing}
               ${columns.map((c, i) => this.#header(c, i, state))}
-              ${rowActions.length ? html`<th scope="col" class="actions"><span class="vh">Actions</span></th>` : nothing}
+              ${rowActions.length ? html`<th scope="col" class="actions"><span class="vh">${this.#w.actions}</span></th>` : nothing}
             </tr>
           </thead>
           <tbody
@@ -1766,7 +1996,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     const { state, columns, rowActions, now, navigable, nested, picks, tabStop, span } = line;
     const model = this.#model!;
     const selected = state.selected.has(key);
-    const name = this.columns[0] ? cellText(this.columns[0], row, now).text : key;
+    const name = this.columns[0] ? cellText(this.columns[0], row, now, this.#l, this.#w).text : key;
     const open = this.expanded === key;
     const dropping = this.#dropKey === key;
     const part = ['row', selected ? 'selected' : '', dropping ? 'drop-target' : ''].filter(Boolean).join(' ');
@@ -1795,8 +2025,8 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
       >
         ${this.selectable
           ? html`<td class="pick" @click=${this.#notePickClick}>
-              <wa-checkbox size="s" .checked=${selected} @change=${() => this.#onPick(key)}
-                ><span class="vh">Select ${name}</span></wa-checkbox
+              <wa-checkbox lang=${this.#l} size="s" .checked=${selected} @change=${() => this.#onPick(key)}
+                ><span class="vh">${this.#w.selectRow(name)}</span></wa-checkbox
               >
             </td>`
           : nothing}
@@ -1858,21 +2088,21 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
         aria-level=${entry.level}
       >
         ${aria(html`<span class="level-note">
-          <wa-button size="s" appearance="plain" ?loading=${entry.loading} @click=${() => model.moreIn(entry.parent)}>Load more</wa-button>
+          <wa-button lang=${this.#l} size="s" appearance="plain" ?loading=${entry.loading} @click=${() => model.moreIn(entry.parent)}>${this.#w.loadMore}</wa-button>
           ${entry.message ? html`<span role="status">${entry.message}</span>` : nothing}
         </span>`)}
       </tr>`;
     }
     const body =
       entry.phase === 'loading'
-        ? html`<span class="level-note"><wa-spinner></wa-spinner> Loading…</span>`
+        ? html`<span class="level-note"><wa-spinner lang=${this.#l}></wa-spinner> ${this.#w.loading}…</span>`
         : entry.phase === 'empty'
-          ? html`<span class="level-note">${this.empty}</span>`
+          ? html`<span class="level-note">${this.empty ?? this.#w.empty}</span>`
           : entry.phase === 'forbidden'
-            ? html`<span class="level-note" role="status">${this.forbiddenText}</span>`
+            ? html`<span class="level-note" role="status">${this.forbiddenText ?? this.#w.forbidden}</span>`
             : html`<span class="level-note" role="alert">
-                <strong>Could not load.</strong> ${entry.message ?? ''}
-                <wa-button size="s" appearance="outlined" @click=${() => model.reloadLevel(entry.parent)}>Try again</wa-button>
+                <strong>${this.#w.couldNotLoad}</strong> ${entry.message ?? ''}
+                <wa-button lang=${this.#l} size="s" appearance="outlined" @click=${() => model.reloadLevel(entry.parent)}>${this.#w.tryAgain}</wa-button>
               </span>`;
     return html`<tr class="level-line" aria-rowindex=${index + 2} aria-level=${entry.level}>${aria(body)}</tr>`;
   }
@@ -1885,6 +2115,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     const blocked = state.busy !== null && !busy;
     return html`${inline.map(
       (a) => html`<wa-button
+        lang=${this.#l}
         size="s"
         appearance="plain"
         variant=${a.tone === 'danger' ? 'danger' : 'neutral'}
@@ -1892,21 +2123,22 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
         ?disabled=${blocked}
         title=${a.icon ? a.label : nothing}
         @click=${() => this.#run(a, row)}
-        >${a.icon ? html`${this.#icon(a.icon)}<span class="vh">${a.label} ${name}</span>` : html`${a.label}<span class="vh"> ${name}</span>`}</wa-button
+        >${a.icon ? html`${this.#icon(a.icon)}<span class="vh">${this.#w.actionOn(a.label, name)}</span>` : html`${a.label}<span class="vh"> ${name}</span>`}</wa-button
       >`,
     )}${more.length
       ? html`<wa-dropdown
+          lang=${this.#l}
           @wa-select=${(e: CustomEvent<{ item: { value: string } }>) => {
             const action = more.find((a) => a.id === e.detail.item.value);
             if (action) void this.#run(action, row);
           }}
         >
-          <wa-button slot="trigger" size="s" appearance="plain" ?disabled=${blocked}
-            >⋯<span class="vh">More actions for ${name}</span></wa-button
+          <wa-button lang=${this.#l} slot="trigger" size="s" appearance="plain" ?disabled=${blocked}
+            >⋯<span class="vh">${this.#w.moreActions(name)}</span></wa-button
           >
           ${more.map(
             (a) =>
-              html`<wa-dropdown-item value=${a.id} variant=${a.tone === 'danger' ? 'danger' : 'default'}
+              html`<wa-dropdown-item lang=${this.#l} value=${a.id} variant=${a.tone === 'danger' ? 'danger' : 'default'}
                 >${a.icon ? this.#icon(a.icon, 'icon') : nothing}${a.label}</wa-dropdown-item
               >`,
           )}
@@ -1916,16 +2148,14 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
 
   #icon(icon: NonNullable<RowAction<T>['icon']>, slot?: string) {
     return typeof icon === 'string'
-      ? html`<wa-icon slot=${slot ?? nothing} name=${icon} aria-hidden="true"></wa-icon>`
-      : html`<wa-icon slot=${slot ?? nothing} src=${icon.src} aria-hidden="true"></wa-icon>`;
+      ? html`<wa-icon lang=${this.#l} slot=${slot ?? nothing} name=${icon} aria-hidden="true"></wa-icon>`
+      : html`<wa-icon lang=${this.#l} slot=${slot ?? nothing} src=${icon.src} aria-hidden="true"></wa-icon>`;
   }
 
   #footer(state: TableState<T, S>) {
     if (state.mode === 'search') {
       const n = state.rows.length;
-      const said = state.capped
-        ? `The first ${n} matches. Add a word to narrow the search.`
-        : `${n} ${n === 1 ? 'match' : 'matches'}`;
+      const said = state.capped ? this.#w.firstMatches(n) : this.#w.matches(n);
       return html`<footer part="footer"><span>${said}</span></footer>`;
     }
     return this.paging === 'more' || this.paging === 'scroll' ? this.#more(state) : this.#pager(state);
@@ -1933,12 +2163,12 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
 
   #more(state: TableState<T, S>) {
     if (!state.next && state.total === null) return nothing;
-    const shown = state.total === null ? `${state.rows.length} shown` : `${state.rows.length} of ${state.total}`;
+    const shown = state.total === null ? this.#w.shown(state.rows.length) : this.#w.shownOf(state.rows.length, state.total);
     return html`<footer part="footer">
       <span aria-live=${this.paging === 'scroll' ? 'polite' : nothing}>${shown}</span>
       ${state.next
-        ? html`<wa-button size="s" appearance="outlined" ?loading=${state.loadingMore} ?disabled=${state.refreshing} @click=${() => this.#model!.more()}
-            >Load more</wa-button
+        ? html`<wa-button lang=${this.#l} size="s" appearance="outlined" ?loading=${state.loadingMore} ?disabled=${state.refreshing} @click=${() => this.#model!.more()}
+            >${this.#w.loadMore}</wa-button
           >`
         : nothing}
     </footer>`;
@@ -1954,29 +2184,32 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     const first = state.page === 0;
     // A single short first page needs no pager — unless its size is the reason it is short.
     if (first && !state.next && state.rows.length < Math.min(...this.pageSizes)) {
-      return state.total === null ? nothing : html`<footer part="footer"><span>${state.total} in all</span></footer>`;
+      return state.total === null ? nothing : html`<footer part="footer"><span>${this.#w.inAll(state.total)}</span></footer>`;
     }
     const from = state.offset + 1;
     const to = state.offset + state.rows.length;
-    const range = `${from}–${to}${state.total === null ? '' : ` of ${state.total}`}`;
+    const words = this.#w;
+    const lang = this.#l;
+    const range = words.range(from, to, state.total);
     const busy = state.refreshing;
     return html`<footer part="footer" class="pager">
       <span aria-live="polite">${range}</span>
       <span class="pages">
         <wa-select
+          lang=${lang}
           size="s"
           class="size"
           .value=${String(state.query.limit ?? this.pageSize)}
           @change=${(e: Event) => this.#changed(model.setPageSize(Number((e.target as HTMLSelectElement).value)))}
         >
-          <span slot="label" class="vh">Rows per page</span>
-          ${this.pageSizes.map((n) => html`<wa-option value=${String(n)}>${n} per page</wa-option>`)}
+          <span slot="label" class="vh">${words.rowsPerPage}</span>
+          ${this.pageSizes.map((n) => html`<wa-option lang=${lang} value=${String(n)}>${words.perPage(n)}</wa-option>`)}
         </wa-select>
-        <wa-button size="s" appearance="outlined" ?disabled=${first || busy} @click=${() => model.prevPage()}
-          >‹ Previous</wa-button
+        <wa-button lang=${lang} size="s" appearance="outlined" ?disabled=${first || busy} @click=${() => model.prevPage()}
+          >‹ ${words.previous}</wa-button
         >
-        <wa-button size="s" appearance="outlined" ?disabled=${!state.next || busy} @click=${() => model.nextPage()}
-          >Next ›</wa-button
+        <wa-button lang=${lang} size="s" appearance="outlined" ?disabled=${!state.next || busy} @click=${() => model.nextPage()}
+          >${words.next} ›</wa-button
         >
       </span>
     </footer>`;

@@ -7,7 +7,9 @@
 
 /** The canonical tag, or undefined when none is set — or the one set is malformed (`en_US`), which `Intl` would throw on mid-render. */
 export function langOf(el: Element): string | undefined {
-  const lang = el.closest<HTMLElement>('[lang]')?.lang || document.documentElement.lang;
+  // Its own `lang` property first: an element that declares `lang` reactive (every Substrat one
+  // does) shadows the native property, so setting it never writes the attribute `closest` reads.
+  const lang = (el as HTMLElement).lang || el.closest<HTMLElement>('[lang]')?.lang || document.documentElement.lang;
   try {
     return lang ? Intl.getCanonicalLocales(lang)[0] : undefined;
   } catch {

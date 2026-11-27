@@ -1,4 +1,13 @@
-export { SubEntityTable, type CellHandle, type Column, type TableFilter, type TableView } from './entity-table.js';
+export {
+  ENTITY_TABLE_LABELS,
+  SubEntityTable,
+  registerEntityTableLabels,
+  type CellHandle,
+  type Column,
+  type EntityTableLabels,
+  type TableFilter,
+  type TableView,
+} from './entity-table.js';
 export {
   BULK,
   EntityTableModel,
@@ -18,6 +27,8 @@ export {
   type LevelState,
   type Page,
   type Phase,
+  type BulkOutcome,
+  type CellWords,
   type Problem,
   type QueryParams,
   type RowAction,
@@ -73,7 +84,7 @@ export {
   type Step,
 } from './kanban-model.js';
 export { SubAvatar, type AvatarShow } from './avatar.js';
-export { SubUserMenu } from './user-menu.js';
+export { SubUserMenu, USER_MENU_LABELS, registerUserMenuLabels, type UserMenuLabels } from './user-menu.js';
 export {
   HUES,
   SessionStore,
