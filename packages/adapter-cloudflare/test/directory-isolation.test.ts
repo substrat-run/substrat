@@ -13,8 +13,9 @@ import { warmControlPlane } from './do-warmup.js';
  * the oracle, not a copy.
  */
 // ROUTES_CONTROL_PLANE (#3395) is the one directory with the routing read model on; no scope reads it.
+// MIRROR_CONTROL_PLANE (K-68 step 3b) is the one with the dual-write on; no scope reads it either.
 const DIRECTORIES = [
-  'CONTROL_PLANE', 'SCHED_CONTROL_PLANE', 'SWEEP_CONTROL_PLANE', 'VE_CONTROL_PLANE', 'PC_CONTROL_PLANE', 'ROUTES_CONTROL_PLANE',
+  'CONTROL_PLANE', 'SCHED_CONTROL_PLANE', 'SWEEP_CONTROL_PLANE', 'VE_CONTROL_PLANE', 'PC_CONTROL_PLANE', 'ROUTES_CONTROL_PLANE', 'MIRROR_CONTROL_PLANE',
 ] as const;
 type Directory = (typeof DIRECTORIES)[number];
 

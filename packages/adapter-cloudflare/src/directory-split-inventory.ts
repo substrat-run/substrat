@@ -47,8 +47,12 @@ const REPORTS = 'Platform reports';
 const HOSTNAMES = 'Hostnames';
 const SCOPE_STORES = 'Vertical scope stores';
 const ROUTING = 'Routing read model';
+const MIRROR = 'Dual-write (step 3b)';
 
-/** `transactionSync` and `storage.transaction` sites: 50 in code (the rfc's 48, plus the routing read model's two, #3395). */
+/**
+ * `transactionSync` and `storage.transaction` sites: 51 in code (the rfc's 48, plus the routing read
+ * model's two, #3395, and the dual-write's one, step 3b).
+ */
 export const DIRECTORY_TRANSACTION_SITES: readonly SiteRow[] = [
   row('alarm', SCHEMA, 'registry', 'none',
     'The #1764 backfill (rfc: `armVersionMigrationsBackfill`, which arms it). rfc §7.2 groups it with schema work run in every object; ' +
@@ -112,6 +116,9 @@ export const DIRECTORY_TRANSACTION_SITES: readonly SiteRow[] = [
   // scopes, its tenant) runs these over its own tables and its own ledger.
   row('installRouteReadModel', ROUTING, 'every', 'none', 'The read model’s outbox, ledger and capture triggers, created with the object.'),
   row('publishRouteReadModel', ROUTING, 'every', 'none', 'The backfill: marks every key the object can publish dirty.'),
+  row('constructor', MIRROR, 'retired', 'projection',
+    'The transaction `directory-mirror.ts` installs its triggers and reads each flush batch in. The mirror is the old ' +
+    'directory’s copy to the split’s objects: it exists only while both are written (3b–3e), and 3f’s reverse copy replaces it.'),
 
   row('writeAndAudit', '`writeAndAudit`', 'both', 'none', 'Split by caller: `WRITE_AND_AUDIT_CALLERS`.'),
 ];

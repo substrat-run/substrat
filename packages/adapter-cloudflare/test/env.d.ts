@@ -11,6 +11,8 @@ declare namespace Cloudflare {
     /** #3395: the directory with the routing read model on, and the KV namespace it publishes to. */
     ROUTES_CONTROL_PLANE: DurableObjectNamespace;
     TEST_ROUTES: KVNamespace;
+    /** K-68 step 3b: the directory with the dual-write to the registry and tenant objects on. */
+    MIRROR_CONTROL_PLANE: DurableObjectNamespace<import('../src/control-plane-do.js').ControlPlaneDO>;
     /** #1899: the schedule suite's own directory — its sweep counts every active scope in it. */
     SCHED_CONTROL_PLANE: DurableObjectNamespace;
     /** …and its scopes, which read SCHED_CONTROL_PLANE as their directory. */

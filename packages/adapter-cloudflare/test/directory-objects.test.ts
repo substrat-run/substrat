@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { directoryCrossingContractSuite } from '@substrat-run/contract-tests';
 import { runCrossing, ulid, type CrossingLedgerPort, type DirectoryClaimsPort } from '@substrat-run/kernel';
 import { durableDirectoryObjects, tenantDirectoryStub } from '../src/directory-objects.js';
-import { DIRECTORY_PLACEMENT, directoryTables, type DirectoryObjectKind } from '../src/directory-placement.js';
+import { DIRECTORY_PLACEMENT, directoryTables, withoutCrossObjectReferences, type DirectoryObjectKind } from '../src/directory-placement.js';
 
 /**
  * K-68 (directory split), step 3a: the registry and the tenant directory object, built beside
@@ -45,8 +45,8 @@ async function objectSchema(kind: DirectoryObjectKind): Promise<Schema> {
 
 /** The tables each new object adds of its own: the crossing ledger, its owner, and the registry's claims. */
 const OWN_TABLES: Record<DirectoryObjectKind, string[]> = {
-  registry: ['_substrat_directory_claims', '_substrat_directory_crossings', '_substrat_directory_self'],
-  tenant: ['_substrat_directory_crossings', '_substrat_directory_self'],
+  registry: ['_substrat_directory_claims', '_substrat_directory_crossings', '_substrat_directory_self', 'directory_mirror_parked', 'directory_mirror_rows'],
+  tenant: ['_substrat_directory_crossings', '_substrat_directory_self', 'directory_mirror_parked', 'directory_mirror_rows'],
 };
 
 describe('directory placement (K-68)', () => {
@@ -63,7 +63,12 @@ describe('directory placement (K-68)', () => {
         .filter(([, p]) => p.to === kind || p.to === 'both')
         .map(([table]) => table);
       expect([...object.keys()].sort()).toEqual([...placed, ...OWN_TABLES[kind]].sort());
-      for (const table of placed) expect({ table, ...object.get(table) }).toEqual({ table, ...directory.get(table) });
+      // A reference into another object is the one difference allowed (`CROSS_OBJECT_REFERENCES`).
+      for (const table of placed) {
+        const built = directory.get(table)!;
+        const expected = { ...built, sql: norm(withoutCrossObjectReferences(kind, table, built.sql)) };
+        expect({ table, ...object.get(table) }).toEqual({ table, ...expected });
+      }
     });
   }
 });

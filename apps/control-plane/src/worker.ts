@@ -619,6 +619,12 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   DIRECTORY_LAKE_PRUNE?: string;
   /**
+   * K-68 step 3b: the directory's dual-write to `DIRECTORY_REGISTRY` and `TENANT_DIRECTORY`
+   * (`@substrat-run/adapter-cloudflare`'s `directory-mirror.ts`). Read by `ControlPlaneDO` itself.
+   * Unset or `off` (the default) mirrors nothing; `all`, or a comma list of directory tables.
+   */
+  DIRECTORY_MIRROR?: string;
+  /**
    * Reads the Tier-2 lake with R2 SQL (#1334), pushed by `scripts/secrets.mjs`. Minted by
    * `scripts/env-provision.mjs` with read groups only, scoped to the lake bucket; that they are
    * enough is what `pnpm lake:smoke` checks. The catalog's write token never reaches a worker.
