@@ -1,7 +1,7 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { ulid } from '@substrat-run/kernel';
-import { registryStub, tenantDirectoryStub } from '../src/directory-objects.js';
+import { durableDirectoryObjects, durableMirrorSender, registryStub, tenantDirectoryStub } from '../src/directory-objects.js';
 import { DIRECTORY_PLACEMENT } from '../src/directory-placement.js';
 import { MIRRORED_TABLES, mirrorKeyColumns, mirrorTargetsSql, type MirrorBatch } from '../src/directory-mirror.js';
 
@@ -150,6 +150,89 @@ describe('directory dual-write (K-68 step 3b)', () => {
     expect(after).toMatchObject({ enabled: true, version: (before as { version: number }).version, restoredAt: expect.any(String) });
     const triggers = await rowsOf(directory, `SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger' AND name GLOB 'dmirror_*'`);
     expect(triggers).toEqual([{ n: MIRRORED_TABLES.length * 3 }]);
+  });
+
+  // Part 2: the registry's claims, through the intent-first crossing (rfc §7.3).
+  const bindHostname = (stub: Stub, hostname: string, tenant: string) =>
+    runInDurableObject(stub, (_i, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO hostnames (hostname, tenant_id, scope_id, surface, status, created_at) VALUES (?, ?, ?, 'app', 'active', ?)`,
+        hostname, tenant, ulid(), NOW,
+      );
+    });
+  const sqlIn = (stub: Stub, sql: string, ...params: unknown[]) =>
+    runInDurableObject(stub, (_i, state) => void state.storage.sql.exec(sql, ...params));
+
+  it('claims in the registry what the directory decided: id and slug on create, a hostname on bind, released on delete and reap', async () => {
+    const directory = mirrorDirectory();
+    const registry = registryStub(env.DIRECTORY_REGISTRY);
+    const t = ulid();
+    const slug = `m-${t.toLowerCase()}`;
+    const hostname = `${ulid().toLowerCase()}.mirror.test`;
+    await directory.createTenant(t, slug, 'Claims', NOW);
+    await bindHostname(directory, hostname, t);
+    await directory.settleDirectoryMirror();
+    for (const [namespace, key] of [['tenant-id', t], ['tenant-slug', slug], ['hostname', hostname]] as const) {
+      expect(await registry.readClaim(namespace, key)).toMatchObject({ holder: t, state: 'confirmed' });
+    }
+    await sqlIn(directory, `DELETE FROM hostnames WHERE hostname = ?`, hostname);
+    await directory.settleDirectoryMirror();
+    expect(await registry.readClaim('hostname', hostname)).toBeNull();
+    // A reap frees the slug and keeps the id for good, so it is never reused (rfc §7.3).
+    await sqlIn(directory, `UPDATE tenants SET status = 'reaped' WHERE tenant_id = ?`, t);
+    await directory.settleDirectoryMirror();
+    expect(await registry.readClaim('tenant-slug', slug)).toBeNull();
+    expect(await registry.readClaim('tenant-id', t)).toMatchObject({ holder: t, state: 'tombstone' });
+    expect(await runInDurableObject(tenantObject(t), (_i, state) => state.storage.sql.exec('SELECT COUNT(*) AS n FROM directory_mirror_releases').one())).toEqual({ n: 0 });
+  });
+
+  it('drains claim work beyond one page after the outbox is empty', async () => {
+    const directory = mirrorDirectory();
+    const registry = registryStub(env.DIRECTORY_REGISTRY);
+    const t = ulid();
+    // More hostname bindings than one apply hands back (MIRROR_CLAIM_WORK_MAX = 20), in one batch.
+    const hostnames = Array.from({ length: 25 }, () => `${ulid().toLowerCase()}.mirror.test`);
+    for (const h of hostnames) await bindHostname(directory, h, t);
+    await directory.settleDirectoryMirror();
+    expect(await directory.directoryMirrorStatus()).toMatchObject({ queued: 0, claimsDue: 0 });
+    const claims = await Promise.all(hostnames.map((h) => registry.readClaim('hostname', h)));
+    expect(claims.map((c) => c?.state)).toEqual(hostnames.map(() => 'confirmed'));
+  });
+
+  it('a hostname released while its crossing is open stays released: the crossing cannot claim it again', async () => {
+    const registry = registryStub(env.DIRECTORY_REGISTRY);
+    const t = ulid();
+    const owner = `tenant:${t}`;
+    const object = tenantObject(t);
+    const hostname = `${ulid().toLowerCase()}.mirror.test`;
+    const row = { hostname, tenant_id: t, scope_id: ulid(), surface: 'app', status: 'active', created_at: NOW };
+    const bound = await object.applyMirror(owner, 'global', { version: 1, changes: [{ table: 'hostnames', key: JSON.stringify([hostname]), row }] });
+    const [crossingId] = bound.claims!.crossings;
+    // A runner that claimed in the registry and died before marking the crossing `claimed`.
+    await registry.claim({ namespace: 'hostname', key: hostname, claimId: crossingId!, holder: t, leaseMs: 60_000 });
+    const removed = await object.applyMirror(owner, 'global', { version: 2, changes: [{ table: 'hostnames', key: JSON.stringify([hostname]), row: null }] });
+    expect(removed.claims).toMatchObject({ crossings: [], releases: [{ namespace: 'hostname', key: hostname, claimId: crossingId }] });
+    await durableMirrorSender(env)!.settleClaims!([{ owner, claims: removed.claims! }]);
+    expect(await registry.readClaim('hostname', hostname)).toBeNull();
+    // The crossing run again (a resumed runner, the safety net) settles nothing and claims nothing.
+    const objects = durableDirectoryObjects({ registry: env.DIRECTORY_REGISTRY, tenants: env.TENANT_DIRECTORY });
+    expect(await objects.complete(objects.tenant(t), crossingId!)).toMatchObject({ state: 'failed', outcome: 'released before it settled' });
+    expect(await registry.readClaim('hostname', hostname)).toBeNull();
+  });
+
+  it('a claim the registry refuses is a difference, not a decision: the crossing fails and the row still applies', async () => {
+    const directory = mirrorDirectory();
+    const registry = registryStub(env.DIRECTORY_REGISTRY);
+    const [t, other] = [ulid(), ulid()];
+    const hostname = `${ulid().toLowerCase()}.mirror.test`;
+    const claimId = ulid();
+    await registry.claim({ namespace: 'hostname', key: hostname, claimId, holder: other, leaseMs: 60_000 });
+    await registry.confirmClaim({ namespace: 'hostname', key: hostname, claimId });
+    await bindHostname(directory, hostname, t);
+    const flush = await directory.settleDirectoryMirror();
+    expect(flush?.claims).toMatchObject({ refused: 1, errors: 0 });
+    expect(await registry.readClaim('hostname', hostname)).toMatchObject({ holder: other });
+    expect(await rowsOf(tenantObject(t), `SELECT tenant_id FROM hostnames WHERE hostname = ?`, hostname)).toEqual([{ tenant_id: t }]);
   });
 
   // Opt-in (`SUBSTRAT_PROBE_DIRECTORY_MIRROR=1`): the rows the dual-write adds per directory write, by

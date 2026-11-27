@@ -46,7 +46,7 @@ async function objectSchema(kind: DirectoryObjectKind): Promise<Schema> {
 /** The tables each new object adds of its own: the crossing ledger, its owner, and the registry's claims. */
 const OWN_TABLES: Record<DirectoryObjectKind, string[]> = {
   registry: ['_substrat_directory_claims', '_substrat_directory_crossings', '_substrat_directory_self', 'directory_mirror_parked', 'directory_mirror_rows'],
-  tenant: ['_substrat_directory_crossings', '_substrat_directory_self', 'directory_mirror_parked', 'directory_mirror_rows'],
+  tenant: ['_substrat_directory_crossings', '_substrat_directory_self', 'directory_mirror_parked', 'directory_mirror_releases', 'directory_mirror_rows'],
 };
 
 describe('directory placement (K-68)', () => {

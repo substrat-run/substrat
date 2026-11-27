@@ -99,7 +99,7 @@ export const COMPUTED_TARGETS = {
   'packages/adapter-cloudflare/src/control-plane-do.ts':
     { sites: 1, reason: "a directory copy's snapshot (#2868): its own numbered row tables, in the control plane, which holds no scope's attachments" },
   'packages/adapter-cloudflare/src/directory-mirror.ts':
-    { sites: 4, reason: "K-68 step 3b: the dual-write's own outbox, appended by its triggers and re-queued by its flush, in the control plane, which holds no scope's attachments" },
+    { sites: 5, reason: "K-68 step 3b: the dual-write's own outbox (appended by its triggers, re-queued by its flush) and its claims-due list, in the control plane, which holds no scope's attachments" },
   'packages/adapter-cloudflare/src/directory-mirror-apply.ts':
     { sites: 1, reason: "K-68 step 3b: a directory row copied into the registry or a tenant directory object, which hold no scope's attachments" },
   'scripts/lake/lakes.mjs': { sites: 1, reason: 'an R2 SQL pipeline statement for the lake, not SQLite' },
