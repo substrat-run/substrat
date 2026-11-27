@@ -42,7 +42,9 @@ export function storeDriverReviewText(value: unknown, field: string): string {
 /** Validate the full body before the client sends it; no text is silently normalised. */
 export function validateStoreDriverApproval(value: unknown): StoreDriverApprovalBody {
   const body = record(value, 'approval');
-  exactKeys(body, ['reason', 'sourceReferences', 'isolationReview', 'schema', 'className', 'operations'], 'approval');
+  // `foundation` (#3175) is stated by a driver that has one and left out by one that does not.
+  exactKeys(body, ['reason', 'sourceReferences', 'isolationReview', 'schema',
+    ...(Object.hasOwn(body, 'foundation') ? ['foundation'] : []), 'className', 'operations'], 'approval');
   const reason = storeDriverReviewText(body.reason, 'reason');
   if (!Array.isArray(body.sourceReferences) || body.sourceReferences.length < 1 || body.sourceReferences.length > 64) {
     throw new Error('sourceReferences: expected 1–64 repository and commit pairs');
@@ -91,6 +93,10 @@ export function validateStoreDriverApproval(value: unknown): StoreDriverApproval
   if (typeof body.schema !== 'number' || !Number.isSafeInteger(body.schema) || body.schema < 0) {
     throw new Error('schema: expected a non-negative integer');
   }
+  const foundation = body.foundation;
+  if (foundation !== undefined && (typeof foundation !== 'number' || !Number.isSafeInteger(foundation) || foundation < 0)) {
+    throw new Error('foundation: expected a non-negative integer');
+  }
   if (typeof body.className !== 'string' || body.className.length > 256 || !classShape.test(body.className)) {
     throw new Error('className: expected a Python class identifier');
   }
@@ -98,7 +104,11 @@ export function validateStoreDriverApproval(value: unknown): StoreDriverApproval
       body.operations.some((name) => typeof name !== 'string' || nonPrinting.test(name) || !storeCatalogOperation.safeParse(name).success)) {
     throw new Error('operations: expected at most 256 fixed catalog labels');
   }
-  return { reason, sourceReferences, isolationReview, schema: body.schema, className: body.className, operations: body.operations as string[] };
+  return {
+    reason, sourceReferences, isolationReview, schema: body.schema,
+    ...(foundation === undefined ? {} : { foundation: foundation as number }),
+    className: body.className, operations: body.operations as string[],
+  };
 }
 
 function readReviewJson(path: string): unknown {
@@ -111,37 +121,52 @@ function readReviewJson(path: string): unknown {
 
 export function approvalFromFiles(input: {
   reason: string; sourceReferencesFile: string; isolationReviewFile: string;
-  schema: string; className: string; operations: string[];
+  schema: string;
+  /** The release's foundation version (#3175); left out for a driver with none. */
+  foundation?: string;
+  className: string; operations: string[];
 }): StoreDriverApprovalBody {
-  if (!/^(?:0|[1-9][0-9]*)$/.test(input.schema)) throw new Error('schema: expected a non-negative integer');
+  const integer = /^(?:0|[1-9][0-9]*)$/;
+  if (!integer.test(input.schema)) throw new Error('schema: expected a non-negative integer');
+  if (input.foundation !== undefined && !integer.test(input.foundation)) throw new Error('foundation: expected a non-negative integer');
   return validateStoreDriverApproval({
     reason: input.reason,
     sourceReferences: readReviewJson(input.sourceReferencesFile),
     isolationReview: readReviewJson(input.isolationReviewFile),
-    schema: Number(input.schema), className: input.className, operations: input.operations,
+    schema: Number(input.schema),
+    ...(input.foundation === undefined ? {} : { foundation: Number(input.foundation) }),
+    className: input.className, operations: input.operations,
   });
 }
 
+/** A foundation version as a listing prints it: `none` for a driver with none (#3175). */
+const foundationText = (foundation: number | null | undefined) => (foundation ?? 'none').toString();
+
 export function approvalLines(result: StoreDriverApprovalResultView): string[] {
-  const { approval, currentSchema } = result;
+  const { approval, currentSchema, currentFoundation } = result;
   return [
     `✓ approved ${approval.driver} ${approval.sha256} (approval ${approval.approvalId})`,
     `  schema ${approval.schema}; current good schema ${currentSchema ?? 'none'}`,
+    `  foundation ${foundationText(approval.foundation)}; current good foundation ${foundationText(currentFoundation)}`,
   ];
 }
 
 export function approvalStatusLines(view: StoreDriverView): string[] {
   if (!view.approvals) return [];
   if (view.approvals.length === 0) return ['  approvals: none'];
-  return view.approvals.map((approval) => approval.revokedAt
+  const lines = view.approvals.map((approval) => approval.revokedAt
     ? `  approval ${approval.approvalId} ${approval.sha256}: revoked ${approval.revokedAt} by ${approval.revokedBy}${approval.revokedEmergency ? ' (emergency)' : ''}; reason: ${approval.revokedReason}`
-    : `  approval ${approval.approvalId} ${approval.sha256}: live, approved ${approval.approvedAt} by ${approval.approvedBy}; schema ${approval.schema}, class ${approval.className}, operations ${approval.operations.join(', ') || 'none'}`);
+    : `  approval ${approval.approvalId} ${approval.sha256}: live, approved ${approval.approvedAt} by ${approval.approvedBy}; schema ${approval.schema}, foundation ${foundationText(approval.foundation)}, class ${approval.className}, operations ${approval.operations.join(', ') || 'none'}`);
+  // The facts a move is judged against: a release with a lower schema or foundation is refused.
+  const current = view.current && view.approvals.find((a) => a.sha256 === view.current!.sha256);
+  if (current) lines.push(`  current good release ${current.sha256}: schema ${current.schema}, foundation ${foundationText(current.foundation)}`);
+  return lines;
 }
 
 export function uploadApprovalLine(driver: string, sha256: string): string {
   return `  upload alone does not make these bytes runnable; a staff person approves them with: ` +
     `substrat store-driver approve --driver ${driver} --sha256 ${sha256} --reason <reason> ` +
-    '--source-references <json-file> --isolation-review <json-file> --schema <n> --class-name <Class> [--operation <name> ...]';
+    '--source-references <json-file> --isolation-review <json-file> --schema <n> [--foundation <n>] --class-name <Class> [--operation <name> ...]';
 }
 
 /** Resume every server page; a busy or lost hold can be retried with the same command. */

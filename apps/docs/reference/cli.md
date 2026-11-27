@@ -728,6 +728,12 @@ says so and exits 0. Any other failure, such as a rollout that ends in a state o
 `upload`, `approve`, `revoke`, `rollout`, `rollback`, `status` and `rebuild` are the individual
 steps; `substrat --help` lists their flags.
 
+An approval records facts about the release that stay fixed for those bytes. One of them is its
+`--schema`. A driver that rewrites its own level-0 foundation in place when it wakes a store also
+records `--foundation`; a driver without a foundation leaves it out. A rollout, rollback or rebuild
+that would move a script to a release with a lower schema or foundation than the one it runs is
+refused. So is a release whose canary reports a foundation other than the approved one.
+
 ### `scope pull`
 
 ```bash

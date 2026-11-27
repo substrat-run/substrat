@@ -241,9 +241,10 @@ Usage:
                                               upload, wait for approval, and roll out in one command
   substrat store-driver approve --driver <driver> --sha256 <sha256> --reason <text>
                     --source-references <json-file> --isolation-review <json-file>
-                    --schema <n> --class-name <Class> [--operation <name> ...]
+                    --schema <n> [--foundation <n>] --class-name <Class> [--operation <name> ...]
                                               a staff person approves uploaded bytes; JSON files contain
-                                              source-reference pairs and per-condition review evidence
+                                              source-reference pairs and per-condition review evidence;
+                                              --foundation for a driver that rewrites its foundation in place
   substrat store-driver revoke --driver <driver> --sha256 <sha256> --reason <text> [--emergency]
                                               revoke a live approval, walking scripts over paged requests
   substrat store-driver rollout --driver <driver> --sha256 <sha256>
@@ -862,7 +863,7 @@ function reportStoreBackfill(result: PromoteResult): void {
 const STORE_DRIVER_USAGE = [
   'usage: substrat store-driver upload   --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>]',
   '       substrat store-driver publish  --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>] [--wait <90s|30m|2h>]',
-  '       substrat store-driver approve  --driver <driver> --sha256 <sha256> --reason <text> --source-references <json-file> --isolation-review <json-file> --schema <n> --class-name <Class> [--operation <name> ...]',
+  '       substrat store-driver approve  --driver <driver> --sha256 <sha256> --reason <text> --source-references <json-file> --isolation-review <json-file> --schema <n> [--foundation <n>] --class-name <Class> [--operation <name> ...]',
   '       substrat store-driver revoke   --driver <driver> --sha256 <sha256> --reason <text> [--emergency]',
   '       substrat store-driver rollout  --driver <driver> --sha256 <sha256>',
   '       substrat store-driver rollback --driver <driver>',
@@ -908,13 +909,16 @@ async function cmdStoreDriver(): Promise<void> {
     const sourceReferencesFile = optionValue('source-references');
     const isolationReviewFile = optionValue('isolation-review');
     const schema = optionValue('schema');
+    const foundation = optionValue('foundation');
     const className = optionValue('class-name');
-    if (!reason || !sourceReferencesFile || !isolationReviewFile || !schema || !className) {
+    // A bare `--foundation` is refused, never read as "no foundation": the first approval fixes it.
+    if (!reason || !sourceReferencesFile || !isolationReviewFile || !schema || !className ||
+        (argv.includes('--foundation') && foundation === undefined)) {
       for (const line of STORE_DRIVER_USAGE) console.error(line);
       process.exit(1);
     }
-    const body = approvalFromFiles({ reason, sourceReferencesFile, isolationReviewFile, schema, className,
-      operations: repeatedFlag('operation') });
+    const body = approvalFromFiles({ reason, sourceReferencesFile, isolationReviewFile, schema,
+      ...(foundation === undefined ? {} : { foundation }), className, operations: repeatedFlag('operation') });
     const result = await planeFor(controlPlaneUrl, header).approveStoreDriverRelease(driver, sha256!, body);
     for (const line of approvalLines(result)) console.log(line);
     return;

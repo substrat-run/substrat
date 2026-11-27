@@ -855,7 +855,7 @@ interface ControlPlaneStub {
     driver: string; sha256: string; reason: string;
     sourceReferences: StoreDriverApprovalRecord['sourceReferences'];
     isolationReview: StoreDriverApprovalRecord['isolationReview'];
-    schema: number; className: string; operations: readonly string[]; actor: string; at: string;
+    schema: number; foundation?: number; className: string; operations: readonly string[]; actor: string; at: string;
   }, audit: AdminEntry): Promise<StoreDriverApprovalRecord>;
   storeDriverRevokeWalk(approvalId: string): Promise<StoreDriverRevokeWalkRecord | undefined>;
   recordStoreDriverRevokeWalk(input: {

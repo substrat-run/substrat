@@ -3231,7 +3231,8 @@ export interface HostAdmin {
     driver: string; sha256: string; reason: string;
     sourceReferences: StoreDriverApprovalRecord['sourceReferences'];
     isolationReview: StoreDriverApprovalRecord['isolationReview'];
-    schema: number; className: string; operations: readonly string[];
+    /** #3175: the foundation version the release brings; left out by a driver with none. */
+    schema: number; foundation?: number; className: string; operations: readonly string[];
   }): Promise<StoreDriverApprovalRecord>;
   /** One paged revoke's cursor, or undefined before it starts. */
   storeDriverRevokeWalk(actor: PlatformActorId, approvalId: string): Promise<StoreDriverRevokeWalkRecord | undefined>;
