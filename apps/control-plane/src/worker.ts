@@ -946,8 +946,10 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
   /**
    * #3358: `on` makes the cost rollup also read each day's Workers observability volume — log lines
    * and spans per script, with the tenant and scope a line named, and their stored bytes — while the
-   * day is inside the telemetry's 7 days. Needs `CLOUDFLARE_COST_ROLLUP=on`, and Workers
-   * Observability Read on the token. Unset ⇒ the rollup reads what it read before.
+   * day is inside the telemetry's 7 days. Needs `CLOUDFLARE_COST_ROLLUP=on`, and a token the
+   * telemetry query endpoint accepts: Cloudflare's API reference lists `Workers Observability Write`
+   * or `Observability Write`, the permission the dashboard's log reads already need on this same
+   * token. Unset ⇒ the rollup reads what it read before.
    */
   OBSERVABILITY_VOLUME_ROLLUP?: string;
   /**

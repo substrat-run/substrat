@@ -2475,7 +2475,8 @@ export function createCloudflareUsageDayReader(opts: {
   /**
    * #3358: also read each day's Workers observability volume (`createObservabilityVolumeReader`)
    * while the whole day is inside the telemetry's retention. Off unless the host turns it on: it
-   * adds telemetry reads to the cost pass, and needs Workers Observability Read on the token.
+   * adds telemetry reads to the cost pass, and needs a permission the telemetry query endpoint
+   * accepts (`Workers Observability Write` or `Observability Write`, per Cloudflare's API reference).
    */
   observabilityVolume?: boolean;
 }): (day: string) => Promise<CloudflareUsageDay> {
