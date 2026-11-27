@@ -1415,6 +1415,11 @@ interface ControlPlaneStub {
     scopeId: string,
     subjectId: string,
   ): Promise<{ keyId: string | null; wrappedDek: string | null; shreddedAt: string | null } | undefined>;
+  /** #3464: several subjects' rows at once; a subject with no row is absent. */
+  readSubjectKeys(
+    scopeId: string,
+    subjectIds: readonly string[],
+  ): Promise<{ subjectId: string; keyId: string | null; wrappedDek: string | null; shreddedAt: string | null }[]>;
   /** Tombstoned subjects, in subject-id order. `cursor` is the last id already returned. */
   listShreddedSubjects(
     scopeId: string,
@@ -12124,6 +12129,9 @@ export class CloudflareScopeHost implements ScopeHost {
   private subjectKeysFor(tenantId: TenantId, scopeId: ScopeId): SubjectKeys {
     return createSubjectKeys(this.secretBox, {
       read: (subjectId) => this.cp.readSubjectKey(scopeId, subjectId),
+      // One directory call per sealed batch rather than one per subject (#3464).
+      readMany: async (subjectIds) =>
+        new Map((await this.cp.readSubjectKeys(scopeId, subjectIds)).map(({ subjectId, ...row }) => [subjectId, row])),
       insert: (subjectId, row) =>
         this.cp.insertSubjectKey({ scopeId, subjectId, tenantId, ...row }),
       tombstone: (subjectId, at) =>

@@ -45,7 +45,7 @@ export const SUBJECT_ACCESS_STORAGE = [
   },
   {
     copy: 'lake',
-    retention: 'event history shipped for analysis; not reached by erasure (kernel-design.md §13.1, limit 6)',
+    retention: 'event history shipped for analysis; payloads sealed under the subject\'s key are reached by erasure, rows shipped before sealing are not (kernel-design.md §13.1, limit 6)',
   },
 ] as const;
 

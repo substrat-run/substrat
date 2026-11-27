@@ -11,12 +11,27 @@ import { eventId, instant, principalId, scopeId } from './ids.js';
  * naming a `tenantId` (or anything else this list does not name) is refused rather than
  * ignored — a caller cannot express a second tenant, which is the whole contract.
  *
- * **No payload, subject, authorization or impersonation detail comes back.** Erasure does
- * not reach the lake yet (`apps/docs/book/11-audit-and-the-lake.md`): an erased subject's
- * payload can survive there, so the gateway answers with the envelope only until lake
- * erasure exists. `impersonated` says whether a staff session was behind the event, which
- * is the question an audit asks, without the session's own details.
+ * **No payload, subject, authorization or impersonation detail comes back.** Erasure
+ * reaches only the lake rows the drain sealed (#3464, `lakeSealedPayload` below): rows
+ * shipped before sealing was switched on still hold their payload in the clear, so the
+ * gateway answers with the envelope only. `impersonated` says whether a staff session was
+ * behind the event, which is the question an audit asks, without the session's own details.
  */
+
+/**
+ * A lake row's `payload` once the drain has sealed it (#3464, K-37 limit 6): the payload's JSON
+ * text sealed under its subject's own key, in the shape a sealed backup cell already has
+ * (`seal.ts` in `@substrat-run/control-plane-api`). The key lives in the directory, and a shred
+ * tombstones it, so after an erasure this cell opens to nothing. `keyId` names the subject
+ * (`subject:<id>`), so the cell needs nothing beside it to find its key.
+ *
+ * It fits the stream's existing nullable `json` column, so sealing needs no new stream. A
+ * tombstoned subject's payload ships as `null`, the same absence a live redaction leaves.
+ */
+export const lakeSealedPayload = z
+  .object({ __sealed: z.object({ keyId: z.string().min(1), ciphertext: z.string().min(1) }).strict() })
+  .strict();
+export type LakeSealedPayload = z.infer<typeof lakeSealedPayload>;
 
 /**
  * The characters a free-text filter may carry. Every value the gateway writes into SQL is

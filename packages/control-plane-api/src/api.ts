@@ -8597,7 +8597,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // #1334 — one tenant's events from the Tier-2 lake, through the gateway that scopes them
   // (`lake-gateway.ts`): the tenant is this path segment and nothing else, the filters are a
   // closed `.strict()` list with no tenant in it, and a row of any other tenant fails the
-  // read whole. Envelope only — no payload until erasure reaches the lake.
+  // read whole. Envelope only: erasure reaches only the lake rows the drain sealed (#3464), so no payload.
   //
   // Staff, and a team's own credential (TENANT_ROUTES, path-pinned). The dashboard checks
   // `dashboard:read-event-lake` before it calls. A team's read must name a window of at most
