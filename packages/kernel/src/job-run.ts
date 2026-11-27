@@ -1,7 +1,7 @@
 import { dataSubjectId, substratError, type DataSubjectId, type ModuleId } from '@substrat-run/contracts';
 import { backoffAt, resolveRetryPolicy, type ExecutorRetryPolicy } from './connector-transport.js';
 import { assertRowLimit } from './retention.js';
-import type { ScopeStub } from './scope-host.js';
+import type { ScopeAttachments, ScopeStub } from './scope-host.js';
 import { ulid } from './ulid.js';
 
 /**
@@ -608,7 +608,21 @@ export interface JobPassContext {
    * on first call, then reused for the rest of the pass.
    */
   scope(): Promise<ScopeStub>;
+  /**
+   * #3443: this run's scope's files, as the run's module — the surface `getSystemAttachments`
+   * returns, each verb checked as `system:<moduleId>` (the target's read key for `open`; its
+   * write key or `removePermission` for `remove`, whose `attachment.removed` names the module).
+   * Opened through the same door as `scope()`, so a door's "not now" defers the pass here too.
+   * Opened on first call, then reused for the rest of the pass.
+   *
+   * `remove` is idempotent (a second remove of a gone id is `null`), which is what a step body
+   * needs. Never return an opened body from a `step`: a step's result is stored as JSON.
+   */
+  attachments(): Promise<SystemAttachments>;
 }
+
+/** #3434 / #3443: a module's system surface over a scope's files — `getSystemAttachments`, `pass.attachments()`. */
+export type SystemAttachments = Pick<ScopeAttachments, 'open' | 'remove'>;
 
 /**
  * A job's body: one pass, given where the last one stopped.
@@ -1163,6 +1177,11 @@ export async function runJobPass(options: {
    */
   openScope: (pass: object) => Promise<ScopeStub>;
   /**
+   * #3443: opens the run's module's file surface, for the same pass token `openScope` is handed.
+   * Called at most once per pass. Absent: `pass.attachments()` refuses, naming the host's gap.
+   */
+  openAttachments?: (pass: object) => Promise<SystemAttachments>;
+  /**
    * #1834: did the host's own system door, on THIS pass (`pass`, the token `openScope` was handed),
    * throw this value to say "not now"? The HOST answers, by the identity of what its door threw for
    * this pass, never by an error's shape: a step or an operation can throw any public shape, and a
@@ -1187,6 +1206,7 @@ export async function runJobPass(options: {
   const jobPolicy = resolveRetryPolicy(options.retry);
   const usedThisPass = new Set<string>();
   let scope: Promise<ScopeStub> | null = null;
+  let files: Promise<SystemAttachments> | null = null;
 
   try {
     // DECODING THE ROW IS PART OF THE PASS, not a precondition of it.
@@ -1220,6 +1240,15 @@ export async function runJobPass(options: {
         counters[name] = (counters[name] ?? 0) + by;
       },
       scope: () => (scope ??= openScope(passToken)),
+      attachments: () =>
+        (files ??= options.openAttachments
+          ? options.openAttachments(passToken)
+          : Promise.reject(
+              substratError(
+                'unavailable',
+                'this host gives a job pass no attachment surface: it runs the job driver without openAttachments',
+              ),
+            )),
       step: async <T>(name: string, fn: () => T | Promise<T>, retry?: ExecutorRetryPolicy): Promise<T> => {
         if (usedThisPass.has(name)) {
           // The determinism rule's mechanical half. The second call would read the
@@ -1401,6 +1430,8 @@ export async function runDueJobRuns(options: {
   handlerFor: (run: Pick<JobRunRow, 'module_id' | 'job'>) => JobRegistration | undefined;
   now: () => string;
   openScope: (run: JobRunRow, pass: object) => Promise<ScopeStub>;
+  /** #3443: the run's module's file surface, for one pass (`runJobPass`). */
+  openAttachments?: (run: JobRunRow, pass: object) => Promise<SystemAttachments>;
   /** #1834: the host's own system-door refusals on one pass, by identity (`runJobPass`). */
   deferral?: (err: unknown, pass: object) => boolean;
   maxPasses?: number;
@@ -1411,6 +1442,7 @@ export async function runDueJobRuns(options: {
    */
   monotonic?: () => number;
 }): Promise<JobDriveReport> {
+  const { openAttachments } = options;
   const report: JobDriveReport = {
     attempted: 0,
     advanced: 0,
@@ -1531,6 +1563,7 @@ export async function runDueJobRuns(options: {
         retry: registered.retry,
         now: options.now,
         openScope: (pass) => options.openScope(run, pass),
+        ...(openAttachments ? { openAttachments: (pass: object) => openAttachments(run, pass) } : {}),
         deferral: options.deferral,
       });
       count(run.id, outcome);

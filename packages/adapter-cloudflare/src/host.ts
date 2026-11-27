@@ -4018,14 +4018,24 @@ export class CloudflareScopeHost implements ScopeHost {
       [ATTACHMENT_TEXT_JOB]: this.attachmentTextHandler(tenantId, scopeId),
       [ATTACHMENT_TEXT_BACKFILL_JOB]: attachmentTextBackfillJob({ queueBatch: (after) => stub.attachmentTextBackfillBatch(after) }),
     };
+    // #1834: the door is opened FOR a pass, so its "not now" is tied to that pass alone. #3443: one
+    // door per pass, shared by `pass.scope()` and `pass.attachments()` — one gate, one answer.
+    const doors = new WeakMap<object, Promise<SubjectDoor>>();
+    const doorFor = (run: { module_id: string }, pass: object): Promise<SubjectDoor> => {
+      let door = doors.get(pass);
+      if (!door) {
+        door = this.openSystemDoor(run.module_id as ModuleId, tenantId, scopeId, undefined, pass);
+        doors.set(pass, door);
+      }
+      return door;
+    };
     return runDueJobRuns({
       store: this.jobStore(scopeId),
       handlerFor: (run) => kernelJobFor(run, kernelJobs) ?? this.jobs.get(`${run.module_id}/${run.job}`),
       now: () => new Date().toISOString(),
-      // #1834: the door is opened FOR this pass, so its "not now" is tied to this pass alone.
-      openScope: async (run, pass) =>
-        this.buildStub(tenantId, scopeId, undefined, undefined,
-          await this.openSystemDoor(run.module_id as ModuleId, tenantId, scopeId, undefined, pass)),
+      openScope: async (run, pass) => this.buildStub(tenantId, scopeId, undefined, undefined, await doorFor(run, pass)),
+      openAttachments: async (run, pass) =>
+        this.systemAttachmentsThrough(await doorFor(run, pass), run.module_id as ModuleId, tenantId, scopeId),
       // #1834: only this host's own door refusals defer a pass, recognised by identity.
       deferral: (err, pass) => this.takeDoorWait(err, pass),
       maxPasses: options?.maxPasses,
@@ -5546,7 +5556,20 @@ export class CloudflareScopeHost implements ScopeHost {
     // system:<moduleId>; the worker reads bytes only after that gate succeeds. A remove (#3434)
     // is decided and committed in the DO (row + event, attributed to the module), and the bytes
     // are deleted here after it, as a person's remove deletes them.
-    const door = await this.openSystemDoor(moduleId, tenantId, scopeId);
+    return this.systemAttachmentsThrough(await this.openSystemDoor(moduleId, tenantId, scopeId), moduleId, tenantId, scopeId);
+  }
+
+  /**
+   * The system file surface over a door already opened — `getSystemAttachments`' own, or a job
+   * pass's (#3443), which shares the door `pass.scope()` acts through so its "not now" defers the
+   * pass whichever of the two the handler called.
+   */
+  private async systemAttachmentsThrough(
+    door: SubjectDoor,
+    moduleId: ModuleId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<Pick<ScopeAttachments, 'open' | 'remove'>> {
     const store = await this.resolveAttachmentStore(tenantId);
     const stub = this.scopeStub(scopeId);
     return {

@@ -3016,6 +3016,35 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await (await h.getSystemAttachments(SCHED, t, free)).open('no-such-attachment')).toBeNull();
   });
 
+  it("#3443: a job pass's attachments() go through the pass's door, so a held module's pass is deferred", async () => {
+    const h = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      attachmentBuckets: () => ({}),
+      switchHoldSnapshotMs: TEST_HOLD_SNAPSHOT_MS,
+    });
+    h.registerModule(scheduleMod);
+    h.registerJob(
+      SCHED,
+      'files',
+      async (p: JobPassContext) => {
+        await p.step('open', async () => (await p.attachments()).open('no-such-attachment'));
+        return { done: true };
+      },
+      { maxAttempts: 1 },
+    );
+    let runId = '';
+    const held = await rewoundPastTheSwitch(true, async (sc) => (runId = (await h.startJobRun(t, sc, { moduleId: SCHED, job: 'files' })).id));
+    // `maxAttempts: 1`: a hold counted as the step's failure would end the run here.
+    expect(await h.runDueJobs(t, held)).toMatchObject({ attempted: 1, deferred: 1, failed: 0 });
+    expect(await runOf(held, runId)).toMatchObject({ status: 'running', attempts: 0, lastError: null });
+    // Twin: on a scope nothing holds, the same pass opens (nothing) and completes.
+    const free = await newScope();
+    const freeRun = await h.startJobRun(t, free, { moduleId: SCHED, job: 'files' });
+    expect(await h.runDueJobs(t, free)).toMatchObject({ completed: 1, deferred: 0 });
+    expect(await runOf(free, freeRun.id)).toMatchObject({ status: 'done' });
+  });
+
   it('a scope that keeps restarting under the door fails closed after a bounded number of gates', async () => {
     const s = await newScope();
     const moving = countingScopes(env.SCOPE);

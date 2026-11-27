@@ -7,6 +7,9 @@
  * as a person's remove is — the target's write key, or its `removePermission` — checked as
  * `system:<moduleId>`, and the `attachment.removed` it emits is attributed to the module.
  *
+ * A job's pass reaches the same surface as `pass.attachments()` (#3443), so a vertical pushed to
+ * the hosted platform runs retention from a job its own sweeper starts, with no harness.
+ *
  * Both adapters run this suite, so the gate, the attribution, the kill switch and the denial
  * record cannot drift between self-host and production.
  */
@@ -24,7 +27,7 @@ import {
   type PrincipalId,
   type ScopeId,
 } from '@substrat-run/contracts';
-import { ulid, type ScopeAttachments, type ScopeHost } from '@substrat-run/kernel';
+import { ulid, type JobPassContext, type ScopeAttachments, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import { RETENTION_PURGE_MODULE_ID, RET_PURGE, RET_READ, RET_WRITE, retentionMod, retentionPurgeMod } from './system-remove-module.js';
 
@@ -99,6 +102,21 @@ export function systemAttachmentRemoveContractSuite(
       const node = { tenantId: t, scopeId: null };
       await host.admin.assignRole(staff, { principalId: alice, roleKey: 'broker', node });
       await host.admin.assignRole(staff, { principalId: dave, roleKey: 'archivist', node });
+      // #3443: a retention walk — each due file read (its size counted) and removed, a step per id.
+      host.registerJob(
+        MODULE,
+        'retire',
+        async (pass: JobPassContext) => {
+          const { ids } = pass.payload as { ids: string[] };
+          for (const id of ids) {
+            const size = await pass.step(`read:${id}`, async () => (await (await pass.attachments()).open(id))?.body.length ?? 0);
+            pass.count('bytes', size);
+            await pass.step(`remove:${id}`, async () => (await (await pass.attachments()).remove(id))?.id ?? null);
+          }
+          return { done: true };
+        },
+        { maxAttempts: 3, baseDelayMs: 0 },
+      );
     });
 
     afterAll(async () => {
@@ -127,6 +145,34 @@ export function systemAttachmentRemoveContractSuite(
       expect(JSON.parse(removed[0]!.payload)).toMatchObject({ attachment: { id: file.id, createdBy: alice } });
       // Gone is gone: a second remove of the same id is null, as an unknown id is.
       expect(await system.remove(file.id)).toBeNull();
+    });
+
+    it("a job pass reads and removes through pass.attachments(), as the module, and only with its keys", async () => {
+      const s = await freshScope();
+      const files = [await upload(s, agreement('j1'), 'mandate'), await upload(s, agreement('j2'), 'consent')];
+      const ids = files.map((f) => f.id);
+      const run = await host.startJobRun(t, s, { moduleId: MODULE, job: 'retire', payload: { ids } });
+      // Read off the run itself: the drive also advances the kernel's text extraction of each upload.
+      const retire = async (instance = 'default') => (await host.jobRuns(t, s, { moduleId: MODULE, job: 'retire', instance }))[0]!;
+
+      // No keys: the step is refused as the module, and the run waits to retry. Nothing moved.
+      await host.runDueJobs(t, s);
+      expect(await retire()).toMatchObject({ status: 'running', attempts: 1, lastError: expect.stringMatching(/ret:read/) });
+      expect((await (await filesOf(alice, s)).open(ids[0]!))?.record.id).toBe(ids[0]);
+
+      await grantSystem(s, RET_READ);
+      await grantSystem(s, RET_PURGE);
+      await host.runDueJobs(t, s);
+      expect(await retire()).toMatchObject({ id: run.id, status: 'done', counters: { bytes: 'mandate'.length + 'consent'.length } });
+      for (const id of ids) expect(await (await filesOf(alice, s)).open(id)).toBeNull();
+      const removed = await read<RemovedRow[]>(s, 'ret/removed');
+      expect(removed.map((r) => JSON.parse(r.actor))).toEqual([{ system: MODULE }, { system: MODULE }]);
+
+      // A second walk over the same ids is a no-op: a gone file opens and removes as null.
+      await host.startJobRun(t, s, { moduleId: MODULE, job: 'retire', instance: 'again', payload: { ids } });
+      await host.runDueJobs(t, s);
+      expect(await retire('again')).toMatchObject({ status: 'done', counters: { bytes: 0 } });
+      expect(await read<RemovedRow[]>(s, 'ret/removed')).toHaveLength(2);
     });
 
     it('a target with no removePermission is removed with its write key alone', async () => {

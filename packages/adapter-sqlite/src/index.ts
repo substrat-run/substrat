@@ -8167,6 +8167,8 @@ export class SqliteScopeHost implements ScopeHost {
       handlerFor: (run) => kernelJobFor(run, kernelJobs) ?? this.jobs.get(`${run.module_id}/${run.job}`),
       now: this.clock,
       openScope: (run) => this.getSystemScope(run.module_id as ModuleId, tenantId, scopeId),
+      // #3443: the run's module's files, through the same gate `getSystemAttachments` opens.
+      openAttachments: (run) => this.getSystemAttachments(run.module_id as ModuleId, tenantId, scopeId),
       maxPasses: options?.maxPasses,
       limit: options?.limit,
     });

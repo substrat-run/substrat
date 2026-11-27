@@ -4,6 +4,8 @@ import type { ScopeId, TenantId, SweepRunsPayload } from '@substrat-run/contract
 import type {
   ExecutorDrainReport,
   JobDriveReport,
+  JobRun,
+  StartJobRunInput,
   ScheduleRegistration,
   ScheduleRunReport,
   ScheduleSweepReport,
@@ -89,6 +91,12 @@ export interface ScopeSweepHost {
    */
   lifecycleHeld?(scopeId: ScopeId): Promise<boolean>;
   runDueJobs(tenantId: TenantId, scopeId: ScopeId): Promise<JobDriveReport>;
+  /**
+   * #3443: start (or coalesce onto the live) run of a registered job — what a `startJobs` hook
+   * calls, so it needs no host of its own. Optional so a fake host (and a pre-widening deployment)
+   * keeps compiling; `CloudflareScopeHost` has it.
+   */
+  startJobRun?(tenantId: TenantId, scopeId: ScopeId, input: StartJobRunInput): Promise<JobRun>;
   registeredSchedules(): ScheduleRegistration[];
   runDueSchedules(
     moduleId: ScheduleRegistration['moduleId'],
@@ -138,7 +146,11 @@ export interface ScopeSweeperDoConfig<Env> {
   drainRetries?: boolean;
   /** Drive one bounded pass of each due resumable job per scope. Default false. */
   runJobs?: boolean;
-  /** Start or coalesce recurring jobs for a scope before driving due runs. */
+  /**
+   * Start or coalesce recurring jobs for a scope before driving due runs — through
+   * `host.startJobRun`, which keeps one live run per (module, job, instance), so a hook that
+   * starts a retention walk every `jobStartIntervalMs` never stacks a second one on a live run.
+   */
   startJobs?(host: ScopeSweepHost, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
   /** Minimum time between successful startJobs calls per scope. */
   jobStartIntervalMs?: number;
