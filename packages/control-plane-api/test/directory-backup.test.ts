@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { DirectoryDump, DirectoryDumpPage, PlatformActorId, ScopeDumpTable } from '@substrat-run/contracts';
+import { substratError, type DirectoryDump, type DirectoryDumpPage, type PlatformActorId, type ScopeDumpTable } from '@substrat-run/contracts';
 import type { HostAdmin } from '@substrat-run/kernel';
 import { backupDirectoryIfDue, parseDirectoryCopyByReference, referenceFaults } from '../src/directory-backup.js';
 import { createR2DirectoryBackupStore } from '../src/r2-backups.js';
@@ -332,5 +332,78 @@ describe('scheduled directory backup (#40)', () => {
     // The operator's "back up now" does not wait.
     const forced = await backupDirectoryIfDue({ admin: fakeAdmin(() => now), store, actor: ACTOR, force: true, now: () => now });
     expect(forced.taken?.capturedAt).toBe(now.toISOString());
+  });
+
+  it('pauses a copy at its budget and resumes it next pass into the copy an unbudgeted pass takes (#3422)', async () => {
+    const { store, objects } = fakeStore();
+    // Every reading of the clock is a minute later, so a budget of one minute holds one page.
+    let minutes = 0;
+    const clock = () => new Date(Date.UTC(2026, 10, 25, 12) + minutes++ * 60_000);
+    const cursors: unknown[] = [];
+    const admin = pagedAdmin(clock);
+    const exportPage = admin.exportDirectoryPage!.bind(admin);
+    admin.exportDirectoryPage = (actor, cursor, opts) => (cursors.push(cursor), exportPage(actor, cursor, opts));
+    const pass = () => backupDirectoryIfDue({ admin, store, actor: ACTOR, budgetMs: 60_000, now: clock });
+
+    const first = await pass();
+    expect(first).toMatchObject({ taken: null, waitingOutAttempt: null, paused: { entries: 1 } });
+    expect(await store.list()).toEqual([]);
+    expect(await pass()).toMatchObject({ taken: null, resumed: true, paused: { entries: 2 } });
+    const last = await pass();
+    expect(last).toMatchObject({ resumed: true, taken: { capturedAt: first.paused!.capturedAt, tables: 2 } });
+    // Each page read once, in order, from the one snapshot.
+    expect(cursors).toEqual([null, '1', '2']);
+    expect((await store.get({ capturedAt: first.paused!.capturedAt }))?.tables.map((t) => [t.name, t.rows])).toEqual([
+      ['tenants', [['t1'], ['t2'], ['t3']]],
+      ['verticals', [['todo']]],
+    ]);
+    expect([...objects.keys()].filter((k) => k.startsWith('directory/') && k.endsWith('/0.json'))).toHaveLength(1);
+  });
+
+  it('starts again when the host no longer holds a paused copy, and drops its pages (#3422)', async () => {
+    const { store, objects } = fakeStore();
+    let minutes = 0;
+    const clock = () => new Date(Date.UTC(2026, 10, 25, 12) + minutes++ * 60_000);
+    const admin = pagedAdmin(clock);
+    const paused = await backupDirectoryIfDue({ admin, store, actor: ACTOR, budgetMs: 60_000, now: clock });
+    const exportPage = admin.exportDirectoryPage!.bind(admin);
+    // A later copy replaced the host's snapshot: the paused cursor is refused, a new copy is not.
+    let refused = false;
+    admin.exportDirectoryPage = async (actor, cursor, opts) => {
+      if (cursor === '1' && !refused) {
+        refused = true;
+        throw substratError('conflict', 'this directory copy is gone');
+      }
+      return exportPage(actor, cursor, opts);
+    };
+    const next = await backupDirectoryIfDue({ admin, store, actor: ACTOR, now: clock });
+    expect(next.resumed).toBeUndefined();
+    expect(next.taken?.capturedAt).not.toBe(paused.paused!.capturedAt);
+    expect([...objects.keys()].filter((k) => k.startsWith(`directory/${paused.paused!.capturedAt}/`))).toEqual([]);
+  });
+
+  it('reports a copy whose pass was cut off when the next copy starts, and a thrown one only where it threw (#3422)', async () => {
+    const { store } = fakeStore();
+    const t0 = new Date('2026-11-25T12:00:00.000Z');
+    // A pass killed at its wall limit leaves only the attempt it noted.
+    await store.markAttempt({ attemptedAt: t0.toISOString() });
+    // The production failure: the first page, which takes the snapshot, throws.
+    const broken = {
+      exportDirectoryPage: async () => {
+        throw new Error('SQLITE_NOMEM');
+      },
+    } as unknown as HostAdmin;
+    const sixHoursOn = new Date(t0.getTime() + 6 * 3_600_000);
+    await expect(backupDirectoryIfDue({ admin: broken, store, actor: ACTOR, now: () => sixHoursOn })).rejects.toThrow('SQLITE_NOMEM');
+    // The copy that threw was reported by its caller; the copy after it reports nothing more.
+    const twelveHoursOn = new Date(t0.getTime() + 12 * 3_600_000);
+    const after = await backupDirectoryIfDue({ admin: fakeAdmin(() => twelveHoursOn), store, actor: ACTOR, now: () => twelveHoursOn });
+    expect(after.taken).not.toBeNull();
+    expect(after.unfinishedAttempt).toBeUndefined();
+
+    const { store: other } = fakeStore();
+    await other.markAttempt({ attemptedAt: t0.toISOString() });
+    const found = await backupDirectoryIfDue({ admin: fakeAdmin(() => sixHoursOn), store: other, actor: ACTOR, now: () => sixHoursOn });
+    expect(found).toMatchObject({ unfinishedAttempt: t0.toISOString(), taken: { capturedAt: sixHoursOn.toISOString() } });
   });
 });

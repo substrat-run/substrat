@@ -821,6 +821,32 @@ describe('the scheduled pass runs the steps after a failed hostname reconcile', 
   });
 });
 
+describe('a failed directory copy in the scheduled pass (#3422)', () => {
+  it('is an ops-failure row, so the digest mails it and the console lists it', async () => {
+    const staff = platformActorId.parse(ulid());
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const since = new Date().toISOString();
+    // A bucket that refuses the copy's pages: the copy throws after its first page.
+    const refusing = {
+      put: async (key: string) => {
+        if (key.startsWith('directory/')) throw new Error('bucket unavailable');
+      },
+      get: async () => null,
+      delete: async () => {},
+      list: async () => ({ objects: [], truncated: false }),
+    };
+    const errors = vi.spyOn(console, 'error');
+    try {
+      await worker.scheduled({} as ScheduledController, { ...env, DIRECTORY_BACKUPS: refusing } as never);
+      expect(errors).toHaveBeenCalledWith('directory-backup failed', 'bucket unavailable');
+    } finally {
+      errors.mockRestore();
+    }
+    const rows = await host.admin.listOpsFailures(staff, { operation: 'directory.backup', since });
+    expect(rows.map((r) => r.message)).toEqual(['the directory copy failed: bucket unavailable']);
+  });
+});
+
 describe('the daily stale-scopes report in the scheduled pass (#3313)', () => {
   it('the log line names the day taken with its counts, a failing run, and nothing else', () => {
     const base = { day: '2026-11-25', taken: false, findings: null, opened: 0, resolved: 0, idleJudged: false, failed: 0, repeated: 0, streak: null };

@@ -423,6 +423,9 @@ export type {
   DirectoryBackup,
   DirectoryBackupStore,
   DirectoryBackupWriter,
+  DirectoryCopyAttempt,
+  DirectoryCopyPause,
+  DirectoryCopyStage,
 } from './backups.js';
 export {
   createR2AccessLogSink,
@@ -455,7 +458,12 @@ export type { R2SqlEngineOptions } from './r2-sql-engine.js';
 // #40 — the scheduled directory copy. Exported as a function the CP worker's cron calls,
 // not as a route with a timer behind it: this package stays library-only, exactly as the
 // platform-request drain does (the recurrence has to come from a deployment, #444).
-export { backupDirectoryIfDue, parseDirectoryCopyByReference, referenceFaults } from './directory-backup.js';
+export {
+  backupDirectoryIfDue,
+  DIRECTORY_COPY_PASS_BUDGET_MS,
+  parseDirectoryCopyByReference,
+  referenceFaults,
+} from './directory-backup.js';
 export type { DirectoryBackupOptions, DirectoryBackupResult } from './directory-backup.js';
 // The masked-export generator (#1034). Exported because the property that matters most
 // about it is one this package cannot assert on its own: that a pseudonymized dump still
