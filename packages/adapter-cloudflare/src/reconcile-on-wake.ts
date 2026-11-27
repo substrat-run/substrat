@@ -8,9 +8,11 @@
  * directory (entitlements, identity links, connection grants, the receipt), which a sandboxed
  * vertical never reaches. So the scope ASKS, once per version, through the road a sandbox-clean
  * scope already has upward: an intent in its own platform-intent journal
- * (docs/architecture/platform-intents.md). The router's kick after the request that woke it drains
- * the intent in seconds; the drain's backstop, and from step 4 the scope's own alarm, reach a scope
- * woken by an alarm. The handler decides from the directory, with the batched pass's own rule
+ * (docs/architecture/platform-intents.md). The scope's own wake (step 4, `scope-wake.ts`) is armed
+ * when the ask is written, so its alarm asks for the drain within seconds whatever request woke the
+ * scope (#3435: a wake whose requests committed nothing used to wait for the next pass). The
+ * router's kick after a committed invoke still drains it sooner when there is one, and the pass is
+ * the backstop. The handler decides from the directory, with the batched pass's own rule
  * (`provisionReconcileTarget`), and does nothing when the receipt already matches.
  *
  * The scope remembers what it asked for in `_substrat_meta` (`RECONCILE_ASKED_KEY`), in the same

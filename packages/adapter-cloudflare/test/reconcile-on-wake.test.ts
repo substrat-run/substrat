@@ -7,15 +7,17 @@
  * A promote is the test moving `WAKE_VERSION`; a wake is `retryMigrations`, the same fresh pass a
  * revived object runs (a warm instance memoises its pass, so an invoke alone would not run another).
  */
-import { env, runInDurableObject } from 'cloudflare:test';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { env, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { MAX_PENDING_PLATFORM_REQUESTS, PROVISION_RECONCILE_KIND, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { PLATFORM_SECRET_HEADER } from '@substrat-run/contracts/wire-headers';
 import { listMod } from '@substrat-run/contract-tests';
 import { markCopyOrigin, ulid, UNSAFE_allowAllChecker } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
-import { WAKE_VERSION } from './worker.js';
+import { WAKE_VERSION, WAKE_VERSION_CONTROL_PLANE_URL } from './worker.js';
 import { RECONCILE_ASKED_KEY, RECONCILE_ON_WAKE_REQUESTED_BY } from '../src/reconcile-on-wake.js';
+import { SCOPE_WAKE_INTENTS_DELAY_MS, SCOPE_WAKE_KEY, type ScopeWakeState, type WakeKick } from '../src/scope-wake.js';
 
 const setVersion = (v: string | undefined) => {
   (globalThis as Record<symbol, string | undefined>)[WAKE_VERSION] = v;
@@ -28,13 +30,25 @@ describe('the on-wake provision reconcile, the scope’s half (K-69)', () => {
   const ns = () => env.WAKE_VERSION_SCOPE;
   const object = (s: string) => ns().get(ns().idFromName(s));
   let host: CloudflareScopeHost;
+  /** The scope's own kicks (#3435), answered as a control plane whose pass still owns intents. */
+  const kicks: { secret: string | null; body: WakeKick }[] = [];
+  const realFetch = globalThis.fetch;
   beforeAll(async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.origin !== WAKE_VERSION_CONTROL_PLANE_URL) return realFetch(input, init);
+      kicks.push({ secret: new Headers(init?.headers).get(PLATFORM_SECRET_HEADER), body: JSON.parse(String(init?.body)) as WakeKick });
+      return Response.json({ drained: 0, done: 0, failed: 0, pending: 0, wake: { platformRequests: 'pass', events: 'pass' } });
+    });
     await warmControlPlane(env.CONTROL_PLANE);
     host = new CloudflareScopeHost({ scope: ns(), controlPlane: env.CONTROL_PLANE, checker: UNSAFE_allowAllChecker });
     host.registerModule(listMod);
   });
   afterEach(() => setVersion(undefined));
-  afterAll(async () => host.close());
+  afterAll(async () => {
+    vi.restoreAllMocks();
+    await host.close();
+  });
 
   /** A live install provisioned on `version`: its migrations applied, its first wake behind it. */
   const install = async (version: string) => {
@@ -85,6 +99,51 @@ describe('the on-wake provision reconcile, the scope’s half (K-69)', () => {
     // Another wake on the same version asks nothing more.
     await wake(s);
     expect(await asks(s)).toHaveLength(1);
+  });
+
+  it('a wake that commits nothing arms the scope’s own wake, whose alarm asks for its drain within seconds (#3435)', async () => {
+    // Provisioned as a hosted scope is, with its roles projected, which records its tenant.
+    const local = new CloudflareScopeHost({ scope: ns() });
+    local.registerModule(listMod);
+    setVersion('01JWAKEW1000000000000000AA');
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await local.provisionScopeLocal({
+      tenantId: t,
+      scopeId: s,
+      owner: who,
+      roles: [{ key: 'owner', permissions: [], source: 'vertical' }],
+      ownerRoleKey: 'owner',
+    });
+    // Whatever the provision armed is not this test's subject: start from a scope with no wake.
+    await runInDurableObject(object(s), async (_i, state) => {
+      await state.storage.delete(SCOPE_WAKE_KEY);
+      await state.storage.deleteAlarm();
+    });
+    // The promote, then a wake by no invoke at all: no response will carry the router's flag.
+    setVersion('01JWAKEW2000000000000000AA');
+    const before = Date.now();
+    await wake(s);
+    expect(await asks(s)).toHaveLength(1);
+    const armed = await runInDurableObject(object(s), async (_i, state) => ({
+      wake: (await state.storage.get<ScopeWakeState>(SCOPE_WAKE_KEY)) ?? null,
+      alarm: await state.storage.getAlarm(),
+    }));
+    expect(armed.wake).toMatchObject({ tenantId: t, scopeId: s });
+    expect(armed.wake!.due.intents).toBeGreaterThanOrEqual(before + SCOPE_WAKE_INTENTS_DELAY_MS);
+    expect(armed.wake!.due.intents).toBeLessThanOrEqual(Date.now() + SCOPE_WAKE_INTENTS_DELAY_MS);
+    expect(armed.alarm).toBeLessThanOrEqual(armed.wake!.due.intents!);
+    // The alarm, run now rather than in two seconds: it asks the control plane to drain this scope.
+    await runInDurableObject(object(s), async (_i, state) => {
+      const w = (await state.storage.get<ScopeWakeState>(SCOPE_WAKE_KEY))!;
+      await state.storage.put(SCOPE_WAKE_KEY, { ...w, due: { ...w.due, intents: Date.now() - 1 } });
+    });
+    expect(await runDurableObjectAlarm(object(s))).toBe(true);
+    // Filtered: the other tests' scopes armed their own alarms, which may fire meanwhile.
+    expect(kicks.filter((k) => k.body.scopeId === s)).toEqual([
+      { secret: 'wake-version-test-secret', body: { tenantId: t, scopeId: s, platformRequests: true, events: false, source: 'scope' } },
+    ]);
+    await local.close();
   });
 
   it('a pending ask from an earlier version is enough: the next promote records the version and writes nothing', async () => {

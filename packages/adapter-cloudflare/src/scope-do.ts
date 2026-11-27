@@ -7116,8 +7116,8 @@ export function defineScopeDO(
           : this.applyPendingMigrations();
         // K-69: only after the pass SUCCEEDED — a scope failing closed asks for nothing, and the
         // rejection passes through untouched.
-        this.migrationPromise = pass.then((applied) => {
-          this.askReconcileOnWake(upgrade);
+        this.migrationPromise = pass.then(async (applied) => {
+          if (this.askReconcileOnWake(upgrade)) await this.wakeForReconcileAsk();
           return applied;
         });
       }
@@ -7128,16 +7128,53 @@ export function defineScopeDO(
      * K-69 (rfc/tenant-scale.md §7.5): the first wake on a version this scope has not asked about
      * writes one `provision-reconcile` intent (`reconcileOnWake`). Never throws: a scope that cannot
      * ask is still reached by the batched pass, and failing the request over it protects nothing.
+     * True when it wrote the intent.
      */
-    private askReconcileOnWake(upgrade: boolean): void {
+    private askReconcileOnWake(upgrade: boolean): boolean {
       try {
         const asked = reconcileOnWake(this.sql, this.env.SUBSTRAT_VERSION_ID, upgrade, new Date().toISOString());
-        if (asked === 'requested') this.reconcileAskUnsignalled = true;
+        if (asked !== 'requested') return false;
+        this.reconcileAskUnsignalled = true;
+        return true;
       } catch (err) {
         console.warn('reconcile-on-wake: could not ask; the batched pass is the backstop', {
           error: err instanceof Error ? err.message : String(err),
         });
+        return false;
       }
+    }
+
+    /**
+     * K-69 (#3435): the ask is written by the migration pass, not by a committing door, so neither
+     * of the commit's two kicks sees it. The router's flag rides only a committed invoke's response
+     * (`takeReconcileAsk`), and a wake whose requests commit nothing (page loads, reads, OIDC
+     * discovery) never carries one; the scope's own wake (`noteScopeWake`) runs only after a commit.
+     * Left to those, the ask waited for the next pass. So the pass arms the scope's wake itself, as
+     * a commit that enqueued an intent would: its alarm asks for the drain within seconds, whatever
+     * request woke the scope. The router's flag still goes out on a committed invoke, which is
+     * sooner; the alarm then finds the intent settled and asks nothing.
+     *
+     * The scope names itself as its stubs do (`idFromName(scopeId)`), and its tenant as the pair
+     * check reads it (`tenantVerdict`): the `provisioned_for` receipt, or, on a scope from before
+     * receipts, the one tenant its role rows name. Missing either, it arms nothing: the flag and the
+     * pass remain. Never throws, as `noteScopeWake` does not.
+     */
+    private async wakeForReconcileAsk(): Promise<void> {
+      try {
+        const tenant = tenantIdOf.safeParse(this.provisionedFor() ?? this.soleRoleTenant());
+        const scope = scopeIdOf.safeParse(this.ctx.id.name);
+        if (!tenant.success || !scope.success) return;
+        await this.noteScopeWake(tenant.data, scope.data);
+      } catch (err) {
+        console.error('reconcile-on-wake: scope wake not armed; the router flag and the pass remain', err);
+      }
+    }
+
+    /** The one tenant this scope's role rows name, or null for none or several (`tenantVerdict`'s `inferred`). */
+    private soleRoleTenant(): string | null {
+      if (!this.hasTable('_substrat_roles')) return null;
+      const rows = this.sql.exec('SELECT DISTINCT tenant_id FROM _substrat_roles LIMIT 2').toArray() as { tenant_id: string }[];
+      return rows.length === 1 ? rows[0]!.tenant_id : null;
     }
 
     /** K-69: 1 once, on the first committed invoke after the wake asked, so its response flags a drain. */
