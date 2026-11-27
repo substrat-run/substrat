@@ -237,11 +237,18 @@ the next pass lands it once more, as delivery allows.
   and every variant of it reports the new count.
 - **An order** already completed is not written again. A cancelled, refunded, failed, trashed or
   draft order is refused, not revived.
-- **When it fails.** No connection yet, the landing permission not delivered yet, a rate limit or an
-  outage: the request is retried. A key without Write permission, a product, variant or order the
-  store does not hold, a value the store refuses, or an order that cannot be completed fails the
-  request for good. Your app is not told: no failure lands in your operation, and it shows on the
-  platform's failure record and the connection's health.
+- **When it fails.** The landing permission not delivered yet, a rate limit or an outage: the
+  request is retried. These fail the request for good:
+  - a connection **not bound to the install** that asked: unbound since the record was landed, or
+    never this install's. Binding it later does not retry the request; send a new one once it is
+    bound;
+  - a key without Write permission;
+  - a product, variant or order the store does not hold;
+  - a value the store refuses;
+  - an order that cannot be completed.
+
+  Your app is not told: no failure lands in your operation. It shows on the platform's failure
+  record and the connection's health.
 
 ## What's missing
 

@@ -1221,10 +1221,12 @@ export interface WooCommerceDispatchOptions extends WooCommerceConnectorOptions 
  * store it is not delivered from. That is also what makes a tenant's several stores (#3219) and a
  * scope's own shop (#3201) work, since a dispatch's own `ctx.connection` opens neither.
  *
- * **Failures.** No connection, no binding or no landing grant yet, a rate limit, an outage: thrown
- * plainly, and the drain retries; every write is absolute, so a retry is safe. A key without Write
- * permission (WooCommerce's 401/403), a record the store does not hold, a value the store refuses
- * (400) and an order that cannot be completed fail terminally.
+ * **Failures.** No live credential or no landing grant yet, a rate limit, an outage: thrown plainly,
+ * and the drain retries; every write is absolute, so a retry is safe. Terminal: a connection not
+ * bound to the asking scope (a request names a record the scope was delivered, so no binding means
+ * it was unbound since, or the id was never this scope's, and binding later does not retry it), a
+ * key without Write permission (WooCommerce's 401/403), a record the store does not hold, a value the
+ * store refuses (400) and an order that cannot be completed.
  */
 export function woocommerceConnector(options: WooCommerceDispatchOptions): ConnectorHandler {
   const { host } = options;
