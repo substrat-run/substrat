@@ -363,6 +363,20 @@ export function attributeCostDay(usage: CloudflareUsageDay, dir: CostDirectory):
     add(row, 'container_disk_gb_s', c.allocatedDisk / GB);
     add(row, 'container_egress_bytes', c.txBytes);
   }
+
+  // Observability volume (#3358): a script's log lines and spans. A line that named its own tenant
+  // on a vertical's script is that installation's (`line`); the rest is the script's, as CPU is —
+  // the vertical's owner, or the platform for its own scripts. The line's own scope id is kept only
+  // when it is one, so a malformed field never lands in the scope column.
+  for (const o of usage.observability ?? []) {
+    const base = scriptRow(o.script, null);
+    const tenant = o.tenantId !== null && ULID_PATTERN.test(o.tenantId) ? (o.tenantId as TenantId) : null;
+    const row = base.attribution === 'script' && tenant !== null
+      ? { ...base, attribution: 'line' as const, tenantId: tenant, scopeId: o.scopeId !== null && ULID_PATTERN.test(o.scopeId) ? (o.scopeId as ScopeId) : null }
+      : base;
+    add(row, o.signal === 'logs' ? 'log_events' : 'span_events', o.events);
+    if (o.bytes !== null) add(row, o.signal === 'logs' ? 'log_bytes' : 'span_bytes', o.bytes);
+  }
   return [...byKey.values()];
 }
 
