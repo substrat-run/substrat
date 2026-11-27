@@ -1,7 +1,7 @@
 ---
 status: proposed
 layer: plan
-description: One chat in every product — a thread with an AI, and sometimes a person, that answers and acts for the signed-in user, with the assistant stamped as actor under a ceiling. Argues the stream protocol, the record, the host loop, the UI element, context, memory and the support handoff, and the bar for the experience.
+description: One chat in every product — a thread with an AI, and sometimes a person, that answers and acts for the signed-in user, with the assistant stamped as actor under a ceiling. Argues the stream protocol, the record, the host loop, the UI element, context, memory and the support handoff, and the bar for the experience. An addendum (§19) adds voice as a channel onto the same thread, from a spike against ElevenLabs Agents.
 ---
 
 # RFC: the assistant — one thread, any product, acting for the user
@@ -9,7 +9,7 @@ description: One chat in every product — a thread with an AI, and sometimes a 
 **Status: proposed. Nothing here is agreed.** It recommends; a human decides. The decisions it
 asks for are collected in §16, where the ones taken as working decisions for P1 are marked. Written against `origin/main` at `c95e6d73a` and against the
 outside world as of 2026-10-14; revised on 2026-10-15 after three review rounds, mainly to
-add the actor and its ceiling (§6.0), which the first draft lacked; §5.5 and Q8 revised on 2026-11-07, once `packages/elements` existed to hold the element. Claims about the repo carry a file or an issue; claims about
+add the actor and its ceiling (§6.0), which the first draft lacked; §5.5 and Q8 revised on 2026-11-07, once `packages/elements` existed to hold the element; §19 (voice) added on 2026-11-27 from a spike, with Q16 to Q20 and the voice rows of §14, §15, §17 and §18. Claims about the repo carry a file or an issue; claims about
 the outside world carry a source in the Sources section at the end; anything I could not check says so in §15.
 
 Related: [#1824](https://github.com/substrat-run/substrat/issues/1824) (delegated MCP access),
@@ -1058,7 +1058,9 @@ is the real critical path.
 
 - **Autonomous background agents.** v1 acts only inside a turn the user started.
 - **Third-party or runtime-installed UI extensions** ([#1671](https://github.com/substrat-run/substrat/issues/1671)).
-- **Voice.** The protocol leaves room for it; it is not in scope.
+- **Voice beyond §19.** The addendum proposes voice as a channel onto the same thread and
+  nothing more: no voice of our own (speech recognition, synthesis and turn-taking are the
+  vendor's), no voice cloning, and no telephony routing of our own beyond what the vendor offers.
 - **Vector or semantic memory**, automatic profile inference, cross-product memory (§8.3).
 - **Hosting our own models.** Providers sit behind the model-providers table.
 - **A general component framework.** Two platform components (the assistant and the account
@@ -1087,6 +1089,12 @@ is the real critical path.
 - **Several sources are vendor blogs or preprints** (Mem0, accessibility issue threads, 2026
   arXiv papers). They inform the design; none of it rests on one of them alone.
 - **Every number marked "target"** (latency, setup time) is an aspiration to measure deployed, in P0b and P1.
+- **Voice (§19).** The spike ran from one developer machine through a tunnel, five turns per
+  run, synthesised English speech, a raw WebSocket client rather than the vendor's SDK. Not run
+  at all: the MCP leg (MCP servers are off by default in a vendor workspace and were off in the
+  one used), the custom LLM's `websocket` API type, WebRTC, telephony, a turn cut off while the
+  model was still generating, and whether audio events carry `alignment` without being asked
+  for. The SDK was read, not run. §19.8 lists the limits in full.
 
 ## 16. Decisions asked of a human
 
@@ -1166,6 +1174,28 @@ is the real critical path.
 15. **`assistant.expose` and `mcp: false` (§4.1).** **Proposed, maintainer to confirm:** one
     derivation, with `expose` a filter over the MCP tool list, and a gate that refuses
     exposing an operation hidden from MCP.
+16. **Voice is a channel, not a second assistant (§19.1).** The vendor carries speech in and
+    out and calls our loop as a custom LLM, recommended; the alternative is the vendor's agent as
+    the assistant, with its own model, prompt, history and tool configuration. **Proposed,
+    maintainer to confirm.**
+17. **No tool runs vendor-side (§19.3).** Our endpoint never answers a voice turn with a tool
+    call for a platform tool. The loop runs the operation itself, and only the vendor's own
+    conversation tools (end the call, switch language) may come back as tool calls. **Proposed,
+    maintainer to confirm.**
+18. **Approvals in voice (§19.3).** A gated call in a voice turn waits for an approval on a
+    screen, the same user-presence route as text, and a voice-only channel (a phone call) is not
+    offered gated operations at all. A spoken "yes" is never an approval. **Proposed, maintainer
+    to confirm.**
+19. **What was heard (§19.5).** A new stream event records how much of an assistant answer the
+    listener heard, reported by our client from the vendor's playback callback, and the next
+    turn's context reads that rather than the vendor's correction. **Proposed, maintainer to
+    confirm**, including whether the event is written under `assistant:use` (it is the user's
+    side of the record) and how a transport with no playback signal is marked.
+20. **The voice connector: home, credential and disclosure (§19.7).** A connector holding the
+    tenant's vendor workspace key platform-side, provisioning the agent and minting a session
+    URL per conversation; whether it is a compiled connector or a vertical-defined one (D-64,
+    #2635); and the vendor's entry as a sub-processor beside the model provider (Q13: audio and
+    transcripts leave the platform). **Open.**
 
 ## 17. Risks
 
@@ -1181,6 +1211,9 @@ is the real critical path.
 | Memory feels creepy or is mishandled (special-category data) | Opt-in, visible list, real deletion, legal review before shipping the coach |
 | Inference stays in the vertical's worker longer than intended | Design does not depend on it; #1073 stays on the path |
 | The element becomes a framework by accretion | The two-consumer rule for any new platform component |
+| A voice turn runs a tool vendor-side, past the approval and the ceiling | §19.3: our endpoint returns no platform tool calls; the loop runs operations itself |
+| The record says the user heard an answer they talked over | §19.5: a heard marker from our client; the vendor's correction is an upper bound, never the fact |
+| Voice feels slow because the loop does its bookkeeping before the model call | §19.4: the first token is the budget; record writes and context work overlap the call, the budget check is a local read |
 
 ## 18. Phases
 
@@ -1190,10 +1223,226 @@ is the real critical path.
 | Prerequisites | **Before P1:** the model-provider and residency position (Q13). **Before P2's gated write:** the actor stamp (§6.0 (b)), the host-side ceiling and `act` on the chain (§6.0 (a), #1824 part 2), and approvals on a user-presence route bound as §6.0 point 3 says. **Before any hosted streaming for a vertical:** #1073's relay. **Only if the offered list is filtered:** a `ScopeStub` read of a principal's keys (§6.0 (c)) | Each lands as its own change, with its own decision record where it needs one |
 | P1 | **Dashboard, read-only.** `contracts` event schema; `engine-assistant`; the thread object in the dashboard worker, pinned to one team; the loop with a fake model first, then a real model through the platform's model host with a per-user budget; read tools that call the routes' guarded functions, never the bare helpers (§12.1), with the actor on the dashboard's request record; `AssistantModel` and a first `<sub-assistant>` inside the dashboard web app; provenance. A preview deploy for **P0b**: the 30 s cap, eviction, first-token time, the real append, idle cost | ⌘K Ask answers "why is this failing" with provenance, behind a flag; the §10 acceptance run passes; the P0b numbers are written into the spike's findings |
 | P2 | **`demos/todo`.** `assistant.expose` and `mountAssistant` for declared operations; the generated tool manifest with `--check`; the assistant-reach section of `PERMISSIONS.md`; `assistantScenario()` with a fake model; the first evals; a gated write with an approval bound as §6.0 point 3 says, once the §6.0 prerequisites have landed (until then P2 ships reads only) | A scripted conversation passes in the demo's suite, including permission, ceiling, approval-binding, revocation and injection cases, and history shows the actor |
+| Pv (after P2, beside P3) | **Voice onto `demos/todo`.** The voice connector (Q20), the per-conversation token and its header (§19.2), the custom LLM endpoint on the host loop with no vendor-side tools (§19.3), the heard marker (§19.5), approvals on screen (Q18). Measured deployed: first token at our endpoint and end of speech to first audio | A spoken turn reads and, after an on-screen approval, writes in the demo; a turn without a valid token is refused; an interrupted answer is recorded as heard up to where it stopped; the latency numbers are written into §19.4 beside the spike's |
 | P3 | Training-plan app (first consumer outside this repo; the first release cycle). Memory, opt-in, with the view-and-delete UI | Acceptance run passes; erasure removes memory and derived summaries |
 | P4 | Internal CRM | Acceptance run passes; approve-always writes hold under the injection fixtures |
 | P5 | ticket0 onto the loop; participants and the handoff contract and mirror | A thread escalates, a person replies in the user's chat, the user sees what was sent |
 | P6 | Dashboard writes (roll back, redeploy) behind approvals; delegated reads (#1824); platform-side inference and streaming relay for verticals (#1073) | A write from the dashboard assistant needs a recorded approval bound to the approving user (§6.0 point 3), and the control plane records the actor |
+
+## 19. Voice (addendum, 2026-11-27)
+
+§14 put voice out of scope. This addendum proposes the smallest voice that keeps §2 intact, and
+records what a spike against ElevenLabs Agents showed on 2026-11-27. The vendor is named because
+the evidence is about its behaviour. The design keeps everything vendor-specific in one
+connector (§19.7), and the endpoint the vendor calls is the OpenAI chat-completions shape, which
+other voice vendors also call. Nothing here is agreed; the decisions are Q16 to Q20.
+
+### 19.1 The shape: a channel onto the same thread
+
+```
+text:   <sub-assistant> ── stream protocol (§5.1) ─────────────┐
+                                                               ├─► host loop ─► engine-assistant (one thread)
+voice:  browser/phone ⇄ vendor (speech in, turn-taking,        │
+                         speech out, barge-in) ── custom LLM ──┘
+```
+
+The vendor does what we should not build: the audio transport (WebRTC or WebSocket, and
+telephony), speech recognition, deciding when the person has finished, speech synthesis, and
+stopping when the person talks over the answer. For each turn it calls a **custom LLM**: an
+OpenAI-compatible chat-completions endpoint that we provide. That endpoint is the host loop of
+§5.3, with the same thread, record, tools, actor and ceiling as the text channel. A person can
+start a thread in text and continue it by voice, because the thread comes from the session token
+(§19.2), not from the vendor.
+
+**Rejected: the vendor's agent as the assistant.** The vendor runs its own model, prompt and
+history, and reaches us only through MCP or webhooks. That gives a second record outside the
+product's scope, which breaks principle 3, and a second place where tool authority is configured,
+in the vendor's console. It also puts model calls outside the model host, its budget and the
+usage ledger (§9, D-59). It is legitimate in one case only: a tenant whose own vendor agent reaches
+a vertical's MCP surface as the user (§19.6). That is an outside client, not an implementation of
+this RFC.
+
+**Text through the vendor is possible and not used.** The vendor has a text-only chat mode (the
+spike's identity runs used it), but routing our text channel through it adds a hop, a cost and a
+sub-processor and gives nothing back.
+
+### 19.2 Identity: a token per conversation, in a header of our own
+
+When a voice session starts, the host mints a short-lived delegated token of #1824's shape:
+`sub` the user, `act` the voice agent, the `thread`, an expiry, and an audience that names the
+voice endpoint alone. Our client sends it to the vendor when it opens the conversation, as a
+dynamic variable whose name starts with `secret__`, in `conversation_initiation_client_data`. The
+agent's configuration binds that variable to a request header of the custom LLM (and of any tool).
+The vendor documents `secret__` variables as usable only in headers, never sent to a language
+model, and redacted in its conversation API.
+
+Observed in the spike, with two conversations running at once and a third with no token:
+
+| What | Result |
+|---|---|
+| Custom LLM, a header of our own (`x-substrat-token`) | Arrived on every call (4 of 4, and 2 of 2 in an earlier run), each in its own conversation; never crossed |
+| Custom LLM, `Authorization` | **Unusable.** The vendor's OpenAI client sends its own `Bearer`, from the agent's API-key setting (a fixed placeholder when there is none), over the configured header |
+| Webhook tool, `Authorization` and our own header | Both arrived per conversation (2 of 2) |
+| No variable supplied, webhook tool | The vendor refused to call the tool ("Missing required dynamic variable") |
+| No variable supplied, custom LLM | **Still called**, with the header absent; the conversation starts anyway |
+| The vendor's conversation API afterwards | The token reads `<REDACTED>`; the raw value is absent |
+| Conversation id on the custom LLM call | **None.** The body carries `messages`, `model`, `stream`, `stream_options`, `temperature` and `max_tokens`, and nothing in the headers names the conversation |
+
+What follows from it:
+
+1. **The token goes in a header of our own,** never in `Authorization`.
+2. **Refusing is ours.** The endpoint refuses a turn whose token is missing, expired or has the
+   wrong audience, because the vendor will call it without one.
+3. **The thread comes from the token.** The vendor's request names none, and its history is a
+   copy, not the record (§19.5).
+4. **The token is supplied by the client,** so it is that client's own credential. The session
+   URL the vendor issues (minted server-side with the workspace key) does not bind the variables,
+   so a client can send any token it holds, and a token it holds is its own. The short expiry and
+   the single audience bound what a leaked one is worth.
+5. **The authority is §6.0 unchanged:** the user's permissions intersected with the voice actor's
+   ceiling, checked by the host on every invoke.
+
+### 19.3 Tools run in our loop, never at the vendor
+
+With a custom LLM, a tool call in the model's answer is executed by the **vendor**: it calls the
+webhook, MCP server or client tool, then sends the result back on the next request. A platform
+operation run that way passes outside engine-assistant's approval binding and execution claim
+(guarantee 3 in `engines/assistant/src/index.ts`, §6.0 point 3), and outside the host's ceiling
+check on the call. So:
+
+- **The endpoint never answers with a tool call for a platform tool.** Within the turn, the loop
+  runs the operation itself, as it does for text, and streams only text to the vendor.
+- **Only the vendor's own conversation tools may come back as tool calls,** such as ending the
+  call or switching language. The vendor offers those in the request's `tools`.
+- **A gated call in a voice turn waits for an approval on a screen** (Q18). The loop pauses with
+  the same `approval-request` event as text, a screen client renders it, and the voice says the
+  answer is waiting for confirmation there. A spoken "yes" cannot be bound to the approving
+  principal and the input digest that §6.0 point 3 requires.
+- **A voice-only channel, such as a phone call, is not offered gated operations at all.** Its
+  ceiling leaves them out.
+- **The vendor's own MCP approval message is not a substitute.** `mcp_tool_approval_result`, sent
+  by the client, is a boolean on a tool-call id, with no input digest and no principal.
+
+### 19.4 Latency: what we control is the first token
+
+Measured on 2026-11-27 with an audio agent and a custom LLM. Real speech (synthesised, streamed in
+real time as a microphone at 16 kHz PCM, silence between utterances) asked five short questions in
+each of two runs. Times run from the end of the person's speech to the first audio of the answer,
+and are medians of the five turns. The endpoint ran on a developer machine reached through a
+tunnel, so the hops between the vendor and the endpoint were longer than a deployed worker's will be.
+
+| | Scripted endpoint (answers at once) | Workers AI `@cf/meta/llama-3.1-8b-instruct-fast` |
+|---|---|---|
+| End of speech → the vendor calls us (turn detection, recognition) | 733 ms | 645 ms |
+| **Our first token** | 0 ms | **255 ms** |
+| First token → first audio (synthesis, delivery) | 281 ms | 233 ms |
+| **End of speech → first audio** | **1,043 ms** | **1,216 ms** |
+
+The vendor's share is about a second, and deciding that the person has finished dominates it (443
+to 1,088 ms across the ten turns). We cannot shorten that part. Ours is the first token, and it
+adds to the total one for one. So:
+
+- **The loop streams first.** Appending the user's message and the turn start, assembling
+  context, and writing the assistant's events overlap the model call or follow it. They do not
+  run ahead of it. The budget check stays before the call (§9: it is the authoritative cap), so it
+  has to be a local read.
+- **A small, fast model for voice turns** (§5.4's routing).
+- **A slow step says so out loud.** For a tool call or a long read, the endpoint first streams a
+  short holding phrase ending in `"... "`, which the vendor documents as keeping its speech
+  natural while the rest arrives.
+- **Target, to measure deployed:** our first token at p50 ≤ 300 ms, measured at our endpoint.
+  Untested: the custom LLM's `websocket` API type, which holds one connection per conversation
+  and may remove per-turn connection cost.
+
+### 19.5 Interruption: the record keeps what was heard
+
+Barge-in works. The vendor sent `interruption` 0.5 to 1.1 s after the person started talking over
+a long answer, the client stopped playing, and the next answer began about 1.1 s after the person
+finished. In both runs the model had finished generating before the interruption, so the stream to
+our endpoint was not cut. A turn that is still generating may be cut; the spike did not test it.
+
+**What the vendor reports as said is not what was heard.** In both runs about five seconds of the
+answer had played when the person talked over it. Yet the next request's history, and the vendor's
+`agent_response_correction`, kept 965 and 1,510 characters, which is a minute or more of speech. By
+then the vendor had sent the client roughly 38 seconds of audio ahead of playback. Its truncation
+follows what it produced and sent, not what the person heard.
+
+**Only our client can know.** The vendor sends `alignment` with each audio chunk: the chunk's
+characters, with a start time and a duration for each. Its browser SDK (`@elevenlabs/client`
+1.38.0, read, not run) calls `onAudioAlignmentPlayback` "when an aligned chunk starts playing,
+skipping interrupted ones", and does not call it on WebRTC. Nothing the client sends back reports
+playback: its messages are audio, `user_message`, `user_activity`, `pong`, `feedback`,
+`contextual_update`, `client_tool_result`, `mcp_tool_approval_result` and the opening message.
+
+The design:
+
+- **The record keeps the generated answer as the assistant's text,** as it does now.
+- **The client adds a heard marker** (Q19). Our voice source in `AssistantModel` adds up the
+  characters of the chunks that started playing and, on an interruption, reports how far it got.
+  The report goes on the user-presence route, because it is a fact about the user's side.
+- **The next turn reads the heard prefix,** and context assembly (§7) tells the model where it
+  was cut off.
+- **The precision is a chunk start,** so "heard" means at most through the last chunk that began.
+- **A transport with no playback callback,** such as WebRTC or telephony, marks the turn as heard
+  unknown. The vendor's correction is then recorded as an upper bound, never as the fact.
+- **The record is authoritative.** The custom LLM call is stateless, carries the whole history
+  each time and names no conversation. The endpoint takes only the last user message from it (the
+  vendor's transcript) and treats the rest as a cross-check.
+
+### 19.6 The other direction: a vendor agent as an outside client
+
+A tenant that already runs its own vendor agent may want it to use a vertical's data. That is
+#1824's delegated MCP access with the vendor as the client, and it needs nothing from this RFC's
+loop. The vendor's MCP configuration accepts a dynamic variable in `request_headers`, and in
+`request_meta`, which goes in the `_meta` of each `tools/call`. The same token in a header of our
+own would then make each call the user's, under the agent's ceiling.
+
+Two caveats. **Unmeasured:** whether `initialize` and `tools/list` carry the token per
+conversation, or happen outside one. MCP servers are off by default in a vendor workspace, and were
+off in the one used (`convai_mcp_servers_disabled`). **Not ours:** the vendor's approval policies
+(`auto_approve_all`, `require_approval_all`, per tool) belong to it, and the thread is the vendor's.
+A transcript could be imported afterwards from its signed post-call webhook, but that is not
+designed here.
+
+### 19.7 The connector
+
+One connector per vendor holds everything vendor-specific (Q20):
+
+- **The credential:** the tenant's vendor workspace key, held platform-side like any connection
+  credential, with a probe that names the account (the connector rule in `CLAUDE.md`).
+- **Provisioning:** the agent's configuration: the custom LLM URL, the header bound to the
+  `secret__` variable, the vendor's conversation tools, the voice, the language.
+- **Starting a session:** a session URL per conversation, minted with the workspace key. It is a
+  call the vertical needs answered synchronously at session start, the same shape #1073 asks of
+  platform-side inference.
+- **Usage:** the signed post-call webhook lands the duration as usage, and the vendor's pricing
+  is per call minute (its agents product is sold separately from its media product). The model
+  cost stays ours, through the model host.
+- **Disclosure:** audio and transcripts go to the vendor, so it is a sub-processor beside the
+  model provider (Q13).
+
+Whether this is a compiled connector or a vertical-defined one (D-64, #2635) is open.
+
+### 19.8 The evidence and its limits
+
+The spike ran on 2026-11-27 against one vendor workspace, in five runs:
+
+- identity over text, twice (custom LLM alone, then with a webhook tool);
+- latency and interruption over audio, twice (a scripted endpoint, then Workers AI);
+- an offline self-test of the harness, with a negative control that catches a swapped identity.
+
+The spike's code is not in the repository; its findings are this section.
+
+Its limits:
+
+- one machine, behind a tunnel;
+- five turns per audio run;
+- synthesised English speech;
+- one scripted interruption per run;
+- a raw WebSocket client in the audio runs, not the vendor's SDK;
+- no MCP leg;
+- `alignment` was not logged, so whether it arrives by default is unchecked;
+- vendor pricing and plan facts are as its pages stated on the day.
 
 ## Sources
 
@@ -1211,6 +1460,16 @@ is the real critical path.
 - [AG-UI concepts](https://docs.ag-ui.com/concepts) and [architecture](https://docs.ag-ui.com/concepts/architecture)
 - [AI SDK stream protocol](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol)
 - [MCP Apps (Thoughtworks Radar)](https://www.thoughtworks.com/radar/platforms/mcp-apps) and [the ext-apps SDK](https://docsearch.algolia.com/mcp/docs/repo/modelcontextprotocol/ext-apps)
+
+**Voice (ElevenLabs, read 2026-11-27)**
+- [Integrate your own model (custom LLM)](https://elevenlabs.io/docs/eleven-agents/customization/llm/custom-llm)
+- [Dynamic variables, including `secret__`](https://elevenlabs.io/docs/eleven-agents/customization/personalization/dynamic-variables)
+- [Model Context Protocol](https://elevenlabs.io/docs/eleven-agents/customization/tools/mcp) and [Create MCP server (API)](https://elevenlabs.io/docs/eleven-agents/api-reference/mcp/create)
+- [Create agent (API: `custom_llm`, `request_headers`, `api_type`)](https://elevenlabs.io/docs/eleven-agents/api-reference/agents/create) and [Create tool (API: webhook `request_headers`)](https://elevenlabs.io/docs/eleven-agents/api-reference/tools/create)
+- [Agent WebSockets (AsyncAPI: `alignment`, `interruption`, `agent_response_correction`, client messages)](https://elevenlabs.io/docs/eleven-agents/api-reference/eleven-agents/websocket) and [WebSocket guide (signed URLs)](https://elevenlabs.io/docs/eleven-agents/libraries/web-sockets)
+- [Chat mode (text only)](https://elevenlabs.io/docs/eleven-agents/guides/chat-mode)
+- [`@elevenlabs/client` 1.38.0 on npm](https://www.npmjs.com/package/@elevenlabs/client) (read: `dist/VoiceConversation.js`, `dist/types.d.ts`, `worklets/audioConcatProcessor.js`)
+- [ElevenAgents pricing](https://elevenlabs.io/pricing/agents)
 
 **Context and memory**
 - [Anthropic cookbook: compaction, tool-result clearing, memory](https://platform.claude.com/cookbook/tool-use-context-engineering-context-engineering-tools)
