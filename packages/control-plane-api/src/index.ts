@@ -94,6 +94,16 @@ export {
   type CopyJobSpec,
   type CopyJobStatus,
 } from './copy-job.js';
+export {
+  advanceStoreMoveJob,
+  isStoreMoveJob,
+  memoryStoreMoveJobs,
+  storeMoveJobId,
+  type StoreMoveJobDeps,
+  type StoreMoveJobRecord,
+  type StoreMoveJobs,
+  type StoreMoveJobSpec,
+} from './store-move-job.js';
 export { sweepScopeAttachments, type AttachmentSweepReach } from './attachment-sweep.js';
 export {
   assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, retryScopeScriptCopy, retryScopeScriptCopies, reapScopeScriptCopies,

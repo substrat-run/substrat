@@ -18,6 +18,7 @@ import {
   createControlPlaneApi,
   createR2BackupStore,
   DEV_ACTOR_HEADER,
+  memoryStoreMoveJobs,
   UNSAFE_devPlatformActorAuth,
   type VerticalClient,
 } from '../src/index.js';
@@ -75,7 +76,7 @@ describe('scope stores in pages through a backup, a restore and a snapshot (D-69
   });
 
   /** What the deployment was asked to load, and a switch to make its load refuse. */
-  const world = (budget?: StoreRequestBudget, opts: { backups?: boolean } = {}) => {
+  const world = (budget?: StoreRequestBudget, opts: { backups?: boolean; jobs?: boolean } = {}) => {
     const loads: unknown[] = [];
     const deployment = {
       refuseLoad: false,
@@ -96,16 +97,29 @@ describe('scope stores in pages through a backup, a restore and a snapshot (D-69
     };
     const driver = fakeStoreDriver({ pageRows: 10 });
     const { bucket, objects } = fakeBucket();
+    const backups = createR2BackupStore(bucket);
+    // `stepMs: 0`: a job step moves one page, so a job takes several steps.
+    const jobs = memoryStoreMoveJobs({ stores: platformOver(driver), backups }, { stepMs: 0 });
     const app = createControlPlaneApi({
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       verticals: { [VERTICAL]: deployment as unknown as VerticalClient },
-      ...(opts.backups === false ? {} : { scopeBackups: createR2BackupStore(bucket) }),
+      ...(opts.backups === false ? {} : { scopeBackups: backups }),
       platformScopeStores: platformOver(driver),
       storeDrivers: [graph],
       ...(budget ? { storeMoveBudget: budget } : {}),
+      ...(opts.jobs ? { storeMoveJobs: jobs } : {}),
     });
-    return { app, driver, deployment, loads, bucket, objects };
+    /** Step every job until none is copying, as alarms would; answers how many steps it took. */
+    const settle = async (): Promise<number> => {
+      let steps = 0;
+      while ([...jobs.jobs.values()].some((job) => job.status === 'copying')) {
+        if (++steps > 200) throw new Error('a store job did not end');
+        await jobs.pump();
+      }
+      return steps;
+    };
+    return { app, driver, deployment, loads, bucket, objects, jobs, settle };
   };
 
   const install = async (tenant = t): Promise<ScopeId> => {
@@ -374,5 +388,123 @@ describe('scope stores in pages through a backup, a restore and a snapshot (D-69
     // The marked scope keeps the one backup its first try took; the other got its own.
     for (const s of scopes) expect(backupsOf(s)).toBe(1);
     expect((await host.admin.getTenant(staff, tenant))?.status).toBe('reaped');
+  });
+  /** A move of two pages a request: GRAPH (25 rows, three pages) and DOCS take a job either way. */
+  const tight = (): StoreRequestBudget => ({ pages: 2, ms: 60_000, sleep: async () => undefined });
+  const takeBackup = (w: ReturnType<typeof world>, s: string, body: unknown = {}) =>
+    w.app.request(`/tenants/${t}/scopes/${s}/backups`, { method: 'POST', headers: auth, body: JSON.stringify(body) });
+
+  /** The restore route of an app over `w`'s bucket, driver and jobs, at the tight budget: its store move goes to a job. */
+  const tightRestore = (w: ReturnType<typeof world>, s: string) => {
+    const app = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { [VERTICAL]: w.deployment as unknown as VerticalClient },
+      scopeBackups: createR2BackupStore(w.bucket),
+      platformScopeStores: platformOver(w.driver),
+      storeDrivers: [graph],
+      storeMoveBudget: tight(),
+      storeMoveJobs: w.jobs,
+    });
+    return (capturedAt: string) => app.request(`/tenants/${t}/scopes/${s}/backups/${capturedAt}/restore`, { method: 'POST', headers: auth });
+  };
+
+  it('a backup whose stores take more than one request is finished by a job, named by its capture time, and restores through one (#2854)', async () => {
+    const w = world(tight(), { jobs: true });
+    const s = await install();
+    w.driver.put(store(s, 'GRAPH'), 25);
+    w.driver.put(store(s, 'DOCS'), 3);
+    const started = await takeBackup(w, s);
+    expect(started.status).toBe(202);
+    const { capturedAt } = (await started.json()) as { capturedAt: string };
+    expect(w.objects.has(`scopes/${t}/${s}/${capturedAt}.json`)).toBe(false);
+    // A call naming none is answered for the job, rather than starting another.
+    expect(((await (await takeBackup(w, s)).json()) as { capturedAt: string }).capturedAt).toBe(capturedAt);
+
+    expect(await w.settle()).toBeGreaterThan(1);
+    const done = await takeBackup(w, s, { capturedAt });
+    expect(done.status).toBe(201);
+    expect(((await done.json()) as ScopeBackup).capturedAt).toBe(capturedAt);
+    const manifest = JSON.parse(w.objects.get(`scopes/${t}/${s}/${capturedAt}.json`)!.body) as { storeEntries: { binding: string; entries: number }[] };
+    expect(manifest.storeEntries.map((e) => [e.binding, e.entries])).toEqual([['DOCS', 1], ['GRAPH', 3]]);
+    expect(w.jobs.jobs.size).toBe(0);
+    // Asked again once it was read, the backup is answered from what the store lists.
+    expect((await takeBackup(w, s, { capturedAt })).status).toBe(201);
+
+    w.driver.put(store(s, 'GRAPH'), 1);
+    const loaded = w.loads.length;
+    const staging = await restore(w, s, capturedAt);
+    expect(staging.status).toBe(202);
+    await w.settle();
+    // Staged, and nothing loaded or committed until the call after the job is done.
+    expect(w.loads.length).toBe(loaded);
+    expect(ops(w)).not.toContain('substrat.commit-stage');
+    expect(w.driver.idsOf(store(s, 'GRAPH'))).toHaveLength(1);
+    const restored = await restore(w, s, capturedAt);
+    expect(restored.status, await restored.clone().text()).toBe(200);
+    expect(w.loads.length).toBe(loaded + 1);
+    expect(w.driver.idsOf(store(s, 'GRAPH'))).toHaveLength(25);
+    expect(w.driver.idsOf(store(s, 'DOCS'))).toHaveLength(3);
+    expect(w.jobs.jobs.size).toBe(0);
+  });
+
+  it('a restore staging in a job refuses a restore of another backup or of a dump, and its stages left past their age are given up (#2854)', async () => {
+    const w = world(undefined, { jobs: true });
+    const { s, backup } = await backedUp(w);
+    const other = (await (await takeBackup(w, s)).json()) as ScopeBackup;
+    const ask = tightRestore(w, s);
+    expect((await ask(backup.capturedAt)).status).toBe(202);
+    const dump = { tenantId: t, scopeId: s, capturedAt: '2026-01-02T03:04:05.000Z', tables: [customers] };
+    for (const refused of [
+      await ask(other.capturedAt),
+      await w.app.request(`/tenants/${t}/scopes/${s}/restore`, { method: 'POST', headers: auth, body: JSON.stringify(dump) }),
+    ]) {
+      expect(refused.status).toBe(409);
+      expect(JSON.stringify(await refused.json())).toContain(backup.capturedAt);
+    }
+
+    await w.settle();
+    const [id, job] = [...w.jobs.jobs.entries()][0]!;
+    expect(job.status).toBe('done');
+    w.jobs.jobs.set(id, { ...job, updatedAt: job.updatedAt - 8 * 3_600_000 });
+    const lapsed = await ask(backup.capturedAt);
+    expect(lapsed.status).toBe(409);
+    expect(JSON.stringify(await lapsed.json())).toMatch(/left too long/);
+    expect(w.driver.stageOf(store(s, 'GRAPH'))).toBeUndefined();
+    expect(w.driver.stageOf(store(s, 'DOCS'))).toBeUndefined();
+    expect(ops(w)).not.toContain('substrat.commit-stage');
+    expect(w.jobs.jobs.size).toBe(0);
+  });
+
+  it("a job's staged page whose answer was lost starts that store's stage again, and the restore lands whole (#2854)", async () => {
+    const w = world(undefined, { jobs: true });
+    const { s, backup } = await backedUp(w);
+    w.driver.put(store(s, 'GRAPH'), 1);
+    const ask = tightRestore(w, s);
+    expect((await ask(backup.capturedAt)).status).toBe(202);
+    let lost = false;
+    w.driver.intercept((call) => {
+      if (lost || call.operation !== 'substrat.stage-page' || call.objectName !== store(s, 'GRAPH') || (call.input as { seq: number }).seq !== 1) return undefined;
+      lost = true;
+      return 'lost';
+    });
+    await w.settle();
+    expect(lost).toBe(true);
+    const restored = await ask(backup.capturedAt);
+    expect(restored.status, await restored.clone().text()).toBe(200);
+    expect(w.driver.idsOf(store(s, 'GRAPH'))).toHaveLength(25);
+    expect(w.driver.idsOf(store(s, 'DOCS'))).toHaveLength(3);
+  });
+
+  it("a reap's own backup still refuses past the budget, with a job to hand to, and nothing is reaped (#2854)", async () => {
+    const w = world(tight(), { jobs: true });
+    const s = await install();
+    w.driver.put(store(s, 'GRAPH'), 25);
+    await host.admin.archiveScope(staff, t, s);
+    const res = await w.app.request(`/tenants/${t}/scopes/${s}/reap`, { method: 'POST', headers: auth, body: JSON.stringify({ backup: true }) });
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(await res.json())).toMatch(/budget of 2 pages/);
+    expect(w.jobs.jobs.size).toBe(0);
+    expect((await host.admin.getScopeRecord(staff, t, s))?.status).not.toBe('reaped');
   });
 });
