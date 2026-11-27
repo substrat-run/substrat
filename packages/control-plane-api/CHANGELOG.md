@@ -1,5 +1,19 @@
 # @substrat-run/control-plane-api
 
+## 0.216.0
+
+### Minor Changes
+
+- d23b8c9: The control plane's daily directory copy succeeds again. A copy that outgrew one scheduled pass was cut off and left its snapshot behind, and every later attempt then failed while dropping it and resetting the directory. The leftover is now dropped in its own steps, a copy longer than its budget pauses and the next pass resumes it, and a failed or cut-off copy is recorded as an ops failure. `DirectoryBackupStore.lastAttempt` now returns the attempt record, which can carry a paused copy.
+- 6da4d11: Ops failures, sweep runs and the model-usage ledger can read history before the directory's 35-day window from the lake (K-70), on the same switch as the admin log (`DIRECTORY_LAKE_READS`, off by default, with a compare mode).
+- d6cd1a3: Ops failures and sweep runs may be pruned to the directory's 35-day window once the lake holds them (K-70), now that their history readers read the lake; the prune stays off unless `DIRECTORY_LAKE_PRUNE` names them and reads are on.
+
+### Patch Changes
+
+- Updated dependencies [40c58f5]
+- Updated dependencies [84ad789]
+  - @substrat-run/kernel@0.216.0
+
 ## 0.215.0
 
 ### Minor Changes

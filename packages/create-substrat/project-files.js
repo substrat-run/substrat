@@ -32,13 +32,13 @@ import { DEV_SERVERS } from './dev-servers.js';
 // kernel release stops republishing everything that only reads the vocabulary — it has
 // its own line, and its own pin. Engines do NOT share a line either — each versions on
 // its own, so one pin per engine, deliberately.
-const SUBSTRAT = '^0.215.0';
+const SUBSTRAT = '^0.216.0';
 const CONTRACTS = '^0.214.0';
 const ENGINE_WORKORDER = '^0.14.0';
 const ENGINE_INVOICING = '^0.12.0';
 const BOUNDARY_LINT = '^0.9.2';
 const DEV_ISSUER = '^0.9.16';
-const ATTACHMENT_EXTRACTORS = '^0.2.76';
+const ATTACHMENT_EXTRACTORS = '^0.2.77';
 
 export const TSCONFIG = `${JSON.stringify(
   {

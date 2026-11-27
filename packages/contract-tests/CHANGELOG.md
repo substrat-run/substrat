@@ -1,5 +1,14 @@
 # @substrat-run/contract-tests
 
+## 0.216.0
+
+### Patch Changes
+
+- 84ad789: The directory lake's capture override can add data sets to the default (`+ops_failures,+sweep_runs`) instead of replacing it, so capturing one more data set for its backfill cannot stop a default's capture (K-70); a contract case holds every data set's capture and backfill on both adapters.
+- Updated dependencies [40c58f5]
+- Updated dependencies [84ad789]
+  - @substrat-run/kernel@0.216.0
+
 ## 0.215.0
 
 ### Minor Changes

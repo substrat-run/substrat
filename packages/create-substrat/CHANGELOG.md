@@ -1,5 +1,13 @@
 # create-substrat
 
+## 0.18.20
+
+### Patch Changes
+
+- A new project now installs the package versions released alongside this one:
+  - `@substrat-run/kernel` and the runtime packages versioned with it: `^0.216.0`
+  - `@substrat-run/attachment-extractors`: `^0.2.77`
+
 ## 0.18.19
 
 ### Patch Changes

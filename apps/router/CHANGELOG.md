@@ -1,5 +1,18 @@
 # @substrat-run/router
 
+## 0.6.53
+
+### Patch Changes
+
+- 44ba8aa: Peer-call answers can be read from the routing read model: the directory publishes an answer that dispatches once a router asks for it, and the router reads it memory → KV → the directory under its own `PEER_READ_MODEL` switch, off by default.
+- Updated dependencies [40c58f5]
+- Updated dependencies [d23b8c9]
+- Updated dependencies [c8e820f]
+- Updated dependencies [ccb4f66]
+- Updated dependencies [f2b4111]
+- Updated dependencies [44ba8aa]
+  - @substrat-run/adapter-cloudflare@0.216.0
+
 ## 0.6.52
 
 ### Patch Changes

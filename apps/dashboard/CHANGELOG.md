@@ -1,5 +1,23 @@
 # @substrat-run/dashboard
 
+## 0.49.34
+
+### Patch Changes
+
+- Updated dependencies [40c58f5]
+- Updated dependencies [d23b8c9]
+- Updated dependencies [84ad789]
+- Updated dependencies [6da4d11]
+- Updated dependencies [d6cd1a3]
+- Updated dependencies [c8e820f]
+- Updated dependencies [ccb4f66]
+- Updated dependencies [f2b4111]
+- Updated dependencies [44ba8aa]
+  - @substrat-run/kernel@0.216.0
+  - @substrat-run/adapter-cloudflare@0.216.0
+  - @substrat-run/control-plane-api@0.216.0
+  - @substrat-run/vertical-host@0.216.0
+
 ## 0.49.33
 
 ### Patch Changes
