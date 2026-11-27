@@ -119,9 +119,29 @@ export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
   const r2 = bucket as R2BucketLike;
 
   return {
-    begin({ vertical, header }) {
+    begin({ vertical, header, written: before = {} }) {
       const { tenantId, scopeId, capturedAt } = header;
-      const written = new Map<string, number[]>();
+      /**
+       * Per stage: what an earlier writer of this backup wrote (`held` entries, `heldBytes`), taken as
+       * written, and each entry from there on as this writer puts it.
+       */
+      const written = new Map<string, { held: number; heldBytes: number; sizes: number[] }>(
+        Object.entries(before).map(([stageId, { entries, bytes }]) => [stageId, { held: entries, heldBytes: bytes, sizes: [] }]),
+      );
+      const stageOf = (stageId: string) => {
+        let stage = written.get(stageId);
+        if (!stage) written.set(stageId, (stage = { held: 0, heldBytes: 0, sizes: [] }));
+        return stage;
+      };
+      /** The entries written in order from 0, and their bytes. */
+      const contiguous = (stageId: string): { entries: number; bytes: number } => {
+        const stage = written.get(stageId);
+        if (!stage) return { entries: 0, bytes: 0 };
+        let entries = stage.held;
+        let bytes = stage.heldBytes;
+        while (stage.sizes[entries] !== undefined) bytes += stage.sizes[entries++]!;
+        return { entries, bytes };
+      };
       return {
         async put(stageId, seq, entry) {
           const body = JSON.stringify(entry);
@@ -130,26 +150,36 @@ export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
             // Retention dates every object of a backup by this, entries included.
             customMetadata: { capturedAt },
           });
-          const sizes = written.get(stageId) ?? [];
-          sizes[seq] = byteLength(body);
-          written.set(stageId, sizes);
+          const stage = stageOf(stageId);
+          // An entry an earlier writer wrote is replaced in place; its size is taken as it was.
+          if (seq >= stage.held) stage.sizes[seq] = byteLength(body);
         },
 
         async discard(stageId) {
-          const sizes = written.get(stageId) ?? [];
+          const { entries } = contiguous(stageId);
+          const stage = written.get(stageId);
+          const last = Math.max(entries, stage?.sizes.length ?? 0);
           written.delete(stageId);
           await Promise.all(
-            sizes.map((_, seq) => r2.delete(entryKey(tenantId, scopeId, capturedAt, stageId, seq)).catch(() => undefined)),
+            Array.from({ length: last }, (_, seq) => r2.delete(entryKey(tenantId, scopeId, capturedAt, stageId, seq)).catch(() => undefined)),
           );
+        },
+
+        written() {
+          return Object.fromEntries([...written.keys()].map((stageId) => [stageId, contiguous(stageId)]));
         },
 
         async commit({ stageId, entries, tables, storeEntries }) {
           let size = 0;
           for (const part of [{ stageId, entries }, ...storeEntries]) {
-            const sizes = written.get(part.stageId) ?? [];
-            for (let seq = 0; seq < part.entries; seq++) {
-              if (sizes[seq] === undefined) throw new Error(`backup entry ${seq} of ${part.entries} under ${part.stageId} was never written`);
-              size += sizes[seq]!;
+            const stage = written.get(part.stageId) ?? { held: 0, heldBytes: 0, sizes: [] };
+            if (part.entries < stage.held) {
+              throw new Error(`backup stage ${part.stageId} holds ${stage.held} entries, more than the ${part.entries} committed`);
+            }
+            size += stage.heldBytes;
+            for (let seq = stage.held; seq < part.entries; seq++) {
+              if (stage.sizes[seq] === undefined) throw new Error(`backup entry ${seq} of ${part.entries} under ${part.stageId} was never written`);
+              size += stage.sizes[seq]!;
             }
           }
           const body = JSON.stringify({ ...header, format: 'paged', stageId, entries, tables, storeEntries });

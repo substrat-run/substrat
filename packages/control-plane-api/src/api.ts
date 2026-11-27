@@ -401,7 +401,15 @@ import type {
   ScopeBackupWriter,
   ScopeDumpHeader,
 } from './backups.js';
-import { discardMoves, moveStores, type MovedStore, type StoreRequestBudget } from './store-move.js';
+import { discardMoves, moveStores, moveStoresOrHandOff, movesOf, type MovedStore, type StoreMovePlan, type StoreRequestBudget } from './store-move.js';
+import {
+  newStoreMoveJob,
+  storeMoveJobAt,
+  storeMoveJobId,
+  storeRestoreFinishableUntil,
+  type StoreMoveJobRecord,
+  type StoreMoveJobs,
+} from './store-move-job.js';
 import {
   backupEnds,
   commitStages,
@@ -660,6 +668,13 @@ export interface ControlPlaneApiOptions {
   platformScopeStores?: PlatformScopeStores;
   /** How much of a store move one request does (D-69). Default `STORE_REQUEST_BUDGET`; a test passes a small one. */
   storeMoveBudget?: StoreRequestBudget;
+  /**
+   * Where a backup's or a backup restore's store move goes on once it is past one request's budget
+   * (D-69, #2854): the copy-job Durable Object in the hosted control plane. Without it such a move
+   * refuses (409) with nothing changed, as before. A reap's own backup and an uploaded dump's restore
+   * never hand off: the one must be durable before the wipe, the other's body is gone with its request.
+   */
+  storeMoveJobs?: StoreMoveJobs;
   /**
    * The registered scope-store drivers (#2207) this control plane judges a scope's stores against
    * (`mayHoldScopeStores`, #2242), and a push's declared drivers and both uploads' plans
@@ -7696,11 +7711,40 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // entry, and IS the bytes when the host is co-located — and a vertical-held scope's
   // real tables overlay it. FULL fidelity, never masked: a masked dump cannot restore,
   // and a backup that cannot restore is a false promise (see `backups.ts`).
-  const backupScope = async (
+  /** How long a call finishing a restore job holds it (#2854): its load, its commits, its replay. */
+  const STORE_RESTORE_FINISH_HOLD_MS = 15 * 60_000;
+
+  /**
+   * The 202 a store move handed to a job answers (D-69): which backup or restore it is, how far it got,
+   * and how to ask again. Ask by POSTing the same route again with the same `capturedAt`.
+   */
+  const storeJobAnswer = (job: StoreMoveJobRecord, capturedAt: string) => ({
+    status: 'copying' as const,
+    capturedAt,
+    pages: job.pages,
+    storesMoved: job.plan ? job.plan.at : job.moved?.length ?? 0,
+    stores: job.plan?.stores.length ?? job.moved?.length ?? 0,
+    startedAt: new Date(job.spec.startedAt).toISOString(),
+  });
+
+  /** A backup taken whole in this request, as a reap needs it: past the store budget it refuses (409). */
+  const backupScope = async (c: ReqCtx, tenantId: TenantId, scope: Scope): Promise<ScopeBackup> => {
+    const taken = await takeBackup(c, tenantId, scope, undefined);
+    if ('job' in taken) throw new ControlPlaneError(500, 'a backup with no job to hand off to handed one off');
+    return taken.backup;
+  };
+
+  /**
+   * Take a backup of `scope`. With `jobs`, a store move past one request's budget goes on there (D-69,
+   * #2854): the scope's own pages are written here, the stores' pages and the manifest by the job,
+   * answered as the job started. Without, it refuses past the budget, with nothing kept.
+   */
+  const takeBackup = async (
     c: ReqCtx,
     tenantId: TenantId,
     scope: Scope,
-  ): Promise<ScopeBackup> => {
+    jobs: StoreMoveJobs | undefined,
+  ): Promise<{ backup: ScopeBackup } | { job: StoreMoveJobRecord }> => {
     const store = options.scopeBackups;
     if (!store) {
       throw new ControlPlaneError(
@@ -7737,13 +7781,40 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       ? (await transferScope(vertical, backup.dest, { from: scope.id }, { retry: retryTransient, stamp: false, alwaysStage: true })).dump
       : hostTables;
     if (Array.isArray(moved)) await backup.dest.stageScopePage(scope.id, ulid(), 0, moved);
-    // The scope, then its stores: two objects, so not one moment (D-69, question 3).
+    // The scope, then its stores: two objects, so not one moment (D-69, question 3). With a job the
+    // stores are read later still, up to the job's limit.
     let stores: MovedStore[] = [];
     try {
       if (reach) {
-        stores = await moveStores(backupEnds(reach.caller, reach.place, writer), reach.stores, `scope ${scope.id}'s stores`, options.storeMoveBudget);
+        const what = `scope ${scope.id}'s stores`;
+        const ends = backupEnds(reach.caller, reach.place, writer);
+        if (jobs) {
+          const step = await moveStoresOrHandOff(ends, reach.stores, options.storeMoveBudget);
+          if ('plan' in step) {
+            const record = newStoreMoveJob({
+              id: storeMoveJobId('store-backup', tenantId, scope.id),
+              kind: 'store-backup',
+              place: reach.place,
+              actor: c.get('actor'),
+              backup: { vertical: scope.vertical, header: { ...header, stores: [] }, scopeStage: backup.scopeStage() },
+            }, step.plan, { written: writer.written() });
+            const started = await jobs.start(record).catch(async (e: unknown) => {
+              await discardMoves(ends, movesOf(step.plan));
+              throw e;
+            });
+            // Another call started one first: this one's entries go, and the caller is pointed at it.
+            if (started.spec.backup?.header.capturedAt !== header.capturedAt) {
+              await discardMoves(ends, movesOf(step.plan));
+              throw new ControlPlaneError(409, `a backup of scope ${scope.id} is already being taken (${started.spec.backup?.header.capturedAt}); ask for it by naming it`);
+            }
+            return { job: started };
+          }
+          stores = step.moved;
+        } else {
+          stores = await moveStores(ends, reach.stores, what, options.storeMoveBudget);
+        }
       }
-      return await backup.commit(stores.map((s) => ({ binding: s.binding, driver: s.driver, stageId: s.moveId, entries: s.pages, revision: s.revision })));
+      return { backup: await backup.commit(stores.map((s) => ({ binding: s.binding, driver: s.driver, stageId: s.moveId, entries: s.pages, revision: s.revision }))) };
     } catch (e) {
       await backup.discard();
       for (const s of stores) await writer.discard(s.moveId).catch(() => undefined);
@@ -7786,6 +7857,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       },
       commit: (storeEntries: readonly ScopeBackupStoreEntries[]) =>
         writer.commit({ stageId: last.stageId, entries: last.entries, tables: last.tables.size, storeEntries }),
+      /** The scope's own stage as written: what a job that finishes the backup commits. */
+      scopeStage: () => ({ stageId: last.stageId, entries: last.entries, tables: last.tables.size }),
       discard: () => writer.discard(last.stageId),
     };
   };
@@ -7859,8 +7932,35 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    // D-69 (#2854): a backup whose stores take more than one request goes on in a job. A call
+    // naming it (`capturedAt`) is answered with where it got to; one naming none is answered for
+    // the job while one runs, and otherwise takes a new backup.
+    const body = z.object({ capturedAt: z.string().min(1).optional() }).parse(await c.req.json().catch(() => ({})));
+    const jobs = options.storeMoveJobs;
+    const jobId = storeMoveJobId('store-backup', tenantId, scopeId);
     try {
-      return c.json(await backupScope(c, tenantId, scope), 201);
+      const held = jobs ? await jobs.get(jobId) : null;
+      const job = held && storeMoveJobAt(held, Date.now());
+      const jobCapturedAt = job?.spec.backup?.header.capturedAt;
+      if (job && (job.status === 'copying' || body.capturedAt === jobCapturedAt)) {
+        if (body.capturedAt !== undefined && body.capturedAt !== jobCapturedAt) {
+          return refuseStatus(c, 409, `a backup of scope ${scopeId} is being taken (${jobCapturedAt}), not ${body.capturedAt}; ask for that one`);
+        }
+        if (job.status === 'copying') return c.json(storeJobAnswer(job, jobCapturedAt!), 202);
+        await jobs!.forget(jobId).catch(() => undefined);
+        if (job.status === 'done' && job.backup) return c.json(job.backup, 201);
+        return refuseStatus(c, job.error?.status ?? 500, job.error?.message ?? `the backup of scope ${scopeId} did not finish`);
+      }
+      if (body.capturedAt !== undefined) {
+        // Finished and read already, or never a job: the backup is what the store holds.
+        const listed = (await options.scopeBackups?.list({ tenantId, scopeId }))?.find((b) => b.capturedAt === body.capturedAt);
+        return listed ? c.json(listed, 201) : refuse(c, 'not_found', `no backup for scope ${scopeId} at ${body.capturedAt}, and none being taken`);
+      }
+      // A job finished that nobody asked about: its backup is listed, and its record goes.
+      if (job) await jobs!.forget(jobId).catch(() => undefined);
+      const taken = await takeBackup(c, tenantId, scope, jobs);
+      if ('job' in taken) return c.json(storeJobAnswer(taken.job, taken.job.spec.backup!.header.capturedAt), 202);
+      return c.json(taken.backup, 201);
     } catch (e) {
       if (e instanceof ControlPlaneError) {
         return relayRefusal(c, e);
@@ -8824,6 +8924,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     const fenced = await refuseStoresFenced(c, scope);
     if (fenced) return relayRefusal(c, fenced);
+    // #2854: a backup's restore staging in a job holds the scope's store stages, which this load's own
+    // stages would drop, so it waits for that one to end.
+    const restoring = await options.storeMoveJobs?.get(storeMoveJobId('store-restore', tenantId, scopeId));
+    if (restoring && storeMoveJobAt(restoring, Date.now()).status === 'copying') {
+      return refuseStatus(c, 409, `a restore of backup ${restoring.spec.restore?.capturedAt} into scope ${scopeId} is staging its stores; restore again once it is done`);
+    }
     const raw: unknown = await c.req.json();
     const dump = scopeDump.parse(raw);
     // #1869: where the uploaded file says it came from, when the caller had to set the dump's
@@ -8895,13 +9001,76 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
     }
     const sealer = sealerFor(c, tenantIdSchema.parse(header.tenantId), scopeIdSchema.parse(header.scopeId));
+    // D-69 (#2854): stores past one request's budget are staged by a job; the call after it is done
+    // finishes the restore here (the scope's load, the commits, the erasure replay). A job for this
+    // backup is answered or finished; one for another backup that is still staging refuses this one.
+    const jobs = options.storeMoveJobs;
+    const jobId = storeMoveJobId('store-restore', tenantId, scopeId);
+    let staged: MovedStore[] | undefined;
+    let finishing = false;
+    if (jobs) {
+      const found = await jobs.get(jobId);
+      const job = found && storeMoveJobAt(found, Date.now());
+      const same = job?.spec.restore?.capturedAt === capturedAt;
+      const giveUp = async (record: StoreMoveJobRecord) => {
+        if (options.platformScopeStores && record.moved && record.moved.length > 0) {
+          await discardMoves(snapshotEnds(options.platformScopeStores, record.spec.place, record.spec.place), record.moved);
+        }
+        await jobs.forget(jobId).catch(() => undefined);
+      };
+      if (job?.status === 'copying') {
+        return same
+          ? c.json(storeJobAnswer(job, capturedAt), 202)
+          : refuseStatus(c, 409, `a restore of backup ${job.spec.restore?.capturedAt} into scope ${scopeId} is staging its stores; ask for it, or restore again once it is done`);
+      }
+      if (job && !same) {
+        await giveUp(job);
+      } else if (job && job.status !== 'done') {
+        await jobs.forget(jobId).catch(() => undefined);
+        return refuseStatus(c, job.error?.status ?? 500, job.error?.message ?? `the restore of backup ${capturedAt} did not finish`);
+      } else if (job) {
+        const claimed = await jobs.claim(jobId, STORE_RESTORE_FINISH_HOLD_MS);
+        if (!claimed) return refuseStatus(c, 409, `the restore of backup ${capturedAt} into scope ${scopeId} is being finished by another call`);
+        if (Date.now() > storeRestoreFinishableUntil(claimed)) {
+          await giveUp(claimed);
+          return refuseStatus(c, 409, `the stores staged for the restore of backup ${capturedAt} were left too long and their stages lapse; restore again`);
+        }
+        staged = claimed.moved ?? [];
+        finishing = true;
+      }
+    }
+    const handOff = jobs && !staged
+      ? async (place: StorePlace, plan: StoreMovePlan) => {
+          const record = newStoreMoveJob({
+            id: jobId, kind: 'store-restore', place, actor: c.get('actor'), restore: { sourceScopeId: scopeId, capturedAt },
+          }, plan);
+          const started = await jobs.start(record);
+          if (started.spec.restore?.capturedAt !== capturedAt || started.status !== 'copying') {
+            throw new ControlPlaneError(409, `another restore into scope ${scopeId} started first; ask for it, or restore again once it is done`);
+          }
+          return started;
+        }
+      : undefined;
+    const jobInput = { ...(staged ? { staged } : {}), ...(handOff ? { handOff } : {}) };
+    /** A restore handed to a job answers 202; one that finished a job lets the job go, whatever its end. */
+    const answer = async (load: () => Promise<Record<string, unknown> | { job: StoreMoveJobRecord }>) => {
+      try {
+        const result = await load();
+        // A restore's own answer has no `job`: only a hand-off answers one.
+        if ('job' in result) return c.json(storeJobAnswer(result.job as StoreMoveJobRecord, capturedAt), 202);
+        return c.json(result);
+      } finally {
+        if (finishing) await jobs?.forget(jobId).catch(() => undefined);
+      }
+    };
     try {
       if (held.entries === 1) {
         const { tables } = await held.entry(0);
         if (tables.length === 0) {
           return refuseStatus(c, 422, 'restore refused: the backup has no tables — not a scope dump');
         }
-        return c.json(await loadIntoScope(c, scope, { header, tables: await openDump(mergeDumpPages([tables]), sealer), pagedStores }));
+        const opened = await openDump(mergeDumpPages([tables]), sealer);
+        return await answer(() => loadIntoScope(c, scope, { header, tables: opened, pagedStores, ...jobInput }));
       }
       // The host judges the roles the backup seats or defines before anything is replaced (#2555), and
       // records the tables it restores. So it is handed every table's schema and the role tables' rows,
@@ -8933,7 +9102,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         }
         return { dump: { stageId }, tables: judged.tables() };
       };
-      return c.json(await loadIntoScope(c, scope, { header, tables: [], stage, pagedStores }));
+      return await answer(() => loadIntoScope(c, scope, { header, tables: [], stage, pagedStores, ...jobInput }));
     } catch (e) {
       return restoreFailed(c, scope, e);
     }
@@ -8959,8 +9128,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       sourceHint?: ScopeId;
       /** A backup's stores held as store pages (D-69). Inline ones are the header's `stores`. */
       pagedStores?: readonly RestoreStore[];
+      /** The stores already staged at the scope by a job (D-69, #2854): committed here, not moved again. */
+      staged?: readonly MovedStore[];
+      /**
+       * Where a store move past one request's budget goes on (#2854). Without it such a move refuses.
+       * With it, the stages made so far and the plan go to the job, and this answers `{ job }`.
+       */
+      handOff?: (place: StorePlace, plan: StoreMovePlan) => Promise<StoreMoveJobRecord>;
     },
-  ) => {
+  ): Promise<Record<string, unknown> | { job: StoreMoveJobRecord }> => {
     const actor = c.get('actor');
     const tenantId = tenantIdSchema.parse(scope.tenantId);
     const scopeId = scopeIdSchema.parse(scope.id);
@@ -8989,9 +9165,29 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const stores = platform ? [...inlineStoreSources(header.stores), ...pagedStores] : [];
     const sources = new Map(stores.map((store) => [store.binding, store.source]));
     const storeEnds = platform && restoreEnds(platform.caller, platform.place, (binding) => sources.get(binding)!);
-    const movedStores = storeEnds && stores.length > 0
-      ? await moveStores(storeEnds, stores.map(({ binding, driver }) => ({ binding, driver })), `the backup's stores for scope ${scopeId}`, options.storeMoveBudget)
-      : [];
+    if (input.staged && !platform) {
+      throw new ControlPlaneError(409, `scope ${scopeId}'s stores were staged for this restore, and it has no route to its stores to commit them`);
+    }
+    let movedStores: MovedStore[] = [];
+    if (input.staged) {
+      movedStores = [...input.staged];
+    } else if (platform && storeEnds && stores.length > 0) {
+      const declared = stores.map(({ binding, driver }) => ({ binding, driver }));
+      if (input.handOff) {
+        const step = await moveStoresOrHandOff(storeEnds, declared, options.storeMoveBudget);
+        if ('plan' in step) {
+          // Nothing is loaded or committed yet: the scope's load and the commits wait for the job.
+          const job = await input.handOff(platform.place, step.plan).catch(async (e: unknown) => {
+            await discardMoves(storeEnds, movesOf(step.plan));
+            throw e;
+          });
+          return { job };
+        }
+        movedStores = step.moved;
+      } else {
+        movedStores = await moveStores(storeEnds, declared, `the backup's stores for scope ${scopeId}`, options.storeMoveBudget);
+      }
+    }
     let staged: Awaited<ReturnType<NonNullable<typeof input.stage>>> | undefined;
     let committing = false;
     try {

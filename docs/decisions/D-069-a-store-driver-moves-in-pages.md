@@ -152,11 +152,21 @@ the replay runs whatever follows. A commit that fails part-way leaves some store
 not, and the answer names them; the same restore again converges, since every commit is a whole
 replace. A snapshot stages the fork's stores straight from the source's.
 
-These moves run in the request, within one budget of 300 pages or 20 s, and past it refuse (409) with
-nothing changed, so a restore that reaches its commits has room to finish them and its replay. Still
-open: a store past that budget cannot be backed up, restored or snapshotted (no job runs the rest), a
-reaped scope's backup cannot be restored into another scope, and a pull or a tenant export still reads
-a store whole into one body (question 1 on [#2854](https://github.com/substrat-run/substrat/issues/2854)).
+These moves run in the request, within one budget of 300 pages or 20 s, so a restore that reaches its
+commits has room to finish them and its replay. Past the budget a backup and a restore of a backup go on
+in a job, in the copy-job Durable Object (`ScopeCopyJobDO`), and the route answers 202 with the backup's
+`capturedAt` ([#2854](https://github.com/substrat-run/substrat/issues/2854)). A backup's job writes the
+remaining store pages and then commits the manifest itself, so a backup nobody asks about again still
+lands. A restore's job only stages: the scope's load, the commits and the erasure replay need the route,
+so the call to the same restore after the job is done finishes it, in the order above, and a done job
+left unclaimed until its stages near `STORE_STAGE_MAX_AGE_MS` is given up and refused. A reap's own
+backup never hands off, since it must be durable before anything is wiped, and neither does a restore of
+an uploaded dump, whose body ends with its request. A chain that keeps moving refuses after the same
+five chains in a job as in a request.
+
+Still open: a snapshot past the budget refuses (409) with nothing changed, a reaped scope's backup cannot
+be restored into another scope, and a pull or a tenant export still reads a store whole into one body
+(question 1 on [#2854](https://github.com/substrat-run/substrat/issues/2854)).
 
 ## Revisit
 

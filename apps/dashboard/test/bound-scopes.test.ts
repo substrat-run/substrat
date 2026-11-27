@@ -61,6 +61,7 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
     begin: ({ vertical, header }) => ({
       put: async () => undefined,
       discard: async () => undefined,
+      written: () => ({}),
       commit: async ({ tables }): Promise<ScopeBackup> => ({
         tenantId: header.tenantId,
         scopeId: header.scopeId,

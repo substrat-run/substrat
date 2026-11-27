@@ -238,15 +238,18 @@ import {
   type ScopeDeployment,
   type ScopeDeploymentLadder,
   advanceCopyJob,
+  advanceStoreMoveJob,
   copyJobThrewRetryMs,
+  isStoreMoveJob,
   type CopyJobRecord,
+  type StoreMoveJobRecord,
   removeManagedSignIn,
   createCfModelCostReader,
   runModelReconciliationPass,
   type ModelCostReader,
 } from '@substrat-run/control-plane-api';
 import { PROVIDERS } from '@substrat-run/model-providers';
-import { durableCopyJobs } from './copy-jobs.js';
+import { durableCopyJobs, durableStoreMoveJobs } from './copy-jobs.js';
 import { problemForThrow, refuse, refuseRelayed, refuseStatus } from './problem.js';
 import { controlPlaneRequestId } from './request-id.js';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
@@ -461,8 +464,13 @@ export async function kickConnectionDrains(env: Env, tenantId: TenantId, vertica
  * their names; the object itself decides only when the next step runs. A control plane with no
  * dispatch namespace has nothing to copy through, so a job there fails rather than waits.
  */
-export const ScopeCopyJobDO = defineCopyJobDO<Env, CopyJobRecord>({
+export const ScopeCopyJobDO = defineCopyJobDO<Env, CopyJobRecord | StoreMoveJobRecord>({
   advance: async (env, job, step) => {
+    // D-69 (#2854): a backup's or a restore's store move past one request, in the same class.
+    if (isStoreMoveJob(job)) {
+      const backups = env.SCOPE_BACKUPS ? createR2BackupStore(env.SCOPE_BACKUPS) : undefined;
+      return advanceStoreMoveJob({ stores: platformStoresFor(env), ...(backups ? { backups } : {}) }, job, { stopped: step.stopped });
+    }
     const clientForRef = resolveVerticalRefFor(env);
     if (!clientForRef) {
       return {
@@ -474,7 +482,7 @@ export const ScopeCopyJobDO = defineCopyJobDO<Env, CopyJobRecord>({
     return advanceCopyJob({ clientForRef, admin: hostFor(env).admin }, job, { stopped: step.stopped });
   },
   onError: (err) => console.warn('scope copy job: a step threw; it is retried', err),
-  threwRetryMs: copyJobThrewRetryMs,
+  threwRetryMs: (job) => (isStoreMoveJob(job) ? 30_000 : copyJobThrewRetryMs(job)),
 });
 
 /** One producer's outgoing edges, now: the kick's pass. The sweep's reach, gates and recorder. */
@@ -4669,7 +4677,7 @@ export default {
         resolveVertical: resolveVerticalFor(env),
         resolveVerticalVersion: resolveVerticalVersionFor(env),
         resolveVerticalRef: resolveVerticalRefFor(env),
-        ...(env.COPY_JOBS ? { copyJobs: durableCopyJobs(env.COPY_JOBS) } : {}),
+        ...(env.COPY_JOBS ? { copyJobs: durableCopyJobs(env.COPY_JOBS), storeMoveJobs: durableStoreMoveJobs(env.COPY_JOBS) } : {}),
         ...(env.DIRECTORY_LAKE_STREAM ? { directoryLakeSink: createPipelinesDirectoryLakeSink(env.DIRECTORY_LAKE_STREAM) } : {}),
         platformScopeStores: platformStoresFor(env),
         deployVertical: deployVerticalFor(env),

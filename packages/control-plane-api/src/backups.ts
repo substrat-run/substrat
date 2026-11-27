@@ -88,6 +88,9 @@ export interface StoredScopeBackup {
   storePage(store: Pick<ScopeBackupStoreEntries, 'stageId'>, seq: number): Promise<ScopeDumpPageTable[]>;
 }
 
+/** Per stage id: the entries written in order from 0, and their bytes. */
+export type ScopeBackupWritten = Record<string, { entries: number; bytes: number }>;
+
 /**
  * One backup being written. Entries are written under a stage, the copy's attempt: a copy that
  * starts again discards its stage and writes the next one. Nothing is a backup until `commit`.
@@ -98,6 +101,12 @@ export interface ScopeBackupWriter {
   /** Drop a stage's entries. Best effort: retention reaches whatever is left. */
   discard(stageId: string): Promise<void>;
   /**
+   * What this writer has written, per stage: how many entries in order from 0, and their bytes. A
+   * backup that a job finishes (D-69) hands this to `begin` in the next invocation, so its commit
+   * still knows every entry was written and how large the backup is.
+   */
+  written(): ScopeBackupWritten;
+  /**
    * Make the stage's first `entries` entries the backup, with each store's entries beside them, and
    * return its metadata. Durable before it returns: the reap's whole guarantee is that this resolved
    * before any byte was wiped.
@@ -107,7 +116,8 @@ export interface ScopeBackupWriter {
 
 export interface ScopeBackupStore {
   /** Start writing one full-fidelity backup. Nothing is listed or read until its `commit`. */
-  begin(input: { vertical: string | null; header: ScopeDumpHeader }): ScopeBackupWriter;
+  /** `written`: what an earlier writer of this same backup wrote (`ScopeBackupWriter.written`). */
+  begin(input: { vertical: string | null; header: ScopeDumpHeader; written?: ScopeBackupWritten }): ScopeBackupWriter;
   /** Every backup held for one scope, newest first. */
   list(input: { tenantId: string; scopeId: string }): Promise<ScopeBackup[]>;
   /** One backup, by its capture time. Null when no such copy is held. */
