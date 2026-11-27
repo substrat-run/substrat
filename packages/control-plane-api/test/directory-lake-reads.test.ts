@@ -123,9 +123,12 @@ describe('admin log history across the window (K-70)', () => {
 
 describe('which data sets the prune may take (K-70)', () => {
   it('allows only a data set whose history is read from the lake, and only while reads are on', () => {
-    expect(prunableDirectoryDatasets(['admin_log', 'sweep_runs'], 'on')).toEqual({
-      allowed: ['admin_log'],
-      refused: [{ dataset: 'sweep_runs', reason: 'its history readers do not read the lake yet' }],
+    expect(prunableDirectoryDatasets(['admin_log', 'ops_failures', 'sweep_runs', 'model_usage', 'access_log'], 'on')).toEqual({
+      allowed: ['admin_log', 'ops_failures', 'sweep_runs'],
+      refused: [
+        { dataset: 'model_usage', reason: 'its history readers do not read the lake yet' },
+        { dataset: 'access_log', reason: 'its history readers do not read the lake yet' },
+      ],
     });
     expect(prunableDirectoryDatasets(['admin_log'], 'compare')).toEqual({
       allowed: [],

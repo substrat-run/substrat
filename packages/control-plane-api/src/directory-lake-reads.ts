@@ -59,7 +59,8 @@ import type { LakeQueryEngine } from './lake-gateway.js';
  *   CLI's `status`, the dashboard's failure groups);
  * - sweep runs: `GET /sweep-runs` (the console's Sweeps);
  * - model usage: `GET /model-usage` (the console's ledger), and only that: the summary, billing,
- *   reconciliation and review-spend reads aggregate over the directory and do not read the lake.
+ *   reconciliation and review-spend reads aggregate over the directory and do not read the lake,
+ *   which is why model usage is not in `DIRECTORY_LAKE_HISTORY_READ`.
  * Every other reader of these data sets asks for rows inside the window (a `since` of days, or the
  * newest few), which the directory keeps. The day-keyed rollups (request, cost and meter days, build
  * usage) are folded per day by their readers and are not read this way.
@@ -563,10 +564,25 @@ export async function readWholeAdminLog(deps: DirectoryHistoryDeps, filter: Audi
 
 /**
  * The data sets whose every history reader reads the lake before the window (this file), so the
- * directory may prune them to it. Only the admin log so far; the readers of the others are listed
- * in the PR that added this (#3405) and join here one by one as they move.
+ * directory may prune them to it. Listing one here only ALLOWS its prune: `DIRECTORY_LAKE_PRUNE`
+ * must still name it, reads must be `on`, and the kernel still refuses a data set that is not
+ * captured and backfilled (`pruneDirectoryLakeWindow`).
+ *
+ * - `admin_log`: `GET /admin-log` and the export (#3405).
+ * - `ops_failures`: `GET /ops-failures`, which every history reader goes through (#3425). The other
+ *   readers ask for days (the connection-health and backlog counts, the digest, the refile checks).
+ * - `sweep_runs`: `GET /sweep-runs` (#3425). The cadence guards read the last outcome per unit, and
+ *   the table is already pruned on write at `SWEEP_RUN_RETENTION_DAYS`, inside the window.
+ *
+ * Not listed, and why:
+ * - `access_log`: no product reader, but its own drain to R2 (K-24) reads every row not yet drained,
+ *   however old, and `pruneAccessLog` deletes only drained rows ("age alone is not a licence").
+ * - `model_usage`: the ledger list reads the lake, but the summary, billing, reconciliation and
+ *   review-spend reads fold the directory's rows over any window asked for.
+ * - `build_usage`, `request_days`, `cost_days`, `meter_days`: their readers (Billing, Meters) fold
+ *   per day over the directory; none reads the lake yet.
  */
-export const DIRECTORY_LAKE_HISTORY_READ: readonly DirectoryLakeDataset[] = ['admin_log'];
+export const DIRECTORY_LAKE_HISTORY_READ: readonly DirectoryLakeDataset[] = ['admin_log', 'ops_failures', 'sweep_runs'];
 
 /**
  * Of the data sets the prune switch lists, those that may be pruned now: their history is read
