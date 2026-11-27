@@ -18,7 +18,16 @@
  *
  * A release is recorded in `directory_mirror_releases` beside the row that causes it, and dropped
  * only once the registry released it, or once nothing was claimed under its id (its crossing failed,
- * or was settled and the claim is gone). An open crossing keeps its release waiting.
+ * or was settled and the claim is gone).
+ *
+ * A release of a key that must become FREE (a hostname, a slug) also settles the crossing it releases
+ * `failed`, in the same transaction, if that crossing is still open. Otherwise an open crossing whose
+ * claim reached the registry before it was marked `claimed` could be released and then run again:
+ * it would find no claim, claim afresh and confirm it, and the registry would hold a key for good
+ * that its tenant no longer has. Settled, it never claims again; a claim a crashed runner left is
+ * removed by the release, or, if only leased, lapses with its lease. A TOMBSTONE release (a reaped
+ * tenant's id) leaves its crossing open on purpose: the crossing may still make the claim the
+ * tombstone needs, and a claim made after the tombstone is refused by it.
  *
  * Because the directory already decided, a claim the registry refuses is a difference, not a
  * decision: the crossing settles `failed` with the refusal, the row is applied regardless, and 3d's
@@ -29,6 +38,7 @@ import {
   crossingIn,
   openCrossingsIn,
   recordCrossingIn,
+  settleCrossingIn,
   type ClaimNamespace,
   type SwitchSql,
 } from '@substrat-run/kernel';
@@ -67,8 +77,12 @@ const hostnameCrossingOf = (hostname: string, version: number): string => `mirro
 
 type Row = Record<string, MirrorValue>;
 
-function recordRelease(sql: SqlStorage, release: MirrorRelease, at: string): void {
-  sql.exec(
+function recordRelease(target: { sql: SqlStorage; kernelSql: SwitchSql; owner: string; nowMs: number }, release: MirrorRelease, at: string): void {
+  // A key that must become free: its crossing may not claim it once this release exists (header).
+  if (!release.tombstone) {
+    settleCrossingIn(target.kernelSql, target.owner, release.claimId, { state: 'failed', outcome: 'released before it settled', nowMs: target.nowMs });
+  }
+  target.sql.exec(
     `INSERT OR IGNORE INTO directory_mirror_releases (namespace, claim_key, claim_id, tombstone, recorded_at) VALUES (?, ?, ?, ?, ?)`,
     release.namespace, release.key, release.claimId, release.tombstone ? 1 : 0, at,
   );
@@ -100,8 +114,8 @@ export function recordMirrorClaims(
     }
     const reapedNow = after?.['status'] === 'reaped' && before?.['status'] !== 'reaped';
     if (reapedNow || (!after && before)) {
-      recordRelease(target.sql, { namespace: 'tenant-slug', key: slug, claimId: tenantSlugCrossingOf(tenantId), tombstone: false }, at);
-      recordRelease(target.sql, { namespace: 'tenant-id', key: tenantId, claimId: tenantIdCrossingOf(tenantId), tombstone: true }, at);
+      recordRelease(target, { namespace: 'tenant-slug', key: slug, claimId: tenantSlugCrossingOf(tenantId), tombstone: false }, at);
+      recordRelease(target, { namespace: 'tenant-id', key: tenantId, claimId: tenantIdCrossingOf(tenantId), tombstone: true }, at);
     }
     return;
   }
@@ -121,7 +135,7 @@ export function recordMirrorClaims(
           target.owner, hostname,
         )
         .toArray()[0] as { crossing_id: string } | undefined;
-      if (held) recordRelease(target.sql, { namespace: 'hostname', key: hostname, claimId: held.crossing_id, tombstone: false }, at);
+      if (held) recordRelease(target, { namespace: 'hostname', key: hostname, claimId: held.crossing_id, tombstone: false }, at);
     }
   }
 }

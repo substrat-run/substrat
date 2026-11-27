@@ -1,7 +1,7 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { ulid } from '@substrat-run/kernel';
-import { registryStub, tenantDirectoryStub } from '../src/directory-objects.js';
+import { durableDirectoryObjects, durableMirrorSender, registryStub, tenantDirectoryStub } from '../src/directory-objects.js';
 import { DIRECTORY_PLACEMENT } from '../src/directory-placement.js';
 import { MIRRORED_TABLES, mirrorKeyColumns, mirrorTargetsSql, type MirrorBatch } from '../src/directory-mirror.js';
 
@@ -184,6 +184,27 @@ describe('directory dual-write (K-68 step 3b)', () => {
     expect(await registry.readClaim('tenant-slug', slug)).toBeNull();
     expect(await registry.readClaim('tenant-id', t)).toMatchObject({ holder: t, state: 'tombstone' });
     expect(await runInDurableObject(tenantObject(t), (_i, state) => state.storage.sql.exec('SELECT COUNT(*) AS n FROM directory_mirror_releases').one())).toEqual({ n: 0 });
+  });
+
+  it('a hostname released while its crossing is open stays released: the crossing cannot claim it again', async () => {
+    const registry = registryStub(env.DIRECTORY_REGISTRY);
+    const t = ulid();
+    const owner = `tenant:${t}`;
+    const object = tenantObject(t);
+    const hostname = `${ulid().toLowerCase()}.mirror.test`;
+    const row = { hostname, tenant_id: t, scope_id: ulid(), surface: 'app', status: 'active', created_at: NOW };
+    const bound = await object.applyMirror(owner, 'global', { version: 1, changes: [{ table: 'hostnames', key: JSON.stringify([hostname]), row }] });
+    const [crossingId] = bound.claims!.crossings;
+    // A runner that claimed in the registry and died before marking the crossing `claimed`.
+    await registry.claim({ namespace: 'hostname', key: hostname, claimId: crossingId!, holder: t, leaseMs: 60_000 });
+    const removed = await object.applyMirror(owner, 'global', { version: 2, changes: [{ table: 'hostnames', key: JSON.stringify([hostname]), row: null }] });
+    expect(removed.claims).toMatchObject({ crossings: [], releases: [{ namespace: 'hostname', key: hostname, claimId: crossingId }] });
+    await durableMirrorSender(env)!.settleClaims!([{ owner, claims: removed.claims! }]);
+    expect(await registry.readClaim('hostname', hostname)).toBeNull();
+    // The crossing run again (a resumed runner, the safety net) settles nothing and claims nothing.
+    const objects = durableDirectoryObjects({ registry: env.DIRECTORY_REGISTRY, tenants: env.TENANT_DIRECTORY });
+    expect(await objects.complete(objects.tenant(t), crossingId!)).toMatchObject({ state: 'failed', outcome: 'released before it settled' });
+    expect(await registry.readClaim('hostname', hostname)).toBeNull();
   });
 
   it('a claim the registry refuses is a difference, not a decision: the crossing fails and the row still applies', async () => {
