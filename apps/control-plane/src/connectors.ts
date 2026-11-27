@@ -56,6 +56,7 @@ import {
   unbindWooCommerceScope,
   woocommerceBindingHealth,
   woocommerceConnectionActivity,
+  woocommerceConnector,
   woocommerceCredentialSummary,
 } from '@substrat-run/connector-woocommerce';
 import {
@@ -581,9 +582,10 @@ const PLANIMA: ConnectorRegistration = {
 };
 
 /**
- * WooCommerce (#3136): a store's products and orders, read-only, landed in the provider-neutral
- * commerce shape through the consuming vertical's own operation. The credential is the store's URL
- * and a REST API key with Read permission, pasted into the dashboard's door; the URL is tenant
+ * WooCommerce (#3136): a store's products and orders, landed in the provider-neutral commerce shape
+ * through the consuming vertical's own operation, and two writes back (a stock count, an order
+ * completed) dispatched from events the vertical emits. The credential is the store's URL and a REST
+ * API key (Read permission, or Read/Write for the writes), pasted into the dashboard's door; the URL is tenant
  * input, so the connector judges it before calling it (`storeBaseUrl`). `probeWooCommerceSecret`
  * tells a wrong address from a wrong key, and names the store the key reads.
  *
@@ -633,6 +635,9 @@ const WOOCOMMERCE: ConnectorRegistration = {
       }
     },
   }),
+  // #3136 write-back: a vertical emits a stock or an order-completion request, and the dispatch writes
+  // it through the store connection bound to the asking scope, then lands the record as it now stands.
+  dispatch: (_env, host) => woocommerceConnector({ fetch: globalFetch, host }),
   sweep: () => async (h, id, o) => sweepWooCommerce(h, id, o),
 };
 

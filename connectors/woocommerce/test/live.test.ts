@@ -15,7 +15,10 @@ import { currencyCode } from '@substrat-run/contracts';
  * and a person can point them at any store with a Read key. `WOOCOMMERCE_ALLOW_LOCAL_HTTP=1` admits
  * that local store's `http://localhost`; the platform never sets it.
  *
- * Read-only: every call is a GET, so it is safe against a real shop.
+ * Read-only unless `WOOCOMMERCE_WRITE_CONSUMER_KEY` and `WOOCOMMERCE_WRITE_CONSUMER_SECRET` are set: the
+ * reads are GETs, safe against a real shop. The write-back case (8) WRITES, so it runs only with that
+ * Read/Write key and the records `docker/seed.sh` made for it, which the local store has and a real
+ * shop does not.
  *
  * What only a real store can prove:
  *
@@ -33,6 +36,9 @@ import { currencyCode } from '@substrat-run/contracts';
  *    — so the products' walk delivers it within one sweep (#3223). Also needs the seeded ids.
  * 7. A variation with no SKU of its own is sent its product's SKU, and the mapping reports it as
  *    having none. Needs the seeded id.
+ * 8. The write-back's requests (#3136): a stock count set on a simple product, on a variation keeping
+ *    its own count, and on the product a variation shares its count with (which the variation then
+ *    reports as `'parent'`); an order set completed; and a Read key's write refused as `refused`.
  */
 const env = process.env;
 const secret =
@@ -49,6 +55,19 @@ const stock = env.WOOCOMMERCE_STOCK_CHANGED_AFTER
     }
   : null;
 const skuLess = env.WOOCOMMERCE_SKU_LESS ? Number(env.WOOCOMMERCE_SKU_LESS) : null;
+const write =
+  env.WOOCOMMERCE_WRITE_CONSUMER_KEY && env.WOOCOMMERCE_WRITE_CONSUMER_SECRET && env.WOOCOMMERCE_WRITE_SIMPLE
+    ? {
+        consumerKey: env.WOOCOMMERCE_WRITE_CONSUMER_KEY,
+        consumerSecret: env.WOOCOMMERCE_WRITE_CONSUMER_SECRET,
+        simple: Number(env.WOOCOMMERCE_WRITE_SIMPLE),
+        variable: Number(env.WOOCOMMERCE_WRITE_VARIABLE),
+        variation: Number(env.WOOCOMMERCE_WRITE_VARIATION),
+        shared: Number(env.WOOCOMMERCE_WRITE_SHARED),
+        sharedVariation: Number(env.WOOCOMMERCE_WRITE_SHARED_VARIATION),
+        order: Number(env.WOOCOMMERCE_WRITE_ORDER),
+      }
+    : null;
 const allowLocalHttp = env.WOOCOMMERCE_ALLOW_LOCAL_HTTP === '1';
 const removed =
   env.WOOCOMMERCE_TRASHED_PRODUCT && env.WOOCOMMERCE_DELETED_PRODUCT && env.WOOCOMMERCE_TRASHED_ORDER && env.WOOCOMMERCE_DELETED_ORDER
@@ -58,12 +77,12 @@ const removed =
       }
     : null;
 
-const connection = (): ConnectorConnection => ({
+const connection = (key?: { consumerKey: string; consumerSecret: string }): ConnectorConnection => ({
   id: connectionId.parse('00000000000000000000000000'),
   tenantId: '',
   vertical: '',
   provider: 'woocommerce',
-  secret: secret!,
+  secret: key ? { ...secret!, consumerKey: key.consumerKey, consumerSecret: key.consumerSecret } : secret!,
   expiresAt: null,
   // `globalFetch`, never the bare global (#1291, `lint:bound-fetch`).
   fetch: (input, init) => globalFetch(input, { ...init, signal: AbortSignal.timeout(30_000) }),
@@ -156,5 +175,34 @@ describe.skipIf(secret === null)('woocommerce connector — live', () => {
     expect(variants.map((v) => v.stock)).toEqual([
       { manageStock: true, quantity: 20, status: 'in_stock', providerStatus: 'instock', sharedWithProduct: true },
     ]);
+  });
+
+  it.skipIf(write === null)('writes back: stock on a product, a variation and a shared count, and an order completed', async () => {
+    const client = new WooCommerceApi(connection(write!), { allowLocalHttp });
+    const currency = currencyCode.parse((await client.storeInfo()).settings.currency);
+    const stockOf = async (productId: number, variantId: number) => {
+      const row = wcProduct.parse(await client.record('products', productId));
+      const variations = row.type === 'variable' ? await client.variations(row.id) : [];
+      return productChange('live', currency, row, variations).variants.find((v) => v.variantId === String(variantId))?.stock;
+    };
+
+    await client.setProductStock(write!.simple, 2);
+    expect(await stockOf(write!.simple, write!.simple)).toMatchObject({ manageStock: true, quantity: 2, sharedWithProduct: false });
+
+    await client.setVariationStock(write!.variable, write!.variation, 9);
+    expect(await stockOf(write!.variable, write!.variation)).toMatchObject({ manageStock: true, quantity: 9, sharedWithProduct: false });
+
+    // The dispatch tells a shared count by the variation's `'parent'`, and writes the product's.
+    expect((await client.variation(write!.shared, write!.sharedVariation))?.manage_stock).toBe('parent');
+    await client.setProductStock(write!.shared, 11);
+    expect(await stockOf(write!.shared, write!.sharedVariation)).toMatchObject({ manageStock: true, quantity: 11, sharedWithProduct: true });
+
+    const order = wcOrder.parse(await client.setOrderStatus(write!.order, 'completed'));
+    expect(orderChange('live', order).providerStatus).toBe('completed');
+
+    // The Read key's write is a refusal, which the dispatch fails for good rather than retrying.
+    const refused = await api().setProductStock(write!.simple, 1).catch((e: unknown) => e);
+    console.log(`woocommerce: a Read key's write answered ${String((refused as Error).message)}`);
+    expect(refused).toMatchObject({ refused: true });
   });
 });

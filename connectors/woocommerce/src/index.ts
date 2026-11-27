@@ -19,8 +19,18 @@ import {
   type OpenConnection,
   type z,
 } from '@substrat-run/contracts';
-import type { ConnectorConnection, FetchLike, HostAdmin, InvokeOptions, ScopeHost, ScopeStub } from '@substrat-run/kernel';
-import { deadlineFetch, landingRefusalSaid, settleConnectionUse } from '@substrat-run/kernel';
+import { z as zod } from 'zod';
+import type {
+  ConnectorConnection,
+  ConnectorHandler,
+  ConnectorOptions,
+  FetchLike,
+  HostAdmin,
+  InvokeOptions,
+  ScopeHost,
+  ScopeStub,
+} from '@substrat-run/kernel';
+import { ConnectorRefusal, deadlineFetch, landingRefusalSaid, settleConnectionUse } from '@substrat-run/kernel';
 import {
   WooCommerceApi,
   WooCommerceApiError,
@@ -70,12 +80,18 @@ export { WooCommerceMock, type WooCommerceMockOptions } from './mock.js';
  * and the schema it parses stay the same when a second store platform's connector lands the same
  * records. What stays WooCommerce's is the connection — the store URL, the key, the probe.
  *
- * ## Poll-only, read-only
+ * ## Reads are polled; two writes are dispatched
  *
  * Nothing inside a scope asks for an order; orders happen at the store and the platform finds out
- * by looking. So this connector registers no dispatch, and {@link sweepWooCommerce} is its whole
- * trigger surface. Every call is a `GET`, so the key it is given needs Read permission and nothing
- * more — which is also all a leaked key would then be worth.
+ * by looking, so {@link sweepWooCommerce} is the whole read surface, and every call it makes is a
+ * `GET`. A vertical that only reads gives the connection a Read key, which is then all a leaked key
+ * is worth.
+ *
+ * The writes (#3136) are the one thing a scope does ask for: set a variant's stock count, mark an
+ * order completed. The vertical emits {@link WOOCOMMERCE_STOCK_SET_REQUESTED} or
+ * {@link WOOCOMMERCE_ORDER_COMPLETE_REQUESTED}, and {@link woocommerceConnector} writes it through the
+ * connection bound to that scope and lands the record as it now stands. Those need a Read/Write key;
+ * a Read key's write is refused by the store, and the request fails for good.
  *
  * ## The sync is a keyset walk over "changed since"
  *
@@ -1117,5 +1133,173 @@ async function openWooCommerceConnection(
         throw err;
       }
     },
+  };
+}
+
+// -- write-back (#3136, "later slices" 1) ------------------------------------------------------------
+
+/**
+ * Set one variant's stock count at the store. The vertical emits it from one of its own operations;
+ * {@link declareWooCommerceConnector} routes it to the platform, and {@link woocommerceConnector}
+ * writes it.
+ */
+export const WOOCOMMERCE_STOCK_SET_REQUESTED = 'woocommerce.stock-set-requested';
+/** Mark one order completed at the store: WooCommerce's "fulfilled and complete". */
+export const WOOCOMMERCE_ORDER_COMPLETE_REQUESTED = 'woocommerce.order-complete-requested';
+
+/** The ids a landed `commerceChange` carries, which a request names its record by. */
+const storeId = zod.string().regex(/^[1-9]\d{0,14}$/, "a store id is the id a landed record carried, e.g. '42'");
+
+/**
+ * The stock request's payload. `connectionId`, `productId` and `variantId` are the ones the
+ * product's `commerceChange` carried, so a request names the store it came from and the variant by
+ * the id the vertical keys on (the product's own for a product without variants).
+ *
+ * `quantity` is the count to SET, not a difference: a redelivered request writes the same number
+ * again. The price is that a sale at the store between the vertical's read and this write is
+ * overwritten; WooCommerce has no compare-and-set. A variant whose count is its product's
+ * (`sharedWithProduct`) sets the product's count, which every one of its siblings reports. A count
+ * the store did not track before is tracked from this write on.
+ */
+export const woocommerceStockSetRequested = zod.object({
+  requestId: zod.string().min(1).max(200),
+  connectionId: zod.string().min(1),
+  productId: storeId,
+  variantId: storeId,
+  quantity: zod.number().int().min(-1_000_000_000).max(1_000_000_000),
+});
+export type WooCommerceStockSetRequested = zod.infer<typeof woocommerceStockSetRequested>;
+
+/**
+ * The order request's payload: the order's `connectionId` and `orderId`, as its `commerceChange`
+ * carried them. An order already completed is not written again. A cancelled, refunded, failed,
+ * trashed or draft order is refused rather than revived.
+ */
+export const woocommerceOrderCompleteRequested = zod.object({
+  requestId: zod.string().min(1).max(200),
+  connectionId: zod.string().min(1),
+  orderId: storeId,
+});
+export type WooCommerceOrderCompleteRequested = zod.infer<typeof woocommerceOrderCompleteRequested>;
+
+/** The statuses a completion refuses to move an order out of. */
+const NOT_COMPLETABLE = new Set(['cancelled', 'refunded', 'failed', 'trash', 'checkout-draft']);
+
+/**
+ * Register both write requests for ROUTING ONLY, on a host that never runs them: a hosted
+ * vertical's scope, which holds no credential. The same pattern as `declareBolagsverketConnector`.
+ */
+export function declareWooCommerceConnector(
+  host: Pick<ScopeHost, 'registerConnector'>,
+  options: { retry?: ConnectorOptions } = {},
+): void {
+  for (const type of [WOOCOMMERCE_STOCK_SET_REQUESTED, WOOCOMMERCE_ORDER_COMPLETE_REQUESTED]) {
+    host.registerConnector(
+      type,
+      type,
+      async () => {
+        throw new Error('woocommerce: this host registered the connector for routing only — the platform dispatches it');
+      },
+      { ...options.retry, provider: 'woocommerce' },
+    );
+  }
+}
+
+export interface WooCommerceDispatchOptions extends WooCommerceConnectorOptions {
+  /** The host the store's connection and the landing scope are opened from: the control plane's. */
+  host: ScopeHost;
+}
+
+/**
+ * The dispatch half (#3136): write the request to the store, then land the record as it now stands
+ * through the scope's binding, as an ordinary `commerceChange` upsert. So the vertical reads the
+ * store's answer within seconds of asking, rather than at the next pass, and in the shape it already
+ * parses. The next pass lands the same record again, which delivery already allows.
+ *
+ * **Which store.** The request names its connection, and the dispatch writes only through a
+ * connection BOUND to the scope that asked, of that scope's tenant and app: a scope cannot write to a
+ * store it is not delivered from. That is also what makes a tenant's several stores (#3219) and a
+ * scope's own shop (#3201) work, since a dispatch's own `ctx.connection` opens neither.
+ *
+ * **Failures.** No connection, no binding or no landing grant yet, a rate limit, an outage: thrown
+ * plainly, and the drain retries; every write is absolute, so a retry is safe. A key without Write
+ * permission (WooCommerce's 401/403), a record the store does not hold, a value the store refuses
+ * (400) and an order that cannot be completed fail terminally.
+ */
+export function woocommerceConnector(options: WooCommerceDispatchOptions): ConnectorHandler {
+  const { host } = options;
+  return async (ctx, event) => {
+    const stock = event.type === WOOCOMMERCE_STOCK_SET_REQUESTED;
+    if (!stock && event.type !== WOOCOMMERCE_ORDER_COMPLETE_REQUESTED) return;
+    const request = stock ? woocommerceStockSetRequested.parse(event.payload) : woocommerceOrderCompleteRequested.parse(event.payload);
+    const connectionId = connectionIdSchema.parse(request.connectionId);
+
+    const stored = await ctx.admin.getConnectorState(connectionId, bindingKey(ctx.scopeId));
+    const binding = stored !== null && typeof stored === 'object' ? (stored as WooCommerceBinding) : null;
+    if (!binding || binding.scopeId !== ctx.scopeId || binding.tenantId !== ctx.tenantId || binding.vertical !== ctx.vertical) {
+      throw new ConnectorRefusal(
+        `request ${request.requestId}: connection ${connectionId} is not bound to scope ${ctx.scopeId}, so it writes nothing ` +
+          `for it. A request names the connectionId of a record this scope was delivered.`,
+      );
+    }
+    if (binding.ownerScopeId && binding.ownerScopeId !== binding.scopeId) {
+      throw new ConnectorRefusal(`connection ${connectionId} is scope ${binding.ownerScopeId}'s own, and writes for that scope alone`);
+    }
+    // Asked before the write: a landing without the key is a terminal 403, and the write would
+    // already have happened. A plain error waits for the connector pass that delivers the grant.
+    const granted = await host.connectionGrantsInScope(tenantIdSchema.parse(ctx.tenantId), scopeIdSchema.parse(ctx.scopeId));
+    if (!granted.some((g) => g.connectionId === connectionId && g.permission === binding.permission)) {
+      throw new Error(
+        `connection ${connectionId} does not hold '${binding.permission}' on scope ${ctx.scopeId} yet, so the record ` +
+          `could not land after the write; retried once the connector pass delivers the grant`,
+      );
+    }
+    const conn = await openWooCommerceConnection(host.admin, options.fetch, binding.tenantId, binding.vertical, options.timeoutMs ?? 30_000, {
+      account: binding.externalAccountRef,
+      owner: binding.ownerScopeId,
+      expected: connectionId,
+    });
+    // No 429 waits inside a dispatch: the drain's own retry is the back-off.
+    const api = new WooCommerceApi(conn, { sleep: options.sleep, allowLocalHttp: options.allowLocalHttp, maxRateLimitRetries: 0 });
+    const scope = landingScope(await host.getConnectorScope(connectionId, scopeIdSchema.parse(ctx.scopeId)));
+
+    try {
+      if ('quantity' in request) {
+        const productId = Number(request.productId);
+        const variantId = Number(request.variantId);
+        if (variantId === productId) {
+          await api.setProductStock(productId, request.quantity);
+        } else {
+          const variation = await api.variation(productId, variantId);
+          if (variation === null) throw new ConnectorRefusal(`request ${request.requestId}: the store holds no variant ${variantId} of product ${productId}`);
+          // A shared count is the product's: writing it on the variation would give that one a count of its own.
+          if (variation.manage_stock === 'parent') await api.setProductStock(productId, request.quantity);
+          else await api.setVariationStock(productId, variantId, request.quantity);
+        }
+        const raw = await api.record('products', productId);
+        if (raw === null) throw new ConnectorRefusal(`request ${request.requestId}: the store holds no product ${productId}`);
+        const row = wcProduct.parse(raw);
+        const currency = storeCurrency((await api.storeInfo()).settings.currency);
+        const variations = row.type === 'variable' ? await api.variations(row.id) : [];
+        await scope.invoke(binding.operation, productChange(connectionId, currency, row, variations));
+      } else {
+        const orderId = Number(request.orderId);
+        const raw = await api.record('orders', orderId);
+        if (raw === null) throw new ConnectorRefusal(`request ${request.requestId}: the store holds no order ${orderId}`);
+        let row = wcOrder.parse(raw);
+        if (NOT_COMPLETABLE.has(row.status)) {
+          throw new ConnectorRefusal(`request ${request.requestId}: order ${orderId} is '${row.status}' at the store, and is not completed from there`);
+        }
+        if (row.status !== 'completed') row = wcOrder.parse(await api.setOrderStatus(orderId, 'completed'));
+        await scope.invoke(binding.operation, orderChange(connectionId, row));
+      }
+    } catch (err) {
+      // A value or a record the store refuses is the request's fault, and fails it for good. A key
+      // without Write permission is already a refusal (`WooCommerceApiError.refused`).
+      if (err instanceof WooCommerceApiError && (err.status === 400 || (err.status === 404 && err.code?.endsWith('_invalid_id')))) {
+        throw new ConnectorRefusal(`request ${request.requestId}: ${err.message}`);
+      }
+      throw err;
+    }
   };
 }

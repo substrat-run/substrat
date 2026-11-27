@@ -12,8 +12,8 @@ declare const btoa: (data: string) => string;
 export type MockRow = Record<string, unknown> & { id: number; date_modified_gmt: string | null };
 
 /**
- * A WooCommerce store in memory — the reads the connector makes, enough to run the probe and the
- * whole inbound sync without a store.
+ * A WooCommerce store in memory — the reads and writes the connector makes, enough to run the probe,
+ * the whole inbound sync and the write-back dispatch (#3136) without a store.
  *
  * **What a mock proves:** that our shape works — Basic auth, the keyset walk, the modified-since
  * filter, variations, the probe's three outcomes. **What it cannot prove:** that our reading of the
@@ -54,6 +54,10 @@ export interface WooCommerceMockOptions {
   ignoreInclude?: boolean;
   /** Answer the first N authenticated requests with 429. */
   rateLimitFirst?: number;
+  /** False: the key has Read permission only, so every write answers WooCommerce's 401 (#3136). */
+  write?: boolean;
+  /** The GMT time a write saves a record at; a write moves its modified date, as a save does. */
+  writtenAt?: string;
 }
 
 interface MockResponse {
@@ -84,8 +88,10 @@ export class WooCommerceMock {
   readonly products: MockRow[];
   readonly orders: MockRow[];
   readonly variations: Record<number, Record<string, unknown>[]>;
-  /** Every request's path and query — never its headers. */
+  /** Every request's path and query — never its headers. A write is prefixed with its method. */
   readonly requests: string[] = [];
+  /** Every write's path and body, in order. */
+  readonly writes: { path: string; body: Record<string, unknown> }[] = [];
   remoteTests = 0;
   private readonly options: WooCommerceMockOptions;
   private rateLimited = 0;
@@ -108,14 +114,15 @@ export class WooCommerceMock {
   }
 
   get fetch(): FetchLike {
-    return (async (input: string, init?: { headers?: Record<string, string> }) => this.answer(input, init?.headers ?? {})) as unknown as FetchLike;
+    return (async (input: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) =>
+      this.answer(input, init?.headers ?? {}, init?.method ?? 'GET', init?.body)) as unknown as FetchLike;
   }
 
-  private answer(input: string, headers: Record<string, string>): MockResponse {
+  private answer(input: string, headers: Record<string, string>, method: string, body: string | undefined): MockResponse {
     if (!input.startsWith(this.storeUrl)) throw new TypeError(`fetch failed: getaddrinfo ENOTFOUND (${input.slice(0, 40)})`);
     const url = new URL(input);
     const path = input.slice(this.storeUrl.length);
-    this.requests.push(path);
+    this.requests.push(method === 'GET' ? path : `${method} ${path}`);
     if (this.options.notWooCommerce === 'html') return respond(200, '<!doctype html><title>Shop</title>', { 'Content-Type': 'text/html' });
     if (!url.pathname.startsWith(new URL(this.storeUrl).pathname.replace(/\/$/, '') + WOOCOMMERCE_API_PATH)) {
       return wcError(404, 'rest_no_route', 'No route was found matching the URL and request method.');
@@ -136,6 +143,9 @@ export class WooCommerceMock {
       return respond(429, { code: 'too_many_requests', message: 'Slow down.' }, { 'Retry-After': '2' });
     }
 
+    if (method === 'PUT') return this.write(route, path, headers, body);
+    if (method !== 'GET') return wcError(404, 'rest_no_route', 'No route was found matching the URL and request method.');
+
     if (route === '/system_status') {
       if (this.options.manager === false) return wcError(403, 'woocommerce_rest_cannot_view', 'Sorry, you cannot list resources.');
       const fields = (url.searchParams.get('_fields') ?? '').split(',');
@@ -147,6 +157,11 @@ export class WooCommerceMock {
     }
     const variations = /^\/products\/(\d+)\/variations$/.exec(route);
     if (variations) return this.page(this.variations[Number(variations[1])] ?? [], url);
+    const oneVariation = /^\/products\/(\d+)\/variations\/(\d+)$/.exec(route);
+    if (oneVariation) {
+      const row = (this.variations[Number(oneVariation[1])] ?? []).find((r) => r.id === Number(oneVariation[2]));
+      return row ? respond(200, row) : wcError(404, 'woocommerce_rest_product_variation_invalid_id', 'Invalid ID.');
+    }
     const one = /^\/(products|orders)\/(\d+)$/.exec(route);
     if (one) {
       const row = (one[1] === 'products' ? this.products : this.orders).find((r) => r.id === Number(one[2]));
@@ -166,6 +181,53 @@ export class WooCommerceMock {
       return this.changed(inStatus, url);
     }
     return wcError(404, 'rest_no_route', 'No route was found matching the URL and request method.');
+  }
+
+  /**
+   * A write (#3136): `stock_quantity`/`manage_stock` on a product or a variation, `status` on an
+   * order. Like the store, a write answers the record as it now stands and moves its modified date;
+   * a stock count on a variation sharing its product's (`'parent'`) is taken as the variation's own.
+   */
+  private write(route: string, path: string, headers: Record<string, string>, body: string | undefined): MockResponse {
+    if (headers['Content-Type'] !== 'application/json') return wcError(400, 'mock_content_type', 'this mock takes a JSON body only');
+    if (this.options.write === false) return wcError(401, 'woocommerce_rest_cannot_edit', 'Sorry, you are not allowed to edit this resource.');
+    const changes = JSON.parse(body ?? '{}') as Record<string, unknown>;
+    this.writes.push({ path, body: changes });
+    const at = this.options.writtenAt ?? '2026-11-20T12:00:00';
+    const saved = { date_modified_gmt: at, date_modified: at };
+    const variation = /^\/products\/(\d+)\/variations\/(\d+)$/.exec(route);
+    if (variation) {
+      const parent = this.products.find((r) => r.id === Number(variation[1]));
+      const row = (this.variations[Number(variation[1])] ?? []).find((r) => r.id === Number(variation[2]));
+      if (!parent || !row) return wcError(404, 'woocommerce_rest_product_variation_invalid_id', 'Invalid ID.');
+      Object.assign(row, this.stockOf(changes));
+      Object.assign(parent, saved);
+      return respond(200, row);
+    }
+    const one = /^\/(products|orders)\/(\d+)$/.exec(route);
+    const row = one ? (one[1] === 'products' ? this.products : this.orders).find((r) => r.id === Number(one[2])) : undefined;
+    if (!one) return wcError(404, 'rest_no_route', 'No route was found matching the URL and request method.');
+    if (!row) return wcError(404, `woocommerce_rest_${one[1] === 'products' ? 'product' : 'shop_order'}_invalid_id`, 'Invalid ID.');
+    if (one[1] === 'products') {
+      Object.assign(row, this.stockOf(changes), saved);
+      // A product's count is what its shared variations report.
+      for (const v of this.variations[row.id] ?? []) if (v.manage_stock === 'parent') v.stock_quantity = row.stock_quantity;
+    } else {
+      if (typeof changes.status !== 'string') return wcError(400, 'rest_invalid_param', 'Invalid parameter(s): status');
+      Object.assign(row, { status: changes.status }, saved);
+    }
+    return respond(200, row);
+  }
+
+  private stockOf(changes: Record<string, unknown>): Record<string, unknown> {
+    if (changes.stock_quantity === undefined) return {};
+    const quantity = changes.stock_quantity;
+    if (typeof quantity !== 'number' || !Number.isInteger(quantity)) throw new TypeError('mock: stock_quantity must be an integer');
+    return {
+      manage_stock: changes.manage_stock ?? true,
+      stock_quantity: quantity,
+      stock_status: quantity > 0 ? 'instock' : 'outofstock',
+    };
   }
 
   private changed(rows: MockRow[], url: InstanceType<typeof URL>): MockResponse {

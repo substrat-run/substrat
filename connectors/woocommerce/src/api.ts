@@ -36,7 +36,8 @@ export const WOOCOMMERCE_MAX_PAGE = 100;
 
 /**
  * A WooCommerce connection's credential: where the store is, and a REST API key made in
- * WooCommerce → Settings → Advanced → REST API. The key needs **Read** permission and must belong
+ * WooCommerce → Settings → Advanced → REST API. The key needs **Read** permission (**Read/Write**
+ * for a vertical that writes back, #3136) and must belong
  * to an administrator or a shop manager: the probe reads the store's own settings, which
  * WooCommerce shows to those two roles only. Both halves are printable ASCII (`ck_…`, `cs_…`).
  */
@@ -248,15 +249,30 @@ export class WooCommerceApi {
     return `${storeBaseUrl(this.secret().storeUrl, { allowLocalHttp: this.allowLocalHttp })}${WOOCOMMERCE_API_PATH}`;
   }
 
-  private async get(path: string, authenticated: boolean): Promise<{ json: unknown; totalPages: number | null }> {
+  private get(path: string, authenticated: boolean): Promise<{ json: unknown; totalPages: number | null }> {
+    return this.send('GET', path, authenticated);
+  }
+
+  /**
+   * One request. A `PUT` is only ever an absolute write (a stock count, a status), so sitting out a
+   * 429 and sending it again changes nothing a first send would not have.
+   */
+  private async send(
+    method: 'GET' | 'PUT',
+    path: string,
+    authenticated: boolean,
+    body?: Record<string, unknown>,
+  ): Promise<{ json: unknown; totalPages: number | null }> {
     const url = `${this.base()}${path}`;
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (authenticated) {
       const { consumerKey, consumerSecret } = this.secret();
       headers.Authorization = `Basic ${btoa(`${consumerKey}:${consumerSecret}`)}`;
     }
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    const init = method === 'GET' ? { headers } : { method, headers, body: JSON.stringify(body) };
     for (let attempt = 0; ; attempt += 1) {
-      const res = await this.conn.fetch(url, { headers });
+      const res = await this.conn.fetch(url, init);
       const body = await res.text();
       if (res.ok) {
         let json: unknown;
@@ -264,7 +280,7 @@ export class WooCommerceApi {
           json = JSON.parse(body);
         } catch {
           // A 200 that is not JSON is a page, not an API: a theme, a maintenance screen, a login wall.
-          throw new WooCommerceApiError(`GET ${path || '/'} answered a page that is not JSON`, 502, null, true);
+          throw new WooCommerceApiError(`${method} ${path || '/'} answered a page that is not JSON`, 502, null, true);
         }
         const pages = Number(res.headers?.get('X-WP-TotalPages') ?? Number.NaN);
         return { json, totalPages: Number.isFinite(pages) ? pages : null };
@@ -275,7 +291,7 @@ export class WooCommerceApi {
       }
       const e = errorOf(body, res.status);
       throw new WooCommerceApiError(
-        `WooCommerce GET ${path || '/'} failed (${res.status}${e.code ? ` ${e.code}` : ''}): ${e.message}`,
+        `WooCommerce ${method} ${path || '/'} failed (${res.status}${e.code ? ` ${e.code}` : ''}): ${e.message}`,
         res.status,
         e.code,
         // No route at all: WordPress without WooCommerce, or no WordPress.
@@ -370,6 +386,41 @@ export class WooCommerceApi {
       if (err instanceof WooCommerceApiError && err.status === 404 && err.code !== null && err.code.endsWith('_invalid_id')) return null;
       throw err;
     }
+  }
+
+  /**
+   * Set one product's own stock count (#3136 write-back). `manage_stock` goes with it, since a count
+   * the store does not track is not kept. Answers the product as it now stands.
+   */
+  async setProductStock(productId: number, quantity: number): Promise<unknown> {
+    const { json } = await this.send('PUT', `/products/${productId}`, true, { manage_stock: true, stock_quantity: quantity });
+    return json;
+  }
+
+  /** {@link setProductStock} for one variation that keeps its own count. Answers the variation. */
+  async setVariationStock(productId: number, variationId: number, quantity: number): Promise<unknown> {
+    const { json } = await this.send('PUT', `/products/${productId}/variations/${variationId}`, true, {
+      manage_stock: true,
+      stock_quantity: quantity,
+    });
+    return json;
+  }
+
+  /** One variation as the store sends it, or `null` when the store says the id does not exist. */
+  async variation(productId: number, variationId: number): Promise<WcVariation | null> {
+    try {
+      const { json } = await this.get(`/products/${productId}/variations/${variationId}`, true);
+      return wcVariation.parse(json);
+    } catch (err) {
+      if (err instanceof WooCommerceApiError && err.status === 404 && err.code !== null && err.code.endsWith('_invalid_id')) return null;
+      throw err;
+    }
+  }
+
+  /** Set an order's status (#3136 write-back). Answers the order as it now stands. */
+  async setOrderStatus(orderId: number, status: string): Promise<unknown> {
+    const { json } = await this.send('PUT', `/orders/${orderId}`, true, { status });
+    return json;
   }
 
   /** Every variation of a variable product. A product's variations are few; this walks pages by number. */
