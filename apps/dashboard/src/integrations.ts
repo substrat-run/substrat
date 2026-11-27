@@ -231,14 +231,15 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
   woocommerce: {
     provider: 'woocommerce',
     name: 'WooCommerce',
-    description: 'An online store — reads its products and orders.',
+    description: 'An online store — reads its products and orders, and can set stock and complete orders.',
     monogram: 'WC',
     // Keyed as the connector's `woocommerceSecret` parses them. The key is made in WooCommerce →
-    // Settings → Advanced → REST API, with Read permission, by an administrator or shop manager:
-    // the connector never writes, and the probe reads the store's own settings.
+    // Settings → Advanced → REST API by an administrator or shop manager (the probe reads the store's
+    // own settings): Read permission for an app that only reads, Read/Write for one that sets stock
+    // or completes orders (#3136).
     fields: [
       { key: 'storeUrl', label: 'Store URL', secret: false, placeholder: 'https://shop.example.com' },
-      { key: 'consumerKey', label: 'Consumer key', secret: true, placeholder: 'ck_… — a Read key' },
+      { key: 'consumerKey', label: 'Consumer key', secret: true, placeholder: 'ck_… — Read, or Read/Write to write back' },
       { key: 'consumerSecret', label: 'Consumer secret', secret: true, placeholder: 'cs_…' },
     ],
     // Empty for Planima's reason: the records land through the consuming vertical's own

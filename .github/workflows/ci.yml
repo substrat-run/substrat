@@ -733,8 +733,9 @@ jobs:
         run: docker save -o "$RUNNER_TEMP/mtls-toolchain.tar" $(docker image ls --format '{{.Repository}}:{{.Tag}}' substrat-mtls-wasm)
 
   # The WooCommerce connector against a real store (#3136): WordPress and WooCommerce at pinned
-  # versions in Docker (connectors/woocommerce/docker/), seeded with a small catalogue, two orders
-  # and a Read API key, then `test/live.test.ts` against it. The mock in the connector's own suite
+  # versions in Docker (connectors/woocommerce/docker/), seeded with a small catalogue, two orders,
+  # a Read API key and a Read/Write one with records of its own for the write-back case (#3136),
+  # then `test/live.test.ts` against it. The mock in the connector's own suite
   # is the author's reading of the REST API; this is what checks the reading. Its own job because
   # starting the store takes a couple of minutes, and only when the connector or the commerce
   # shapes changed — or on a push to main, which always runs it.

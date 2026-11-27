@@ -144,6 +144,12 @@ describe('connector registry', () => {
     expect(probe).toMatchObject({ ok: false, refused: false, error: expect.stringMatching(/private network name/) });
   });
 
+  it('WooCommerce dispatches its write-back requests, and passes over any other event (#3136)', async () => {
+    const woo = CONNECTORS.find((c) => c.provider === 'woocommerce')!;
+    const dispatcher = woo.dispatch!({}, null as never);
+    await expect(dispatcher(null as never, { type: 'shop.order-placed', payload: {} } as never)).resolves.toBeUndefined();
+  });
+
   it('a poll-only connector registers with no dispatch and no callback — by design, not omission', () => {
     // Fortnox (#1203): nothing inside a scope initiates a bookkeeping read, so there
     // is no dispatch handler to wire and no `connector:fortnox` intent kind to drain.

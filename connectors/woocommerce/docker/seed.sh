@@ -1,6 +1,6 @@
 #!/bin/sh
 # Install WooCommerce into the compose store, seed a small catalogue and two orders, and print a
-# Read API key as `KEY=value` lines on stdout. Everything else goes to stderr, so stdout is the
+# Read API key (and a Read/Write one for the write-back test) as `KEY=value` lines on stdout. Everything else goes to stderr, so stdout is the
 # env file the live test reads.
 set -eu
 exec 3>&1 1>&2
@@ -73,4 +73,20 @@ wp eval "wc_update_product_stock(wc_get_product($stocked), 2, 'decrease'); wc_up
 printf 'WOOCOMMERCE_STOCK_CHANGED_AFTER=%s\nWOOCOMMERCE_STOCK_SIMPLE=%s\nWOOCOMMERCE_STOCK_VARIABLE=%s\nWOOCOMMERCE_STOCK_VARIATION=%s\nWOOCOMMERCE_STOCK_SHARED=%s\n' \
   "$before" "$stocked" "$own" "$own_variation" "$shared" >&3
 
+# Write-back (#3136): records of their own for the live test to write to, so no other assertion
+# meets a count or a status it changed — a counted simple product, a variation keeping its own
+# count, one sharing its product's, and a processing order — and a Read/Write key to write with.
+write_simple=$(w product create --name='Skrivbar' --type=simple --regular_price=20.00 --manage_stock=true --stock_quantity=5)
+write_variable=$(w product create --name='Skrivbar tröja' --type=variable \
+  --attributes='[{"name":"Size","options":["S"],"variation":true,"visible":true}]')
+write_variation=$(w product_variation create "$write_variable" --regular_price=99.00 --manage_stock=true --stock_quantity=6 \
+  --attributes='[{"name":"Size","option":"S"}]')
+write_shared=$(w product create --name='Skrivbar mössa' --type=variable --manage_stock=true --stock_quantity=20 \
+  --attributes='[{"name":"Size","options":["One"],"variation":true,"visible":true}]')
+write_shared_variation=$(w product_variation create "$write_shared" --regular_price=79.00 --attributes='[{"name":"Size","option":"One"}]')
+write_order=$(w shop_order create --status=processing --set_paid=true --line_items="[{\"product_id\":$simple,\"quantity\":1}]")
+printf 'WOOCOMMERCE_WRITE_SIMPLE=%s\nWOOCOMMERCE_WRITE_VARIABLE=%s\nWOOCOMMERCE_WRITE_VARIATION=%s\nWOOCOMMERCE_WRITE_SHARED=%s\nWOOCOMMERCE_WRITE_SHARED_VARIATION=%s\nWOOCOMMERCE_WRITE_ORDER=%s\n' \
+  "$write_simple" "$write_variable" "$write_variation" "$write_shared" "$write_shared_variation" "$write_order" >&3
+
 wp eval-file /seed/api-key.php >&3
+wp eval-file /seed/api-key.php read_write >&3

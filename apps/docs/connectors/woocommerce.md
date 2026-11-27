@@ -1,7 +1,8 @@
 # WooCommerce (online store)
 
 Reads a [WooCommerce](https://woocommerce.com/) store's **products** and **orders** and lands them
-into a scope through the consuming app's own operation, in a **provider-neutral commerce shape**.
+into a scope through the consuming app's own operation, in a **provider-neutral commerce shape**,
+and writes two things back when your app asks: a **stock count**, and an **order completed**.
 Your app codes against that shape rather than against WooCommerce, so a second store platform's
 connector can land the same records into the same operation.
 
@@ -9,7 +10,8 @@ connector can land the same records into the same operation.
 The client and its mock are written from WooCommerce's REST API documentation and its source code.
 The mock encodes that reading, so the two can agree with each other while both disagree with a
 real store. `test/live.test.ts` checks the reading against a real WooCommerce, started in Docker by
-CI's `woocommerce-live` job, and can be pointed at any store with a Read key.
+CI's `woocommerce-live` job, and can be pointed at any store with a Read key (its write-back case
+runs only against the store CI seeds).
 :::
 
 ## At a glance
@@ -18,16 +20,18 @@ CI's `woocommerce-live` job, and can be pointed at any store with a Read key.
 |---|---|
 | **Provider** | WooCommerce (WordPress), REST API `wc/v3` |
 | **Category** | Commerce |
-| **Status** | **Built, not yet verified against a production store** — poll-only, read-only |
+| **Status** | **Built, not yet verified against a production store** — polled reads, two writes on request |
 | **Package** | `@substrat-run/connector-woocommerce` — private until its first release |
-| **Consumes** | *nothing* — this connector answers no event |
+| **Consumes** | `woocommerce.stock-set-requested`, `woocommerce.order-complete-requested` |
 | **Lands** | `commerceChange` from `@substrat-run/contracts`, one product or order per call |
 
 ## What it consumes
 
-**Nothing.** Nobody inside a scope asks for an order: orders happen at the store, and the platform
-finds out by looking. The connection is polled every quarter of an hour, and each pass reads only
-what changed at the store since the last one.
+Reads ask for nothing. Orders happen at the store, and the platform finds out by looking: the
+connection is polled every quarter of an hour, and each pass reads only what changed at the store
+since the last one.
+
+Writes are the two events your app emits, described under [Writing back](#writing-back).
 
 ## How a binding comes into existence
 
@@ -86,7 +90,8 @@ personal data (names, an email address, addresses): declare those columns as suc
 
 A **store URL** and a **REST API key**, made in WooCommerce under *Settings → Advanced → REST API*:
 
-- give the key **Read** permission, since the connector never writes;
+- give the key **Read** permission if your app only reads, or **Read/Write** if it
+  [writes back](#writing-back): a Read key's write is refused by the store, and the request fails;
 - make it as an **administrator or shop manager**, since connecting reads the store's own settings
   (its URL, WooCommerce version and currency), which WooCommerce shows only to those roles.
 
@@ -185,6 +190,66 @@ with each record's error beside it. Your app reads the same per binding with
 `listBindings({ ...access, health: true })` ([reference](/reference/vertical-host#listbindings-request)),
 the tenant's connection bound to the scope included.
 
+## Writing back
+
+Your app asks for a write by emitting an event from one of its own operations, and registers both
+events for routing in its host setup with `declareWooCommerceConnector(host)`. The platform
+dispatches the request within seconds and writes it to the store.
+
+```ts
+// Set a variant's stock count.
+ctx.emit({
+  type: 'woocommerce.stock-set-requested',
+  schemaVersion: 1,
+  entity: { entityType: 'article', entityId: article.id }, // your own record the request is about
+  payload: {
+    requestId,                          // your own id for the request
+    connectionId: product.connectionId, // the connection the product was landed from
+    productId: '42',
+    variantId: '42', // the variant's id: the product's own for a product without variants
+    quantity: 7,     // the count to SET, not a difference
+  },
+});
+
+// Mark an order completed (WooCommerce's "fulfilled and complete").
+ctx.emit({
+  type: 'woocommerce.order-complete-requested',
+  schemaVersion: 1,
+  entity: { entityType: 'order', entityId: order.id },
+  payload: { requestId, connectionId: order.connectionId, orderId: '1001' },
+});
+```
+
+The ids and the `connectionId` are the ones the record's `commerceChange` carried. The payload
+schemas are exported as `woocommerceStockSetRequested` and `woocommerceOrderCompleteRequested`.
+
+After the write, the record **lands again through your landing operation as it now stands**, as an
+ordinary upsert. Your app sees the store's answer within seconds, in the shape it already reads, and
+the next pass lands it once more, as delivery allows.
+
+- **Which store.** A request is written only through a connection **bound to the install that
+  asked**: an install cannot write to a store it is not delivered from. This also covers an app
+  connected to several stores and an install that connected its own shop.
+- **Stock is set, not adjusted.** A redelivered request writes the same number again, so it is safe
+  to repeat. The price is that a sale at the store between your read and the write is overwritten:
+  WooCommerce has no compare-and-set. A count the store did not track is tracked from the write on.
+  For a variant whose count is its product's (`sharedWithProduct`), the product's count is set,
+  and every variant of it reports the new count.
+- **An order** already completed is not written again. A cancelled, refunded, failed, trashed or
+  draft order is refused, not revived.
+- **When it fails.** The landing permission not delivered yet, a rate limit or an outage: the
+  request is retried. These fail the request for good:
+  - a connection **not bound to the install** that asked: unbound since the record was landed, or
+    never this install's. Binding it later does not retry the request; send a new one once it is
+    bound;
+  - a key without Write permission;
+  - a product, variant or order the store does not hold;
+  - a value the store refuses;
+  - an order that cannot be completed.
+
+  Your app is not told: no failure lands in your operation. It shows on the platform's failure
+  record and the connection's health.
+
 ## What's missing
 
 - **A variant changed on its own.** WooCommerce does not mark a variable product as changed when
@@ -192,5 +257,7 @@ the tenant's connection bound to the scope included.
   itself is saved.
 - **A removal sooner than the hourly check.** Deletes are found by asking, not told.
 - **Refunds and fulfilment as records of their own**, and a **customer register**.
-- **Writing back** — marking an order fulfilled, setting stock (stock is read-only).
+- **A write receipt in your app.** A refused write lands nothing, so your app learns of a write by
+  the record landing changed, not by an answer to its request.
+- **More writes** — prices, product details, refunds, shipment tracking.
 - **Webhooks**, as a hint to read sooner than the next pass.
