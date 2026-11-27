@@ -3,7 +3,7 @@ id: K-74
 date: 2026-11-27
 layer: kernel
 title: "A broker per tenant and app owns every message a scope sends, once the scope has handed it off"
-status: proposed
+status: accepted
 aliases: []
 amends: ["K-69"]
 tracking: ["#3463", "#3467", "#3468", "#3469", "#3470", "#3471", "#3472", "#3473", "#3474"]
@@ -11,9 +11,9 @@ tracking: ["#3463", "#3467", "#3468", "#3469", "#3470", "#3471", "#3472", "#3473
 
 # K-74 — A broker per tenant and app owns every message a scope sends, once the scope has handed it off
 
-> **Proposed 2026-11-27**, as Track A of [rfc/broker-and-tenant-isolation.md](../rfc/broker-and-tenant-isolation.md)
-> (§4, §9.2, §11). It waits for the owner. Nothing in it is built. Tracks B, C and D of that RFC are
-> not decided here.
+> **Proposed and ratified 2026-11-27** by the owner, as Track A of [rfc/broker-and-tenant-isolation.md](../rfc/broker-and-tenant-isolation.md)
+> (§4, §9.2, §11). Nothing in it is built: #3467–#3474 build it. Tracks B, C and D of
+> that RFC are not decided here.
 
 **Every message a scope sends leaves through a broker, one Durable Object per (tenant, app).** That
 covers a scope's platform intents, its events to other apps, its connector deliveries, the replies it
