@@ -5,7 +5,7 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import type { PersonResolveInput, PersonResolveOutput } from '@substrat-run/contracts';
+import { substratError, type PersonResolveInput, type PersonResolveOutput } from '@substrat-run/contracts';
 import {
   PEOPLE_DDL,
   PEOPLE_TTL_SECONDS,
@@ -41,6 +41,7 @@ function world() {
     now: Date.UTC(2026, 10, 13),
     answer: { person: { id: BJORN, status: 'active', roles: ['member'] } } as unknown,
     down: false,
+    ambiguous: false,
     asked: 0,
     inputs: [] as PersonResolveInput[],
     bound: [] as string[],
@@ -51,6 +52,8 @@ function world() {
       state.asked += 1;
       state.inputs.push(input);
       if (state.down) throw new Error('master unreachable');
+      // What `peerClient` throws for the router's 409: the tenant runs several masters and binds none.
+      if (state.ambiguous) throw substratError('conflict', 'a call cannot pick one; bind the instance first');
       return state.answer;
     },
     store: sqlPeopleStore(sqlOver(db)),
@@ -203,9 +206,10 @@ describe('admitDelegated', () => {
     expect(w.state.asked).toBe(0);
   });
 
-  it.each<[string, () => void, 'blocked' | 'unavailable']>([
+  it.each<[string, () => void, 'blocked' | 'unavailable' | 'master-conflict']>([
     ['blocked', () => void (w.state.answer = { person: { id: BJORN, status: 'blocked', roles: ['member'] } }), 'blocked'],
     ['unreachable', () => void (w.state.down = true), 'unavailable'],
+    ['ambiguous', () => void (w.state.ambiguous = true), 'master-conflict'],
   ])('answers with the person refusal when the master says %s', async (_name, arrange, reason) => {
     arrange();
     expect(await admitDelegated(w.deps, SCOPE, call, door(delegated))).toEqual({ admitted: false, reason });

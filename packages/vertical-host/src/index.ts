@@ -1523,6 +1523,14 @@ export type DelegatedPeerAnswer =
 /** What a refused call for a person is told, whatever the reason: the reason is the operator's. */
 const ON_BEHALF_REFUSED = 'this call for a person was refused';
 
+/**
+ * What a call for a person is told when this app cannot tell which instance of its master to ask
+ * (#3436): a configuration gap a tenant admin settles by binding one, which a retry never fixes.
+ */
+const ON_BEHALF_MASTER_CONFLICT =
+  'this call for a person cannot be answered: the tenant runs more than one instance of the app this one takes its people from, ' +
+  'and this app is not bound to one that is live; a tenant admin binds the instance on this app\'s page';
+
 /** What a peer call is told when its body does not match the caller its envelope signed (K-66). */
 const SIGNED_CALLER_REFUSED = 'this call does not match the caller its envelope names';
 
@@ -2709,7 +2717,9 @@ export function mountPlatformSurface<Env extends object>(
           console.warn(JSON.stringify({ host: 'peer-on-behalf-refused', ...node, caller: body.caller.vertical, reason: admitted.reason }));
           throw admitted.reason === 'unavailable'
             ? substratError('unavailable', 'this call for a person cannot be answered now; retry')
-            : substratError('forbidden', ON_BEHALF_REFUSED);
+            : admitted.reason === 'master-conflict'
+              ? substratError('conflict', ON_BEHALF_MASTER_CONFLICT)
+              : substratError('forbidden', ON_BEHALF_REFUSED);
         }
         if (!host.getScope) throw substratError('unavailable', 'this deployment cannot run a call for a person (#3161) — redeploy it');
         // `via`: the calling vertical must also pass this scope's peer admission (declared in

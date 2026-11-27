@@ -79,11 +79,17 @@ interface Net {
   peer: Array<Record<string, unknown>>;
   issuer: Array<Record<string, string>>;
   person: unknown;
-  clientIds: Record<string, string | null | 'down'>;
+  clientIds: Record<string, string | null | 'down' | 'ambiguous'>;
   refresh: { status: number; body: unknown };
   exchange: { status: number; body: unknown };
 }
 let net: Net;
+
+/** The router's refusals, as egress relays them: a master that does not answer, and one it cannot pick an instance of. */
+const refused = (mode: 'down' | 'ambiguous') =>
+  mode === 'down'
+    ? Response.json({ error: 'not answering' }, { status: 503 })
+    : Response.json({ error: "this tenant runs 2 instances of 'todo' — a call cannot pick one; bind the instance first" }, { status: 409 });
 
 const b64 = (o: unknown) => btoa(JSON.stringify(o)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
 const idToken = (sub: string) => `${b64({ alg: 'RS256' })}.${b64({ iss: ISSUER, sub })}.sig`;
@@ -110,10 +116,11 @@ beforeEach(() => {
       net.peer.push(body);
       if (body['operation'] === PEER_CLIENT_OPERATION) {
         const id = net.clientIds[String(body['vertical'])];
-        return id === 'down' ? Response.json({ error: 'not answering' }, { status: 503 }) : Response.json({ result: { clientId: id ?? null } });
+        if (id === 'down' || id === 'ambiguous') return refused(id);
+        return Response.json({ result: { clientId: id ?? null } });
       }
       if (body['operation'] === 'todo/resolve-person') {
-        return net.person === 'down' ? Response.json({ error: 'not answering' }, { status: 503 }) : Response.json({ result: net.person });
+        return net.person === 'down' || net.person === 'ambiguous' ? refused(net.person) : Response.json({ result: net.person });
       }
       return Response.json({ result: { ran: body['operation'] } });
     }
@@ -236,6 +243,7 @@ describe('a dependent signs a person in through its master (#3161)', () => {
     ['blocked', { person: { id: ada, status: 'blocked', roles: ['admin'] } }, 403, 'forbidden'],
     ['unknown', { person: null }, 403, 'forbidden'],
     ['a master that does not answer', 'down', 503, 'unavailable'],
+    ['a master the platform cannot pick an instance of', 'ambiguous', 409, 'conflict'],
   ] as const)('refuses %s: %i problem, and opens no scope', async (_label, person, status, code) => {
     subject = signedIn();
     net.person = person;
@@ -315,12 +323,16 @@ describe('a dependent takes a call made for a person (#3161)', () => {
     expect(await door.platform.delegatedPeer!({}, node, caller('todo'), 'eyJ.forged.sig')).toEqual({ admitted: false, reason: 'token-refused' });
   });
 
-  it('a master that does not say which client it is fails closed as unavailable, and the operator is told', async () => {
-    net.clientIds['todo'] = 'down';
+  it.each([
+    ['does not answer', 'down', 'unavailable', 'unavailable'],
+    // #3436: a configuration gap, not an outage, so it is not told to retry.
+    ['cannot be picked among several instances', 'ambiguous', 'master-conflict', 'conflict'],
+  ] as const)('a master that %s fails closed before the token is read, and the operator is told', async (_label, mode, reason, code) => {
+    net.clientIds['todo'] = mode;
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { door } = dependent();
-    expect(await door.platform.delegatedPeer!({}, node, caller('todo'), GOOD)).toEqual({ admitted: false, reason: 'unavailable' });
-    expect(JSON.parse(String(errors.mock.calls[0]![0]))).toMatchObject({ host: 'door-master-client-unavailable', master: 'todo', code: 'unavailable' });
+    expect(await door.platform.delegatedPeer!({}, node, caller('todo'), GOOD)).toEqual({ admitted: false, reason });
+    expect(JSON.parse(String(errors.mock.calls[0]![0]))).toMatchObject({ host: 'door-master-client-unavailable', master: 'todo', code });
     expect(JSON.stringify(errors.mock.calls)).not.toContain(GOOD);
   });
 

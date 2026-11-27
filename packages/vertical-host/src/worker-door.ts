@@ -177,7 +177,8 @@ export interface WorkerDoorDeps<E extends object> {
    * person signed in here is asked about at the master (a peer call as this app, kept in the
    * tenant's identity directory for `ttlSeconds`) and let in as it says, and the master may call
    * this app as a signed-in person with a delegated token. A refusal is 403, a master that does
-   * not answer 503. Not with `invites` or `join`: a dependent owns no people.
+   * not answer 503, and a master the platform cannot pick an instance of 409 (#3436). Not with
+   * `invites` or `join`: a dependent owns no people.
    */
   people?: DoorPeople;
   /**
@@ -221,6 +222,15 @@ function peerDelegationCeiling(delegations: DoorPeople['delegations'], actor: st
 export interface PeopleSeatHost {
   revokeScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<boolean>;
 }
+
+/**
+ * What a sign-in is told when the platform cannot tell which instance of the master to ask (#3436):
+ * the tenant runs several and this app binds none, or the bound one is gone. A tenant admin settles
+ * it on this app's page, so it names the remedy rather than asking for a retry.
+ */
+const masterConflictMessage = (master: string): string =>
+  `this tenant runs more than one instance of '${master}', which this app takes its people from, and this app is not ` +
+  `bound to one that is live; a tenant admin binds the instance on this app's page`;
 
 /** How long another app's answer to `PEER_CLIENT_OPERATION` is kept, per isolate. */
 const PEER_CLIENT_TTL_MS = 60_000;
@@ -400,6 +410,7 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
     if (answer.reason === 'unavailable') {
       throw substratError('unavailable', `'${master.master}', which this app takes its people from, did not answer; retry`);
     }
+    if (answer.reason === 'master-conflict') throw substratError('conflict', masterConflictMessage(master.master));
     throw substratError('forbidden', `'${master.master}' does not let this sign-in in here (${answer.reason})`);
   };
 
@@ -535,7 +546,8 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
               code: errorCodeOf(err) ?? (err instanceof Error ? err.name : typeof err),
             }),
           );
-          return { admitted: false, reason: 'unavailable' };
+          // A conflict is the platform unable to pick the master's instance (#3436), not an outage.
+          return { admitted: false, reason: errorCodeOf(err) === 'conflict' ? 'master-conflict' : 'unavailable' };
         }
       }
       const instance = await wiring(env, node, { actors, channels: ['peer'] });

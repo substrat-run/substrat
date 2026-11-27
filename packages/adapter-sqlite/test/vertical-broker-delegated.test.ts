@@ -132,7 +132,7 @@ describe('the local broker: a call made for a person (#3161)', () => {
     expect((e as Error).message).toBe('this app does not take calls for a person');
   });
 
-  it('a token the target’s door refuses is forbidden in the hosted door’s words, the reason on the operator’s line only; a door that could not ask is unavailable', async () => {
+  it('a token the target’s door refuses is forbidden in the hosted door’s words, the reason on the operator’s line only; a door that could not ask is unavailable, and one that could not pick the master a conflict', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       answer = { admitted: false, reason: 'token-refused' };
@@ -143,11 +143,17 @@ describe('the local broker: a call made for a person (#3161)', () => {
       const u = await refusal(forPerson('ceiling/a'));
       expect(errorCodeOf(u)).toBe('unavailable');
       expect((u as Error).message).toBe('this call for a person cannot be answered now; retry');
+      // #3436: a master the broker cannot pick an instance of is a conflict a tenant admin settles.
+      answer = { admitted: false, reason: 'master-conflict' };
+      const c = await refusal(forPerson('ceiling/a'));
+      expect(errorCodeOf(c)).toBe('conflict');
+      expect((c as Error).message).toContain('a tenant admin binds the instance');
       const lines = warn.mock.calls.map((c) => JSON.parse(String(c[0])) as Record<string, unknown>);
       const at = { tenantId: t, scopeId: pluginScope, caller: MASTER };
       expect(lines).toEqual([
         { host: 'peer-on-behalf-refused', ...at, reason: 'token-refused' },
         { host: 'peer-on-behalf-refused', ...at, reason: 'unavailable' },
+        { host: 'peer-on-behalf-refused', ...at, reason: 'master-conflict' },
       ]);
       expect(JSON.stringify(warn.mock.calls)).not.toContain(TOKEN);
     } finally {

@@ -28,6 +28,7 @@
  * does yet (docs/rfc/dependent-people.md §5.2).
  */
 import {
+  errorCodeOf,
   personResolveOutput,
   principalId,
   type PersonResolveInput,
@@ -51,7 +52,13 @@ export type PersonRefusal =
   /** The master refuses them. */
   | 'blocked'
   /** The copy is past its time and the master did not answer. */
-  | 'unavailable';
+  | 'unavailable'
+  /**
+   * The copy is past its time and the platform cannot tell which instance of the master to ask:
+   * the tenant runs several and none is bound, or the bound one is gone (#3436). A configuration
+   * gap a tenant admin settles, not an outage, so it is not `unavailable` and a retry does not help.
+   */
+  | 'master-conflict';
 
 export type PersonAnswer =
   | { admitted: true; principal: PrincipalId }
@@ -119,7 +126,8 @@ export async function admitPerson(deps: PeopleDeps, scopeId: string, login: Pers
     principal = answer.person ? principalId.parse(answer.person.id) : null;
   } catch (error) {
     deps.onUnavailable?.(error);
-    return { admitted: false, reason: 'unavailable' };
+    // A peer call the platform refused as a conflict never reached the master (#3436).
+    return { admitted: false, reason: errorCodeOf(error) === 'conflict' ? 'master-conflict' : 'unavailable' };
   }
 
   const status = answer.person?.status ?? 'unknown';
