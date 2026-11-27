@@ -51,7 +51,7 @@ import {
 import { DIRECTORY_PLACEMENT, directoryObjectSchema, type DirectoryObjectKind } from './directory-placement.js';
 import { applyMirrorBatch, MIRROR_TARGET_DDL, mirrorTargetStatus, type MirrorTargetStatus } from './directory-mirror-apply.js';
 import type { MirrorApplyResult, MirrorBatch, MirrorClaimReport, MirrorSender } from './directory-mirror.js';
-import { MIRROR_CLAIMS_DDL, settleMirrorReleaseIn, type MirrorClaimWork, type MirrorRelease } from './directory-mirror-claims.js';
+import { MIRROR_CLAIMS_DDL, mirrorClaimWork, settleMirrorReleaseIn, type MirrorClaimWork, type MirrorRelease } from './directory-mirror-claims.js';
 import { switchSqlOver } from './scope-do.js';
 
 /** The registry's object name. */
@@ -207,6 +207,12 @@ export class TenantDirectoryDO extends DirectoryObjectBase {
     super(ctx, env, 'tenant');
   }
 
+  /** Step 3b: one page of the registry claim work this object owes, asked until it is empty. */
+  mirrorClaimWork(owner: string, jurisdiction: Jurisdiction): MirrorClaimWork {
+    this.assertOwner(owner, jurisdiction, false);
+    return mirrorClaimWork(this.sql, this.kernelSql, owner);
+  }
+
   /** Step 3b: the registry answered a release this object owes; drop it once it is done (`directory-mirror-claims.ts`). */
   settleMirrorRelease(owner: string, jurisdiction: Jurisdiction, release: MirrorRelease, released: boolean): boolean {
     return this.ctx.storage.transactionSync(() => {
@@ -339,6 +345,8 @@ export function durableMirrorSender(env: unknown): MirrorSender | null {
       await releaseAll();
       return out;
     },
+    claimWork: async (owner) =>
+      tenantDirectoryStub(tenants as DurableObjectNamespace<TenantDirectoryDO>, tenantIdOf(owner), 'global').mirrorClaimWork(owner, 'global'),
     send: async (owner, batch) => {
       if (owner === REGISTRY_OWNER) return registryStub(registry as DurableObjectNamespace<DirectoryRegistryDO>).applyMirror(owner, 'global', batch);
       if (!owner.startsWith(tenantPrefix)) throw new Error(`directory mirror: not an owner: ${owner}`);

@@ -172,6 +172,7 @@ export function parseDirectoryMirror(value: unknown): string[] {
 const OUTBOX = 'directory_mirror_outbox';
 const STATE = 'directory_mirror_state';
 const TABLES = 'directory_mirror_tables';
+const CLAIMS_DUE = 'directory_mirror_claims_due';
 
 const SOURCE_DDL = [
   // Append-only: `id` is the rowid, so no trigger insert can meet a constraint. No index: the flush
@@ -182,6 +183,10 @@ const SOURCE_DDL = [
   `CREATE TABLE IF NOT EXISTS ${STATE} (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL, restored_at TEXT)`,
   // Which tables mirror, and since when: a row written before `since` reached no object (3c fills it).
   `CREATE TABLE IF NOT EXISTS ${TABLES} (tbl TEXT PRIMARY KEY, since TEXT NOT NULL)`,
+  // Owners whose object handed back registry claim work (part 2): drained after the rows, page by
+  // page until the object has none, so work beyond one page, or a round that failed, is never left
+  // waiting for that tenant's next write. A row per owner with work, written once until it is done.
+  `CREATE TABLE IF NOT EXISTS ${CLAIMS_DUE} (owner TEXT PRIMARY KEY, since TEXT NOT NULL)`,
 ];
 
 const quoteIdent = (name: string): string => `"${name.replaceAll('"', '""')}"`;
@@ -279,7 +284,13 @@ export interface MirrorSender {
   send(owner: string, batch: MirrorBatch): Promise<MirrorApplyResult>;
   /** Drive the claim work the objects handed back: every release, then every crossing, then the releases left. */
   settleClaims?(work: readonly { owner: string; claims: MirrorClaimWork }[]): Promise<MirrorClaimReport>;
+  /** One page of a tenant object's open claim work, asked again until it is empty. */
+  claimWork?(owner: string): Promise<MirrorClaimWork>;
 }
+
+/** How many owners one flush drains claim work for, and how many pages each at most. */
+export const MIRROR_CLAIM_OWNERS_PER_FLUSH = 20;
+export const MIRROR_CLAIM_PAGES_PER_OWNER = 10;
 
 export interface MirrorFlush {
   /** Outbox rows read and acknowledged. */
@@ -311,6 +322,8 @@ export interface MirrorStatus {
   restoredAt: string | null;
   queued: number;
   oldestQueuedId: number | null;
+  /** Owners whose registry claim work is not drained yet. */
+  claimsDue: number;
 }
 
 interface OutboxRow {
@@ -407,7 +420,10 @@ export class DirectoryMirror {
   }
 
   pending(): boolean {
-    return this.sql.exec(`SELECT 1 FROM ${OUTBOX} LIMIT 1`).toArray().length > 0;
+    return (
+      this.sql.exec(`SELECT 1 FROM ${OUTBOX} LIMIT 1`).toArray().length > 0 ||
+      this.sql.exec(`SELECT 1 FROM ${CLAIMS_DUE} LIMIT 1`).toArray().length > 0
+    );
   }
 
   status(): MirrorStatus {
@@ -420,6 +436,7 @@ export class DirectoryMirror {
       restoredAt: state.restored_at,
       queued: Number(q.n),
       oldestQueuedId: q.oldest === null ? null : Number(q.oldest),
+      claimsDue: Number((this.sql.exec(`SELECT COUNT(*) AS n FROM ${CLAIMS_DUE}`).one() as { n: number }).n),
     };
   }
 
@@ -509,7 +526,7 @@ export class DirectoryMirror {
       );
       const ack: number[] = [];
       const back: number[] = [];
-      const claimWork: { owner: string; claims: MirrorClaimWork }[] = [];
+      const claimsDue: string[] = [];
       for (const [owner, slot] of batch.byOwner) {
         const i = owners.indexOf(owner);
         const r = i >= 0 ? settled[i]! : null;
@@ -522,7 +539,7 @@ export class DirectoryMirror {
           out.healed += r.value.healed;
           out.rowsWrittenObjects += r.value.rowsWritten;
           const claims = r.value.claims;
-          if (claims && (claims.crossings.length > 0 || claims.releases.length > 0)) claimWork.push({ owner, claims });
+          if (claims && (claims.crossings.length > 0 || claims.releases.length > 0)) claimsDue.push(owner);
         } else {
           if (r && r.status === 'rejected') failed.set(owner, r.reason);
           back.push(...slot.ids);
@@ -539,26 +556,22 @@ export class DirectoryMirror {
           return moved + this.sql.exec(`DELETE FROM ${OUTBOX} WHERE id IN (SELECT value FROM json_each(?))`, list).rowsWritten;
         });
       }
-      // The rows are in; the claims they made are host code's (rfc §7.3), never inside a transaction.
-      // A failure here leaves the work recorded in its object, handed back on its next send.
-      if (claimWork.length > 0 && this.options.sender.settleClaims) {
-        const c = await this.options.sender.settleClaims(claimWork).catch((err: unknown) => {
-          console.error('directory mirror: claims failed, retried on the next send', err);
-          return { claimed: 0, refused: 0, released: 0, errors: claimWork.length };
-        });
-        out.claims.claimed += c.claimed;
-        out.claims.refused += c.refused;
-        out.claims.released += c.released;
-        out.claims.errors += c.errors;
-      }
       if (ack.length > 0) {
-        const deleted = this.sql.exec(`DELETE FROM ${OUTBOX} WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ack)).rowsWritten;
+        // The owners with claim work are recorded due in the same transaction as the ack, so a row is
+        // never acknowledged while the claims it made are scheduled nowhere.
+        out.rowsWrittenDirectory += this.options.transaction(() => {
+          const at = new Date(this.now()).toISOString();
+          let n = 0;
+          for (const owner of claimsDue) n += this.sql.exec(`INSERT OR IGNORE INTO ${CLAIMS_DUE} (owner, since) VALUES (?, ?)`, owner, at).rowsWritten;
+          return n + this.sql.exec(`DELETE FROM ${OUTBOX} WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ack)).rowsWritten;
+        });
         out.acked += ack.length;
-        out.rowsWrittenDirectory += deleted;
       }
       // A batch that landed nothing while an object refuses: stop, and let the alarm try again.
       if (ack.length === 0 && failed.size > 0) break;
     }
+    // The rows are in; the claims they made are host code's (rfc §7.3), never inside a transaction.
+    if (!out.deferred) await this.drainClaims(out, failed);
     out.failed = [...failed.keys()];
     this.last = out;
     if (failed.size > 0) {
@@ -566,6 +579,43 @@ export class DirectoryMirror {
       throw new Error(`directory mirror: ${failed.size} object(s) refused a batch; retried from the alarm. First: ${String(first)}`);
     }
     return out;
+  }
+
+  /**
+   * Drain the registry claim work of the owners recorded due, page by page, until each object reports
+   * none. A round that throws, or settles nothing while work is left, is a failure: the owner stays
+   * due and the flush throws, so the alarm retries it. A refusal settles its crossing and is progress.
+   */
+  private async drainClaims(out: MirrorFlush, failed: Map<string, unknown>): Promise<void> {
+    const { sender } = this.options;
+    if (!sender.settleClaims || !sender.claimWork) return;
+    const due = this.sql.exec(`SELECT owner FROM ${CLAIMS_DUE} ORDER BY since, owner LIMIT ?`, MIRROR_CLAIM_OWNERS_PER_FLUSH).toArray() as { owner: string }[];
+    for (const { owner } of due) {
+      if (failed.has(owner)) continue;
+      try {
+        let empty = false;
+        for (let page = 0; page < MIRROR_CLAIM_PAGES_PER_OWNER; page++) {
+          const work = await sender.claimWork(owner);
+          if (work.crossings.length === 0 && work.releases.length === 0) {
+            empty = true;
+            break;
+          }
+          const c = await sender.settleClaims([{ owner, claims: work }]);
+          out.claims.claimed += c.claimed;
+          out.claims.refused += c.refused;
+          out.claims.released += c.released;
+          out.claims.errors += c.errors;
+          if (c.errors > 0 || c.claimed + c.refused + c.released === 0) {
+            throw new Error(`registry claim work of ${owner} made no progress (${c.errors} error(s))`);
+          }
+        }
+        // Drained, or more pages than one flush gives an owner: those stay due for the next flush.
+        if (empty) out.rowsWrittenDirectory += this.sql.exec(`DELETE FROM ${CLAIMS_DUE} WHERE owner = ?`, owner).rowsWritten;
+      } catch (err) {
+        console.error('directory mirror: registry claims failed, retried from the alarm', err);
+        failed.set(owner, err);
+      }
+    }
   }
 
   /**

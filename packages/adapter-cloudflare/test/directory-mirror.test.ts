@@ -186,6 +186,19 @@ describe('directory dual-write (K-68 step 3b)', () => {
     expect(await runInDurableObject(tenantObject(t), (_i, state) => state.storage.sql.exec('SELECT COUNT(*) AS n FROM directory_mirror_releases').one())).toEqual({ n: 0 });
   });
 
+  it('drains claim work beyond one page after the outbox is empty', async () => {
+    const directory = mirrorDirectory();
+    const registry = registryStub(env.DIRECTORY_REGISTRY);
+    const t = ulid();
+    // More hostname bindings than one apply hands back (MIRROR_CLAIM_WORK_MAX = 20), in one batch.
+    const hostnames = Array.from({ length: 25 }, () => `${ulid().toLowerCase()}.mirror.test`);
+    for (const h of hostnames) await bindHostname(directory, h, t);
+    await directory.settleDirectoryMirror();
+    expect(await directory.directoryMirrorStatus()).toMatchObject({ queued: 0, claimsDue: 0 });
+    const claims = await Promise.all(hostnames.map((h) => registry.readClaim('hostname', h)));
+    expect(claims.map((c) => c?.state)).toEqual(hostnames.map(() => 'confirmed'));
+  });
+
   it('a hostname released while its crossing is open stays released: the crossing cannot claim it again', async () => {
     const registry = registryStub(env.DIRECTORY_REGISTRY);
     const t = ulid();
