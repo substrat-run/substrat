@@ -127,10 +127,30 @@ export interface RowAction<T> {
 
 export type Phase = 'loading' | 'ready' | 'forbidden' | 'error';
 
-/** Something to say above the rows that does not replace them. */
+/** What a bulk action came to: the counts behind its `message`, for a screen that words them itself. */
+export interface BulkOutcome {
+  /** The action's `label`. */
+  action: string;
+  done: number;
+  total: number;
+  refused: number;
+  /** Rows that changed somewhere else (409 / 404). */
+  changed: number;
+  failed: number;
+  /** The last failure's message, from the server. */
+  error: string | null;
+}
+
+/**
+ * Something to say above the rows that does not replace them. `message` is English or the
+ * server's; when the model wrote it, `said` carries what it said as data, so a screen in
+ * another language can word it (`changed`: a row changed somewhere else and the view was
+ * read again; `bulk`: a bulk action's tally).
+ */
 export interface Problem {
   kind: 'refused' | 'stale' | 'failed';
   message: string;
+  said?: { kind: 'changed' } | { kind: 'bulk'; outcome: BulkOutcome };
 }
 
 export interface TableState<T, S extends string = string> {
@@ -767,7 +787,7 @@ export class EntityTableModel<T, S extends string = string> {
       const status = statusOf(error);
       this.#set({ busy: null });
       if (status === 409 || status === 404) {
-        await this.load({ kind: 'stale', message: 'This changed somewhere else. The view was refreshed.' });
+        await this.load({ kind: 'stale', message: 'This changed somewhere else. The view was refreshed.', said: { kind: 'changed' } });
       } else {
         this.#set({ problem: { kind: status === 403 ? 'refused' : 'failed', message: messageOf(error) } });
       }
@@ -809,10 +829,12 @@ export class EntityTableModel<T, S extends string = string> {
       stale ? `${stale} changed somewhere else` : '',
       failed ? `${failed} failed${last ? ` (${last})` : ''}` : '',
     ].filter(Boolean);
+    const outcome: BulkOutcome = { action: action.label, done: done.length, total: rows.length, refused, changed: stale, failed, error: last || null };
     const problem: Problem | null = parts.length
       ? {
           kind: refused ? 'refused' : stale ? 'stale' : 'failed',
           message: `${action.label}: ${done.length} of ${rows.length} done; ${parts.join(', ')}.`,
+          said: { kind: 'bulk', outcome },
         }
       : null;
     await this.load(problem);
@@ -996,8 +1018,19 @@ const RELATIVE: [Intl.RelativeTimeFormatUnit, number][] = [
   ['minute', 60],
 ];
 
-/** `now` is passed in, not read, so the same row reads the same in a test and on a screen. */
-export function cellText<T>(column: ColumnSpec<T, string>, row: T, now: Date, locale?: string): CellText {
+/** The words a cell says itself, rather than formats: a `boolean` column's two values. */
+export interface CellWords {
+  yes: string;
+  no: string;
+}
+
+const ENGLISH_CELLS: CellWords = { yes: 'Yes', no: 'No' };
+
+/**
+ * `now` is passed in, not read, so the same row reads the same in a test and on a screen.
+ * `locale` formats numbers, money and dates; `words` is what a boolean says (English by default).
+ */
+export function cellText<T>(column: ColumnSpec<T, string>, row: T, now: Date, locale?: string, words: CellWords = ENGLISH_CELLS): CellText {
   const raw = column.value ? column.value(row) : (row as Record<string, unknown>)[column.key];
   if (raw === null || raw === undefined || raw === '') return { text: '—', blank: true };
   switch (column.kind ?? 'text') {
@@ -1024,7 +1057,7 @@ export function cellText<T>(column: ColumnSpec<T, string>, row: T, now: Date, lo
     }
     case 'boolean':
       // SQLite has no boolean, so 1/0 arrive as numbers; both spellings read the same.
-      return raw === true || raw === 1 || raw === '1' ? { text: 'Yes' } : { text: 'No', blank: true };
+      return raw === true || raw === 1 || raw === '1' ? { text: words.yes } : { text: words.no, blank: true };
     case 'badge':
       return { text: String(raw), tone: column.tones?.[String(raw)] ?? 'neutral' };
     default:

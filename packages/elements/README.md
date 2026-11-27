@@ -17,7 +17,11 @@ element's attributes or slots.
   and "no matches" from both, keeps the rows when one action is refused, re-reads when an
   action finds the view stale (409/404), follows `next` on "Load more", and drops `priority` 3,
   then 2 columns while the table is wider than its frame. Cells are typed (`kind`), or drawn by
-  `render` (Lit) or `mount` (a light-DOM element, for React or Vue).
+  `render` (Lit) or `mount` (a light-DOM element, for React or Vue). Every word it shows or
+  announces is replaceable (`labels`, typed `EntityTableLabels`) and resolves through Web
+  Awesome's translation registry by the table's `lang` (`registerEntityTableLabels('sv', {…})`),
+  reusing the words Web Awesome already has (`columns`, `rowsPerPage`, …); the same `lang`
+  formats its numbers and dates.
 - **`<sub-kanban>`** — cards in columns, moved between states by drag or keyboard. The card
   lifts and tilts as it is picked up, a gap opens where it will land and the others slide
   aside; columns the lifecycle refuses (`canDrop`) dim and say so; WIP limits warn, or refuse
@@ -40,6 +44,8 @@ element's attributes or slots.
   the auth endpoints (`/api/auth/*`). Every built-in part is a slot with a default, and
   `sub-sign-out` / `sub-switch-user` are cancelable. Signed out it draws "Sign in"; before
   the first session read it draws an empty circle, never "Sign in". `show="avatar|name|email"`.
+  Its words are `labels` (`UserMenuLabels`), resolved by `lang` like the table's
+  (`registerUserMenuLabels`).
 - **`<sub-avatar>`** — the same identity without a menu: picture or initials (by grapheme,
   coloured by principal), optionally the name or email beside it. Reads the session itself,
   or draws the `session` property you hand it.

@@ -22,7 +22,10 @@
  *   `session-url` (`/api/me`; empty reads nothing, for a host that sets `session`), `login-url` (`/api/auth/login`), `logout-url`
  *   (`/api/auth/logout`), `account-url` (adds "Manage account" when set),
  *   `hide-switch-user`, `placement` (default `bottom-end`).
- * Property: `session` — set it to draw a session the host already read.
+ * Properties: `session` — set it to draw a session the host already read; `labels` —
+ *   `Partial<UserMenuLabels>`, any of its words in place of the registered language's or
+ *   English (`USER_MENU_LABELS`).
+ * Function: `registerUserMenuLabels(code, labels)` — the menu's words for a language.
  * Events, both cancelable — `preventDefault()` keeps the navigation from happening:
  *   `sub-sign-out`, `sub-switch-user`. The built-in items send no `wa-select`.
  * Method: `refresh()` — read the session again.
@@ -30,6 +33,12 @@
  * Sign-out is a top-level navigation, never a `fetch`: the logout route sends the
  * browser on to the issuer, and the cookie carrying the logout hint is scoped to that
  * one path.
+ *
+ * Every word it shows or announces resolves as: its own `labels`, then the words registered
+ * for its language in Web Awesome's translation registry, then English. Its language is the
+ * nearest `lang` up from it, then the page's, then the browser's; it sets that on the Web
+ * Awesome components it draws, which would otherwise read only their own or the page's. A
+ * slotted `signed-out`, `switch-user` or `sign-out` replacement is the host's, words included.
  */
 import '@awesome.me/webawesome/dist/components/button/button.js';
 import '@awesome.me/webawesome/dist/components/divider/divider.js';
@@ -38,11 +47,45 @@ import '@awesome.me/webawesome/dist/components/dropdown-item/dropdown-item.js';
 import './avatar.js';
 import { css, html, nothing } from 'lit';
 import type { AvatarShow } from './avatar.js';
+import { LabelsController, registerLabels } from './internal/labels.js';
+import { langOf } from './internal/lang.js';
 import SubstratElement from './internal/substrat-element.js';
 import { SessionController } from './internal/session-controller.js';
 import { signInHref, switchUserHref, type Session } from './session.js';
 
 type Builtin = 'account' | 'switch-user' | 'sign-out';
+
+/** Every word the menu shows or announces. `name` is the person's display name. */
+export interface UserMenuLabels {
+  signIn: string;
+  /** The trigger's accessible name when it shows only the avatar. */
+  account(name: string): string;
+  manageAccount: string;
+  switchUser: string;
+  signOut: string;
+}
+
+/** The menu's English words: the last fallback, and a start for a translation. */
+export const USER_MENU_LABELS: Readonly<UserMenuLabels> = {
+  signIn: 'Sign in',
+  account: (name) => `Account: ${name}`,
+  manageAccount: 'Manage account',
+  switchUser: 'Switch user',
+  signOut: 'Sign out',
+};
+
+const PREFIX = 'sub-user-menu';
+
+/**
+ * Register the menu's words for a language (`'sv'`, or a region such as `'sv-FI'`) in Web
+ * Awesome's translation registry. Every menu whose language is that one uses them, unless its
+ * own `labels` says otherwise; the words not given fall back to English.
+ */
+export function registerUserMenuLabels(code: string, labels: Partial<UserMenuLabels>): void {
+  registerLabels(PREFIX, code, labels);
+}
+
+registerUserMenuLabels('en', USER_MENU_LABELS);
 
 interface SelectEvent extends Event {
   detail: { item: HTMLElement };
@@ -59,6 +102,7 @@ export class SubUserMenu extends SubstratElement {
     hideSwitchUser: { attribute: 'hide-switch-user', type: Boolean },
     placement: {},
     session: { attribute: false },
+    labels: { attribute: false },
     customTrigger: { state: true },
   };
 
@@ -72,9 +116,11 @@ export class SubUserMenu extends SubstratElement {
   declare placement: 'bottom-end' | 'bottom-start' | 'top-end' | 'top-start';
   /** `undefined`: read it. `null`: nobody. */
   declare session: Session | null | undefined;
+  declare labels: Partial<UserMenuLabels> | undefined;
   declare customTrigger: boolean;
 
   readonly #session = new SessionController(this);
+  readonly #translations = new LabelsController<UserMenuLabels>(this, PREFIX, USER_MENU_LABELS);
 
   constructor() {
     super();
@@ -86,6 +132,12 @@ export class SubUserMenu extends SubstratElement {
     this.hideSwitchUser = false;
     this.placement = 'bottom-end';
     this.customTrigger = false;
+    this.labels = undefined;
+  }
+
+  /** The nearest `lang` up from the menu, then the page's, then the browser's. */
+  get #lang(): string {
+    return langOf(this) ?? (typeof navigator === 'undefined' ? 'en' : navigator.language);
   }
 
   /** Read the session again (every element on that URL redraws). */
@@ -158,21 +210,23 @@ export class SubUserMenu extends SubstratElement {
 
   render() {
     const state = this.#session.state;
+    const lang = this.#lang;
+    const words = this.#translations.resolve(lang, this.labels);
     if (state.phase === 'loading') {
       return html`<span class="placeholder" style="width: ${this.size}; height: ${this.size}" aria-hidden="true"></span>`;
     }
     if (state.phase === 'signed-out') {
       return html`<slot name="signed-out"
-        ><wa-button size="s" variant="brand" href=${signInHref(this.#urls, here())}>Sign in</wa-button></slot
+        ><wa-button lang=${lang} size="s" variant="brand" href=${signInHref(this.#urls, here())}>${words.signIn}</wa-button></slot
       >`;
     }
     const s = state.session;
-    return html`<wa-dropdown placement=${this.placement} @wa-select=${this.#onSelect}>
+    return html`<wa-dropdown lang=${lang} placement=${this.placement} @wa-select=${this.#onSelect}>
       <button
         slot="trigger"
         class="trigger"
         part="trigger"
-        aria-label=${this.show === 'avatar' && !this.customTrigger ? `Account: ${s.display}` : nothing}
+        aria-label=${this.show === 'avatar' && !this.customTrigger ? words.account(s.display) : nothing}
       >
         <slot name="trigger" @slotchange=${this.#onTriggerSlot}
           ><sub-avatar .session=${s} show=${this.show} size=${this.size}></sub-avatar
@@ -188,19 +242,19 @@ export class SubUserMenu extends SubstratElement {
           </div>
         </div>
       </slot>
-      <wa-divider></wa-divider>
+      <wa-divider lang=${lang}></wa-divider>
       <slot name="teams"></slot>
       <slot></slot>
       ${this.accountUrl
-        ? html`<wa-dropdown-item data-builtin="account" href=${this.accountUrl}>Manage account</wa-dropdown-item>`
+        ? html`<wa-dropdown-item lang=${lang} data-builtin="account" href=${this.accountUrl}>${words.manageAccount}</wa-dropdown-item>`
         : nothing}
       <slot name="switch-user"
         >${this.hideSwitchUser
           ? nothing
-          : html`<wa-dropdown-item data-builtin="switch-user">Switch user</wa-dropdown-item>`}</slot
+          : html`<wa-dropdown-item lang=${lang} data-builtin="switch-user">${words.switchUser}</wa-dropdown-item>`}</slot
       >
-      <wa-divider></wa-divider>
-      <slot name="sign-out"><wa-dropdown-item data-builtin="sign-out">Sign out</wa-dropdown-item></slot>
+      <wa-divider lang=${lang}></wa-divider>
+      <slot name="sign-out"><wa-dropdown-item lang=${lang} data-builtin="sign-out">${words.signOut}</wa-dropdown-item></slot>
     </wa-dropdown>`;
   }
 

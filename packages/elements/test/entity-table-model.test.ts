@@ -217,6 +217,7 @@ describe('EntityTableModel', () => {
     expect(model.state.problem).toEqual({
       kind: 'refused',
       message: 'Archive: 1 of 3 done; 1 not allowed, 1 changed somewhere else.',
+      said: { kind: 'bulk', outcome: { action: 'Archive', done: 1, total: 3, refused: 1, changed: 1, failed: 0, error: null } },
     });
   });
 
