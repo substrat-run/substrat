@@ -230,6 +230,28 @@ describe('the Workers AI binding', () => {
     );
   });
 
+  it('routes the call through AI Gateway with the attribution, and keeps no log of it (#3320)', async () => {
+    // Without a gateway a binding call is a plain Workers AI call: it carries a model and
+    // neurons and nothing that names a tenant, scope or vertical.
+    const seen: unknown[] = [];
+    const recording = {
+      run: async (_model: string, _inputs: unknown, options: unknown) => {
+        seen.push(options);
+        return { response: 'bound', usage: { prompt_tokens: 9, completion_tokens: 1 } };
+      },
+    };
+    const spec = 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fast';
+    const run = await createModelHost({ env: {}, aiBinding: recording }).run({ spec, attribution, prompt: 'hi', maxRetries: 0 });
+    expect(run.text).toBe('bound');
+    expect(seen).toEqual([
+      expect.objectContaining({ gateway: { id: 'default', metadata: { ...attribution }, collectLog: false } }),
+    ]);
+
+    // A gateway the platform named is the one the call goes through.
+    await createModelHost({ env: { CLOUDFLARE_AI_GATEWAY_ID: 'substrat' }, aiBinding: recording }).run({ spec, attribution, prompt: 'hi', maxRetries: 0 });
+    expect(seen[1]).toMatchObject({ gateway: { id: 'substrat' } });
+  });
+
   it('leaves every other row alone — the binding is one row’s transport, not a global', () => {
     const bound = createModelHost({ env: {}, aiBinding });
     expect(bound.status('scaleway:llama-3.3-70b-instruct')).toMatchObject({

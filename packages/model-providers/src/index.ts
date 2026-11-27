@@ -33,7 +33,13 @@ export {
 } from './resolve.js';
 export { listModels } from './list-models.js';
 export { hostOf, isLoopbackHost } from './host.js';
-export { requestHeadersFor, type RequestExtrasInput, type WireAttribution } from './request.js';
+export {
+	bindingGatewayFor,
+	requestHeadersFor,
+	type BindingGateway,
+	type RequestExtrasInput,
+	type WireAttribution,
+} from './request.js';
 export {
 	hostingInfo,
 	providerCatalog,
