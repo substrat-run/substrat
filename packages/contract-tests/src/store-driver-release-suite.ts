@@ -82,12 +82,12 @@ export function storeDriverReleaseContractSuite(adapterName: string, makeFixture
       const body = {
         driver, sha256, reason: 'Read the bundle',
         sourceReferences: [{ repository: 'https://example.test/driver.git', commit: commit('c') }],
-        isolationReview: review, schema: 1, className: 'Store', operations: ['read'],
+        isolationReview: review, schema: 1, foundation: 3, className: 'Store', operations: ['read'],
       };
       await expectRefusal(host.admin.approveStoreDriverRelease(staff, body), 'not_found');
       await host.admin.recordStoreDriverRelease(staff, { driver, sha256, sourceCommit: commit('c') });
       const first = await host.admin.approveStoreDriverRelease(staff, body);
-      expect(first).toMatchObject({ driver, sha256, sourceCommit: commit('c'), approvedBy: staff, revokedAt: null });
+      expect(first).toMatchObject({ driver, sha256, sourceCommit: commit('c'), approvedBy: staff, schema: 1, foundation: 3, revokedAt: null });
       await expectRefusal(host.admin.approveStoreDriverRelease(staff, body), 'conflict');
       const holder = ulid();
       expect(await host.admin.holdStoreDriver(staff, { driver, holder, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
@@ -97,6 +97,10 @@ export function storeDriverReleaseContractSuite(adapterName: string, makeFixture
       expect(revoked).toMatchObject({ revokedBy: staff, revokedReason: 'Withdraw', revokedEmergency: false });
       expect(await host.admin.storeDriverRevokeWalk(staff, first.approvalId)).toBeUndefined();
       await expectRefusal(host.admin.approveStoreDriverRelease(staff, { ...body, schema: 2 }), 'conflict');
+      // #3175: the foundation is fixed with the schema, and leaving it out is a different fact.
+      await expectRefusal(host.admin.approveStoreDriverRelease(staff, { ...body, foundation: 4 }), 'conflict');
+      const { foundation: _stated, ...withoutFoundation } = body;
+      await expectRefusal(host.admin.approveStoreDriverRelease(staff, withoutFoundation), 'conflict');
       const second = await host.admin.approveStoreDriverRelease(staff, body);
       expect(second.approvalId).not.toBe(first.approvalId);
       expect(await host.admin.storeDriverApprovals(staff, driver)).toEqual([revoked, second]);

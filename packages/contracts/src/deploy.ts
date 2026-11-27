@@ -985,10 +985,15 @@ export type StoreWipeResult = z.infer<typeof storeWipeResult>;
 
 /**
  * `substrat.selfcheck` takes no input. The driver builds its whole runtime and only then answers,
- * with the catalog operations that runtime serves (#2814). The rollout's canary compares them with
- * the catalog the release's approval records.
+ * with the catalog operations that runtime serves (#2814), and, for a driver that rewrites its own
+ * level-0 foundation in place when it wakes a store, the foundation version the code brings (#3175).
+ * A driver with no foundation leaves `foundation` out. The rollout's canary compares both with the
+ * facts the release's approval records.
  */
-export const storeSelfcheckResult = z.object({ operations: z.array(storeCatalogOperation) });
+export const storeSelfcheckResult = z.object({
+  operations: z.array(storeCatalogOperation),
+  foundation: z.number().int().nonnegative().optional(),
+});
 export type StoreSelfcheckResult = z.infer<typeof storeSelfcheckResult>;
 
 /**

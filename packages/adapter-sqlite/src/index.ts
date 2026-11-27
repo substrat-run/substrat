@@ -14992,6 +14992,8 @@ export class SqliteScopeHost implements ScopeHost {
     // #3321: a line counting something other than tokens; NULL on every token line.
     this.ensureColumn(this.directory, '_substrat_model_usage', 'unit', 'unit TEXT');
     this.ensureColumn(this.directory, '_substrat_model_usage', 'quantity', 'quantity INTEGER');
+    // #3175: the foundation version a store-driver release brings; NULL on every older approval.
+    this.ensureColumn(this.directory, 'store_driver_approvals', 'foundation', 'foundation INTEGER');
     // builder-plane.md Phase 1b: who owns a vertical (NULL = platform-owned).
     this.ensureColumn(this.directory, 'verticals', 'owner_tenant', 'owner_tenant TEXT');
     this.ensureColumn(this.directory, 'verticals', 'env_spec', 'env_spec TEXT');

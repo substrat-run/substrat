@@ -48,6 +48,7 @@ import {
 import { assertPythonDriverModules } from './store-entry.js';
 import {
   approvalFactsOf,
+  loweredFactOf,
   canaryFixtureOf,
   liveApprovalOf,
   type ScopeStoreEnsurerOptions,
@@ -401,7 +402,8 @@ const dumpText = (tables: readonly object[]) =>
  * is no vertical's. Each answer is parsed by the call and asserted here; the first that is wrong
  * fails the canary. The object starts empty, takes the release's own fixture (#2814) and must
  * export it back unchanged, then builds its runtime over that data (`substrat.selfcheck`) and
- * must serve exactly the catalog the release's approval records. The object is wiped at the end.
+ * must serve exactly the catalog the release's approval records, and report exactly the foundation
+ * it records (#3175), or none when it records none. The object is wiped at the end.
  *
  * The dump moves in pages (D-69) through the kernel's own `readStoreDump` and `writeStoreDumpPages`,
  * the reader and the writer a backup and a restore use, at the smallest page the contract allows.
@@ -417,6 +419,8 @@ export async function canaryStoreRelease(input: {
   fixture: Uint8Array | undefined;
   /** The catalog the release's approval records. */
   operations: readonly string[];
+  /** The foundation version the release's approval records (#3175); null for a driver with none. */
+  foundation?: number | null;
   binding?: string;
 }): Promise<void> {
   const fixture = canaryFixtureOf(input.fixture);
@@ -475,11 +479,18 @@ export async function canaryStoreRelease(input: {
   await step('substrat.stage-page', staged(false, 'staged a page it already held'), { stageId: dropped, seq: 0, tables: pages[0] });
   await step('substrat.discard-stage', (a) => ((a as { discarded: boolean }).discarded ? null : 'did not discard a stage it held'), { stageId: dropped });
   const approved = [...input.operations].sort();
+  const foundation = input.foundation ?? null;
   await step('substrat.selfcheck', (a) => {
-    const served = [...(a as { operations: string[] }).operations].sort();
-    return JSON.stringify(served) === JSON.stringify(approved)
+    const answer = a as { operations: string[]; foundation?: number };
+    const served = [...answer.operations].sort();
+    if (JSON.stringify(served) !== JSON.stringify(approved)) {
+      return `serves [${served.join(', ')}], and the approval records [${approved.join(', ')}]`;
+    }
+    // #3175: the foundation the code brings is the one the approver read, or both say there is none.
+    const reported = answer.foundation ?? null;
+    return reported === foundation
       ? null
-      : `serves [${served.join(', ')}], and the approval records [${approved.join(', ')}]`;
+      : `reports foundation ${reported ?? 'none'}, and the approval records ${foundation ?? 'none'}`;
   });
   await step('substrat.erase', (a) => ((a as { erased: number }).erased === 0 ? null : 'erased rows of a subject the object never held'), { subjectId: ulid() });
   await step('substrat.wipe', ok);
@@ -529,12 +540,12 @@ class HoldLost extends ControlPlaneError {
 /**
  * Move every script of a driver to a stored, approved release (D-63, D-65): hold, then the
  * approvals read and judged under it, then the canary, then each vertical. The target needs a live
- * approval (422), and its `schema` is never below that of the current release, which is judged
+ * approval (422), and its `schema` and `foundation` are never below the current release's, which is judged
  * from its approval facts even when it has been revoked (409). Both are judged under the exclusive
  * hold, so a revoke written before it is seen and none can be written during it. A failure after a vertical moved returns every vertical the attempt reached to the
  * release the rollout started from, rehashing those bytes as it uploads them, and ends `failed`.
  * It ends `diverged` instead, naming what is where, when there is nothing to return to (a driver's
- * first rollout), when returning would lower the stored schema, when the attempt reached more
+ * first rollout), when returning would lower the stored schema or foundation, when the attempt reached more
  * verticals than one request returns, or when a return fails: the next rollout or rollback
  * converges every script. The hold is renewed before every upload, the returns included, and a
  * hold that cannot be renewed stops everything at once: another holder may be moving the same
@@ -570,8 +581,13 @@ export async function runStoreDriverRollout(deps: StoreDriverRolloutDeps): Promi
     if (current && current.sha256 !== sha256) {
       const leaving = approvalFactsOf(approvals, current.sha256);
       if (!leaving) throw new ControlPlaneError(409, `the current release ${current.sha256} of '${driver}' was never approved, so its schema cannot be judged`);
-      if (approved.schema < leaving.schema) {
-        throw new ControlPlaneError(409, `release ${sha256} has schema ${approved.schema}, below the current release's ${leaving.schema}: objects may already have migrated`);
+      const lowered = loweredFactOf(approved, leaving);
+      if (lowered) {
+        throw new ControlPlaneError(
+          409,
+          `release ${sha256} has ${lowered.fact} ${lowered.to ?? 'none'}, below the current release's ${lowered.from}: ` +
+            (lowered.fact === 'schema' ? 'objects may already have migrated' : 'objects may already hold its foundation'),
+        );
       }
     }
     const walkMax = deps.perRequestWalks ?? ROLLOUT_WALKS_PER_REQUEST;
@@ -592,7 +608,7 @@ export async function runStoreDriverRollout(deps: StoreDriverRolloutDeps): Promi
 
     try {
       const { scriptName, fixture } = await deps.ensureCanary(sha256, approvals);
-      await canaryStoreRelease({ call: deps.callCanary, scriptName, fixture, operations: approved.operations });
+      await canaryStoreRelease({ call: deps.callCanary, scriptName, fixture, operations: approved.operations, foundation: approved.foundation });
     } catch (e) {
       // No vertical's script moved in this request; the current release stays. A row the end
       // cannot write (the hold lapsed) reads as diverged, which is what it then is.
@@ -671,12 +687,12 @@ async function restore(
   if (!returnTo) {
     return { state: 'diverged', text: `${from} has no live approval to return to, so ${all} may run ${deps.sha256}.` };
   }
-  const leaving = approvalFactsOf(approvals, deps.sha256)?.schema;
-  const returning = returnTo.schema;
-  if (leaving === undefined || returning < leaving) {
+  const leaving = approvalFactsOf(approvals, deps.sha256);
+  const lowered = leaving ? loweredFactOf(returnTo, leaving) : { fact: 'schema' as const, from: undefined, to: returnTo.schema };
+  if (lowered) {
     return {
       state: 'diverged',
-      text: `Returning to ${from} would lower the stored schema (${leaving} to ${returning}), so ${all} may run ${deps.sha256}.`,
+      text: `Returning to ${from} would lower the stored ${lowered.fact} (${lowered.from} to ${lowered.to ?? 'none'}), so ${all} may run ${deps.sha256}.`,
     };
   }
   const max = deps.perRequestWalks ?? ROLLOUT_WALKS_PER_REQUEST;

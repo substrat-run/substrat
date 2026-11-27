@@ -41,8 +41,12 @@ describe('store-driver approval CLI input', () => {
       const review = join(dir, 'review.json');
       writeFileSync(sources, JSON.stringify(body().sourceReferences));
       writeFileSync(review, JSON.stringify(body().isolationReview));
-      expect(approvalFromFiles({ reason: body().reason, sourceReferencesFile: sources,
-        isolationReviewFile: review, schema: '0', className: 'Store', operations: ['read', 'graph.lookup'] })).toEqual(body());
+      const files = { reason: body().reason, sourceReferencesFile: sources, isolationReviewFile: review, schema: '0',
+        className: 'Store', operations: ['read', 'graph.lookup'] };
+      expect(approvalFromFiles(files)).toEqual(body());
+      // #3175: a driver with a foundation states it beside the schema; one without leaves it out.
+      expect(approvalFromFiles({ ...files, foundation: '4' })).toEqual({ ...body(), foundation: 4 });
+      for (const foundation of ['', '-1', '1.5', '04']) expect(() => approvalFromFiles({ ...files, foundation })).toThrow(/foundation/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -77,6 +81,10 @@ describe('store-driver approval CLI input', () => {
       expect(() => validateStoreDriverApproval({ ...body(), className })).toThrow(/className/);
     }
     expect(() => validateStoreDriverApproval({ ...body(), operations: ['read:name'] })).toThrow(/operations/);
+    expect(validateStoreDriverApproval({ ...body(), foundation: 0 })).toEqual({ ...body(), foundation: 0 });
+    for (const foundation of [-1, 1.5, '1', null]) {
+      expect(() => validateStoreDriverApproval({ ...body(), foundation })).toThrow(/foundation/);
+    }
     expect(() => validateStoreDriverApproval({ ...body(), isolationReview: { ...body().isolationReview, extra: true } })).toThrow();
   });
 });
@@ -87,11 +95,17 @@ describe('store-driver approval CLI output and revoke continuation', () => {
     expect(uploadApprovalLine('graph', sha256)).toContain('upload alone does not make these bytes runnable');
     expect(approvalLines({ approval: approval(), currentSchema: null })).toEqual([
       `✓ approved graph ${sha256} (approval approval-1)`, '  schema 0; current good schema none',
+      '  foundation none; current good foundation none',
     ]);
-    const lines = approvalStatusLines({ driver: 'graph', pins: [], current: null, rollouts: [], rollbackTarget: null,
-      unfinishedRollback: null, approvals: [approval(), approval(true)] });
-    expect(lines).toHaveLength(2);
+    expect(approvalLines({ approval: { ...approval(), foundation: 3 }, currentSchema: 0, currentFoundation: 2 })[2])
+      .toBe('  foundation 3; current good foundation 2');
+    const lines = approvalStatusLines({ driver: 'graph', pins: [], current: { sha256, seq: 1, previousGoodSha256: null },
+      rollouts: [], rollbackTarget: null, unfinishedRollback: null, approvals: [{ ...approval(), foundation: 3 }, approval(true)] });
+    expect(lines).toHaveLength(3);
     expect(lines[0]).toContain('live');
+    expect(lines[0]).toContain('schema 0, foundation 3');
+    // The facts a move is judged against: the current good release's.
+    expect(lines[2]).toBe(`  current good release ${sha256}: schema 0, foundation 3`);
     expect(lines[1]).toContain('revoked');
     expect(lines[1]).toContain('Rolled back');
   });

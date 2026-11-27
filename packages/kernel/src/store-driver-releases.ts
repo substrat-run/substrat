@@ -65,7 +65,10 @@ export const STORE_DRIVER_RELEASES_DDL = `
     revoked_by        TEXT,
     revoked_at        TEXT,
     revoked_reason    TEXT,
-    revoked_emergency INTEGER
+    revoked_emergency INTEGER,
+    -- #3175: the level-0 foundation version the release brings; NULL for a driver with none, and
+    -- on every approval written before the column. Added by ALTER on a directory that predates it.
+    foundation        INTEGER
   );
   CREATE UNIQUE INDEX IF NOT EXISTS store_driver_approvals_one_live
     ON store_driver_approvals (driver, sha256) WHERE revoked_at IS NULL;
@@ -278,6 +281,12 @@ export interface StoreDriverApprovalRecord {
   readonly sourceReferences: readonly { readonly repository: string; readonly commit: string }[];
   readonly isolationReview: Readonly<Record<string, unknown>>;
   readonly schema: number;
+  /**
+   * The foundation version the release brings (#3175): a driver that rewrites its own foundation in
+   * place when it wakes a store, which no earlier release can undo. Null for a driver with none,
+   * and on an approval written before the field existed.
+   */
+  readonly foundation: number | null;
   readonly className: string;
   readonly operations: readonly string[];
   readonly revokedBy: string | null;
@@ -408,12 +417,12 @@ interface ApprovalRow {
   approved_by: string; approved_at: string; reason: string; source_references: string;
   isolation_review: string; schema: number; class_name: string; operations: string;
   revoked_by: string | null; revoked_at: string | null; revoked_reason: string | null;
-  revoked_emergency: number | null;
+  revoked_emergency: number | null; foundation: number | null;
 }
 
 const APPROVAL_COLUMNS = `approval_id, driver, sha256, source_commit, approved_by, approved_at, reason,
   source_references, isolation_review, schema, class_name, operations,
-  revoked_by, revoked_at, revoked_reason, revoked_emergency`;
+  revoked_by, revoked_at, revoked_reason, revoked_emergency, foundation`;
 
 const approvalOf = (row: ApprovalRow): StoreDriverApprovalRecord => ({
   approvalId: row.approval_id,
@@ -426,6 +435,7 @@ const approvalOf = (row: ApprovalRow): StoreDriverApprovalRecord => ({
   sourceReferences: JSON.parse(row.source_references) as StoreDriverApprovalRecord['sourceReferences'],
   isolationReview: JSON.parse(row.isolation_review) as StoreDriverApprovalRecord['isolationReview'],
   schema: Number(row.schema),
+  foundation: row.foundation === null ? null : Number(row.foundation),
   className: row.class_name,
   operations: JSON.parse(row.operations) as string[],
   revokedBy: row.revoked_by,
@@ -444,13 +454,14 @@ export function liveStoreDriverApprovalIn(db: SwitchSql, driver: string, sha256:
   return row ? approvalOf(row) : undefined;
 }
 
-/** The first approval fixes schema, class and catalog for these bytes forever. */
+/** The first approval fixes schema, foundation, class and catalog for these bytes forever. */
 export function approveStoreDriverReleaseIn(db: SwitchSql, input: {
   driver: string; sha256: string; approvalId: string; actor: string; at: string; reason: string;
   sourceReferences: StoreDriverApprovalRecord['sourceReferences'];
   isolationReview: StoreDriverApprovalRecord['isolationReview'];
-  schema: number; className: string; operations: readonly string[];
+  schema: number; foundation?: number; className: string; operations: readonly string[];
 }): StoreDriverApprovalRecord {
+  const foundation = input.foundation ?? null;
   const stored = storeDriverReleaseIn(db, input.driver, input.sha256);
   if (!stored) throw substratError('not_found', `release ${input.sha256} of '${input.driver}' is not stored`);
   if (liveStoreDriverApprovalIn(db, input.driver, input.sha256)) {
@@ -458,15 +469,15 @@ export function approveStoreDriverReleaseIn(db: SwitchSql, input: {
   }
   const [first] = db.all(`SELECT ${APPROVAL_COLUMNS} FROM store_driver_approvals
     WHERE driver = ? AND sha256 = ? ORDER BY approved_at, approval_id LIMIT 1`, input.driver, input.sha256) as unknown as ApprovalRow[];
-  if (first && (Number(first.schema) !== input.schema || first.class_name !== input.className ||
-    first.operations !== JSON.stringify(input.operations))) {
-    throw substratError('conflict', `release ${input.sha256} of '${input.driver}' has fixed schema, class and operations from its first approval`);
+  if (first && (Number(first.schema) !== input.schema || approvalOf(first).foundation !== foundation ||
+    first.class_name !== input.className || first.operations !== JSON.stringify(input.operations))) {
+    throw substratError('conflict', `release ${input.sha256} of '${input.driver}' has fixed schema, foundation, class and operations from its first approval`);
   }
   db.run(`INSERT INTO store_driver_approvals (${APPROVAL_COLUMNS})
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)`,
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)`,
   input.approvalId, input.driver, input.sha256, stored.sourceCommit, input.actor, input.at,
   input.reason, JSON.stringify(input.sourceReferences), JSON.stringify(input.isolationReview),
-  input.schema, input.className, JSON.stringify(input.operations));
+  input.schema, input.className, JSON.stringify(input.operations), foundation);
   return liveStoreDriverApprovalIn(db, input.driver, input.sha256)!;
 }
 

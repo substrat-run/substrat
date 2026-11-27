@@ -102,6 +102,24 @@ export function approvalFactsOf(approvals: StoreDriverApprovals, sha256: string)
   return approvals.records.find((a) => a.sha256 === sha256);
 }
 
+/**
+ * Which approved fact a move from the release `running` to `target` would lower, or null when
+ * neither is lowered (D-65, #3175). A store's objects may already hold what `running` wrote: its
+ * migrations (`schema`) and the level-0 foundation a driver rewrites in place when it wakes one
+ * (`foundation`). Neither can be undone by running earlier code. A target that states no foundation
+ * lowers a running release that states one, since its objects already carry it.
+ */
+export function loweredFactOf(
+  target: Pick<StoreDriverApprovalRecord, 'schema' | 'foundation'>,
+  running: Pick<StoreDriverApprovalRecord, 'schema' | 'foundation'>,
+): { fact: 'schema' | 'foundation'; from: number; to: number | null } | null {
+  if (target.schema < running.schema) return { fact: 'schema', from: running.schema, to: target.schema };
+  if (running.foundation !== null && (target.foundation === null || target.foundation < running.foundation)) {
+    return { fact: 'foundation', from: running.foundation, to: target.foundation };
+  }
+  return null;
+}
+
 /** One release of a driver's code, as the publish flow stores it (#2297). */
 export interface StoreDriverReleaseArtifact extends PythonStoreDriverRelease {
   /** The commit the bundle was built from. A reviewer reads it; the upload checks the sha256. */
@@ -179,8 +197,9 @@ async function buildDigest(script: PythonStoreScript): Promise<string> {
  * has no live approval (D-65), or that are not the release asked for. That holds for a rebuild
  * where the script stands too, so a script running a revoked release is not uploaded again until a
  * rollout moves it. A driver with no release to run is refused (409). A script is never moved to a
- * release whose approved `schema` is lower than that of the release it runs (409), judged from that
- * release's approval facts, revoked or not: its objects may have migrated. The class the entry loads
+ * release whose approved `schema` or `foundation` is lower than that of the release it runs (409,
+ * {@link loweredFactOf}), judged from that release's approval facts, revoked or not: its objects may
+ * have migrated, or had their foundation rewritten in place. The class the entry loads
  * is the approval's. The runtime's own failures are 502. Answers how many scripts were uploaded.
  */
 export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
@@ -294,11 +313,12 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
       if (!running) {
         throw new ControlPlaneError(409, `store script '${script.scriptName}' runs ${current.release}, which was never approved, so its schema cannot be judged`);
       }
-      if (approval.schema < running.schema) {
+      const lowered = loweredFactOf(approval, running);
+      if (lowered) {
         throw new ControlPlaneError(
           409,
-          `store script '${script.scriptName}' runs schema ${running.schema}; release ${sha256} has schema ${approval.schema}, and a script never moves to a lower one. ` +
-            `To undo a schema-raising rollout that stopped part way, converge it forward: post that rollout again`,
+          `store script '${script.scriptName}' runs ${lowered.fact} ${lowered.from}; release ${sha256} has ${lowered.fact} ${lowered.to ?? 'none'}, and a script never moves to a lower one. ` +
+            `To undo a ${lowered.fact}-raising rollout that stopped part way, converge it forward: post that rollout again`,
         );
       }
     }

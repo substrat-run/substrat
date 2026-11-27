@@ -39,6 +39,7 @@ import {
   type CanaryCall,
 } from '../src/index.js';
 import { STORE_REQUEST_BUDGET } from '../src/store-move.js';
+import { loweredFactOf } from '../src/store-script.js';
 
 const storedBytes = (objects: Map<string, Uint8Array>) => ({
   get: async (key: string) => objects.get(key),
@@ -318,6 +319,19 @@ describe('the canary runs every reserved operation on a fresh platform object (D
         message: expect.stringMatching(/selfcheck serves .*, and the approval records \[increment, read\]/),
       });
     }
+    // #3175: the foundation the code reports is the approved one, or neither states one.
+    const reports = (foundation: number) => ({ 'substrat.selfcheck': (a: unknown) => ({ ...(a as object), foundation }) });
+    for (const [fail, approved, pattern] of [
+      [reports(3), null, /reports foundation 3, and the approval records none/],
+      [{}, 3, /reports foundation none, and the approval records 3/],
+      [reports(2), 3, /reports foundation 2, and the approval records 3/],
+    ] as const) {
+      expect(await refusal(canary(canaryStore(fail, ['increment', 'read']).call, { foundation: approved }))).toMatchObject({
+        status: 502,
+        message: expect.stringMatching(pattern),
+      });
+    }
+    await canary(canaryStore(reports(3), ['increment', 'read']).call, { foundation: 3 });
     // A page sent again that is staged a second time: the resend must answer it already held.
     let stagings = 0;
     const twice = canaryStore({ 'substrat.stage-page': (a) => (++stagings === 5 ? { staged: true } : a) }, ['increment', 'read']);
@@ -980,6 +994,8 @@ describe('the release routes: a person stores, approves and rolls out a release 
   const unreadableScripts = new Set<string>();
   /** Moves that fail, as `<vertical>:<release n>`. */
   const failMoves = new Set<string>();
+  /** The foundation each release's code reports in its selfcheck (#3175), by sha256; none when absent. */
+  const foundations = new Map<string, number>();
 
   const appWith = (humanStaffActor?: (r: Request) => Promise<PlatformActorId | null>) =>
     createControlPlaneApi({
@@ -1006,7 +1022,12 @@ describe('the release routes: a person stores, approves and rolls out a release 
           if (unreadableScripts.has(scriptName)) throw new Error('settings unavailable');
           return scripts.has(scriptName) ? { exists: true, release: scripts.get(scriptName) } : { exists: false };
         },
-        callCanary: canaryStore().call,
+        callCanary: canaryStore({
+          'substrat.selfcheck': (a) => {
+            const foundation = foundations.get(scripts.get('substrat-store-graph--canary') ?? '');
+            return foundation === undefined ? a : { ...(a as object), foundation };
+          },
+        }).call,
       },
     });
   const asPerson = async (r: Request) => (r.headers.get(DEV_ACTOR_HEADER) === person ? person : null);
@@ -1031,6 +1052,7 @@ describe('the release routes: a person stores, approves and rolls out a release 
     scripts.clear();
     unreadableScripts.clear();
     failMoves.clear();
+    foundations.clear();
     shas = [await storeDriverReleaseDigest(bundle(1)), await storeDriverReleaseDigest(bundle(2)), await storeDriverReleaseDigest(bundle(3))];
     await host.admin.registerVertical(person, { slug: 'va', name: 'va', source: 'cli' });
     const id = ulid();
@@ -1466,7 +1488,7 @@ describe('the release routes: a person stores, approves and rolls out a release 
     expect(await pins()).toEqual([]);
     expect((await call(app, 'POST', `/store-drivers/graph/releases/${shas[0]}/approvals`, person, reviewed(0))).status).toBe(201);
     expect(await upload()).toMatchObject({ pinned: true, approved: true });
-    expect(await pins()).toEqual([{ sha256: shas[0], sourceCommit: COMMIT, schema: 0 }]);
+    expect(await pins()).toEqual([{ sha256: shas[0], sourceCommit: COMMIT, schema: 0, foundation: null }]);
     expect((await call(app, 'POST', `/store-drivers/graph/releases/${shas[0]}/revoke`, person, { reason: 'Withdraw', emergency: true })).status).toBe(200);
     expect(await upload()).toMatchObject({ pinned: false, approved: false });
     expect(await pins()).toEqual([]);
@@ -1480,6 +1502,36 @@ describe('the release routes: a person stores, approves and rolls out a release 
     expect(unapproved.status).toBe(422);
     expect(await unapproved.text()).toMatch(/no live approval/);
     expect(moves).toEqual([]);
+  });
+
+  it('never moves below the stored foundation, at an unchanged schema (#3175)', async () => {
+    const app = appWith(asPerson);
+    const approve = (n: number, foundation: number) =>
+      call(app, 'POST', `/store-drivers/graph/releases/${shas[n - 1]}/approvals`, person, { ...reviewed(0), foundation });
+    for (const n of [1, 2]) {
+      foundations.set(shas[n - 1]!, n);
+      expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(n)))).status).toBe(201);
+      const approved = await approve(n, n);
+      expect(approved.status).toBe(201);
+      // The approver sees the release's foundation beside the current good one.
+      expect(await approved.json()).toMatchObject({ approval: { foundation: n }, currentFoundation: n === 1 ? null : 1 });
+      expect((await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[n - 1] })).status).toBe(200);
+    }
+    expect(moves).toEqual(['va:1', 'va:2']);
+    // 2 → 1 lowers the foundation (2 to 1), though both are schema 0: refused either way, nothing moves.
+    const below = await call(app, 'POST', '/store-drivers/graph/rollback', person);
+    expect(below.status).toBe(409);
+    expect(await below.text()).toMatch(/foundation 1, below the current release's 2/);
+    expect((await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[0] })).status).toBe(409);
+    expect(moves).toEqual(['va:1', 'va:2']);
+    // A release whose code reports a foundation other than its approval's fails its canary.
+    foundations.set(shas[2]!, 2);
+    expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(3)))).status).toBe(201);
+    expect((await approve(3, 3)).status).toBe(201);
+    const canaried = await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[2] });
+    expect(canaried.status).toBe(502);
+    expect(await canaried.text()).toMatch(/reports foundation 2, and the approval records 3/);
+    expect(moves).toEqual(['va:1', 'va:2']);
   });
 
   it('rolls back to the immediately previous good release, and never below the stored schema', async () => {
@@ -1692,6 +1744,27 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
     expect(release('substrat-store-graph--canary')).toBe(await storeDriverReleaseDigest(bundle(1)));
   });
 
+  it('refuses to move a script below the foundation it runs, at an unchanged schema (#3175)', async () => {
+    const [s1, s2] = [await storeDriverReleaseDigest(bundle(1)), await storeDriverReleaseDigest(bundle(2))];
+    const keys = { caller: (await generateScopeStoreKeyPair()).publicKey, platform: (await generateScopeStoreKeyPair()).publicKey };
+    const approval = (sha256: string, foundation: number) => ({
+      approvalId: ulid(), driver: 'graph', sha256, sourceCommit: COMMIT, approvedBy: person, approvedAt: '2026-11-27T00:00:00.000Z',
+      ...reviewed(0), foundation, revokedBy: null, revokedAt: null, revokedReason: null, revokedEmergency: null,
+    });
+    const ensure = createScopeStoreEnsurer({
+      accountId: 'a', namespace: 'n', apiToken: 't', callerPublicKeys: [keys.caller], platformPublicKeys: [keys.platform], drivers: [GRAPH],
+      loadRelease: async ({ sha256 }) => (sha256 === s1 ? { ...bundle(1), sha256: s1 } : { ...bundle(2), sha256: s2 }),
+      approvals: { registration: GRAPH, records: [approval(s1, 1), approval(s2, 2)] },
+    });
+    // va's script runs 2, whose objects may already hold foundation 2.
+    scripts.set('substrat-store-graph-va', [{ name: STORE_RELEASE_VAR, text: s2 }]);
+    expect(await refusal(ensure({ vertical: 'va', stores: [{ binding: 'GRAPH', driver: 'graph' }], to: s1 }))).toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/runs foundation 2; release .* has foundation 1, and a script never moves to a lower one/),
+    });
+    expect(release('substrat-store-graph-va')).toBe(s2);
+  });
+
   it('refuses to undo a diverged schema raise by re-posting the lower release', async () => {
     const [s1, s2] = [await storeDriverReleaseDigest(bundle(1)), await storeDriverReleaseDigest(bundle(2))];
     const registration = GRAPH;
@@ -1844,5 +1917,23 @@ describe('a Python release may carry python_modules (#2390)', () => {
     } catch (e) {
       expect(e).toMatchObject({ status: 422, message: expect.stringMatching(/not a store driver release/) });
     }
+  });
+});
+
+describe('a move never lowers a fact a store may already hold (D-65, #3175)', () => {
+  it('judges the schema first, then the foundation, and a foundation left out as below any stated one', () => {
+    const at = (schema: number, foundation: number | null) => ({ schema, foundation });
+    const cases: [target: ReturnType<typeof at>, running: ReturnType<typeof at>, lowered: ReturnType<typeof loweredFactOf>][] = [
+      [at(1, 5), at(1, 5), null],
+      [at(2, 6), at(1, 5), null],
+      // A driver with no foundation, and an approval from before the field: nothing to lower.
+      [at(1, null), at(1, null), null],
+      [at(1, 3), at(1, null), null],
+      [at(0, 9), at(1, 5), { fact: 'schema', from: 1, to: 0 }],
+      [at(1, 4), at(1, 5), { fact: 'foundation', from: 5, to: 4 }],
+      // Its objects already carry foundation 5; code that states none cannot be judged to read them.
+      [at(1, null), at(1, 5), { fact: 'foundation', from: 5, to: null }],
+    ];
+    for (const [target, running, lowered] of cases) expect(loweredFactOf(target, running), JSON.stringify([target, running])).toEqual(lowered);
   });
 });

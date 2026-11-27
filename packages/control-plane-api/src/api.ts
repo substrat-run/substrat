@@ -14779,6 +14779,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       noModuleStateChecked: checkedEvidence,
     }).strict(),
     schema: z.number().int().min(0),
+    // #3175: the level-0 foundation version the release brings, beside its schema; left out by a
+    // driver with none. Fixed at the first approval of the bytes, like the schema.
+    foundation: z.number().int().min(0).optional(),
     className: approvalClassName,
     operations: z.array(approvalOperation).max(256),
   }).strict();
@@ -14786,7 +14789,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const approvalPathParts = new Set([
     'reason', 'sourceReferences', 'repository', 'commit', 'isolationReview', 'separateScriptPerTenant',
     'noOutboundAccess', 'envelopeVerifiedOutsideDriver', 'envelopeChecked', 'reservedOperationsChecked',
-    'noModuleStateChecked', 'met', 'checked', 'evidence', 'schema', 'className', 'operations', 'emergency',
+    'noModuleStateChecked', 'met', 'checked', 'evidence', 'schema', 'foundation', 'className', 'operations', 'emergency',
   ]);
   const issueCodes: Record<string, string> = {
     unrecognized_keys: 'unrecognized_key', invalid_type: 'invalid_type', too_small: 'out_of_range',
@@ -14887,7 +14890,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // `pins` stays for released CLIs (RFC §5 step 3): the releases a move may go to now, one per live approval.
     const pins = approvals.records
       .filter((a) => liveApprovalOf(approvals, a.sha256) === a)
-      .map((a) => ({ sha256: a.sha256, sourceCommit: a.sourceCommit, schema: a.schema }));
+      .map((a) => ({ sha256: a.sha256, sourceCommit: a.sourceCommit, schema: a.schema, foundation: a.foundation }));
     return c.json({ driver: registration.driver, pins, approvals: approvals.records, ...state, ...(rebuild ? { rebuild } : {}) });
   });
 
@@ -14922,8 +14925,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const state = await c.var.admin.storeDriverState(actor, registration.driver);
     const approvals = state.current ? await c.var.admin.storeDriverApprovals(actor, registration.driver) : [];
     // The current release's approval facts, revoked or not: they are fixed at its first approval.
-    const currentSchema = state.current ? approvals.find((a) => a.sha256 === state.current!.sha256)?.schema ?? null : null;
-    return c.json({ approval, currentSchema }, 201);
+    const current = state.current ? approvals.find((a) => a.sha256 === state.current!.sha256) : undefined;
+    return c.json({ approval, currentSchema: current?.schema ?? null, currentFoundation: current?.foundation ?? null }, 201);
   });
 
   app.post('/store-drivers/:driver/releases/:sha256/revoke', async (c) => {

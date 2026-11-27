@@ -2223,6 +2223,8 @@ export class ControlPlaneDO extends DurableObject {
     // #3321: a line counting something other than tokens; NULL on every token line.
     this.addColumn('_substrat_model_usage', 'unit TEXT');
     this.addColumn('_substrat_model_usage', 'quantity INTEGER');
+    // #3175: the foundation version a store-driver release brings; NULL on every older approval.
+    this.addColumn('store_driver_approvals', 'foundation INTEGER');
   }
 
   /**
@@ -3329,7 +3331,7 @@ export class ControlPlaneDO extends DurableObject {
     driver: string; sha256: string; reason: string;
     sourceReferences: StoreDriverApprovalRecord['sourceReferences'];
     isolationReview: StoreDriverApprovalRecord['isolationReview'];
-    schema: number; className: string; operations: readonly string[]; actor: string; at: string;
+    schema: number; foundation?: number; className: string; operations: readonly string[]; actor: string; at: string;
   }, audit: AdminEntryInput): StoreDriverApprovalRecord {
     let record!: StoreDriverApprovalRecord;
     this.writeAndAudit(() => {

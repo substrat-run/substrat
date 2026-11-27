@@ -293,6 +293,8 @@ export interface StoreDriverApprovalBody {
   sourceReferences: { repository: string; commit: string }[];
   isolationReview: StoreDriverIsolationReview;
   schema: number;
+  /** The level-0 foundation version the release brings (#3175); left out by a driver with none. */
+  foundation?: number;
   className: string;
   operations: string[];
 }
@@ -308,6 +310,11 @@ export interface StoreDriverApprovalView {
   sourceReferences: { repository: string; commit: string }[];
   isolationReview: StoreDriverIsolationReview;
   schema: number;
+  /**
+   * Null for a driver with no foundation, and on an approval written before the field existed;
+   * absent from an older control plane's answer (#3175).
+   */
+  foundation?: number | null;
   className: string;
   operations: string[];
   revokedBy: string | null;
@@ -316,10 +323,15 @@ export interface StoreDriverApprovalView {
   revokedEmergency: boolean | null;
 }
 
-/** Approval response also shows the schema of the current good release. */
+/** Approval response also shows the schema and foundation of the current good release. */
 export interface StoreDriverApprovalResultView {
   approval: StoreDriverApprovalView;
   currentSchema: number | null;
+  /**
+   * Null when there is no current release, it states no foundation, or an older control plane
+   * answered without the field (#3175).
+   */
+  currentFoundation?: number | null;
 }
 
 export interface StoreDriverRevokeResultView {
@@ -345,7 +357,7 @@ export interface StoreDriverRolloutView {
 
 export interface StoreDriverView {
   driver: string;
-  pins: { sha256: string; sourceCommit: string; schema: number }[];
+  pins: { sha256: string; sourceCommit: string; schema: number; foundation?: number | null }[];
   /** Present on approval-aware status responses. */
   approvals?: StoreDriverApprovalView[];
   current: { sha256: string; seq: number; previousGoodSha256: string | null } | null;
