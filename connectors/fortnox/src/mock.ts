@@ -50,6 +50,8 @@ export interface FortnoxMockSupplierInvoice {
   files?: { FileId: string; Name: string; bytes: Uint8Array; contentType?: string }[];
   /** Its comment log, oldest first. */
   comments?: string[];
+  /** Its accrual, as `GET /3/supplierinvoiceaccruals/{n}` answers it. Without one the read answers 404. */
+  accrual?: Record<string, unknown>;
   /** Why `bookkeep` answers 400, as Fortnox does for a locked period or a missing account. */
   cannotBook?: string;
   /**
@@ -150,6 +152,8 @@ export class FortnoxMock {
    * {@link deniedScopes}, which is what a read is refused for.
    */
   grantedScope: string | null = 'bookkeeping companyinformation supplierinvoice archive connectfile';
+  /** Every accrual read answers 403 — a company whose licence or consent does not cover accruals. */
+  accrualsRefused = false;
   /**
    * The company books only attested invoices: `bookkeep` on one nobody attested answers `2001109`,
    * as the Fortnox sandbox does with approval set to "Simple approve". Off by default: with approval
@@ -279,6 +283,13 @@ export class FortnoxMock {
       const entry = this.supplierInvoices.get(decodeURIComponent(invoiceMatch[1]!));
       if (!entry || entry.gone) return this.json({ ErrorInformation: { message: 'no such supplier invoice' } }, 404);
       return this.json({ SupplierInvoice: entry.invoice });
+    }
+    const accrualMatch = /\/supplierinvoiceaccruals\/([^/?]+)$/.exec(url.pathname);
+    if (accrualMatch) {
+      if (this.accrualsRefused) return this.json({ ErrorInformation: { message: 'no access to supplier invoice accruals' } }, 403);
+      const entry = this.supplierInvoices.get(decodeURIComponent(accrualMatch[1]!));
+      if (!entry || entry.gone || !entry.accrual) return this.json({ ErrorInformation: { message: 'no accrual for supplier invoice' } }, 404);
+      return this.json({ SupplierInvoiceAccrual: entry.accrual });
     }
     if (url.pathname.endsWith('/supplierinvoicefileconnections')) {
       if (this.deniedScopes.includes('connectfile')) return this.json({ ErrorInformation: { message: 'no access to scope' } }, 403);

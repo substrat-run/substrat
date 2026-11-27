@@ -587,6 +587,8 @@ describe('fortnox connector — inbound sync', () => {
           booked: true, cancelled: false, credit: false, paymentPending: true,
           comments: 'Hiss', commentLog: [{ comment: 'Granskad', createdAt: '2026-06-02 08:15', userName: 'Ekonom' }],
           voucher: { series: 'D', number: 44, year: 3 }, project: 'P1', costCentre: '2001',
+          // Asked for and answered 404: the invoice is not periodised.
+          accrual: null,
           rows: [
             { account: '4160', accountDescription: 'Reparationer', costCentre: '2001', project: 'P1', transactionInformation: 'Hiss', amount: { amount: '1000', currency: 'SEK' } },
             { account: '2641', accountDescription: null, costCentre: null, project: null, transactionInformation: null, amount: { amount: '250', currency: 'SEK' } },
@@ -621,6 +623,61 @@ describe('fortnox connector — inbound sync', () => {
       });
     });
 
+    it("lands an invoice's accrual as Fortnox states it, null for one without, and spends two reads per invoice", async () => {
+      await bindInvoices();
+      fortnox.setSupplierInvoice({
+        modified: '2026-06-10 09:00',
+        invoice: {
+          GivenNumber: '12', SupplierNumber: '26', SupplierName: 'Medlemsorganisationen', Total: 4520, Booked: false, Cancelled: false,
+          SupplierInvoiceRows: [{ Account: 1790, AccountDescription: 'Förutbetalda kostnader', Debit: 4520, Credit: 0 }, { Account: 2440, Debit: 0, Credit: 4520 }],
+        },
+        accrual: {
+          SupplierInvoiceNumber: 12, AccrualAccount: 1790, CostAccount: 6980, StartDate: '2027-01-01', EndDate: '2027-12-31',
+          Period: 'MONTHLY', Times: 12, Total: 4520, VATIncluded: false, Description: 'Medlemskap 2027',
+          SupplierInvoiceAccrualRows: [{ Account: 6980, Debit: 376.67, Credit: 0 }, { Account: 1790, CostCenter: '', Debit: 0, Credit: 376.67 }],
+        },
+      });
+      invoice('13', '2026-06-10 09:05');
+      const budget = { details: 10 };
+
+      const result = await syncFortnoxSupplierInvoices(host, connId, await binding(), { ...at(NOW), budget });
+
+      expect(result).toMatchObject({ landed: 2, pending: false });
+      expect(budget.details).toBe(6);
+      expect(fortnox.calls.filter((c) => c.includes('/supplierinvoiceaccruals/'))).toEqual(['/3/supplierinvoiceaccruals/12', '/3/supplierinvoiceaccruals/13']);
+      const [periodised, plain] = invoicesLanded[0]!.invoices;
+      expect(periodised!.accrual).toEqual({
+        accrualAccount: '1790', costAccount: '6980', startDate: '2027-01-01', endDate: '2027-12-31', period: 'MONTHLY', times: 12,
+        total: { amount: '4520', currency: 'SEK' }, vatIncluded: false, description: 'Medlemskap 2027',
+        rows: [
+          { account: '6980', costCentre: null, project: null, transactionInformation: null, amount: { amount: '376.67', currency: 'SEK' } },
+          { account: '1790', costCentre: null, project: null, transactionInformation: null, amount: { amount: '-376.67', currency: 'SEK' } },
+        ],
+      });
+      expect(plain!.accrual).toBeNull();
+    });
+
+    it('lands invoices without their accruals when Fortnox refuses the accrual read, asks once, and says so', async () => {
+      await bindInvoices();
+      invoice('12', '2026-06-10 09:00');
+      invoice('13', '2026-06-10 09:05');
+      fortnox.accrualsRefused = true;
+
+      const first = await sweepFortnoxLedger(host, connId, at(NOW));
+
+      expect(first.failed).toEqual([{ scopeId: s, error: expect.stringMatching(/invoice accruals: Fortnox refused the read/) }]);
+      expect(fortnox.calls.filter((c) => c.includes('/supplierinvoiceaccruals/'))).toEqual(['/3/supplierinvoiceaccruals/12']);
+      expect(invoicesLanded.map((p) => p.invoices.map((i) => i.givenNumber))).toEqual([['12', '13']]);
+      for (const landed of invoicesLanded[0]!.invoices) expect(landed).not.toHaveProperty('accrual');
+
+      // The cursor moved past them: a pass after the refusal reads nothing again.
+      fortnox.accrualsRefused = false;
+      fortnox.calls.length = 0;
+      const second = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+      expect(second.failed).toEqual([]);
+      expect(fortnox.calls.filter((c) => c.includes('/supplierinvoices/'))).toEqual([]);
+    });
+
     it('reads a flag Fortnox sends as a string, and refuses one it has never sent (#3103)', async () => {
       await bindInvoices();
       invoice('12', '2026-06-10 09:00', { Credit: 'true', PaymentPending: 'false', DisablePaymentFile: '' });
@@ -640,7 +697,8 @@ describe('fortnox connector — inbound sync', () => {
       await bindInvoices(INVOICE_OPERATION, s, 'all');
       invoice('1', '2019-02-01 09:00');
       invoice('2', '2021-03-01 09:00');
-      const run = async (ms: number) => syncFortnoxSupplierInvoices(host, connId, await binding(), { ...at(ms), budget: { details: 1 } });
+      // Two reads per invoice (its rows and its accrual): a budget of two is one invoice a pass.
+      const run = async (ms: number) => syncFortnoxSupplierInvoices(host, connId, await binding(), { ...at(ms), budget: { details: 2 } });
 
       await run(NOW);
       await run(NOW + 15 * 60_000);
@@ -828,7 +886,8 @@ describe('fortnox connector — inbound sync', () => {
       filed('1', 'a.pdf', 'b.pdf', 'c.pdf');
       const run = async (ms: number, budget: { details: number }) =>
         syncFortnoxSupplierInvoices(host, connId, await binding(), { ...at(ms), budget });
-      await run(NOW, { details: 1 });
+      // Two reads land the invoice (its rows and its accrual) and leave nothing for its files.
+      await run(NOW, { details: 2 });
 
       const budget = { details: 3 };
       expect(await run(NOW + 15 * 60_000, budget)).toEqual({ scopeId: s, landed: 0, files: 2, held: 0, written: 0, pending: true });
@@ -978,7 +1037,8 @@ describe('fortnox connector — inbound sync', () => {
       for (const n of ['1', '2', '3']) filed(n, 'a.pdf');
       const run = async (ms: number, details: number) => syncFortnoxSupplierInvoices(host, connId, await binding(), { ...at(ms), budget: { details } });
 
-      await run(NOW, 3);
+      // Six reads: the three invoices with their accruals, and nothing left for the files.
+      await run(NOW, 6);
       expect((await binding()).files).toHaveLength(3);
 
       fortnox.calls.length = 0;
@@ -1042,7 +1102,8 @@ describe('fortnox connector — inbound sync', () => {
     it('resumes a change set larger than the budget, and re-reads an invoice that changed mid-run', async () => {
       await bindInvoices();
       for (const n of ['3', '1', '2']) invoice(n, '2026-06-10 09:00');
-      const run = async (ms: number) => syncFortnoxSupplierInvoices(host, connId, await binding(), { ...at(ms), budget: { details: 2 } });
+      // Four reads a pass: two invoices, each with its accrual.
+      const run = async (ms: number) => syncFortnoxSupplierInvoices(host, connId, await binding(), { ...at(ms), budget: { details: 4 } });
 
       expect(await run(NOW)).toEqual({ scopeId: s, landed: 2, files: 0, held: 0, written: 0, pending: true });
       expect((await binding()).invoiceSync?.pending).toEqual({ startedAt: new Date(NOW).toISOString(), through: '2' });
@@ -1098,14 +1159,14 @@ describe('fortnox connector — inbound sync', () => {
 
       const first = await sweepFortnoxLedger(host, connId, slow());
 
-      // The list at 10 s, then reads until 90 s had passed: eight of them.
+      // The list at 10 s, then invoices until 90 s had passed — two reads each, so four of them.
       expect(first.failed).toEqual([]);
-      expect(first.invoices).toEqual([{ scopeId: s, landed: 8, files: 0, held: 0, written: 0, pending: true }]);
-      expect(invoicesLanded[0]!.invoices.map((i) => i.givenNumber)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8']);
+      expect(first.invoices).toEqual([{ scopeId: s, landed: 4, files: 0, held: 0, written: 0, pending: true }]);
+      expect(invoicesLanded[0]!.invoices.map((i) => i.givenNumber)).toEqual(['1', '2', '3', '4']);
 
       // A poll on request (#2672) is held to the same deadline, and says work is left.
       expect(await pollFortnoxScope(host, connId, s, slow())).toEqual({ outcome: 'landed', pending: true, errors: [] });
-      expect(invoicesLanded[1]!.invoices[0]!.givenNumber).toBe('9');
+      expect(invoicesLanded[1]!.invoices[0]!.givenNumber).toBe('5');
     });
 
     it('paces a burst of reads to 25 requests in any 5 seconds', async () => {
@@ -1121,7 +1182,7 @@ describe('fortnox connector — inbound sync', () => {
       await sweepFortnoxLedger(host, connId, { ...options(), fetch, now: () => clock, sleep: async (ms) => void (clock += ms) });
 
       expect(invoicesLanded[0]!.invoices).toHaveLength(40);
-      expect(sent).toHaveLength(42); // the list, 40 details, the company
+      expect(sent).toHaveLength(82); // the list, 40 details and their 40 accruals, the company
       expect(Math.max(...sent.map((t) => sent.filter((u) => u >= t && u < t + 5_000).length))).toBe(25);
     });
 

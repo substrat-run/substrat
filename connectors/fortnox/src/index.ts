@@ -34,6 +34,7 @@ import {
   type FortnoxApiOptions,
   type FortnoxFinancialYear,
   type FortnoxSupplierInvoice,
+  type FortnoxSupplierInvoiceAccrual,
   type FortnoxSupplierInvoiceFile,
 } from './api.js';
 import { financialYearFor, summarizeLedger } from './aggregate.js';
@@ -70,6 +71,7 @@ export {
   type FortnoxSecret,
   type FortnoxApiOptions,
   type FortnoxSupplierInvoice,
+  type FortnoxSupplierInvoiceAccrual,
   type FortnoxSupplierInvoiceFile,
 } from './api.js';
 export {
@@ -441,6 +443,38 @@ export const fortnoxSupplierInvoicePage = z.object({
         voucher: z.object({ series: z.string().nullable(), number: z.number().int(), year: z.number().int().nullable() }).nullable().optional(),
         project: z.string().nullable().optional(),
         costCentre: z.string().nullable().optional(),
+        /**
+         * The invoice's accrual (periodisering), when Fortnox has one: the invoice is booked on
+         * `accrualAccount`, and the cost moves to `costAccount` period by period between the two
+         * dates. `period` is Fortnox's own word (MONTHLY, BIMONTHLY, QUARTERLY, SEMIANNUALLY,
+         * ANNUALLY), carried as text. `null` says Fortnox has none for the invoice; absent only from
+         * a connector older than the field, or a pass Fortnox refused the accrual reads in.
+         */
+        accrual: z
+          .object({
+            accrualAccount: z.string(),
+            costAccount: z.string(),
+            startDate: z.string(),
+            endDate: z.string(),
+            period: z.string(),
+            times: z.number().int().nullable(),
+            /** In SEK, as the rows are: an accrual is booked in the company's currency. */
+            total: money,
+            vatIncluded: z.boolean(),
+            description: z.string().nullable(),
+            /** Fortnox's own accrual rows, debit-positive, in SEK. */
+            rows: z.array(
+              z.object({
+                account: z.string(),
+                costCentre: z.string().nullable(),
+                project: z.string().nullable(),
+                transactionInformation: z.string().nullable(),
+                amount: money,
+              }),
+            ),
+          })
+          .nullable()
+          .optional(),
         /** The invoice's accounting rows: debit-positive, in SEK, as the ledger page states them. */
         rows: z.array(
           z.object({
@@ -513,9 +547,12 @@ export type FortnoxInvoiceWritebackReceipt = z.infer<typeof fortnoxInvoiceWriteb
 /**
  * Invoice details read per connection per pass. The client paces every read to Fortnox's limit,
  * so this bounds how long one pass runs (about 40 seconds at the limit) rather than the rate. A
- * larger change set resumes on the next pass.
+ * larger change set resumes on the next pass. An invoice spends {@link INVOICE_DETAIL_READS} of
+ * these, so a pass lands at most 100 changed invoices.
  */
 const INVOICE_DETAILS_PER_PASS = 200;
+/** Reads one invoice costs: its rows (`supplierinvoices/{n}`) and its accrual (`supplierinvoiceaccruals/{n}`). */
+const INVOICE_DETAIL_READS = 2;
 /**
  * How long one binding's pass keeps starting invoice reads. Pacing alone puts 200 reads at about
  * 40 seconds, but every 429 adds its wait, and a sweep holds one of a few concurrent slots while
@@ -1231,9 +1268,11 @@ async function landChangedInvoices(
   const changed = [...new Set(await api.supplierInvoicesModifiedSince(filter))]
     .filter((n) => Number(n) > through)
     .sort((a, b) => Number(a) - Number(b));
-  const batch = changed.slice(0, budget.details);
+  // An invoice costs two reads: its rows, and its accrual (a periodised invoice is booked on the
+  // accrual account, and only `supplierinvoiceaccruals` says which cost account it is for).
+  const batch = changed.slice(0, Math.floor(budget.details / INVOICE_DETAIL_READS));
   if (batch.length === 0) return { landed: 0, more: changed.length > 0, failure: null };
-  budget.details -= batch.length;
+  budget.details -= batch.length * INVOICE_DETAIL_READS;
 
   // Read in number order, stopping at the first read that fails. What was read before it still
   // lands and the cursor moves past it, so a failure costs the pass the rest of its batch, never
@@ -1243,12 +1282,31 @@ async function landChangedInvoices(
   // starts from it. An invoice that can never be read therefore fails every pass by number
   // instead of being dropped, because a skipped one would not reach the vertical until someone
   // edited it in Fortnox.
+  //
+  // The accrual read is the exception: a refusal (401/403) says the company's licence or consent
+  // does not cover accruals, not that the invoice is bad. The invoices then land WITHOUT the
+  // field — the page says nothing about their accruals rather than something false — no further
+  // accrual is asked for this pass, and the refusal is the pass's failure so the row says so.
   const invoices: FortnoxSupplierInvoicePage['invoices'] = [];
   let handled = 0;
   let failure: Error | null = null;
+  let accrualsRefused: Error | null = null;
   for (const givenNumber of batch) {
     try {
-      invoices.push(landedInvoice(await api.supplierInvoice(givenNumber)));
+      const invoice = await api.supplierInvoice(givenNumber);
+      let accrual: FortnoxSupplierInvoiceAccrual | null | undefined;
+      if (accrualsRefused === null) {
+        try {
+          accrual = await api.supplierInvoiceAccrual(givenNumber);
+        } catch (err) {
+          if (!(err instanceof FortnoxApiError && err.refused)) throw err;
+          accrualsRefused = new Error(
+            `invoice accruals: Fortnox refused the read (${err.message}). The invoices landed without their ` +
+              `accruals; the company's licence and consent must cover supplier invoice accruals (the supplierinvoice scope).`,
+          );
+        }
+      }
+      invoices.push(landedInvoice(invoice, accrual));
     } catch (err) {
       if (!(err instanceof FortnoxApiError && err.status === 404)) {
         const text = `supplier invoice ${givenNumber}: ${err instanceof Error ? err.message : String(err)}`;
@@ -1290,7 +1348,7 @@ async function landChangedInvoices(
   files.moved = false;
   await files.drain();
   await saveFiles(synced);
-  return { landed: invoices.length, more, failure };
+  return { landed: invoices.length, more, failure: failure ?? accrualsRefused };
 }
 
 interface InvoiceWrites {
@@ -1651,9 +1709,14 @@ class InvoiceFiles {
   }
 }
 
-/** One Fortnox invoice as the page carries it, parsed here so a bad one is named by number. */
-const landedInvoice = (invoice: FortnoxSupplierInvoice): FortnoxSupplierInvoicePage['invoices'][number] =>
+/**
+ * One Fortnox invoice as the page carries it, parsed here so a bad one is named by number. `accrual`
+ * is what the accrual read answered: null when Fortnox has none, and left out (`undefined`) when the
+ * read was refused this pass, so the page says nothing rather than something false.
+ */
+const landedInvoice = (invoice: FortnoxSupplierInvoice, accrual?: FortnoxSupplierInvoiceAccrual | null): FortnoxSupplierInvoicePage['invoices'][number] =>
   fortnoxSupplierInvoicePage.shape.invoices.element.parse({
+    ...(accrual === undefined ? {} : { accrual: accrual === null ? null : landedAccrual(accrual) }),
     givenNumber: invoice.GivenNumber,
     supplierNumber: invoice.SupplierNumber,
     supplierName: invoice.SupplierName,
@@ -1685,6 +1748,26 @@ const landedInvoice = (invoice: FortnoxSupplierInvoice): FortnoxSupplierInvoiceP
       amount: { amount: addDecimal(row.Debit, mulDecimal('-1', row.Credit)), currency: 'SEK' },
     })),
   });
+
+/** The accrual as the page carries it: Fortnox's fields in the page's words, nothing derived. Parsed with the invoice. */
+const landedAccrual = (a: FortnoxSupplierInvoiceAccrual) => ({
+  accrualAccount: a.AccrualAccount,
+  costAccount: a.CostAccount,
+  startDate: a.StartDate,
+  endDate: a.EndDate,
+  period: a.Period,
+  times: a.Times === null ? null : Number(a.Times),
+  total: { amount: a.Total, currency: 'SEK' },
+  vatIncluded: a.VATIncluded,
+  description: a.Description || null,
+  rows: a.SupplierInvoiceAccrualRows.map((row) => ({
+    account: row.Account,
+    costCentre: row.CostCenter || null,
+    project: row.Project || null,
+    transactionInformation: row.TransactionInformation || null,
+    amount: { amount: addDecimal(row.Debit, mulDecimal('-1', row.Credit)), currency: 'SEK' },
+  })),
+});
 
 /** What one sweep pass over a connection did. */
 export interface FortnoxSweepResult {
