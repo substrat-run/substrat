@@ -4480,6 +4480,13 @@ export class SqliteScopeHost implements ScopeHost {
           }
         : authority;
     const node = { tenantId: rt.tenantId, scopeId: rt.scopeId };
+    // #119 / #3434: a module's purge-only keys are withheld from its system principal on every
+    // check but the purge sweep's own invoke, so an attachment verb made as the module (`open`,
+    // `remove`) is never admitted by one: holding the purge key is not a licence over the files.
+    const withheldFor = (subject: CheckSubject): ReadonlySet<string> | undefined =>
+      subject.kind === 'system' ? withheldKeysFor(this.modules.get(subject.id)?.purgeOnlyKeys, undefined, false) : undefined;
+    const contextFor = (subject: CheckSubject, operation: string): OperationContext =>
+      this.operationContext(rt, subject, undefined, undefined, undefined, operation, [], this.clock(), undefined, withheldFor(subject));
     const targetGate = (entityType: string): AttachmentGate => {
       const gate = this.attachmentTargets.get(entityType);
       if (!gate) {
@@ -4499,7 +4506,7 @@ export class SqliteScopeHost implements ScopeHost {
     ): Promise<T> =>
       rt.actor.enqueue(async () => {
         const subject = actingAs(operation);
-        const ctx = this.operationContext(rt, subject, undefined, undefined, undefined, operation);
+        const ctx = contextFor(subject, operation);
         rt.db.exec('BEGIN IMMEDIATE');
         let result: T;
         try {
@@ -4546,10 +4553,7 @@ export class SqliteScopeHost implements ScopeHost {
     ): Promise<T> => {
       const subject = actingAs(operation);
       try {
-        return await fn(
-          this.operationContext(rt, subject, undefined, undefined, undefined, operation),
-          subject,
-        );
+        return await fn(contextFor(subject, operation), subject);
       } catch (err) {
         // #1525: the ENCLOSING call's id, deliberately. This runner takes no turn of its
         // own — it is the connector's dispatch-time read, already inside that call's

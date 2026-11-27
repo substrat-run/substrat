@@ -5214,6 +5214,15 @@ export function defineScopeDO(
       return record;
     }
 
+    /**
+     * #119 / #3434: a module's purge-only keys, withheld from its system principal's attachment
+     * checks as from every system check but the purge sweep's own invoke — so holding the purge
+     * key never admits an `open` or a `remove` of a file.
+     */
+    private systemAttachmentWithheld(moduleId: ModuleId): ReadonlySet<string> | undefined {
+      return withheldKeysFor(this.purgeOnlyKeys.get(moduleId), undefined, false);
+    }
+
     /** Authorize a job's read as its registered module, never as a person. */
     private async authorizeSystemAttachment(
       attachmentId: string,
@@ -5241,6 +5250,7 @@ export function defineScopeDO(
         const ctx = this.operationContext(
           this.systemPrincipal, tenantId, scopeId, undefined, undefined,
           systemDoor, undefined, undefined, 'attachments.open',
+          undefined, [], undefined, undefined, undefined, this.systemAttachmentWithheld(moduleId),
         );
         assertAllowed(await ctx.check(gate.read, record.entity));
       } catch (err) {
@@ -5302,7 +5312,8 @@ export function defineScopeDO(
      * retention schedule deleting a file it never uploaded. The system door's pin first, exactly
      * as `authorizeSystemAttachment` and a system invoke take it; then the gate a person's remove
      * meets (the write key, or the declared remove key), checked as `system:<moduleId>`, so the
-     * kill switch and the purge-only withholding apply as they do to any system check. The row
+     * kill switch applies as it does to any system check, and the module's purge-only keys are
+     * withheld (`systemAttachmentWithheld`). The row
      * and `attachment.removed` commit together, the event attributed to the module.
      */
     private async removeSystemAttachment(
@@ -5334,6 +5345,7 @@ export function defineScopeDO(
             const ctx = this.operationContext(
               this.systemPrincipal, tenantId, scopeId, undefined, undefined,
               systemDoor, undefined, undefined, 'attachments.remove',
+              undefined, [], undefined, undefined, undefined, this.systemAttachmentWithheld(moduleId),
             );
             assertAllowed(await decideAttachmentRemove((p, e) => ctx.check(p, e), gate, record.entity));
             this.sql.exec('DELETE FROM _substrat_attachments WHERE id = ?', attachmentId);

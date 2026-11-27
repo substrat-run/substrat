@@ -13,6 +13,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   errorCodeOf,
+  permissionKey,
   platformActorId,
   principalId,
   scopeId,
@@ -25,9 +26,11 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, type ScopeAttachments, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
-import { RET_PURGE, RET_READ, RET_WRITE, retentionMod } from './system-remove-module.js';
+import { RETENTION_PURGE_MODULE_ID, RET_PURGE, RET_READ, RET_WRITE, retentionMod, retentionPurgeMod } from './system-remove-module.js';
 
 const MODULE = retentionMod.manifest.id;
+const RP_READ = permissionKey.parse('rp:read');
+const RP_SHRED = permissionKey.parse('rp:shred');
 const VERTICAL = 'retention-vertical';
 const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 
@@ -86,10 +89,12 @@ export function systemAttachmentRemoveContractSuite(
       fixture = await makeFixture();
       host = fixture.host;
       host.registerModule(retentionMod);
+      host.registerModule(retentionPurgeMod);
       await host.admin.createTenant(staff, { id: t, slug: `ret-${t.toLowerCase()}`, name: 'Retention' });
       await host.admin.grantEntitlement(staff, t, 'retention');
+      await host.admin.grantEntitlement(staff, t, 'retention-purge');
       await host.provisionBlobStore(staff, { tenantId: t, vertical: VERTICAL, binding: 'ATTACHMENTS' });
-      await host.admin.defineRole(staff, t, { key: 'broker', permissions: [RET_READ, RET_WRITE], source: 'vertical' });
+      await host.admin.defineRole(staff, t, { key: 'broker', permissions: [RET_READ, RET_WRITE, RP_READ], source: 'vertical' });
       await host.admin.defineRole(staff, t, { key: 'archivist', permissions: [RET_READ, RET_PURGE], source: 'vertical' });
       const node = { tenantId: t, scopeId: null };
       await host.admin.assignRole(staff, { principalId: alice, roleKey: 'broker', node });
@@ -141,6 +146,22 @@ export function systemAttachmentRemoveContractSuite(
       expect((await (await filesOf(dave, s)).remove(file.id))?.id).toBe(file.id);
       // Recorded as theirs: they removed it.
       expect((await read<RemovedRow[]>(s, 'ret/removed'))[0]!.actor).toContain(dave);
+    });
+
+    it('a remove key the module holds only for its purge schedule admits no system remove', async () => {
+      const s = await freshScope();
+      const file = await upload(s, { entityType: 'rpbox', entityId: 'b1' }, 'ledger');
+      // Held, and still refused: a purge-only key is withheld from every system check but the purge
+      // sweep's own invoke of the purge operation (#119), so it is no licence over the files.
+      await host.admin.grantToSystem(staff, {
+        moduleId: RETENTION_PURGE_MODULE_ID as typeof MODULE,
+        permission: RP_SHRED,
+        node: { tenantId: t, scopeId: s },
+        grantedBy: staff,
+      });
+      const system = await host.getSystemAttachments(RETENTION_PURGE_MODULE_ID as typeof MODULE, t, s);
+      expectDenied(await refusal(system.remove(file.id)), 'rp:shred');
+      expect((await (await filesOf(alice, s)).open(file.id))?.record.id).toBe(file.id);
     });
 
     it('the schedule kill switch refuses a system remove until it is restored', async () => {

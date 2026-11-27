@@ -11,8 +11,18 @@
  * Inert for every other suite: only the remove suite grants its entitlement, and nothing else
  * reads its rows.
  */
-import { moduleManifest, permissionKey } from '@substrat-run/contracts';
-import type { ModuleRegistration, OperationHandler } from '@substrat-run/kernel';
+import { z } from 'zod';
+import {
+  defineEntities,
+  defineOperations,
+  manifestEntities,
+  manifestOperations,
+  moduleManifest,
+  operationInputsOf,
+  permissionKey,
+  purgeSchedulesOf,
+} from '@substrat-run/contracts';
+import { assertAllowed, type ModuleRegistration, type OperationHandler } from '@substrat-run/kernel';
 import { testOperations } from './test-operations.js';
 
 export const RET_READ = permissionKey.parse('ret:read');
@@ -59,4 +69,72 @@ export const retentionMod: ModuleRegistration = {
       unknown
     >,
   }),
+};
+
+/**
+ * The second fixture (#3434 review): a target whose `removePermission` is a PURGE-ONLY key — one
+ * the module's system principal holds only for its purge schedule (#119). Such a key is withheld
+ * from every system check but the purge sweep's own invoke of the purge operation, so it must not
+ * admit a system remove either: holding it is not a licence to delete any file on the target.
+ *
+ * - `rpbox` — trashable, purged after a week by `rp/purge` under `rp:shred`; files on it are
+ *   read (and uploaded) with `rp:read` and removed with `rp:shred`.
+ */
+export const RETENTION_PURGE_MODULE_ID = '@test/retention-purge';
+
+const rpEntities = defineEntities({
+  rpbox: {
+    table: 'rp_boxes',
+    fields: z.object({ id: z.string() }),
+    trash: { permission: 'rp:trash', purgeAfterDays: 7 },
+  },
+});
+
+const RP_PERMISSIONS = ['rp:read', 'rp:trash', 'rp:shred'] as const;
+const rpOk = z.object({ ok: z.boolean() });
+
+const rpOperations = defineOperations(rpEntities, RP_PERMISSIONS)({
+  'rp/purge': {
+    summary: 'Delete a box for good — the purge horizon runs this',
+    permission: { key: 'rp:shred', entity: 'rpbox', idFrom: 'boxId' },
+    trashed: 'purges',
+    input: z.strictObject({ boxId: z.string() }),
+    output: rpOk,
+  },
+});
+
+type RpHandler = OperationHandler<never, unknown>;
+const RP = (key: (typeof RP_PERMISSIONS)[number]) => key as Parameters<Parameters<RpHandler>[0]['check']>[0];
+
+export const retentionPurgeMod: ModuleRegistration = {
+  manifest: moduleManifest.parse({
+    id: RETENTION_PURGE_MODULE_ID,
+    version: '1.0.0',
+    kernelContract: '^0.0.1',
+    migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+    ...manifestOperations(rpOperations, {
+      permissions: {
+        'rp:read': 'read a box and its files',
+        'rp:trash': 'bin a box',
+        'rp:shred': 'delete a box, or a file on it, for good',
+      },
+      consumes: [],
+    }),
+    ...manifestEntities(rpEntities, {
+      attachmentTargets: [{ entityType: 'rpbox', readPermission: 'rp:read', removePermission: 'rp:shred' }],
+    }),
+    schedules: purgeSchedulesOf(rpOperations, rpEntities),
+    entitlementKey: 'retention-purge',
+  }),
+  migrations: [{ version: '0001-init', sql: 'CREATE TABLE rp_boxes (id TEXT PRIMARY KEY);' }],
+  ...testOperations(
+    {
+      'rp/purge': (async (ctx, i: { boxId: string }) => {
+        assertAllowed(await ctx.check(RP('rp:shred'), { entityType: 'rpbox', entityId: i.boxId }));
+        ctx.sql.exec('DELETE FROM rp_boxes WHERE id = ?', [i.boxId]);
+        return { ok: true };
+      }) as RpHandler,
+    },
+    { inputs: operationInputsOf(rpOperations) },
+  ),
 };
