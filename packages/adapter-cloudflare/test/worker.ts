@@ -345,18 +345,24 @@ export class SetCheckScopeDO extends SetCheckBase {
  * K-69: the on-wake provision reconcile — reconcile-on-wake.test.ts. Hosted, `SUBSTRAT_VERSION_ID`
  * is the plain_text binding an in-place promote rewrites; here env is script-wide (as
  * `SET_CHECK_DIGEST` says), so the class reads the version a test sets under this key, and a
- * promote is the test moving it.
+ * promote is the test moving it. It carries the control plane's origin and the platform secret an
+ * upload injects, so its wake kicks a drain (#3435); the suite answers those kicks itself.
  */
 export const WAKE_VERSION = Symbol.for('substrat.test.wake-version');
+export const WAKE_VERSION_CONTROL_PLANE_URL = 'https://control-plane.wake-version.test';
 const WakeVersionBase = defineScopeDO([listMod], {});
 export class WakeVersionScopeDO extends WakeVersionBase {
   constructor(ctx: DurableObjectState, env: ScopeDoEnv) {
     super(
       ctx,
-      Object.defineProperty({ ...env }, 'SUBSTRAT_VERSION_ID', {
-        enumerable: true,
-        get: () => (globalThis as Record<symbol, string | undefined>)[WAKE_VERSION],
-      }),
+      Object.defineProperty(
+        { ...env, CONTROL_PLANE_URL: WAKE_VERSION_CONTROL_PLANE_URL, PLATFORM_SECRET: 'wake-version-test-secret' },
+        'SUBSTRAT_VERSION_ID',
+        {
+          enumerable: true,
+          get: () => (globalThis as Record<symbol, string | undefined>)[WAKE_VERSION],
+        },
+      ),
     );
   }
 }
