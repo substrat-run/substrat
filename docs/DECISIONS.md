@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-152 decisions · 79 plan · 73 kernel
+153 decisions · 80 plan · 73 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -64,7 +64,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-20](decisions/K-020-control-plane.md) | 2026-07-15 | kernel | Control plane <br>*restated as D-30* |  |
 | [D-31](decisions/D-031-the-admin-s-record-keeping-half-becomes-a-vertical-and-is-th.md) | 2026-07-18 | plan | The admin's record-keeping half becomes a vertical, and is the first consumer of the… | #38, #39, #33, #34 |
 | [D-32](decisions/D-032-hosting-is-the-monetization-boundary-certification-inheritan.md) | 2026-07-18 | plan | Hosting is the monetization boundary; certification inheritance is the paid layer |  |
-| [D-33](decisions/D-033-the-builder-portal-is-the-platform-vertical-milestone-one-is.md) | 2026-07-19 | plan | The builder portal is the platform vertical; milestone one is demo instantiation, not git push | #31, #33, #35, #39 |
+| [D-33](decisions/D-033-the-builder-portal-is-the-platform-vertical-milestone-one-is.md) | 2026-07-19 | plan | The builder portal is the platform vertical; milestone one is demo instantiation, not git push <br>*amended by D-80* | #31, #33, #35, #39 |
 | [D-34](decisions/D-034-workers-for-platforms-is-verified-to-fit-so-connect-a-git-re.md) | 2026-07-19 | plan | Workers for Platforms is verified to fit, so \"connect a git repo\" is a COMMERCIAL gate, not… |  |
 | [K-21](decisions/K-021-revoking-a-tuple-tombstones-it-and-assignment-authority-is-a.md) | 2026-07-19 | kernel | Revoking a tuple tombstones it, and assignment authority is a set comparison the kernel owns |  |
 | [K-22](decisions/K-022-the-membership-seam-is-a-connector-and-orgid-becomes-a-brand.md) | 2026-07-19 | kernel | The membership seam is a connector, and OrgId becomes a branded ULID | #53 |
@@ -164,3 +164,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-71](decisions/K-071-the-hosted-issuer-partitions-its-people-by-person-and-prunes-what-expires.md) | 2026-11-25 | kernel | A shared hosted issuer partitions its people by person, and prunes the sessions and tokens that expire <br>*awaiting ratification* |  |
 | [K-72](decisions/K-072-the-router-reads-routes-from-a-kv-read-model-the-directory-publishes.md) | 2026-11-25 | kernel | The router reads routes from a KV read model the directory publishes <br>*awaiting ratification* <br>*amends K-26* | #3395 |
 | [K-73](decisions/K-073-the-platform-s-own-bookkeeping-reads-are-recorded-as-one-access-log-row-per-pass.md) | 2026-11-26 | kernel | The platform's own bookkeeping reads are recorded as one access-log row per pass <br>*amends K-24* | #3326 |
+| [D-80](decisions/D-080-any-tenant-may-own-apps-a-host-it-depends-on-never-co-owns-them-and-a-managed-tenant-is-billed-through-its-manager.md) | 2026-11-27 | plan | Any tenant may own apps, a host it depends on never co-owns them, and a managed tenant is billed through its manager <br>*awaiting ratification* <br>*amends D-33* | #3439 |
