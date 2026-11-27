@@ -1170,16 +1170,17 @@ export async function syncFortnoxSupplierInvoices(
 const asError = (err: unknown): Error => (err instanceof Error ? err : new Error(String(err)));
 
 /**
- * A read that failed, with what the binding's tenant may be told about it (#3103). The message is
- * staff's: it carries Fortnox's own answer. `said` is built only from what this connector names
- * itself (the invoice number, the field our schema could not read, the HTTP status), so the sweep's
- * row can say why the binding did not land without carrying a provider's text.
+ * A read or a write-back that failed, with what the binding's tenant may be told about it (#3103,
+ * #3452). The message is staff's: it carries Fortnox's own answer. `said` is built only from what
+ * this connector names itself (the invoice number, the step, the field our schema could not read,
+ * the HTTP status, Fortnox's numeric code), so the sweep's row can say why the binding did not land
+ * without carrying a provider's text.
  */
-class FortnoxReadFailure extends Error {
+class FortnoxSaidFailure extends Error {
   readonly said: string;
   constructor(message: string, said: string) {
     super(message);
-    this.name = 'FortnoxReadFailure';
+    this.name = 'FortnoxSaidFailure';
     this.said = said;
   }
 }
@@ -1197,6 +1198,19 @@ function invoiceReadSaid(givenNumber: string, err: unknown): string | null {
   }
   if (err instanceof FortnoxApiError) return `Fortnox answered ${err.status} for supplier invoice ${givenNumber}`;
   return null;
+}
+
+/** `Fortnox answered 400 (code 2003576)`, from the status and the envelope's code alone, or null for a failure that is not Fortnox's. */
+function fortnoxAnswered(err: unknown): string | null {
+  if (!(err instanceof FortnoxApiError)) return null;
+  const code = fortnoxErrorCode(err);
+  return `Fortnox answered ${err.status}${code === null ? '' : ` (code ${code})`}`;
+}
+
+/** A write-back failure, staff's text and the tenant's line: `<what> <how>`, then why when Fortnox answered. */
+function writeFailure(what: string, how: string, err: unknown): FortnoxSaidFailure {
+  const answered = fortnoxAnswered(err);
+  return new FortnoxSaidFailure(`${what} ${how}: ${asError(err).message}`, `${what} ${how}${answered === null ? '' : `: ${answered}`}`);
 }
 
 interface InvoiceLanding {
@@ -1253,7 +1267,7 @@ async function landChangedInvoices(
       if (!(err instanceof FortnoxApiError && err.status === 404)) {
         const text = `supplier invoice ${givenNumber}: ${err instanceof Error ? err.message : String(err)}`;
         const said = invoiceReadSaid(givenNumber, err);
-        failure = said === null ? new Error(text) : new FortnoxReadFailure(text, said);
+        failure = said === null ? new Error(text) : new FortnoxSaidFailure(text, said);
         break;
       }
     }
@@ -1310,6 +1324,12 @@ interface InvoiceHold {
   unconfirmed?: true;
   /** The invoice was approved before it could be held, so the API cannot block it. Not asked again. */
   approved?: true;
+  /**
+   * Fortnox refused the block in its own words (#3452): a company whose approval flow lets only the
+   * current approver change an invoice, say. Not asked again while the note stands, because the next
+   * pass would get the same answer. A settled decision clears it.
+   */
+  refused?: { status: number; code: number | null; at: string };
 }
 
 /** A refusal in Fortnox's own words: the request was read and not carried out. */
@@ -1328,8 +1348,9 @@ const statedRefusal = (err: unknown): boolean =>
  * approval: the block is lifted first, while it still can be, then the invoice is approved and booked.
  * That order leaves nothing payable unblocked, because such a company cannot pay an unbooked invoice.
  *
- * Only `hold` errors and transient failures are retried here. A refusal in Fortnox's own words is
- * the vertical's at once, because the next pass would get the same answer and a person has to act.
+ * Only transient failures are retried here. A refusal in Fortnox's own words is not, because the next
+ * pass would get the same answer and a person has to act: a decision's goes to the vertical at once,
+ * and a hold's is remembered on the invoice's note and fails one pass, not every pass (#3452).
  */
 async function writeBackInvoices(
   host: ScopeHost,
@@ -1365,7 +1386,7 @@ async function writeBackInvoices(
     const live = known && !known.cleared ? known : null;
     // Only a block this connector saw set is left alone. Someone else's is looked at again, because
     // lifting it would leave the undecided invoice payable, and so is one Fortnox never confirmed.
-    if ((live?.ours && !live.unconfirmed) || live?.approved) continue;
+    if ((live?.ours && !live.unconfirmed) || live?.approved || live?.refused) continue;
     if (budget.details < INVOICE_HOLD_CALLS || expired()) {
       out.more = true;
       break;
@@ -1393,14 +1414,22 @@ async function writeBackInvoices(
       if (fortnoxErrorCode(err) === APPROVED_LOCKED) {
         // Approved before it could be held: asking again gets the same answer every pass.
         await host.admin.putConnectorState(connectionId, key, { ours: false, at, approved: true } satisfies InvoiceHold);
-        out.failure ??= new Error(
+        out.failure ??= new FortnoxSaidFailure(
           `hold of supplier invoice ${givenNumber}: it was approved in Fortnox before it could be held, ` +
-            `so it cannot be blocked over the API. Block it in Fortnox if it must wait for the decision.`,
+            `so it cannot be blocked over the API. Block it in Fortnox if it must wait for the decision. ${asError(err).message}`,
+          `supplier invoice ${givenNumber} was approved in Fortnox before it could be held: ${fortnoxAnswered(err)}`,
         );
         continue;
       }
-      if (asked && statedRefusal(err)) await host.admin.putConnectorState(connectionId, key, known ?? null);
-      out.failure ??= new Error(`hold of supplier invoice ${givenNumber}: ${asError(err).message}`);
+      if (asked && statedRefusal(err) && err instanceof FortnoxApiError) {
+        // Refused in Fortnox's words, so the block was not set and asking again gets the same answer:
+        // remembered, and failed for once (#3452), rather than asked and failed on every pass.
+        const refused = { status: err.status, code: fortnoxErrorCode(err), at };
+        await host.admin.putConnectorState(connectionId, key, { ours: false, at, refused } satisfies InvoiceHold);
+        out.failure ??= writeFailure(`hold of supplier invoice ${givenNumber}`, 'was refused, and is not asked again until the invoice is decided', err);
+        continue;
+      }
+      out.failure ??= writeFailure(`hold of supplier invoice ${givenNumber}`, 'failed', err);
     }
   }
 
@@ -1411,19 +1440,25 @@ async function writeBackInvoices(
     }
     budget.details -= INVOICE_DECISION_CALLS;
     const tries = invoiceWriteKey(decision.key);
+    const progress: DecisionProgress = { step: 'the read' };
     try {
-      await settleInvoiceDecision(host, connectionId, api, decision, at);
+      await settleInvoiceDecision(host, connectionId, api, decision, at, progress);
+      progress.step = 'the receipt';
       await scope.invoke(operations.record, fortnoxInvoiceWritebackReceipt.parse({ key: decision.key, status: 'done', error: null }));
       await host.admin.putConnectorState(connectionId, tries, null);
+      await forgetRefusedHold(host, connectionId, decision.givenNumber, at);
       out.written += 1;
     } catch (err) {
       const error = asError(err);
       const attempts = (((await host.admin.getConnectorState(connectionId, tries)) as { attempts?: number } | null | undefined)?.attempts ?? 0) + 1;
-      out.failure ??= new Error(`write-back of supplier invoice ${decision.givenNumber}: ${error.message}`);
+      // The step says how far the decision got (#3452): a refused second booking reads apart from a
+      // first booking that was refused for another reason.
+      out.failure ??= writeFailure(`write-back of supplier invoice ${decision.givenNumber}`, `failed at ${progress.step}`, err);
       if (statedRefusal(err) || attempts >= INVOICE_WRITE_ATTEMPTS) {
         try {
           await scope.invoke(operations.record, fortnoxInvoiceWritebackReceipt.parse({ key: decision.key, status: 'failed', error: error.message }));
           await host.admin.putConnectorState(connectionId, tries, null);
+          await forgetRefusedHold(host, connectionId, decision.givenNumber, at);
           continue;
         } catch {
           // The receipt did not land, so the vertical still lists the decision: the next pass tries
@@ -1436,6 +1471,21 @@ async function writeBackInvoices(
   return out;
 }
 
+/** The step a decision has reached, for the failure that stops it. */
+interface DecisionProgress {
+  step: 'the read' | 'the booking' | 'the release' | 'the approval' | 'the booking after approval' | 'the comment' | 'the receipt';
+}
+
+/**
+ * A settled decision ends what a refused hold remembered, so an invoice that comes back to the queue
+ * is asked about again. A note for any other hold stays: whether to lift that block is the release's.
+ */
+async function forgetRefusedHold(host: ScopeHost, connectionId: ConnectionId, givenNumber: string, at: string): Promise<void> {
+  const key = invoiceHoldKey(givenNumber);
+  const hold = (await host.admin.getConnectorState(connectionId, key)) as InvoiceHold | null | undefined;
+  if (hold?.refused && !hold.cleared) await host.admin.putConnectorState(connectionId, key, { ...hold, cleared: at } satisfies InvoiceHold);
+}
+
 /** Bring Fortnox to what one decision says. Safe to repeat: every step looks before it writes. */
 async function settleInvoiceDecision(
   host: ScopeHost,
@@ -1443,14 +1493,17 @@ async function settleInvoiceDecision(
   api: FortnoxApi,
   decision: FortnoxInvoiceWriteback['decisions'][number],
   at: string,
+  progress: DecisionProgress,
 ): Promise<void> {
   const { givenNumber, book, release, comment } = decision;
+  progress.step = 'the read';
   const invoice = await api.supplierInvoice(givenNumber);
   const key = invoiceHoldKey(givenNumber);
   /** Lift the block this binding set, once. */
   const releaseHold = async (): Promise<void> => {
     const hold = (await host.admin.getConnectorState(connectionId, key)) as InvoiceHold | null | undefined;
     if (!hold?.ours || hold.cleared) return;
+    progress.step = 'the release';
     if (invoice.DisablePaymentFile) {
       try {
         await api.setSupplierInvoicePaymentBlock(givenNumber, false);
@@ -1470,17 +1523,21 @@ async function settleInvoiceDecision(
   let released = false;
   if (book && !invoice.Booked) {
     try {
+      progress.step = 'the booking';
       await api.bookSupplierInvoice(givenNumber);
     } catch (err) {
       if (fortnoxErrorCode(err) !== NEEDS_APPROVAL) throw err;
       // The decision is the approval. Lift the block before approving, because approval locks it.
       if (release) await releaseHold();
       released = true;
+      progress.step = 'the approval';
       await api.approveSupplierInvoice(givenNumber);
+      progress.step = 'the booking after approval';
       await api.bookSupplierInvoice(givenNumber);
     }
   }
   if (release && !released) await releaseHold();
+  progress.step = 'the comment';
   if (comment !== null && !(await api.supplierInvoiceComments(givenNumber)).includes(comment)) {
     await api.addSupplierInvoiceComment(givenNumber, comment);
   }
@@ -1830,7 +1887,7 @@ export async function sweepFortnoxLedger(
       result.failed.push({
         scopeId: binding.scopeId,
         error: err instanceof Error ? err.message : String(err),
-        ...(err instanceof FortnoxReadFailure ? { said: err.said } : {}),
+        ...(err instanceof FortnoxSaidFailure ? { said: err.said } : {}),
       });
     } finally {
       // A release that fails leaves the lease to expire.

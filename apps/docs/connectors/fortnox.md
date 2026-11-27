@@ -348,13 +348,22 @@ fifteen minutes and nothing else. The operation answers for the company it is gi
   hold first leaves nothing payable. If someone approved the invoice in Fortnox before the decision,
   the receipt is `failed` and says the block must be lifted in Fortnox. An invoice approved before the
   sweep could hold it is not held, and its row says so once.
+- **A hold Fortnox refuses** in its own words is not asked for again, and its row says so once. A
+  company whose approval flow names its approvers answers this way: there only the current approver
+  may change an unbooked invoice. Once a decision on the invoice has a receipt, the refusal is
+  forgotten, so an invoice that comes back to `hold` is asked about again. What the write-back should
+  do in such a company is not settled yet. Today its booking is refused too, and the receipt is
+  `failed`.
 - **The receipt** goes to `record`, parsed by `fortnoxInvoiceWritebackReceipt`, as
   `{ key, status: 'done' | 'failed', error }`. A refusal in Fortnox's own words (a `4xx`, a locked
   period for example) is `failed` at once, because the next pass would get the same answer and a
   person has to act. Anything else, an outage for example, is tried on the next passes, and is
   `failed` after eight. Answering the same key again after a `failed` is how a vertical retries.
 - **A write that fails** also fails the scope's row by the invoice's number. It never stops the
-  invoices landing, and a landing that fails never stops the writes.
+  invoices landing, and a landing that fails never stops the writes. The row names the step a
+  decision stopped at (the booking, the approval, the booking after approval, the release, the
+  comment, the receipt), with Fortnox's HTTP status and error code. The tenant's row carries those
+  same facts, and never Fortnox's text.
 - **Budget.** A hold costs two calls and a decision up to seven, from the pass's 200, and the 90-second
   deadline applies. What does not fit is answered again next pass.
 
