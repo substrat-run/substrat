@@ -1,5 +1,11 @@
 # @substrat-run/connector-fortnox
 
+## 0.11.1
+
+### Patch Changes
+
+- 9b70be0: A refused hold is remembered and fails one pass, not every pass. Write-back failures name the step and carry Fortnox's error code, in staff's row and in the tenant's.
+
 ## 0.11.0
 
 ### Minor Changes

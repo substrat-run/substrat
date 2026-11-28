@@ -1,5 +1,23 @@
 # @substrat-run/control-plane-client
 
+## 0.10.0
+
+### Minor Changes
+
+- 508692d: `substrat dev` reaches real Workers AI through your `substrat login`: a project with `usesModels` gets a loopback relay over short-lived, workspace-scoped model access, and no Cloudflare token (#3420). The control plane issues that access and files each call on the workspace's model usage ledger; the client gains `issueModelAccess()`; the template's agent rules say so.
+- 5f58671: A store-driver approval names the release's foundation version beside its schema (#3175). This is for a driver that rewrites its level-0 foundation in place when it wakes a store. `substrat store-driver approve` takes `--foundation <n>`, the approval records it and keeps it fixed for those bytes, and the approval result and `store-driver status` show it beside the current good release's. `substrat.selfcheck` may answer `foundation`, and the canary refuses a release whose reported foundation differs from the approved one. A rollout, rollback, return or script build that would lower the foundation a script runs is refused, as it is for the schema. A driver with no foundation leaves the field out.
+
+### Patch Changes
+
+- Updated dependencies [d923f9b]
+- Updated dependencies [0516ad7]
+- Updated dependencies [5db4c15]
+- Updated dependencies [1c3b47f]
+- Updated dependencies [5f58671]
+- Updated dependencies [cc4a402]
+- Updated dependencies [7dcef43]
+  - @substrat-run/contracts@0.215.0
+
 ## 0.9.14
 
 ### Patch Changes

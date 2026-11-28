@@ -1,5 +1,25 @@
 # @substrat-run/vertical-auth
 
+## 0.39.0
+
+### Minor Changes
+
+- ee22045: A plugin whose master runs several instances in the tenant, with none bound, now answers 409 `conflict` naming the remedy (a tenant admin binds the instance) instead of 503 "retry", both for a person signing in and for a call made for a person (#3436). The person contract gains the refusal `master-conflict`.
+
+### Patch Changes
+
+- Updated dependencies [7e7e5af]
+- Updated dependencies [ad88c1a]
+- Updated dependencies [d923f9b]
+- Updated dependencies [0516ad7]
+- Updated dependencies [5db4c15]
+- Updated dependencies [1c3b47f]
+- Updated dependencies [5f58671]
+- Updated dependencies [cc4a402]
+- Updated dependencies [7dcef43]
+  - @substrat-run/kernel@0.217.0
+  - @substrat-run/contracts@0.215.0
+
 ## 0.38.7
 
 ### Patch Changes
