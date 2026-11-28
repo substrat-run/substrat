@@ -47,7 +47,7 @@ FORBIDDEN_PORTS = {5173, 8787, 8879, 8880, 8891, 5280, 9229} | set(range(8870, 8
 PLATFORM_HEADER = 'x-substrat-platform'  # contracts/wire-headers
 AUTH_CONFIG_KEY = 'substrat:auth'  # vertical-auth instance-auth AUTH_CONFIG_KEY
 SHARED_ISSUER_KEY = 'substrat:auth:shared-issuer'  # contracts SHARED_ISSUER_CONFIG_KEY
-RUNTIME_BASELINE = '2026-06-01'  # contracts deploy.ts: the compatibility date a push derives
+RUNTIME_BASELINE = '2026-08-06'  # contracts deploy.ts: the compatibility date a push derives
 # The template's fixed dev node, used when src/worker.ts cannot be read for one.
 TEMPLATE_DEV_NODE = ('01JZ00000000000000000DEV01', '01JZ00000000000000000DEV02')
 
