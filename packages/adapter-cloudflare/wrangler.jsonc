@@ -100,6 +100,13 @@
       { "name": "UNMETERED_SCOPE", "class_name": "UnmeteredScopeDO" },
       // K-69: scopes that wake themselves for their pending work — scope-wake.test.ts.
       { "name": "WAKE_SCOPE", "class_name": "WakeScopeDO" },
+      // K-74: scopes that hand off to a delivery broker, the brokers, and scopes with none bound —
+      // delivery-broker.test.ts.
+      { "name": "BROKER_SCOPE", "class_name": "BrokerScopeDO" },
+      { "name": "HOLDING_BROKER_SCOPE", "class_name": "HoldingBrokerScopeDO" },
+      { "name": "UNBROKERED_SCOPE", "class_name": "UnbrokeredScopeDO" },
+      { "name": "TEST_DELIVERY_BROKER", "class_name": "TestDeliveryBrokerDO" },
+      { "name": "HOLDING_DELIVERY_BROKER", "class_name": "HoldingDeliveryBrokerDO" },
       // #2209: the scope-store door's same-script counter. The cross-script binding is the spike's.
       { "name": "SUBSTRAT_STORE_GRAPH", "class_name": "ScopeStoreCounterDO" },
       // #1686: vertical-auth's real identity directory, for the owner claim link suite — the
@@ -233,6 +240,10 @@
     {
       "tag": "v29",
       "new_sqlite_classes": ["MirrorControlPlaneDO"]
+    },
+    {
+      "tag": "v30",
+      "new_sqlite_classes": ["BrokerScopeDO", "HoldingBrokerScopeDO", "UnbrokeredScopeDO", "TestDeliveryBrokerDO", "HoldingDeliveryBrokerDO"]
     }
   ],
   // #3395: the routing read model's namespace, seen by RoutesControlPlaneDO alone (as `ROUTES`).

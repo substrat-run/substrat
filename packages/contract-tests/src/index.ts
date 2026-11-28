@@ -43,6 +43,7 @@ export { entityVersionContractSuite } from './entity-version-suite.js';
 export { timelineContractSuite } from './timeline-suite.js';
 export { concurrencyContractSuite } from './concurrency-suite.js';
 export { emittedReportContractSuite } from './emitted-suite.js';
+export { deliveryBrokerContractSuite, type DeliveryBrokerFixture } from './delivery-broker-suite.js';
 export { moduleLogContractSuite } from './module-log-suite.js';
 export { verifiedEmailContractSuite } from './verified-email-suite.js';
 export { checkTallyContractSuite } from './check-tally-suite.js';

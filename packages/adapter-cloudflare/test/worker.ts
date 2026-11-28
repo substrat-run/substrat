@@ -40,6 +40,8 @@ import { defineScopeDO, type ScopeDoEnv } from '../src/scope-do.js';
 import { CloudflareScopeHost } from './test-host.js';
 import { definePlatformSweeperDO } from '../src/platform-sweeper-do.js';
 import { defineScopeSweeperDO } from '../src/scope-sweeper-do.js';
+import { defineDeliveryBrokerDO } from '../src/delivery-broker-do.js';
+import type { BrokerMessage, HandOffAnswer } from '@substrat-run/kernel';
 import { defineKickCoalescerDO } from '../src/kick-coalescer-do.js';
 import { defineConnectionSweepDO } from '../src/connection-sweep-do.js';
 import { defineCopyJobDO, type CopyJobDoRecord, type CopyJobStep } from '../src/copy-job-do.js';
@@ -404,6 +406,70 @@ export class WakeScopeDO extends WakeBase {
     super(ctx, { ...env, CONTROL_PLANE_URL: WAKE_CONTROL_PLANE_URL, PLATFORM_SECRET: 'wake-test-secret' });
   }
 }
+
+/**
+ * K-74: a delivery broker whose receiver records what it is given, and which refuses or fails on
+ * request (delivery-broker.test.ts). Its state is the isolate's, so the suite reads what the object
+ * was given. Every retry is due at once (`retryMs: [0]`): the suite runs passes back to back.
+ */
+export const DELIVERY_BROKER_TEST = Symbol.for('substrat.test.delivery-broker');
+export interface DeliveryBrokerTestState {
+  received: BrokerMessage[];
+  refusals: number;
+  failures: number;
+}
+export const deliveryBrokerTest = (): DeliveryBrokerTestState =>
+  ((globalThis as Record<symbol, DeliveryBrokerTestState>)[DELIVERY_BROKER_TEST] ??= { received: [], refusals: 0, failures: 0 });
+const TestDeliveryBrokerBase = defineDeliveryBrokerDO({
+  retryMs: [0],
+  receiver: () => ({
+    async deliver(m) {
+      const state = deliveryBrokerTest();
+      if (state.failures > 0) {
+        state.failures--;
+        throw new Error('receiver down');
+      }
+      state.received.push(m);
+    },
+  }),
+});
+export class TestDeliveryBrokerDO extends TestDeliveryBrokerBase {
+  override async handOff(messages: BrokerMessage[]): Promise<HandOffAnswer> {
+    const state = deliveryBrokerTest();
+    if (state.refusals > 0) {
+      state.refusals--;
+      throw new Error('broker unreachable');
+    }
+    return super.handOff(messages);
+  }
+  /**
+   * The suite drives each delivery pass itself (`drive`). With every attempt due at once, the
+   * runtime's own alarm would fire in the background and race the suite's reads, so it does nothing.
+   */
+  override async alarm(): Promise<void> {}
+  async drive(): Promise<void> {
+    await super.alarm();
+  }
+}
+/** A broker with no receiver, as A1 ships it: it holds what it accepts. */
+export const HoldingDeliveryBrokerDO = defineDeliveryBrokerDO();
+/** The app slug the broker scopes hand off under. */
+export const DELIVERY_BROKER_APP = 'broker-vertical';
+const BrokerScopeBase = defineScopeDO([], contractTestBareOps);
+/** Scopes with the broker bound, as an app's script binds `SUBSTRAT_DELIVERY_BROKER`. */
+export class BrokerScopeDO extends BrokerScopeBase {
+  constructor(ctx: DurableObjectState, env: ScopeDoEnv & { TEST_DELIVERY_BROKER: DurableObjectNamespace; HOLDING_DELIVERY_BROKER: DurableObjectNamespace }) {
+    super(ctx, { ...env, SUBSTRAT_DELIVERY_BROKER: env.TEST_DELIVERY_BROKER, SUBSTRAT_VERTICAL: DELIVERY_BROKER_APP });
+  }
+}
+/** …and scopes over the holding broker. */
+export class HoldingBrokerScopeDO extends BrokerScopeBase {
+  constructor(ctx: DurableObjectState, env: ScopeDoEnv & { TEST_DELIVERY_BROKER: DurableObjectNamespace; HOLDING_DELIVERY_BROKER: DurableObjectNamespace }) {
+    super(ctx, { ...env, SUBSTRAT_DELIVERY_BROKER: env.HOLDING_DELIVERY_BROKER, SUBSTRAT_VERTICAL: DELIVERY_BROKER_APP });
+  }
+}
+/** …and scopes with no broker bound: the switch off. */
+export const UnbrokeredScopeDO = defineScopeDO([], contractTestBareOps);
 
 export const NarrowedPeerScopeDO = defineScopeDO([peerModNarrowed], {});
 export const RemovedPeerScopeDO = defineScopeDO([peerModWithoutCaller], {});

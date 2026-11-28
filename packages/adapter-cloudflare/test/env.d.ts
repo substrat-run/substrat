@@ -86,6 +86,12 @@ declare namespace Cloudflare {
     UNMETERED_SCOPE: DurableObjectNamespace;
     /** K-69: scopes that wake themselves for their pending work — scope-wake.test.ts. */
     WAKE_SCOPE: DurableObjectNamespace;
+    /** K-74: scopes over the recording broker, over the holding broker, and with none bound; the two brokers. */
+    BROKER_SCOPE: DurableObjectNamespace;
+    HOLDING_BROKER_SCOPE: DurableObjectNamespace;
+    UNBROKERED_SCOPE: DurableObjectNamespace;
+    TEST_DELIVERY_BROKER: DurableObjectNamespace;
+    HOLDING_DELIVERY_BROKER: DurableObjectNamespace;
     /** #2498: a real R2 bucket for the streamed upload — attachment-stream.test.ts. */
     STREAM_BUCKET: R2Bucket;
   }

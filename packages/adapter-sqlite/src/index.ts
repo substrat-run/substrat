@@ -1031,6 +1031,7 @@ import {
   type DirectoryObjects,
 } from '@substrat-run/kernel';
 import { canonicalInstant } from '@substrat-run/kernel';
+import { advanceMarks, handoffQueries, messagesOf, type DeliveryBroker, type HandoffMarks } from '@substrat-run/kernel';
 import {
   MARKUP_INSERT_SQL,
   MARKUP_SELECT_FOR_TENANT_SQL,
@@ -1065,6 +1066,7 @@ import { createTupleChecker, directoryTenantReader } from './checker.js';
 import { decidedByOf, entityString, forgetInvocationTrace, invocationTrace, tracedSql } from './trace.js';
 
 export { scopeStoreRunnersFor } from './scope-store-runners.js';
+export { InProcessDeliveryBroker, type InProcessDeliveryBrokerOptions } from './delivery-broker.js';
 export { devMailOutbox, MAIL_OUTBOX_ENV, type DevMailOutbox, type DevMailOutboxOptions, type OutboxNode } from './dev-mail-outbox.js';
 
 /**
@@ -1456,6 +1458,13 @@ export interface SqliteScopeHostOptions {
    * nothing is compared (a test fixture, a host with no declared surface).
    */
   permissions?: DeclaredPermissions;
+  /**
+   * K-74: the delivery broker each scope hands its committed messages to — one per (tenant, app),
+   * which the harness resolves (`brokerName`), since one pure host may serve several apps. Given,
+   * every commit hands off the events the scope emitted and the intents it raised past its marks,
+   * right after the commit's own dispatch. Omitted, nothing is handed off: the broker is off.
+   */
+  deliveryBroker?: (ids: { tenantId: TenantId; scopeId: ScopeId }) => DeliveryBroker;
 }
 
 /**
@@ -2622,6 +2631,10 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly connectorCalls: ConnectorCallRecorder;
   private readonly clock: Clock;
   private readonly versionId: string | null;
+  /** K-74: the broker each scope hands off to, or null (off). */
+  private readonly deliveryBroker: ((ids: { tenantId: TenantId; scopeId: ScopeId }) => DeliveryBroker) | null;
+  /** K-74: each scope's handoff marks, a cache of what its broker holds (`DeliveryBroker.marks`). */
+  private readonly handoffMarks = new Map<string, HandoffMarks>();
   private readonly migrationsDigest: string | undefined;
   /** #1746: where `ctx.log` lines go — the console unless a caller (a test) says otherwise. */
   private readonly logSink: ModuleLogSink;
@@ -2645,6 +2658,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
     this.versionId = options.versionId ?? null;
+    this.deliveryBroker = options.deliveryBroker ?? null;
     this.migrationsDigest = options.migrationsDigest;
     this.permissions = options.permissions;
     // #2430: what the declared surface reserves holds here too, whatever is registered under its ids.
@@ -7529,6 +7543,8 @@ export class SqliteScopeHost implements ScopeHost {
             // this call's own work — the same tail its consumers' emits are stamped in.
             await this.dispatch(rt, rt.invocationId);
             await this.dispatchExecutors(rt, rt.invocationId, executorOutcomes);
+            // K-74: after the consumers and executors, whose own emits and intents count too.
+            await this.handOffCommitted(rt);
           }
           if (exportMark !== null && !replayed) {
             const q = exportedSinceQuery(exportTypes, exportMark);
@@ -8407,6 +8423,43 @@ export class SqliteScopeHost implements ScopeHost {
         await this.dispatchExecutors(rt, null);
       }
     });
+  }
+
+  /**
+   * K-74: hand off what the scope's commits left to its delivery broker, past the scope's marks, and
+   * move the marks over what the broker acknowledged. Runs inside the actor task after a commit, as
+   * the dispatch does. Never throws: a handoff that fails is retried by the next commit, or by
+   * `retryHandoffs`, and the broker drops what it already holds.
+   */
+  private async handOffCommitted(rt: ScopeRuntime): Promise<void> {
+    if (!this.deliveryBroker) return;
+    const ids = { tenantId: rt.tenantId, scopeId: rt.scopeId };
+    const key = `${rt.tenantId}/${rt.scopeId}`;
+    try {
+      const broker = this.deliveryBroker(ids);
+      let marks = this.handoffMarks.get(key) ?? (await broker.marks(rt.tenantId, rt.scopeId));
+      // A backlog larger than one batch follows in the next round; bounded, so a commit never spins.
+      for (let round = 0; round < 20; round++) {
+        const sent = handoffQueries(marks).flatMap((q) =>
+          messagesOf(q.kind, rt.db.prepare(q.sql).all(...q.params) as Record<string, unknown>[], ids),
+        );
+        if (sent.length === 0) break;
+        marks = advanceMarks(marks, sent, await broker.handOff(sent));
+        this.handoffMarks.set(key, marks);
+      }
+      this.handoffMarks.set(key, marks);
+    } catch (err) {
+      console.error('substrat: delivery handoff failed; the next commit retries it', err);
+    }
+  }
+
+  /**
+   * K-74: hand off again whatever a scope's earlier handoff left unacknowledged — the pure host's
+   * stand-in for the scope alarm that retries it on the Durable Object. Runs in the scope's actor.
+   */
+  async retryHandoffs(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    await rt.actor.enqueue(() => this.handOffCommitted(rt));
   }
 
   private async dispatch(
