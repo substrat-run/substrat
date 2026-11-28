@@ -522,6 +522,9 @@ import type {
 import { createDoTupleChecker, createLocalControlPlaneReader, scopeTupleReader, type ControlPlaneReader } from './checker.js';
 import { settlePlatformRequestIn, type PlatformRequestSettle } from '@substrat-run/kernel';
 import { loadDropsRowsOf, SCOPE_COPY_LEASE_MS, ulidTime } from '@substrat-run/kernel';
+import { DELIVERY_HANDOFF_KEY, HANDOFF_ROUNDS, handoffAfterFailure, handoffDue, handoffPending, mergeHandoff, sameMarks, type HandoffState } from './delivery-handoff.js';
+import { advanceMarks, brokerName, handoffQueries, messagesOf } from '@substrat-run/kernel';
+import type { DeliveryBrokerRpc } from './delivery-broker-do.js';
 import { SCOPE_WAKE_KEY, keepRegisteredMeanwhile, kickControlPlane, runWake, wakeAfterCommit, wakeDueAt, type CommitWork, type ScopeWakeState, type WakeWork } from './scope-wake.js';
 import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertSpineTablesBuilt, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, CLEAN_ROOM_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 import { GRANT_CHILDREN_INDEX_DDL, SHAPE_MARKER_INDEX_DDL, grantedEntitiesForContext, type ShapeCursor } from '@substrat-run/kernel';
@@ -582,6 +585,12 @@ export interface ScopeDoEnv {
    */
   CONTROL_PLANE_URL?: string;
   PLATFORM_SECRET?: string;
+  /**
+   * K-74: the app's delivery brokers (`defineDeliveryBrokerDO`), one per (tenant, app). Bound, every
+   * commit hands off the events the scope emitted and the intents it raised; unbound, nothing is
+   * handed off and delivery stays the control plane's drain. The upload does not bind it yet (A5).
+   */
+  SUBSTRAT_DELIVERY_BROKER?: DurableObjectNamespace;
 }
 
 interface RegisteredModule {
@@ -1829,6 +1838,14 @@ export function defineScopeDO(
      * underneath rows it already stored.
      */
     private readonly mintEventId: UlidMint = createUlid();
+    /**
+     * K-74: the intent-id mint for THIS scope, floored at its own highest intent as `mintEventId` is at
+     * its highest event. The handoff reads intents past a mark with `id > ?`, so an intent minted
+     * below one already handed off (a clock stepped back across a restart) would never be handed off.
+     * Per scope, never the process-wide mint: seeding that from one scope would move every other
+     * scope's ids forward.
+     */
+    private readonly mintIntentId: UlidMint = createUlid();
     /** `module@version` → the SQL digest its journal row recorded, null for a row from before #2066. */
     private applied = new Map<string, string | null>();
     private migrationPromise?: Promise<boolean>;
@@ -1945,6 +1962,12 @@ export function defineScopeDO(
         }[]
       )[0]?.id;
       if (highest) this.mintEventId.seedFrom(highest);
+      const highestIntent = (
+        this.sql.exec('SELECT MAX(id) AS id FROM _substrat_platform_requests').toArray() as unknown as {
+          id: string | null;
+        }[]
+      )[0]?.id;
+      if (highestIntent) this.mintIntentId.seedFrom(highestIntent);
 
       const controlPlane = this.controlPlaneReader();
       // #2263: a peer holds only what this code's declaration names, whatever the tuples say. The
@@ -2847,12 +2870,18 @@ export function defineScopeDO(
       executors: readonly OutboxSubscriber[],
       due = true,
     ): Promise<number> {
+      // K-74: with a broker bound, only what it has acknowledged may go: the scope's own marks,
+      // which are only ever at or below what the broker holds, so the prune keeps more, never less.
+      const handedOffThrough = this.env.SUBSTRAT_DELIVERY_BROKER
+        ? ((await this.ctx.storage.get<HandoffState>(DELIVERY_HANDOFF_KEY))?.marks?.event ?? null)
+        : undefined;
       return this.queue.enqueue(() =>
         this.revision.transactionSync(() =>
           pruneDrainedOutbox(this.switchSql(), {
             drainedBefore,
             limit,
             due,
+            ...(handedOffThrough === undefined ? {} : { handedOffThrough }),
             // Executors run on the coordinator, which names them; the consumers are this DO's own.
             subscribers: [...outboxSubscribersOf(this.modules.values(), []), ...executors],
             exportTypes: this.crossVertical.exportTypes(),
@@ -4199,6 +4228,7 @@ export function defineScopeDO(
     async alarm(): Promise<void> {
       await this.armLiveExpiry();
       await this.runScopeWake();
+      await this.retryHandoff();
     }
 
     /** K-69: a scope with the control plane's origin and secret asks for its own drains. */
@@ -4271,6 +4301,99 @@ export function defineScopeDO(
         if (at !== null) await this.armAlarmBy(at);
       } catch (err) {
         console.error('substrat: scope wake failed; the pass is the backstop', err);
+      }
+    }
+
+    /** K-74: this scope's broker, or null when the script binds none (the broker is off). */
+    private deliveryBroker(tenantId: TenantId): DeliveryBrokerRpc | null {
+      const ns = this.env.SUBSTRAT_DELIVERY_BROKER;
+      if (!ns) return null;
+      const app = this.env.SUBSTRAT_VERTICAL ?? 'vertical';
+      return ns.get(ns.idFromName(brokerName(tenantId, app))) as unknown as DeliveryBrokerRpc;
+    }
+
+    /**
+     * K-74: hand off what the scope's commits left, past its marks, and keep the marks the broker
+     * acknowledged. The marks live in storage KV (`DELIVERY_HANDOFF_KEY`), never SQL, as the wake's
+     * state does: a cache of what the broker holds, which it answers for when they are lost. Never
+     * fails the commit it follows.
+     *
+     * A retry is durable before the first broker call, so an object reset mid-handoff leaves one the
+     * alarm runs. It is cleared only by a read that finds nothing left. A handoff that fails, that
+     * makes no progress, or that stops at its round limit with work left keeps it, on
+     * `HANDOFF_RETRY_MS`.
+     */
+    private async handOffCommitted(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+      const broker = this.deliveryBroker(tenantId);
+      if (!broker) return;
+      const ids = { tenantId, scopeId };
+      const stored = (await this.ctx.storage.get<HandoffState>(DELIVERY_HANDOFF_KEY)) ?? null;
+      let marks = stored?.marks;
+      try {
+        marks ??= await broker.marks(tenantId, scopeId);
+        let retry: HandoffState | null = null;
+        let drained = false;
+        // A backlog larger than one batch follows in the next round; bounded, so a commit never spins.
+        for (let round = 0; round < HANDOFF_ROUNDS; round++) {
+          const sent = handoffQueries(marks).flatMap((q) =>
+            messagesOf(q.kind, this.sql.exec(q.sql, ...q.params).toArray() as Record<string, unknown>[], ids),
+          );
+          if (sent.length === 0) {
+            drained = true;
+            break;
+          }
+          if (!retry) {
+            retry = handoffPending(stored, marks, Date.now(), ids);
+            await this.keepHandoff(retry);
+            await this.armAlarmBy(retry.due!);
+          }
+          const next = advanceMarks(marks, sent, await broker.handOff(sent));
+          // An answer that acknowledges nothing new: stop, and leave the retry armed.
+          if (sameMarks(next, marks)) throw new Error('the broker acknowledged none of the handoff');
+          marks = next;
+          await this.keepHandoff({ ...retry, marks });
+        }
+        if (drained) {
+          await this.keepHandoff({ tenantId, scopeId, marks });
+          return;
+        }
+        // The round limit, with work left: continue on the first step of the back-off.
+        const more = handoffPending(null, marks, Date.now(), ids);
+        await this.keepHandoff(more);
+        await this.armAlarmBy(more.due!);
+      } catch (err) {
+        console.error('substrat: delivery handoff failed; the scope alarm retries it', err);
+        const next = handoffAfterFailure(stored, marks, Date.now(), ids);
+        await this.keepHandoff(next);
+        await this.armAlarmBy(next.due!);
+      }
+    }
+
+    /**
+     * Store the handoff state, never moving a mark backwards: another commit's handoff may have
+     * stored a later one while this one awaited the broker.
+     */
+    private async keepHandoff(next: HandoffState): Promise<void> {
+      const fresh = (await this.ctx.storage.get<HandoffState>(DELIVERY_HANDOFF_KEY)) ?? null;
+      await this.ctx.storage.put(DELIVERY_HANDOFF_KEY, mergeHandoff(fresh, next));
+    }
+
+    /** K-74: the handoff's half of the alarm. Never throws. */
+    private async retryHandoff(): Promise<void> {
+      try {
+        const state = (await this.ctx.storage.get<HandoffState>(DELIVERY_HANDOFF_KEY)) ?? null;
+        if (state?.due === undefined) return;
+        // The alarm is shared: another of its users may have fired it first. Keep this one's time.
+        if (!handoffDue(state, Date.now())) {
+          await this.armAlarmBy(state.due);
+          return;
+        }
+        const tenant = tenantIdOf.safeParse(state?.tenantId);
+        const scope = scopeIdOf.safeParse(state?.scopeId);
+        if (!tenant.success || !scope.success) return;
+        await this.handOffCommitted(tenant.data, scope.data);
+      } catch (err) {
+        console.error('substrat: delivery handoff retry failed', err);
       }
     }
 
@@ -4412,6 +4535,8 @@ export function defineScopeDO(
       await this.dispatch(tenantId, scopeId, invocationId);
       // K-69: after the consumers, whose own emits and intents count too.
       await this.noteScopeWake(tenantId, scopeId);
+      // K-74: the same, for the delivery broker.
+      await this.handOffCommitted(tenantId, scopeId);
       if (liveSince === null) return;
       try {
         await this.fanOutLive(liveSince, tenantId, scopeId);
@@ -7817,7 +7942,7 @@ export function defineScopeDO(
       invocationId: string | null = null,
     ): Promise<PlatformRequestId | null> {
       if (this.pendingConnectorDispatches() >= MAX_PENDING_CONNECTOR_DISPATCHES) return null;
-      const id = platformRequestId.parse(ulid());
+      const id = platformRequestId.parse(this.mintIntentId());
       // K-42: the intent inherits the SOURCE EVENT's stamp rather than being written
       // unstamped. Nobody is impersonating at this moment — the drain runs long after
       // the session's invoke returned — but the intent exists BECAUSE of an event that
@@ -7842,7 +7967,10 @@ export function defineScopeDO(
       // K-69: this intent is enqueued by the coordinator after the commit's own wake was armed, so
       // it arms one too, under the ids its source event carries. Both writes above are made before
       // this await, as one unit.
-      if (source) await this.noteScopeWake(tenantIdOf.parse(source.tenant_id), scopeIdOf.parse(source.scope_id));
+      if (source) {
+        await this.noteScopeWake(tenantIdOf.parse(source.tenant_id), scopeIdOf.parse(source.scope_id));
+        await this.handOffCommitted(tenantIdOf.parse(source.tenant_id), scopeIdOf.parse(source.scope_id));
+      }
       return id;
     }
 
@@ -7921,7 +8049,7 @@ export function defineScopeDO(
       if (counts.c >= MAX_PENDING_PLATFORM_REQUESTS || (counts.k ?? 0) >= MAX_PENDING_SWEEP_RUNS) {
         return null;
       }
-      const id = platformRequestId.parse(ulid());
+      const id = platformRequestId.parse(this.mintIntentId());
       this.sql.exec(
         `INSERT INTO _substrat_platform_requests
            (id, kind, payload, requested_by, impersonation, status, attempts, requested_at)
@@ -10439,7 +10567,7 @@ export function defineScopeDO(
             ).c,
           );
           assertPlatformRequestRoom(pending);
-          const id = platformRequestId.parse(ulid());
+          const id = platformRequestId.parse(this.mintIntentId());
           const requestedBy = systemActor ?? derivedActor;
           sql.exec(
             `INSERT INTO _substrat_platform_requests

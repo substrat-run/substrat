@@ -34,7 +34,11 @@ export const INDEX_VALUE_EXPORTS = [
   'BACKFILL_MOVE_ID',
   'BILLING_ROLLUP_RETENTION_MONTHS',
   'BIND_EXPORT_BREAK_REFUSAL',
+  // K-74: how long a broker with no receiver holds a message; the Durable Object broker arms its prune on it.
+  'BROKER_HELD_RETENTION_MS',
   'BUILD_USAGE_RETENTION_DAYS',
+  // K-74: the broker's own tables and statements, shared so both adapters' brokers cannot drift.
+  'BrokerStore',
   'CANCELLED_JOB_NOTE',
   'CAPABILITY_BECOME_MINT_OPERATION',
   // #2817: a principal's bind link mint — the pseudo-operation, the bound, and the write.
@@ -104,6 +108,8 @@ export const INDEX_VALUE_EXPORTS = [
   'FINDING_RETENTION_DAYS',
   'FilterNotDeclared',
   'GRANT_CHILDREN_INDEX_DDL',
+  // K-74: the scope's back-off for a refused handoff, run by the Durable Object's alarm.
+  'HANDOFF_RETRY_MS',
   'IDEMPOTENCY_DDL',
   'IMPERSONATION_COLUMNS',
   'IMPERSONATION_DDL',
@@ -304,6 +310,8 @@ export const INDEX_VALUE_EXPORTS = [
   'admissionMissOutcome',
   'admitPeer',
   'advanceDirectoryLakeBackfill',
+  // K-74: how far a broker's answer moves a scope's handoff marks; both adapters' scopes.
+  'advanceMarks',
   'advanceStoreDriverRebuildIn',
   'afterMigration',
   'afterRuntimeDdl',
@@ -378,6 +386,8 @@ export const INDEX_VALUE_EXPORTS = [
   'boundShapesOfColumn',
   // #2263: a peer holds only what the running declaration names; both adapters wrap their checker.
   'boundToPeerDeclarations',
+  // K-74: a broker's name, one per (tenant, app); the scope and the harness resolve it alike.
+  'brokerName',
   'bytesStream',
   'callReservedStoreOperation',
   'callScopeStore',
@@ -521,6 +531,8 @@ export const INDEX_VALUE_EXPORTS = [
   'guardSecrets',
   'guardSpine',
   'guardSqlLimits',
+  // K-74: the reads a scope's handoff makes past its marks; both adapters.
+  'handoffQueries',
   // #3360: the keys a person could pass a check for, one helper so both adapters answer `heldPermissions` alike.
   'heldKeysOf',
   'heldPurgePass',
@@ -632,6 +644,8 @@ export const INDEX_VALUE_EXPORTS = [
   'membershipFencesBackfillSql',
   'membershipFencesTableExists',
   'membershipRemoveExecutorId',
+  // K-74: a handoff read's rows as the messages they become; both adapters.
+  'messagesOf',
   'metaValueIn',
   'migratesFrom',
   'migrationChangeRefusal',
@@ -862,6 +876,8 @@ export const INDEX_VALUE_EXPORTS = [
   'restoreConnectLinkRow',
   'restoreSwitchRecord',
   'retireScopeStorage',
+  // K-74: the wait after n failures on a schedule; the handoff and the broker share it.
+  'retryAfter',
   'revokeBecomeCapabilityAsPrincipal',
   'revokeCapabilityAsPlatform',
   'revokeConnectLinkRow',
@@ -875,6 +891,8 @@ export const INDEX_VALUE_EXPORTS = [
   'runCrossVerticalFrom',
   // K-68 (directory split), step 3a: drives a crossing across two objects; the Cloudflare seam calls it.
   'runCrossing',
+  // K-74: one delivery pass over a broker store; both adapters' brokers.
+  'runDeliveryPass',
   'runDueJobRuns',
   'runJobPass',
   'runMigrationStatements',

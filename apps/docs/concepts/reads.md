@@ -95,6 +95,9 @@ If a scope's read volume genuinely outgrows its executor, the **outbox** already
 the way out. Event emission is transactional with the write it describes
 ([Events & audit](/concepts/events)), so a second drain sink can maintain a denormalized
 read model in external storage (D1, KV) without any risk of a write that never reaches it.
+That pump is the control plane's drain today. A delivery broker per tenant and app, which
+takes custody of a scope's messages right after commit, is being built to take it over; it is
+switched on for no deployment yet.
 
 ::: warning Read-your-writes does not survive the crossing
 D1's Sessions API provides sequential consistency *within D1's version space* — a

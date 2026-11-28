@@ -69,7 +69,16 @@ describe('pruneDrainedOutbox (#1334)', () => {
     expect(taken.db.prepare('SELECT COUNT(*) AS n FROM _substrat_deliveries').get()).toEqual({ n: 0 });
   });
 
+  it('with a delivery broker bound (K-74), prunes a row it has acknowledged', () => {
+    const acked = world();
+    expect(pruneDrainedOutbox(acked.sql, { ...base, handedOffThrough: T })).toBe(1);
+    expect(ids(acked.db)).toEqual(['E09']);
+  });
+
   it.each<[string, (s: ReturnType<typeof store>) => Partial<OutboxPruneInput> | void]>([
+    // K-74: the handoff reads only the outbox, so a row past the broker's mark has to stay.
+    ['a bound broker has acknowledged nothing', () => ({ handedOffThrough: null })],
+    ['a bound broker has acknowledged only an older row', () => ({ handedOffThrough: 'E04' })],
     ['a dead letter for its subscriber', (s) => {
       deliver(s.db, T, 'mine', { error: 'gave up' });
       return { subscribers: [{ deliveryId: 'mine', eventType: 'x.happened' }] };

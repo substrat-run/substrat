@@ -71,6 +71,8 @@ export type { PlatformSweeperDoConfig, PlatformSweepOutcome } from './platform-s
 // #2450 step 2: one object per background scope copy, stepped by alarm.
 export { defineCopyJobDO, type CopyJobDo, type CopyJobDoConfig, type CopyJobDoRecord, type CopyJobStep } from './copy-job-do.js';
 export { defineScopeSweeperDO, SCOPE_SWEEPER_NAME } from './scope-sweeper-do.js';
+export { defineDeliveryBrokerDO, type DeliveryBrokerDOClass, type DeliveryBrokerOptions, type DeliveryBrokerRpc } from './delivery-broker-do.js';
+export { DELIVERY_HANDOFF_KEY, type HandoffState } from './delivery-handoff.js';
 export type {
   ScopeSweeperDo,
   ScopeSweeperDoConfig,
