@@ -51,6 +51,8 @@ import {
   withUpstreamReference,
   type Page,
   type ScopeTimelineEntry,
+  lakeSealedPayload,
+  type DrainedEvent,
 } from '@substrat-run/contracts';
 import {
   INERT_SCOPE_REASON,
@@ -65,6 +67,7 @@ import {
   REDACTED_FAILURE_NOTE,
   REDACTED_INTENT_MARKER,
   runPlatformSweep,
+  drainScopeEvents,
   startPlatformSweeper,
   promoteReviewDigest,
   promoteReviewRefusalOf,
@@ -3348,6 +3351,48 @@ export function scopeHostContractSuite(
         // backup its ability to restore everyone else.
         expect(opened[0]).toBeNull();
         expect(opened[1]).toBe('not theirs');
+      });
+
+      it('an event drained to the lake before an erasure cannot be opened after it, and nothing after it is shipped readable (#3464)', async () => {
+        // Its own scope: the drain ships every undrained row, and the redrain reopens them all.
+        const sLake = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: sLake, jurisdiction: 'eu', vertical: 'connector-vertical' });
+        await host.admin.activateScope(staff, t1, sLake);
+        const stub = await host.getScope(alice, t1, sLake);
+        const subject = dataSubjectId.parse(ulid());
+        await stub.invoke('test/emit-event', { subject, secret: 'drained-before-the-erasure' });
+        await stub.invoke('test/emit-event');
+
+        const lake: DrainedEvent[] = [];
+        const sink = { ship: async (_scope: unknown, batch: DrainedEvent[]) => (lake.push(...batch), { ref: 'lake' }) };
+        const drain = () => drainScopeEvents(host, { actor: staff, sealEventPayloads: true }, sink, { tenantId: t1, scopeId: sLake, budget: 200 });
+        const ofSubject = () => lake.filter((e) => e.subjectId === subject);
+        expect((await drain()).shipped).toBe(2);
+
+        // Sealed on the way out; the event with no personal data is not.
+        const [shipped] = ofSubject();
+        expect(JSON.stringify(shipped)).not.toContain('drained-before-the-erasure');
+        expect(lake.find((e) => e.subjectId === undefined)!.payload).toEqual({ hello: 'world' });
+        const cell = lakeSealedPayload.parse(shipped!.payload).__sealed;
+        const open = () => host.admin.openSubjectPayloads(staff, t1, sLake, [{ subjectId: subject, sealed: cell }]);
+        expect(JSON.parse((await open())[0]!)).toEqual({ hello: 'world', secret: 'drained-before-the-erasure' });
+
+        await host.admin.shredSubject(staff, t1, sLake, subject);
+        // THE property: the lake's copy is untouched and no longer opens.
+        expect(await open()).toEqual([null]);
+
+        // After the tombstone: a new event about them, and a redrain re-shipping the old one,
+        // both leave with no payload. The sealer refuses rather than minting them a key.
+        await stub.invoke('test/emit-event', { subject, secret: 'emitted-after-the-erasure' });
+        // Reopened just past the drain's stamp, once the clock is past it too (a future instant is refused).
+        const past = Date.now() + 1;
+        while (Date.now() <= past) await new Promise((r) => setTimeout(r, 1));
+        await host.admin.redrainEvents(staff, t1, sLake, { drainedBefore: new Date(past).toISOString() });
+        lake.length = 0;
+        expect((await drain()).shipped).toBe(3);
+        // The redacted one decodes with no payload, the refused one with null: the sink writes both as null.
+        expect(ofSubject().map((e) => e.payload ?? null)).toEqual([null, null]);
+        expect(await host.admin.sealSubjectPayloads(staff, t1, sLake, [{ subjectId: subject, plaintext: 'x' }])).toEqual([null]);
       });
 
       it('fails closed on a mismatched (tenantId, scopeId) pair (K-3)', async () => {

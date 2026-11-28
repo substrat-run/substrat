@@ -297,6 +297,7 @@ import {
   scopeWakeCheckLogOf,
   scopeWakePhasesOf,
 } from './scope-wake.js';
+import { lakePayloadSealOf } from './lake-seal.js';
 
 /**
  * Whether code reviews are priced at zero (hosted-review-runner.md Q1b: zero-rated in phases 1–2,
@@ -409,7 +410,7 @@ function scopeWakeAnswerFor(env: Env) {
  */
 async function drainScopeLake(env: Env, t: TenantId, s: ScopeId): Promise<number> {
   if (scopeWakeAnswerFor(env).events !== 'scope') return 0;
-  const { shipped } = await drainScopeEvents(hostFor(env), { actor: SWEEP_ACTOR }, createPipelinesEventSink(env.SUBSTRAT_OUTBOX_STREAM!), {
+  const { shipped } = await drainScopeEvents(hostFor(env), { actor: SWEEP_ACTOR, sealEventPayloads: lakePayloadSealOf(env.LAKE_PAYLOAD_SEAL) }, createPipelinesEventSink(env.SUBSTRAT_OUTBOX_STREAM!), {
     tenantId: t,
     scopeId: s,
     budget: SCOPE_WAKE_EVENT_BATCH,
@@ -598,6 +599,12 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * above, and the reason a deployment that ships nowhere is a supported one.
    */
   SUBSTRAT_OUTBOX_STREAM?: { send(records: readonly Record<string, unknown>[]): Promise<unknown> };
+  /**
+   * #3464: `on` seals each drained event's personal data under its subject's own key before it
+   * reaches `SUBSTRAT_OUTBOX_STREAM`, so an erasure reaches the lake copy (`lake-seal.ts`). Unset,
+   * the default, ships payloads as before. Read by the pass and by a scope's kicked drain.
+   */
+  LAKE_PAYLOAD_SEAL?: string;
   /**
    * K-70 (tenants × time data leaves the objects): the stream that feeds the lake's directory
    * table (`scripts/lake/directory-stream-schema.generated.json`). Not bound anywhere yet: binding
@@ -3495,7 +3502,7 @@ export default {
         // skipped: the host's own scope namespace is the placeholder, and a drain over it
         // would read nothing and report a fleet with no events as drained.
         ...(env.SUBSTRAT_OUTBOX_STREAM && eventDrainDelegationFor(env)
-          ? { eventSink: createPipelinesEventSink(env.SUBSTRAT_OUTBOX_STREAM) }
+          ? { eventSink: createPipelinesEventSink(env.SUBSTRAT_OUTBOX_STREAM), sealEventPayloads: lakePayloadSealOf(env.LAKE_PAYLOAD_SEAL) }
           : {}),
         // K-69, step 4: the scopes ship their own events; the phase checks and ships only what they left.
         ...(wakePhases.events === 'scope' ? { eventDrainCheck: { graceMs: SCOPE_WAKE_CHECK_GRACE_MS } } : {}),

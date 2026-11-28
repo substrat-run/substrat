@@ -227,11 +227,14 @@ Here is what **is not built**, stated where you would otherwise assume it was:
   against the real lake, and the dashboard has no screen for it yet. Until it is switched on,
   the lake is queried, as before, by whoever holds read credentials for the bucket, which
   means operators.
-- **No erasure in the lake.** Payloads ship as they are in the outbox, with `subject_id`
-  alongside. That column exists so "delete every row for this subject" can be expressed as a
-  query, but nothing runs it yet. Erasure is handled in Tier 1. **Until lake erasure is built,
-  an erased subject's payloads survive in Tier 2**, and a deployment that drains to a lake has
-  to account for that.
+- **Erasure reaches the lake only for sealed rows.** With the control plane's
+  `LAKE_PAYLOAD_SEAL` switch on, the drain seals each payload that carries personal data under
+  its subject's own key on the way out, the way a backup is sealed. The key lives in the
+  directory and an erasure destroys it, so the lake's copy can no longer be opened. An event
+  about a subject who is already erased ships with no payload. The switch is off by default,
+  and rows shipped before it was turned on hold their payloads unsealed: **an erased subject's
+  payloads in those rows survive in Tier 2**, and a deployment that drains to a lake has to
+  account for that. Only the payload is sealed; `subject_id` and the other ids stay readable.
 - **No lake retention policy** is configured. Snapshot expiry and compaction are the catalog's
   defaults.
 
