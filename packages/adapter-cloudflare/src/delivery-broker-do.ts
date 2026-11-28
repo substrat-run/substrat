@@ -15,7 +15,6 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import {
-  BROKER_HELD_RETENTION_MS,
   BrokerStore,
   runDeliveryPass,
   type BrokerMessage,
@@ -77,15 +76,11 @@ export function defineDeliveryBrokerDO<Env = unknown>(options: DeliveryBrokerOpt
     }
 
     /**
-     * The one alarm, moved only earlier: the next due delivery with a receiver, the next prune of
-     * what it holds without one, nothing when it holds nothing.
+     * The one alarm, moved only earlier: the next due delivery or the next row whose bound runs out
+     * (`BrokerStore.nextWakeAt`), and nothing when the broker holds nothing.
      */
     private async armFor(): Promise<void> {
-      const at = this.receiver
-        ? this.store.nextAt()
-        : this.store.pending() > 0
-          ? Date.now() + BROKER_HELD_RETENTION_MS
-          : null;
+      const at = this.store.nextWakeAt();
       if (at === null) return;
       const current = await this.ctx.storage.getAlarm();
       if (current === null || current > at) await this.ctx.storage.setAlarm(at);

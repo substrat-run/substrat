@@ -202,7 +202,7 @@ interface StoredRow {
 export interface DeliveryPass {
   delivered: number;
   failed: number;
-  /** Epoch ms of the next due message, or null when nothing waits. */
+  /** Epoch ms the store next has work (`BrokerStore.nextWakeAt`), or null when it holds nothing. */
   nextAt: number | null;
 }
 
@@ -288,6 +288,27 @@ export class BrokerStore {
     return row?.at ?? null;
   }
 
+  /**
+   * Epoch ms the store next has work: the earliest of the next due delivery and the moment a kept
+   * row's bound runs out (a delivered row's `BROKER_DELIVERED_RETENTION_MS`, a held row's
+   * `BROKER_HELD_RETENTION_MS`). Null only when it holds nothing, so an idle broker arms nothing and
+   * a busy one never keeps a row past its bound for want of an alarm.
+   */
+  nextWakeAt(): number | null {
+    const row = this.sql.all<{ due: number | null; delivered: number | null; held: number | null }>(
+      `SELECT MIN(next_at) AS due,
+              MIN(delivered_at) AS delivered,
+              MIN(CASE WHEN next_at IS NULL AND delivered_at IS NULL THEN received_at END) AS held
+         FROM broker_messages`,
+    )[0];
+    const times = [
+      row?.due ?? null,
+      row?.delivered == null ? null : row.delivered + BROKER_DELIVERED_RETENTION_MS,
+      row?.held == null ? null : row.held + BROKER_HELD_RETENTION_MS,
+    ].filter((t): t is number => t !== null);
+    return times.length ? Math.min(...times) : null;
+  }
+
   /** Drop what the bounds say has been kept long enough (K-70). Marks stay: they are one row per scope and kind. */
   prune(now: number): void {
     this.sql.run(
@@ -330,5 +351,5 @@ export async function runDeliveryPass(
     }
   }
   store.prune(now());
-  return { delivered, failed, nextAt: store.nextAt() };
+  return { delivered, failed, nextAt: store.nextWakeAt() };
 }

@@ -62,7 +62,7 @@ export class InProcessDeliveryBroker implements DeliveryBroker {
   async deliverDue(): Promise<DeliveryPass> {
     if (!this.receiver) {
       this.store.prune(this.now());
-      return { delivered: 0, failed: 0, nextAt: null };
+      return { delivered: 0, failed: 0, nextAt: this.store.nextWakeAt() };
     }
     return runDeliveryPass(this.store, this.receiver, this.now);
   }

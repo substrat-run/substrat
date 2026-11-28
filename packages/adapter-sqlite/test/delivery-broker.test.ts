@@ -107,4 +107,19 @@ describe('the in-process broker (K-74)', () => {
     expect(await broker.marks('t', 's')).toEqual({ event: m.id });
     broker.close();
   });
+
+  it('after its last delivery, still says when the delivered row is to be pruned', async () => {
+    let now = Date.parse('2026-11-28T10:00:00Z');
+    const broker = new InProcessDeliveryBroker({ now: () => now, receiver: { deliver: async () => {} } });
+    await broker.handOff([{ id: ulid(), kind: 'event', tenantId: 't', scopeId: 's', type: 'x', body: '{}', committedAt: '2026-11-28T10:00:00.000Z' }]);
+    const delivered = now;
+    const pass = await broker.deliverDue();
+    expect(pass).toMatchObject({ delivered: 1, failed: 0 });
+    // The row is kept for a duplicate handoff to find, and the pass says when its bound runs out.
+    expect(pass.nextAt).toBeGreaterThan(delivered);
+    now = pass.nextAt!;
+    // At that moment the row is pruned, and a broker holding nothing has no next wake.
+    expect(await broker.deliverDue()).toEqual({ delivered: 0, failed: 0, nextAt: null });
+    broker.close();
+  });
 });
