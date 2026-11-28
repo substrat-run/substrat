@@ -62,8 +62,9 @@ const LAKE_TABLE = 'kernel.events';
 
 /**
  * The envelope columns a lake read returns. Deliberately NOT `payload`, `subject_id`,
- * `authorization` or `impersonation`: erasure does not reach the lake yet, so what was said
- * stays out of every answer until it does. `impersonated` is derived, so the fact of a staff
+ * `authorization` or `impersonation`: erasure reaches only the rows the drain sealed (#3464),
+ * and rows shipped before sealing hold their payloads in the clear, so what was said
+ * stays out of every answer. `impersonated` is derived, so the fact of a staff
  * session is visible and the session's own record is not.
  */
 const COLUMNS = [

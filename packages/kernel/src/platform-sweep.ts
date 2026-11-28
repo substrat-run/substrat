@@ -12,6 +12,7 @@ import type {
   ScopeId,
   TenantId,
   DrainedEvent,
+  LakeSealedPayload,
 } from '@substrat-run/contracts';
 import type {
   EdgeHealth,
@@ -460,6 +461,15 @@ export interface PlatformSweepOptions {
    * answer" shape `accessLogSink` and `recordSweepRun` already have.
    */
   eventSink?: EventSink;
+  /**
+   * #3464 (K-37 limit 6): seal each drained event's payload under its subject's own key before it
+   * reaches `eventSink`, so a later erasure reaches the lake copy. Only events the kernel
+   * classified (`piiClass` other than `none`) with a payload are sealed; the envelope stays in the
+   * clear. A tombstoned subject's payload ships as `null` and no key is minted for them. A seal
+   * that fails throws before the ship, so nothing unsealed leaves and nothing is stamped. One
+   * `sealSubjectPayloads` call per scope batch. UNSET or false ships payloads as before.
+   */
+  sealEventPayloads?: boolean;
   /** Events drained per scope per pass. Default 200. */
   eventDrainBatch?: number;
   /**
@@ -3190,7 +3200,7 @@ export async function crossVerticalHealth(
  */
 export async function drainScopeEvents(
   host: ScopeHost,
-  options: Pick<PlatformSweepOptions, 'actor'>,
+  options: Pick<PlatformSweepOptions, 'actor' | 'sealEventPayloads'>,
   sink: EventSink,
   /**
    * `holdFrom` (K-69 check mode): when every event read is at or after this instant, nothing is
@@ -3218,7 +3228,10 @@ export async function drainScopeEvents(
   // Every event, not the first: ids keep rising when the wall clock steps back, so an older event can
   // follow a young one, and it is the pass's to ship once it is past the grace.
   if (input.holdFrom !== undefined && events.every((e) => e.occurredAt >= input.holdFrom!)) return { shipped: 0, skipped, held: events.length };
-  await sink.ship({ tenantId: input.tenantId, scopeId: input.scopeId }, events);
+  // #3464: sealed here, after the parse and the hold and before the ship, so every path that ships
+  // through this function (the pass, a scope's kicked drain, a redrain's re-ship) seals alike.
+  const shipping = options.sealEventPayloads ? await sealLakePayloads(host, options.actor, input, events) : events;
+  await sink.ship({ tenantId: input.tenantId, scopeId: input.scopeId }, shipping);
   await host.admin.markEventsDrained(
     options.actor,
     input.tenantId,
@@ -3226,6 +3239,48 @@ export async function drainScopeEvents(
     events.map((e) => e.id),
   );
   return { shipped: events.length, skipped };
+}
+
+/**
+ * #3464: the batch with every classified payload sealed under its subject's key, in one
+ * `sealSubjectPayloads` call (the directory holds the keys; a shred tombstones them). Returns new
+ * events; the input is not changed. An event with no personal data, or no payload (a redacted
+ * one), passes as it is. A refusal, the subject being tombstoned, ships `null`: the same absence a
+ * live redaction leaves, and no key is minted. Anything thrown propagates, so the caller ships
+ * nothing. The schema already refuses a classified event with no subject; one that got past it is
+ * shipped with no payload rather than in the clear.
+ */
+async function sealLakePayloads(
+  host: ScopeHost,
+  actor: PlatformActorId,
+  scope: { tenantId: TenantId; scopeId: ScopeId },
+  events: readonly DrainedEvent[],
+): Promise<DrainedEvent[]> {
+  const targets: { index: number; subjectId: string; plaintext: string }[] = [];
+  const out = events.map((e) => ({ ...e }));
+  events.forEach((e, index) => {
+    if (e.piiClass === 'none' || e.payload === undefined || e.payload === null) return;
+    if (!e.subjectId) {
+      out[index]!.payload = null;
+      return;
+    }
+    targets.push({ index, subjectId: e.subjectId, plaintext: JSON.stringify(e.payload) });
+  });
+  if (targets.length === 0) return out;
+  const sealed = await host.admin.sealSubjectPayloads(
+    actor,
+    scope.tenantId,
+    scope.scopeId,
+    targets.map(({ subjectId, plaintext }) => ({ subjectId, plaintext })),
+  );
+  if (sealed.length !== targets.length) {
+    throw new Error(`event drain: the sealer answered ${sealed.length} of ${targets.length} payloads; nothing shipped`);
+  }
+  targets.forEach((t, i) => {
+    const cell = sealed[i];
+    out[t.index]!.payload = cell ? ({ __sealed: { keyId: cell.keyId, ciphertext: cell.ciphertext } } satisfies LakeSealedPayload) : null;
+  });
+  return out;
 }
 
 /**

@@ -46,8 +46,13 @@ import {
  * than ~6 months behind, and `resolveWranglerConfig` refuses a `runtimeNeeds` push whose
  * ignored wrangler.jsonc carries a NEWER date than this baseline. Keep advances a few
  * weeks behind today so builders' installed wrangler/workerd always know the date.
+ *
+ * The test runtime is a ceiling too: `control-plane-api`'s platform-entry suite runs an
+ * upload at this date on the newest stable miniflare (4.20260730.0), whose workerd knows
+ * dates up to 2026-08-06, which is why the baseline stands there and not later. Advancing
+ * past it waits for a stable miniflare that knows the date.
  */
-export const RUNTIME_BASELINE = '2026-06-01';
+export const RUNTIME_BASELINE = '2026-08-06';
 
 /**
  * One of the vertical's OWN stores: a durable state class the code exports, reached in the

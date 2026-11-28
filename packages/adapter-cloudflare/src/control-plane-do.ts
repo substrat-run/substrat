@@ -1816,6 +1816,9 @@ const copyRowsTable = (ord: number): string => `_directory_copy_rows_${ord}`;
  */
 const DIRECTORY_READ_BATCH = 32;
 
+/** #3464: subject ids per `readSubjectKeys` statement, with one more bound parameter for the scope: under 100. */
+const SUBJECT_KEY_READ_CHUNK = 90;
+
 /** Where a directory dump page resumes (#2868). */
 interface DirectoryDumpCursor {
   copyId: string;
@@ -6834,6 +6837,31 @@ export class ControlPlaneDO extends DurableObject {
     return row
       ? { keyId: row.key_id, wrappedDek: row.wrapped_dek, shreddedAt: row.shredded_at }
       : undefined;
+  }
+
+  /**
+   * #3464: several subjects' key rows in one call, for a sealer that seals a whole lake batch at
+   * once. Read-only and outside any transaction, like `readSubjectKey`. Chunked under the bound
+   * parameter limit a Durable Object's SQLite enforces (K-49's `assertWithinSqlLimits`).
+   */
+  readSubjectKeys(
+    scopeId: string,
+    subjectIds: readonly string[],
+  ): { subjectId: string; keyId: string | null; wrappedDek: string | null; shreddedAt: string | null }[] {
+    const out: { subjectId: string; keyId: string | null; wrappedDek: string | null; shreddedAt: string | null }[] = [];
+    for (let i = 0; i < subjectIds.length; i += SUBJECT_KEY_READ_CHUNK) {
+      const chunk = subjectIds.slice(i, i + SUBJECT_KEY_READ_CHUNK);
+      const rows = this.sql
+        .exec(
+          `SELECT subject_id, key_id, wrapped_dek, shredded_at FROM _substrat_subject_keys
+            WHERE scope_id = ? AND subject_id IN (${chunk.map(() => '?').join(', ')})`,
+          scopeId,
+          ...chunk,
+        )
+        .toArray() as unknown as { subject_id: string; key_id: string | null; wrapped_dek: string | null; shredded_at: string | null }[];
+      for (const row of rows) out.push({ subjectId: row.subject_id, keyId: row.key_id, wrappedDek: row.wrapped_dek, shreddedAt: row.shredded_at });
+    }
+    return out;
   }
 
   listShreddedSubjects(scopeId: string, tenantId: string, cursor: string | null): string[] {

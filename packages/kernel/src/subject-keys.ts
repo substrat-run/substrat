@@ -58,6 +58,15 @@ export interface SubjectKeyRecords {
   insert(subjectId: string, row: { keyId: string; wrappedDek: string; createdAt: string }): Promise<void> | void;
   /** Clear the key, keep the row, stamp the time. `existed` reports whether a key was there to destroy. */
   tombstone(subjectId: string, at: string): Promise<{ existed: boolean }> | { existed: boolean };
+  /**
+   * Several subjects' rows in one round trip (#3464), keyed by subject id; a subject with no row
+   * is absent from the map. Optional: without it, each distinct subject in a call costs one
+   * `read`. The lake drain seals a whole batch at once, and on a Durable Object host each `read`
+   * is a call into the directory, so the batched read is what keeps that at one call per batch.
+   */
+  readMany?(
+    subjectIds: readonly string[],
+  ): Promise<ReadonlyMap<string, SubjectKeyRow>> | ReadonlyMap<string, SubjectKeyRow>;
 }
 
 export interface SubjectKeys {
@@ -83,16 +92,25 @@ export interface SubjectKeys {
 const subjectKeyId = (subjectId: string): string => `subject:${subjectId}`;
 
 export function createSubjectKeys(box: SecretBox, records: SubjectKeyRecords): SubjectKeys {
+  /** The rows of every distinct subject in a call, fetched together where the port can. */
+  const prefetch = async (subjectIds: readonly string[]): Promise<ReadonlyMap<string, SubjectKeyRow> | undefined> => {
+    if (!records.readMany || subjectIds.length === 0) return undefined;
+    return records.readMany([...new Set(subjectIds)]);
+  };
+  const rowOf = async (rows: ReadonlyMap<string, SubjectKeyRow> | undefined, subjectId: string) =>
+    rows ? rows.get(subjectId) : records.read(subjectId);
+
   // One unwrap per subject per call, not per row: a dump can carry thousands of events for
   // one person, and unwrapping is the expensive half.
   const openDek = async (
     cache: Map<string, SecretBox | null>,
+    rows: ReadonlyMap<string, SubjectKeyRow> | undefined,
     subjectId: string,
     mint: boolean,
   ): Promise<SecretBox | null> => {
     const hit = cache.get(subjectId);
     if (hit !== undefined) return hit;
-    const row = await records.read(subjectId);
+    const row = await rowOf(rows, subjectId);
     let resolved: SecretBox | null = null;
     if (row?.shreddedAt) {
       // Tombstoned. Refused for BOTH directions, and for seal that refusal is the whole
@@ -109,7 +127,20 @@ export function createSubjectKeys(box: SecretBox, records: SubjectKeyRecords): S
         wrappedDek: wrapped.ciphertext,
         createdAt: new Date().toISOString(),
       });
-      resolved = webCryptoSecretBox(subjectKeyId(subjectId), bytes);
+      // The insert is `OR IGNORE`, so it can lose (#3464): to another sealer that minted the same
+      // subject first (a backup beside a lake drain), or to a shred that tombstoned them between
+      // the read above and the insert. Sealing with our own key after losing would write
+      // ciphertext that no stored key opens, losing a living subject's data. So the row is read
+      // back, and what the store holds decides: the winner's key, or the refusal.
+      const stored = await records.read(subjectId);
+      if (!stored || stored.shreddedAt) {
+        resolved = null;
+      } else if (stored.wrappedDek === wrapped.ciphertext) {
+        resolved = webCryptoSecretBox(subjectKeyId(subjectId), bytes);
+      } else if (stored.wrappedDek && stored.keyId) {
+        const dek = await box.open({ keyId: stored.keyId, ciphertext: stored.wrappedDek });
+        resolved = webCryptoSecretBox(subjectKeyId(subjectId), fromBase64(dek));
+      }
     }
     cache.set(subjectId, resolved);
     return resolved;
@@ -118,20 +149,22 @@ export function createSubjectKeys(box: SecretBox, records: SubjectKeyRecords): S
   return {
     async sealMany(items) {
       const cache = new Map<string, SecretBox | null>();
+      const rows = await prefetch(items.map((i) => i.subjectId));
       const out: (SealedSecret | null)[] = [];
       for (const item of items) {
-        const dek = await openDek(cache, item.subjectId, true);
+        const dek = await openDek(cache, rows, item.subjectId, true);
         out.push(dek ? await dek.seal(item.plaintext) : null);
       }
       return out;
     },
     async openMany(items) {
       const cache = new Map<string, SecretBox | null>();
+      const rows = await prefetch(items.map((i) => i.subjectId));
       const out: (string | null)[] = [];
       for (const item of items) {
         // `mint: false` — opening never creates. A missing key means the payload is
         // unreadable, which after a shred is the correct and permanent answer.
-        const dek = await openDek(cache, item.subjectId, false);
+        const dek = await openDek(cache, rows, item.subjectId, false);
         if (!dek) {
           out.push(null);
           continue;

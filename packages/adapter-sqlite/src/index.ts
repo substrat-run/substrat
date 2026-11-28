@@ -8801,6 +8801,21 @@ export class SqliteScopeHost implements ScopeHost {
           ? { keyId: row.key_id, wrappedDek: row.wrapped_dek, shreddedAt: row.shredded_at }
           : undefined;
       },
+      // One statement per chunk of a sealed batch (#3464), under the bound parameter limit.
+      readMany: (subjectIds) => {
+        const out = new Map<string, { keyId: string | null; wrappedDek: string | null; shreddedAt: string | null }>();
+        for (let i = 0; i < subjectIds.length; i += 90) {
+          const chunk = subjectIds.slice(i, i + 90);
+          const rows = this.directory
+            .prepare(
+              `SELECT subject_id, key_id, wrapped_dek, shredded_at FROM _substrat_subject_keys
+                WHERE scope_id = ? AND subject_id IN (${chunk.map(() => '?').join(', ')})`,
+            )
+            .all(scopeId, ...chunk) as { subject_id: string; key_id: string | null; wrapped_dek: string | null; shredded_at: string | null }[];
+          for (const r of rows) out.set(r.subject_id, { keyId: r.key_id, wrappedDek: r.wrapped_dek, shreddedAt: r.shredded_at });
+        }
+        return out;
+      },
       insert: (subjectId, row) => {
         // `OR IGNORE` rather than `OR REPLACE`: two concurrent exports of the same subject
         // both mint, and the loser must not overwrite the winner's key — a replaced key
