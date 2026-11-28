@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-154 decisions · 80 plan · 74 kernel
+155 decisions · 81 plan · 74 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -133,7 +133,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-56](decisions/K-056-a-runtime-installed-extension-acts-only-as-a-capability-the-vertical-mints-for-it.md) | 2026-10-23 | kernel | A runtime-installed extension acts only as a capability the vertical mints for it | #1671, #1672 |
 | [K-57](decisions/K-057-a-semantic-index-is-scope-local-a-semantic-read-is-declared-eventual-an-external-index-only-as-a-store-driver.md) | 2026-10-23 | kernel | A semantic index is scope-local; a semantic read is declared eventual; an external index only as a scope-store driver | #1576 |
 | [K-58](decisions/K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md) | 2026-10-23 | kernel | A call from the platform to a vertical carries an Ed25519 envelope, a deployed vertical holds public keys only, and its calls up to the control plane give way to its outbox <br>*amends K-27, K-31* <br>*amended by K-66* |  |
-| [D-64](decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md) | 2026-10-26 | plan | A vertical may define its own connector, and it runs in the vertical's worker with a capability narrowed to one connection <br>*amends D-18* <br>*amended by D-73* | #2614 |
+| [D-64](decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md) | 2026-10-26 | plan | A vertical may define its own connector, and it runs in the vertical's worker with a capability narrowed to one connection <br>*amends D-18* <br>*amended by D-73* <br>*amended by D-81* | #2614 |
 | [D-65](decisions/D-065-a-store-driver-release-runs-after-a-person-approves-its-uploaded-bytes.md) | 2026-10-28 | plan | A store driver release runs after a person approves its uploaded bytes <br>*amends D-63* | #2210, #2297 |
 | [D-66](decisions/D-066-projects-use-github-or-artifacts-and-the-platform-builds-every-release.md) | 2026-10-28 | plan | Projects use GitHub or Cloudflare Artifacts and the platform builds every release <br>*supersedes D-53* |  |
 | [D-67](decisions/D-067-the-graph-driver-is-admitted-under-a-reviewed-release-isolation-lift.md) | 2026-10-31 | plan | The graph driver is admitted under a reviewed-release isolation lift <br>*amends D-63* <br>*amended by D-70* | #2210, #2394, #2830 |
@@ -166,3 +166,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-73](decisions/K-073-the-platform-s-own-bookkeeping-reads-are-recorded-as-one-access-log-row-per-pass.md) | 2026-11-26 | kernel | The platform's own bookkeeping reads are recorded as one access-log row per pass <br>*amends K-24* | #3326 |
 | [D-80](decisions/D-080-any-tenant-may-own-apps-a-host-it-depends-on-never-co-owns-them-and-a-managed-tenant-is-billed-through-its-manager.md) | 2026-11-27 | plan | Any tenant may own apps, a host it depends on never co-owns them, and a managed tenant is billed through its manager <br>*awaiting ratification* <br>*amends D-33* | #3439 |
 | [K-74](decisions/K-074-a-broker-per-tenant-and-app-owns-every-message-a-scope-sends-once-the-scope-has-handed-it-off.md) | 2026-11-27 | kernel | A broker per tenant and app owns every message a scope sends, once the scope has handed it off <br>*amends K-69* | #3463, #3467, #3468, #3469, #3470, #3471, #3472, #3473, #3474 |
+| [D-81](decisions/D-081-a-connection-s-credential-is-bound-to-the-host-its-connector-declares-and-is-never-sent-to-another.md) | 2026-11-28 | plan | A connection's credential is bound to the host its connector declares, and is never sent to another <br>*awaiting ratification* <br>*amends D-64* | #3465, #3463 |
