@@ -1,5 +1,36 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.217.0
+
+### Minor Changes
+
+- 7e7e5af: The delivery broker's contract (K-74): `DeliveryBroker`, `DeliveryReceiver` and the shared `BrokerStore`, plus the handoff of a scope's emitted events and raised intents after commit.
+  An in-process `InProcessDeliveryBroker` and the `deliveryBroker` host option on the pure host, with `retryHandoffs`.
+  `defineDeliveryBrokerDO`, and a scope that hands off to it when its script binds `SUBSTRAT_DELIVERY_BROKER`, retrying from its alarm; nothing is handed off without the binding.
+  `deliveryBrokerContractSuite`, run by both adapters.
+- ad88c1a: A job's pass now has `attachments()`, the module's system file surface (`open` and `remove`) for the run's scope, beside `scope()`. A deployed vertical can run retention from a job without a harness of its own. On the hosted adapter both share the pass's system door, so a held module defers the pass instead of spending its retries. A scope sweeper's `startJobs` hook can call the new optional `host.startJobRun`.
+- d923f9b: The lake drain can seal each event's personal data under its subject's own key, so an erasure reaches the lake copy (#3464, K-37 limit 6). `drainScopeEvents` takes `sealEventPayloads`. With it set, every classified payload is sealed through `sealSubjectPayloads` in one call per batch, and ships in the backup cell's `{"__sealed": …}` shape, which contracts now publishes as `lakeSealedPayload`. A tombstoned subject's payload ships as `null`, and a seal that fails ships and stamps nothing. The control plane turns it on with `LAKE_PAYLOAD_SEAL=on`, which is off by default, for the pass and a scope's kicked drain alike. `createSubjectKeys` reads a batch's keys in one call (`SubjectKeyRecords.readMany`, which both adapters fill). It also re-reads after minting, so a sealer that loses the insert to another sealer uses the stored key, and one that loses to a shred refuses.
+- 0516ad7: Workers observability volume is measured per app and installation (#3358): with `OBSERVABILITY_VOLUME_ROLLUP=on`, the daily cost rollup reads each day's log lines and spans per script from the telemetry query (`createObservabilityVolumeReader`), with the tenant and scope a stamped line names and the stored size in bytes, and records them as `log_events`, `log_bytes`, `span_events` and `span_bytes`. A line naming a scope the directory holds and that scope's own tenant is attributed to that installation (`line`); the rest goes to the app's owner. Measured, not billed yet.
+- 5db4c15: Workers trace rates are a per-app setting (#3358): `HostAdmin.setVerticalTraceSampling` stores an app's rate for its serving script and for its preview scripts (`traceSampling`, `previewTraceSampling` on the registry row), its owner sets them from the dashboard's Settings → Tracing, and each upload declares the higher of the app's rate and the environment's default (`effectiveTraceSampling`; `VERTICAL_PREVIEW_TRACE_SAMPLING` joins `VERTICAL_TRACE_SAMPLING`). The egress report asks about the serving script too, and lists the scripts that recorded no span (`unobserved`, `spansRecorded`), so an untraced app reads as not observed rather than clean.
+- 5f58671: A store-driver approval names the release's foundation version beside its schema (#3175). This is for a driver that rewrites its level-0 foundation in place when it wakes a store. `substrat store-driver approve` takes `--foundation <n>`, the approval records it and keeps it fixed for those bytes, and the approval result and `store-driver status` show it beside the current good release's. `substrat.selfcheck` may answer `foundation`, and the canary refuses a release whose reported foundation differs from the approved one. A rollout, rollback, return or script build that would lower the foundation a script runs is refused, as it is for the schema. A driver with no foundation leaves the field out.
+- cc4a402: `getSystemAttachments` now has `remove`, so a module's system principal can delete a file whose retention period has ended. The remove is checked against the target's write key, or its new optional `removePermission` (which admits a remove but not an upload), and its `attachment.removed` event names the module. `systemAttachmentRemoveContractSuite` holds both adapters to it.
+- 7dcef43: Speech-to-text calls are metered (#3321): `createModelHost(...).transcribe` runs a transcription on the Workers AI binding through AI Gateway and records one `ModelUsageLine` counting the audio bytes sent (`unit: 'audio-byte'`, `quantity`), priced from the new unit rate card at a stated bytes-per-second basis. The line and the model-usage ledger carry `unit` and `quantity`, NULL on token lines.
+
+### Patch Changes
+
+- 3cf8407: A scope that asks for its provision reconcile after a promote now arms its own wake, so the reconcile lands within seconds even when the requests that woke it committed nothing, instead of waiting for the next scheduled pass (#3435).
+- Updated dependencies [7e7e5af]
+- Updated dependencies [ad88c1a]
+- Updated dependencies [d923f9b]
+- Updated dependencies [0516ad7]
+- Updated dependencies [5db4c15]
+- Updated dependencies [1c3b47f]
+- Updated dependencies [5f58671]
+- Updated dependencies [cc4a402]
+- Updated dependencies [7dcef43]
+  - @substrat-run/kernel@0.217.0
+  - @substrat-run/contracts@0.215.0
+
 ## 0.216.0
 
 ### Minor Changes

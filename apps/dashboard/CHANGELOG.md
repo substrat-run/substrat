@@ -1,5 +1,33 @@
 # @substrat-run/dashboard
 
+## 0.49.35
+
+### Patch Changes
+
+- 5db4c15: Workers trace rates are a per-app setting (#3358): `HostAdmin.setVerticalTraceSampling` stores an app's rate for its serving script and for its preview scripts (`traceSampling`, `previewTraceSampling` on the registry row), its owner sets them from the dashboard's Settings → Tracing, and each upload declares the higher of the app's rate and the environment's default (`effectiveTraceSampling`; `VERTICAL_PREVIEW_TRACE_SAMPLING` joins `VERTICAL_TRACE_SAMPLING`). The egress report asks about the serving script too, and lists the scripts that recorded no span (`unobserved`, `spansRecorded`), so an untraced app reads as not observed rather than clean.
+- 41899ce: A WooCommerce connection writes back now: an app that emits `woocommerce.stock-set-requested` or `woocommerce.order-complete-requested` has the stock count set, or the order marked completed, at the store within seconds, and the record lands again as it now stands. The write goes through the store connection bound to the asking install only, and needs a Read/Write key; the dashboard's WooCommerce card says so.
+- Updated dependencies [8565b2f]
+- Updated dependencies [7e7e5af]
+- Updated dependencies [508692d]
+- Updated dependencies [ad88c1a]
+- Updated dependencies [d923f9b]
+- Updated dependencies [ee22045]
+- Updated dependencies [0516ad7]
+- Updated dependencies [5db4c15]
+- Updated dependencies [3cf8407]
+- Updated dependencies [1c3b47f]
+- Updated dependencies [5f58671]
+- Updated dependencies [1199e86]
+- Updated dependencies [cc4a402]
+- Updated dependencies [7dcef43]
+  - @substrat-run/model-providers@0.6.0
+  - @substrat-run/vertical-host@0.217.0
+  - @substrat-run/kernel@0.217.0
+  - @substrat-run/adapter-cloudflare@0.217.0
+  - @substrat-run/control-plane-client@0.10.0
+  - @substrat-run/contracts@0.215.0
+  - @substrat-run/control-plane-api@0.217.0
+
 ## 0.49.34
 
 ### Patch Changes

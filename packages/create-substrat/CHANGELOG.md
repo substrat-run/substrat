@@ -1,5 +1,11 @@
 # create-substrat
 
+## 0.18.21
+
+### Patch Changes
+
+- 508692d: `substrat dev` reaches real Workers AI through your `substrat login`: a project with `usesModels` gets a loopback relay over short-lived, workspace-scoped model access, and no Cloudflare token (#3420). The control plane issues that access and files each call on the workspace's model usage ledger; the client gains `issueModelAccess()`; the template's agent rules say so.
+
 ## 0.18.20
 
 ### Patch Changes

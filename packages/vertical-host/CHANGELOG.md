@@ -1,5 +1,31 @@
 # @substrat-run/vertical-host
 
+## 0.217.0
+
+### Minor Changes
+
+- 7dcef43: Speech-to-text calls are metered (#3321): `createModelHost(...).transcribe` runs a transcription on the Workers AI binding through AI Gateway and records one `ModelUsageLine` counting the audio bytes sent (`unit: 'audio-byte'`, `quantity`), priced from the new unit rate card at a stated bytes-per-second basis. The line and the model-usage ledger carry `unit` and `quantity`, NULL on token lines.
+
+### Patch Changes
+
+- 8565b2f: A model call through the Workers AI binding now passes AI Gateway (#3320). `bindingGatewayFor(provider, { attribution, env })` gives the binding's `gateway` option: the five attribution keys as metadata, the gateway `CLOUDFLARE_AI_GATEWAY_ID` names (the account's `default` gateway otherwise), and `collectLog: false`, so no prompt or answer is kept. The model host passes it on every binding call, so the call is counted per tenant, scope and vertical as an HTTP call is. A vertical picks it up by upgrading and re-pushing.
+- ee22045: A plugin whose master runs several instances in the tenant, with none bound, now answers 409 `conflict` naming the remedy (a tenant admin binds the instance) instead of 503 "retry", both for a person signing in and for a call made for a person (#3436). The person contract gains the refusal `master-conflict`.
+- Updated dependencies [8565b2f]
+- Updated dependencies [7e7e5af]
+- Updated dependencies [ad88c1a]
+- Updated dependencies [d923f9b]
+- Updated dependencies [ee22045]
+- Updated dependencies [0516ad7]
+- Updated dependencies [5db4c15]
+- Updated dependencies [1c3b47f]
+- Updated dependencies [5f58671]
+- Updated dependencies [cc4a402]
+- Updated dependencies [7dcef43]
+  - @substrat-run/model-providers@0.6.0
+  - @substrat-run/kernel@0.217.0
+  - @substrat-run/contracts@0.215.0
+  - @substrat-run/vertical-auth@0.39.0
+
 ## 0.216.0
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # @substrat-run/portal-starter
 
+## 0.1.27
+
+### Patch Changes
+
+- Updated dependencies [24e6ed2]
+  - @substrat-run/elements@0.10.0
+
 ## 0.1.26
 
 ### Patch Changes
