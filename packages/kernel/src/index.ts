@@ -725,15 +725,9 @@ export {
 } from './outbox-prune.js';
 export {
   advanceMarks,
-  BROKER_DDL,
-  BROKER_DELIVERED_RETENTION_MS,
-  BROKER_DELIVERY_BATCH,
   BROKER_HELD_RETENTION_MS,
-  BROKER_MESSAGE_KINDS,
-  BROKER_RETRY_MS,
   BrokerStore,
   brokerName,
-  HANDOFF_BATCH,
   HANDOFF_RETRY_MS,
   handoffQueries,
   messagesOf,
