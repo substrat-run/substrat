@@ -60,6 +60,12 @@ updates:
       # names it — that reads the lockfile on every push and every Monday, independent of this.
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # vitest 5.1.x rebuilds a live Durable Object mid-test in the workerd pool (#3292); the
+      # catalog pins 5.0.5 and says what failed. 5.2 and later are proposed as usual.
+      - dependency-name: "vitest"
+        versions: ["5.1.x"]
+      - dependency-name: "@vitest/ui"
+        versions: ["5.1.x"]
 
   - package-ecosystem: github-actions
     directory: /

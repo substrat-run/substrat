@@ -56,7 +56,7 @@ beforeAll(async () => {
   [active, standby, platformPair] = await Promise.all([generateScopeStoreKeyPair(), generateScopeStoreKeyPair(), generateScopeStoreKeyPair()]);
   // Entry source outside any package export, reached by path as vertical-egress's suites reach
   // control-plane-api's store entry.
-  const gatePath = fileURLToPath(new URL('../../../packages/control-plane-api/platform-entry/wire-gate.ts', import.meta.url));
+  const gatePath = fileURLToPath(new URL('../../../packages/control-plane-api/platform-entry/wire-gate.ts', import.meta.url).href);
   ({ withWireGate } = (await import(/* @vite-ignore */ gatePath)) as { withWireGate: Gate });
 });
 
