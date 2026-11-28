@@ -1282,6 +1282,11 @@ interface ScopeRuntime {
    */
   mintEventId: UlidMint;
   /**
+   * K-74: the intent-id mint for this scope, floored at its own highest intent, for the reason
+   * `mintEventId` is floored at its highest event: the handoff reads intents past a mark with `id > ?`.
+   */
+  mintIntentId: UlidMint;
+  /**
    * #1237: the invocation currently running in this scope, or null.
    *
    * Per-runtime, not per host: the host serves every scope in the process, and a
@@ -4559,6 +4564,8 @@ export class SqliteScopeHost implements ScopeHost {
         } catch (err) {
           console.error('substrat: consumer drain failed after an attachment committed', err);
         }
+        // K-74: what the attachment's commit and its consumers emitted (never throws).
+        await this.handOffCommitted(rt);
         return result;
       });
 
@@ -6138,6 +6145,8 @@ export class SqliteScopeHost implements ScopeHost {
       if (outcome) {
         await this.dispatch(rt, null);
         await this.dispatchExecutors(rt, null);
+        // K-74: what the exchange's commit and its consumers emitted (never throws).
+        await this.handOffCommitted(rt);
       }
       return outcome;
     });
@@ -8422,6 +8431,8 @@ export class SqliteScopeHost implements ScopeHost {
         await this.dispatch(rt, null);
         await this.dispatchExecutors(rt, null);
       }
+      // K-74: the settle's outcome event, and what its consumers emitted (never throws).
+      await this.handOffCommitted(rt);
     });
   }
 
@@ -8444,7 +8455,10 @@ export class SqliteScopeHost implements ScopeHost {
           messagesOf(q.kind, rt.db.prepare(q.sql).all(...q.params) as Record<string, unknown>[], ids),
         );
         if (sent.length === 0) break;
-        marks = advanceMarks(marks, sent, await broker.handOff(sent));
+        const next = advanceMarks(marks, sent, await broker.handOff(sent));
+        // An answer that acknowledges nothing new: stop; the next commit or `retryHandoffs` tries again.
+        if (next.event === marks.event && next.intent === marks.intent) break;
+        marks = next;
         this.handoffMarks.set(key, marks);
       }
       this.handoffMarks.set(key, marks);
@@ -11696,6 +11710,13 @@ export class SqliteScopeHost implements ScopeHost {
         const input = pruneInputOf(raw, new Date().toISOString());
         this.assertScopeReachable(tenantId, scopeId);
         const db = this.scopeDbFor(tenantId, scopeId);
+        // K-74: with a broker bound, only what it has acknowledged may go. Its marks are read
+        // before the turn, which cannot await; a mark read early is only ever lower than the
+        // truth, so the prune keeps more, never less.
+        const handedOffThrough = this.deliveryBroker
+          ? ((this.handoffMarks.get(`${tenantId}/${scopeId}`) ??
+              (await this.deliveryBroker({ tenantId, scopeId }).marks(tenantId, scopeId).catch(() => ({})))) as HandoffMarks).event ?? null
+          : undefined;
         // On the scope actor, like the stamp: issued mid-invoke it would otherwise be a
         // SAVEPOINT inside the invoke's transaction, and roll back with it.
         const pruned = await this.runtime(tenantId, scopeId).actor.turn(() =>
@@ -11704,6 +11725,7 @@ export class SqliteScopeHost implements ScopeHost {
               drainedBefore: input.drainedBefore,
               limit: input.limit,
               due: input.due ?? true,
+              ...(handedOffThrough === undefined ? {} : { handedOffThrough }),
               subscribers: outboxSubscribersOf(this.modules.values(), this.executors),
               exportTypes: this.crossVertical.exportTypes(),
             }),
@@ -15579,7 +15601,7 @@ export class SqliteScopeHost implements ScopeHost {
             .get() as { c: number }
         ).c;
         assertPlatformRequestRoom(pending);
-        const id = platformRequestId.parse(ulid());
+        const id = platformRequestId.parse(rt.mintIntentId());
         const requestedBy = overrideActor ?? actorOf(subject);
         rt.db
           .prepare(
@@ -16295,6 +16317,11 @@ export class SqliteScopeHost implements ScopeHost {
       | { id: string | null }
       | undefined)?.id;
     if (highest) mintEventId.seedFrom(highest);
+    const mintIntentId = createUlid();
+    const highestIntent = (db.prepare('SELECT MAX(id) AS id FROM _substrat_platform_requests').get() as
+      | { id: string | null }
+      | undefined)?.id;
+    if (highestIntent) mintIntentId.seedFrom(highestIntent);
     const created: ScopeRuntime = {
       tenantId,
       scopeId,
@@ -16305,6 +16332,7 @@ export class SqliteScopeHost implements ScopeHost {
       appliedMigrations,
       derivedRepaired: false,
       mintEventId,
+      mintIntentId,
       invocationId: null,
       logTally: null,
     };

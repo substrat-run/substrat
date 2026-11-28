@@ -109,6 +109,12 @@ export interface OutboxPruneInput {
   subscribers: readonly OutboxSubscriber[];
   /** The types this deployment exports to other verticals (#1705). Kept whole: their readers' cursors live elsewhere. */
   exportTypes: readonly string[];
+  /**
+   * K-74: with a delivery broker bound, the greatest event id it has acknowledged for this scope
+   * (its `event` mark), or null when it has acknowledged none. A row past it is not in the broker's
+   * custody yet, and the handoff reads only the outbox, so the row stays. Omitted: no broker is bound.
+   */
+  handedOffThrough?: string | null;
 }
 
 /**
@@ -128,7 +134,8 @@ export interface OutboxPruneInput {
  * - a newer row of the same type exists, so "when did this type last happen" (freshness) is
  *   never answered by a prune;
  * - its own cause chain does not reach an imported event (#1705): an export's hop count walks
- *   `caused_by` back to the nearest import, and a missing link there would reset it.
+ *   `caused_by` back to the nearest import, and a missing link there would reset it;
+ * - with a delivery broker bound (K-74), the broker has acknowledged it (`handedOffThrough`).
  *
  * A pass that hits either cap stores its position, and the next pass continues from there
  * whatever `due` says: a backlog drains at the sweep's cadence. A pass that reaches the end of
@@ -167,11 +174,14 @@ export function pruneDrainedOutbox(sql: SwitchSql, input: OutboxPruneInput): num
              WHERE n.entity_type = o.entity_type AND n.entity_id = o.entity_id AND n.id > o.id
                AND n.type NOT IN (SELECT value FROM json_each(?)))
           AND EXISTS (SELECT 1 FROM _substrat_outbox t WHERE t.type = o.type AND t.id > o.id)
+          ${input.handedOffThrough === undefined ? '' : 'AND o.id <= ?'}
         ORDER BY s.key LIMIT ?`,
       JSON.stringify(scanned.map((r) => r.id)),
       JSON.stringify(input.exportTypes),
       JSON.stringify(input.subscribers),
       JSON.stringify(ENTITY_STATE_MOVE_TYPES),
+      // Nothing acknowledged: no id compares at or below the empty string, so no row goes.
+      ...(input.handedOffThrough === undefined ? [] : [input.handedOffThrough ?? '']),
       input.limit,
     )
     .map((r) => r.id as string);

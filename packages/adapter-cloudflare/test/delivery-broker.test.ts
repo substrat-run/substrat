@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { platformActorId, principalId, scopeId, tenantId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { deliveryBrokerContractSuite } from '@substrat-run/contract-tests';
 import { BROKER_HELD_RETENTION_MS, HANDOFF_RETRY_MS, brokerName, ulid, type BrokerMessage } from '@substrat-run/kernel';
-import { DELIVERY_HANDOFF_KEY, handoffAfterFailure, handoffDue, mergeHandoff, type HandoffState } from '../src/delivery-handoff.js';
+import { DELIVERY_HANDOFF_KEY, handoffAfterFailure, handoffDue, handoffPending, mergeHandoff, sameMarks, type HandoffState } from '../src/delivery-handoff.js';
 import { CloudflareScopeHost } from './test-host.js';
 import { DELIVERY_BROKER_APP, deliveryBrokerTest, type TestDeliveryBrokerDO } from './worker.js';
 
@@ -62,6 +62,20 @@ describe('the handoff retry decision (delivery-handoff.ts)', () => {
     expect(handoffDue(null, NOW)).toBe(false);
   });
 
+  it('stores a retry before the broker call: the first step, its ids, the count so far', () => {
+    const ids = { tenantId: 'T', scopeId: 'S' };
+    expect(handoffPending(null, { event: 'A' }, NOW, ids)).toEqual({ ...ids, marks: { event: 'A' }, due: NOW + HANDOFF_RETRY_MS[0]! });
+    expect(handoffPending({ retries: 2, marks: { intent: 'X' } }, undefined, NOW, ids)).toEqual({
+      ...ids,
+      marks: { intent: 'X' },
+      retries: 2,
+      due: NOW + HANDOFF_RETRY_MS[0]!,
+    });
+    expect(sameMarks({ event: 'A' }, { event: 'A' })).toBe(true);
+    expect(sameMarks({ event: 'A' }, { event: 'B' })).toBe(false);
+    expect(sameMarks(undefined, {})).toBe(true);
+  });
+
   it('never moves a mark backwards, and invents none', () => {
     expect(mergeHandoff({ marks: { event: 'B', intent: 'X' } }, { marks: { event: 'A' } }).marks).toEqual({ event: 'B', intent: 'X' });
     expect(mergeHandoff({ marks: { event: 'A' } }, { marks: { event: 'B' } }).marks).toEqual({ event: 'B' });
@@ -108,6 +122,19 @@ describe('the broker on the Durable Object (K-74)', () => {
     const settled = await runInDurableObject(object, async (_i, state) => state.storage.get<HandoffState>(DELIVERY_HANDOFF_KEY));
     expect(settled?.due).toBeUndefined();
     expect(settled?.marks?.event).toBeDefined();
+  });
+
+  it('an alarm another user of it fired first re-arms the handoff retry at its own time', async () => {
+    const { t, s, object } = await scopeOn(env.BROKER_SCOPE);
+    const due = Date.now() + 60_000;
+    // The state another user's alarm finds: the retry stored, no alarm left armed (it just fired).
+    const armed = await runInDurableObject(object, async (instance, state) => {
+      await state.storage.put(DELIVERY_HANDOFF_KEY, { tenantId: t, scopeId: s, retries: 1, due });
+      await state.storage.deleteAlarm();
+      await (instance as unknown as { alarm(): Promise<void> }).alarm();
+      return state.storage.getAlarm();
+    });
+    expect(armed).toBe(due);
   });
 
   it('a broker with no receiver holds what it accepts, under one prune alarm; one holding nothing arms nothing', async () => {

@@ -39,6 +39,35 @@ export function handoffAfterFailure(
   };
 }
 
+/** How many batches one handoff hands off before it leaves the rest to its retry. */
+export const HANDOFF_ROUNDS = 20;
+
+/**
+ * The retry a handoff stores before its first broker call, and when it stops at its round limit: the
+ * first step of the back-off, the retries it has counted so far unchanged. An object reset while the
+ * call is out leaves it for the alarm.
+ */
+export function handoffPending(
+  prior: HandoffState | null,
+  marks: HandoffMarks | undefined,
+  now: number,
+  ids: { tenantId: string; scopeId: string },
+): HandoffState {
+  const known = marks ?? prior?.marks;
+  return {
+    tenantId: ids.tenantId,
+    scopeId: ids.scopeId,
+    ...(known ? { marks: known } : {}),
+    ...(prior?.retries ? { retries: prior.retries } : {}),
+    due: now + HANDOFF_RETRY_MS[0]!,
+  };
+}
+
+/** Do two sets of marks say the same thing? */
+export function sameMarks(a: HandoffMarks | undefined, b: HandoffMarks | undefined): boolean {
+  return (a?.event ?? '') === (b?.event ?? '') && (a?.intent ?? '') === (b?.intent ?? '');
+}
+
 /** Is a retry due at `now`? */
 export function handoffDue(state: HandoffState | null, now: number): boolean {
   return state?.due !== undefined && state.due <= now;

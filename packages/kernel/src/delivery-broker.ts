@@ -216,6 +216,11 @@ export class BrokerStore {
     private readonly opts: { delivers: boolean; retryMs?: readonly number[] },
   ) {
     for (const stmt of BROKER_DDL.split(';').map((s) => s.trim()).filter(Boolean)) sql.run(stmt);
+    // A store opened with a receiver over rows held while it had none: those become due, from when
+    // they arrived. Delivered rows keep their state.
+    if (opts.delivers) {
+      sql.run('UPDATE broker_messages SET next_at = received_at WHERE next_at IS NULL AND delivered_at IS NULL');
+    }
   }
 
   /** Take custody. Idempotent by id; every id handed in is acknowledged, a duplicate too. */

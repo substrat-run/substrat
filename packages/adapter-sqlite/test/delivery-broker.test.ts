@@ -108,6 +108,53 @@ describe('the in-process broker (K-74)', () => {
     broker.close();
   });
 
+  const message = (): BrokerMessage => ({
+    id: ulid(),
+    kind: 'event',
+    tenantId: 't',
+    scopeId: 's',
+    type: 'x',
+    body: '{}',
+    committedAt: '2026-11-28T10:00:00.000Z',
+  });
+
+  it('runs overlapping delivery passes one at a time, so a message reaches the receiver once', async () => {
+    const delivered: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const broker = new InProcessDeliveryBroker({
+      receiver: {
+        async deliver(m) {
+          await gate;
+          delivered.push(m.id);
+        },
+      },
+    });
+    const m = message();
+    await broker.handOff([m]);
+    const first = broker.deliverDue();
+    const second = broker.deliverDue();
+    release();
+    await Promise.all([first, second]);
+    expect(delivered).toEqual([m.id]);
+    broker.close();
+  });
+
+  it('makes the rows it held without a receiver due once it is opened with one', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-broker-held-'));
+    const file = join(dir, 'broker.sqlite');
+    const m = message();
+    const holding = new InProcessDeliveryBroker({ file });
+    await holding.handOff([m]);
+    holding.close();
+    const delivered: string[] = [];
+    const delivering = new InProcessDeliveryBroker({ file, receiver: { deliver: async (x) => void delivered.push(x.id) } });
+    expect(await delivering.deliverDue()).toMatchObject({ delivered: 1 });
+    expect(delivered).toEqual([m.id]);
+    delivering.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it('after its last delivery, still says when the delivered row is to be pruned', async () => {
     let now = Date.parse('2026-11-28T10:00:00Z');
     const broker = new InProcessDeliveryBroker({ now: () => now, receiver: { deliver: async () => {} } });

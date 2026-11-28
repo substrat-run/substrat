@@ -42,7 +42,10 @@ const SCOPES = [
  */
 const SHARED_SCOPES = [
   'BROKEN_SCOPE',
+  // K-74: scopes that hand off to a delivery broker, and with none bound (delivery-broker.test.ts) — the worker's own directory.
+  'BROKER_SCOPE',
   'CAUSED_BY_SCOPE',
+  'HOLDING_BROKER_SCOPE',
   'JOURNAL_FENCE_DROP_SCOPE',
   'JOURNAL_WRITE_SCOPE',
   'LIVE_SCOPE',
@@ -55,6 +58,7 @@ const SHARED_SCOPES = [
   'SPINE_DROP_SCOPE',
   'SPINE_PARENT_SCOPE',
   'SPINE_SHADOW_SCOPE',
+  'UNBROKERED_SCOPE',
   'UNMETERED_SCOPE',
   // K-69: scopes that wake themselves (scope-wake.test.ts) — the worker's own directory.
   'WAKE_SCOPE',

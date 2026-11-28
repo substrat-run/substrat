@@ -58,8 +58,29 @@ export class InProcessDeliveryBroker implements DeliveryBroker {
     return this.store.marks(tenantId, scopeId);
   }
 
-  /** One delivery pass. With no receiver there is nothing to deliver: the pass only prunes. */
+  /** The pass now running, if any: passes run one at a time, as the Durable Object's alarm runs them. */
+  private running: Promise<DeliveryPass> | null = null;
+
+  /**
+   * One delivery pass. With no receiver there is nothing to deliver: the pass only prunes. A call
+   * made while a pass runs waits for it and then runs its own, so no message is handed to the
+   * receiver twice by two overlapping passes.
+   */
   async deliverDue(): Promise<DeliveryPass> {
+    const prior = this.running;
+    const pass = (async () => {
+      if (prior) await prior.catch(() => undefined);
+      return this.pass();
+    })();
+    this.running = pass;
+    try {
+      return await pass;
+    } finally {
+      if (this.running === pass) this.running = null;
+    }
+  }
+
+  private async pass(): Promise<DeliveryPass> {
     if (!this.receiver) {
       this.store.prune(this.now());
       return { delivered: 0, failed: 0, nextAt: this.store.nextWakeAt() };
