@@ -468,6 +468,67 @@ export class HoldingBrokerScopeDO extends BrokerScopeBase {
     super(ctx, { ...env, SUBSTRAT_DELIVERY_BROKER: env.HOLDING_DELIVERY_BROKER, SUBSTRAT_VERTICAL: DELIVERY_BROKER_APP });
   }
 }
+/**
+ * #3474: a broker and its scopes with `SUBSTRAT_BROKER_TELEMETRY` bound to a recorder
+ * (delivery-broker-telemetry.test.ts). Its own state, so the handoff suite's counts are untouched.
+ */
+export const BROKER_TELEMETRY_TEST = Symbol.for('substrat.test.broker-telemetry');
+export interface BrokerTelemetryTestState extends DeliveryBrokerTestState {
+  written: { indexes: string[]; blobs: string[]; doubles: number[] }[];
+}
+export const brokerTelemetryTest = (): BrokerTelemetryTestState =>
+  ((globalThis as Record<symbol, BrokerTelemetryTestState>)[BROKER_TELEMETRY_TEST] ??= {
+    received: [],
+    refusals: 0,
+    failures: 0,
+    written: [],
+  });
+const brokerTelemetryRecorder = {
+  writeDataPoint(point: { indexes?: string[]; blobs?: string[]; doubles?: number[] }): void {
+    brokerTelemetryTest().written.push({ indexes: point.indexes ?? [], blobs: point.blobs ?? [], doubles: point.doubles ?? [] });
+  },
+};
+const TelemetryDeliveryBrokerBase = defineDeliveryBrokerDO({
+  retryMs: [0],
+  receiver: () => ({
+    async deliver(m) {
+      const state = brokerTelemetryTest();
+      if (state.failures > 0) {
+        state.failures--;
+        throw new Error('receiver down');
+      }
+      state.received.push(m);
+    },
+  }),
+});
+export class TelemetryDeliveryBrokerDO extends TelemetryDeliveryBrokerBase {
+  constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
+    super(ctx, { ...env, SUBSTRAT_BROKER_TELEMETRY: brokerTelemetryRecorder });
+  }
+  override async handOff(messages: BrokerMessage[]): Promise<HandOffAnswer> {
+    const state = brokerTelemetryTest();
+    if (state.refusals > 0) {
+      state.refusals--;
+      throw new Error('broker unreachable');
+    }
+    return super.handOff(messages);
+  }
+  /** Driven by the suite (`drive`), as `TestDeliveryBrokerDO` is. */
+  override async alarm(): Promise<void> {}
+  async drive(): Promise<void> {
+    await super.alarm();
+  }
+}
+export class TelemetryBrokerScopeDO extends BrokerScopeBase {
+  constructor(ctx: DurableObjectState, env: ScopeDoEnv & { TELEMETRY_DELIVERY_BROKER: DurableObjectNamespace }) {
+    super(ctx, {
+      ...env,
+      SUBSTRAT_DELIVERY_BROKER: env.TELEMETRY_DELIVERY_BROKER,
+      SUBSTRAT_VERTICAL: DELIVERY_BROKER_APP,
+      SUBSTRAT_BROKER_TELEMETRY: brokerTelemetryRecorder,
+    });
+  }
+}
 /** …and scopes with no broker bound: the switch off. */
 export const UnbrokeredScopeDO = defineScopeDO([], contractTestBareOps);
 

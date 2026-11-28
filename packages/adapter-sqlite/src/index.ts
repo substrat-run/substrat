@@ -1008,6 +1008,8 @@ import {
   type ScopeStoreRunner,
   type StoreErasureReplay,
 } from '@substrat-run/kernel';
+import { reportHandoff, traceIdOf, type BrokerMessage, type BrokerTelemetrySink } from '@substrat-run/kernel';
+import { currentTraceparent } from '@substrat-run/kernel/invocation-line';
 import {
   attributedView,
   delegatedRevokeSql,
@@ -1470,6 +1472,12 @@ export interface SqliteScopeHostOptions {
    * right after the commit's own dispatch. Omitted, nothing is handed off: the broker is off.
    */
   deliveryBroker?: (ids: { tenantId: TenantId; scopeId: ScopeId }) => DeliveryBroker;
+  /**
+   * #3474: where each handoff round's point goes (`reportHandoff`), as the Durable Object writes it
+   * to `SUBSTRAT_BROKER_TELEMETRY`, and the app a scope hands off under — the harness knows it, as it
+   * knows which broker to resolve. Omitted, nothing is reported.
+   */
+  brokerTelemetry?: { sink: BrokerTelemetrySink; appOf: (ids: { tenantId: TenantId; scopeId: ScopeId }) => string };
 }
 
 /**
@@ -2638,6 +2646,7 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly versionId: string | null;
   /** K-74: the broker each scope hands off to, or null (off). */
   private readonly deliveryBroker: ((ids: { tenantId: TenantId; scopeId: ScopeId }) => DeliveryBroker) | null;
+  private readonly brokerTelemetry: SqliteScopeHostOptions['brokerTelemetry'] | null;
   /** K-74: each scope's handoff marks, a cache of what its broker holds (`DeliveryBroker.marks`). */
   private readonly handoffMarks = new Map<string, HandoffMarks>();
   private readonly migrationsDigest: string | undefined;
@@ -2664,6 +2673,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
     this.versionId = options.versionId ?? null;
     this.deliveryBroker = options.deliveryBroker ?? null;
+    this.brokerTelemetry = options.brokerTelemetry ?? null;
     this.migrationsDigest = options.migrationsDigest;
     this.permissions = options.permissions;
     // #2430: what the declared surface reserves holds here too, whatever is registered under its ids.
@@ -8446,6 +8456,8 @@ export class SqliteScopeHost implements ScopeHost {
     if (!this.deliveryBroker) return;
     const ids = { tenantId: rt.tenantId, scopeId: rt.scopeId };
     const key = `${rt.tenantId}/${rt.scopeId}`;
+    /** #3474: the round now with the broker, so a throw reports what it tried. */
+    let inFlight: { sent: BrokerMessage[]; startedAt: number } | null = null;
     try {
       const broker = this.deliveryBroker(ids);
       let marks = this.handoffMarks.get(key) ?? (await broker.marks(rt.tenantId, rt.scopeId));
@@ -8455,7 +8467,14 @@ export class SqliteScopeHost implements ScopeHost {
           messagesOf(q.kind, rt.db.prepare(q.sql).all(...q.params) as Record<string, unknown>[], ids),
         );
         if (sent.length === 0) break;
-        const next = advanceMarks(marks, sent, await broker.handOff(sent));
+        inFlight = { sent, startedAt: Date.now() };
+        const answer = await broker.handOff(sent);
+        const next = advanceMarks(marks, sent, answer);
+        const acked = new Set(answer.acked);
+        this.reportHandoffRound(rt, inFlight, next.event === marks.event && next.intent === marks.intent
+          ? 'failed'
+          : sent.every((m) => acked.has(m.id)) ? 'acked' : 'partial');
+        inFlight = null;
         // An answer that acknowledges nothing new: stop; the next commit or `retryHandoffs` tries again.
         if (next.event === marks.event && next.intent === marks.intent) break;
         marks = next;
@@ -8463,8 +8482,25 @@ export class SqliteScopeHost implements ScopeHost {
       }
       this.handoffMarks.set(key, marks);
     } catch (err) {
+      if (inFlight) this.reportHandoffRound(rt, inFlight, 'failed');
       console.error('substrat: delivery handoff failed; the next commit retries it', err);
     }
+  }
+
+  /** #3474: one point per handoff round, when `brokerTelemetry` is given. */
+  private reportHandoffRound(
+    rt: ScopeRuntime,
+    round: { sent: BrokerMessage[]; startedAt: number },
+    outcome: 'acked' | 'partial' | 'failed',
+  ): void {
+    const t = this.brokerTelemetry;
+    if (!t) return;
+    const ids = { tenantId: rt.tenantId, scopeId: rt.scopeId };
+    reportHandoff(
+      t.sink,
+      { ...ids, app: t.appOf(ids) },
+      { ...round, outcome, at: Date.now(), traceId: traceIdOf(currentTraceparent()) },
+    );
   }
 
   /**
