@@ -6,15 +6,19 @@
  *
  * It has no alarm. A delivery pass runs when `deliverDue()` is called: by the harness on its own
  * timer, or by a test. Without a receiver it only holds what it accepts, as the hosted broker does
- * until its receivers exist (A5).
+ * until its receivers exist (A5). Retries, the pause per receiver, ordering per key and dead letter
+ * (A4) are the kernel's `BrokerStore`, so they hold here exactly as on the Durable Object.
  */
 import Database from 'better-sqlite3';
 import {
   BrokerStore,
   runDeliveryPass,
   type BrokerMessage,
+  type BrokerTiming,
+  type DeadLetter,
   type DeliveryBroker,
   type DeliveryPass,
+  type DeliveryPolicyInput,
   type DeliveryReceiver,
   type HandOffAnswer,
   type HandoffMarks,
@@ -23,35 +27,57 @@ import {
 export interface InProcessDeliveryBrokerOptions {
   /** The database file; omitted, an in-memory database (lost with the process). */
   file?: string;
-  /** Where due messages are delivered; omitted, the broker holds what it accepts. */
+  /** Where due messages are delivered, as the subscription named `'default'`; omitted, the broker holds what it accepts. */
   receiver?: DeliveryReceiver;
-  /** The waits after each failed delivery. Defaults to `BROKER_RETRY_MS`. */
-  retryMs?: readonly number[];
+  /** The `receiver`'s policy, over the platform's (`DEFAULT_DELIVERY_POLICY`). */
+  policy?: DeliveryPolicyInput;
+  /** Further receivers, each its own subscription: its own attempts, pause and lanes. */
+  subscriptions?: readonly InProcessSubscription[];
+  /** The platform's timing, over `BROKER_TIMING`. */
+  timing?: Partial<BrokerTiming>;
+  /** The jitter's draw, for a test that judges waits exactly. */
+  random?: () => number;
   /** Epoch ms, for a test that judges retries on its own clock. */
   now?: () => number;
+}
+
+/** One receiver of an in-process broker. */
+export interface InProcessSubscription {
+  name: string;
+  receiver: DeliveryReceiver;
+  policy?: DeliveryPolicyInput;
 }
 
 export class InProcessDeliveryBroker implements DeliveryBroker {
   private readonly db: Database.Database;
   private readonly store: BrokerStore;
-  private readonly receiver: DeliveryReceiver | null;
+  private readonly receivers: Record<string, DeliveryReceiver>;
   private readonly now: () => number;
 
   constructor(options: InProcessDeliveryBrokerOptions = {}) {
     this.db = new Database(options.file ?? ':memory:');
-    this.receiver = options.receiver ?? null;
+    const subscriptions: InProcessSubscription[] = [
+      ...(options.receiver ? [{ name: 'default', receiver: options.receiver, ...(options.policy ? { policy: options.policy } : {}) }] : []),
+      ...(options.subscriptions ?? []),
+    ];
+    this.receivers = Object.fromEntries(subscriptions.map((s) => [s.name, s.receiver]));
     this.now = options.now ?? Date.now;
     this.store = new BrokerStore(
       {
         run: (sql, ...params) => void this.db.prepare(sql).run(...params),
         all: <T>(sql: string, ...params: unknown[]) => this.db.prepare(sql).all(...params) as T[],
+        transaction: (fn) => this.db.transaction(fn)(),
       },
-      { delivers: this.receiver !== null, ...(options.retryMs ? { retryMs: options.retryMs } : {}) },
+      {
+        subscriptions: subscriptions.map((s) => ({ name: s.name, ...(s.policy ? { policy: s.policy } : {}) })),
+        ...(options.timing ? { timing: options.timing } : {}),
+        ...(options.random ? { random: options.random } : {}),
+      },
     );
   }
 
   async handOff(messages: readonly BrokerMessage[]): Promise<HandOffAnswer> {
-    return this.db.transaction(() => this.store.accept(messages, this.now()))();
+    return this.store.accept(messages, this.now());
   }
 
   async marks(tenantId: string, scopeId: string): Promise<HandoffMarks> {
@@ -81,16 +107,27 @@ export class InProcessDeliveryBroker implements DeliveryBroker {
   }
 
   private async pass(): Promise<DeliveryPass> {
-    if (!this.receiver) {
-      this.store.prune(this.now());
-      return { delivered: 0, failed: 0, nextAt: this.store.nextWakeAt() };
-    }
-    return runDeliveryPass(this.store, this.receiver, this.now);
+    return runDeliveryPass(this.store, this.receivers, this.now);
   }
 
-  /** How many messages it holds that are not delivered yet. */
+  /** How many messages it holds that some receiver is still owed. */
   pending(): number {
     return this.store.pending();
+  }
+
+  /** The dead letters, oldest first; `content` adds each message's body. */
+  deadLetters(opts: { receiver?: string; limit?: number; content?: boolean } = {}): DeadLetter[] {
+    return this.store.deadLetters(opts);
+  }
+
+  /** Resend a dead letter (at `receiver`, or wherever it is dead). Idempotent; returns the deliveries moved. */
+  resend(messageId: string, receiver?: string): number {
+    return this.store.resend(messageId, receiver, this.now());
+  }
+
+  /** Discard a dead letter, so its lane moves on. Idempotent; returns the deliveries settled. */
+  discard(messageId: string, receiver?: string): number {
+    return this.store.discard(messageId, receiver, this.now());
   }
 
   close(): void {

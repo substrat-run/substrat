@@ -1066,7 +1066,7 @@ import { createTupleChecker, directoryTenantReader } from './checker.js';
 import { decidedByOf, entityString, forgetInvocationTrace, invocationTrace, tracedSql } from './trace.js';
 
 export { scopeStoreRunnersFor } from './scope-store-runners.js';
-export { InProcessDeliveryBroker, type InProcessDeliveryBrokerOptions } from './delivery-broker.js';
+export { InProcessDeliveryBroker, type InProcessDeliveryBrokerOptions, type InProcessSubscription } from './delivery-broker.js';
 export { devMailOutbox, MAIL_OUTBOX_ENV, type DevMailOutbox, type DevMailOutboxOptions, type OutboxNode } from './dev-mail-outbox.js';
 
 /**

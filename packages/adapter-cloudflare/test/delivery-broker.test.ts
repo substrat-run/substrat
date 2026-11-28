@@ -145,7 +145,9 @@ describe('the broker on the Durable Object (K-74)', () => {
     const before = Date.now();
     await stub.invoke('test/emit-event', {});
     const held = await runInDurableObject(broker, async (_i, state) => ({
-      rows: state.storage.sql.exec('SELECT COUNT(*) AS n FROM broker_messages WHERE next_at IS NULL').one().n,
+      rows: state.storage.sql
+        .exec('SELECT COUNT(*) AS n FROM broker_messages m WHERE NOT EXISTS (SELECT 1 FROM broker_deliveries d WHERE d.message_id = m.id)')
+        .one().n,
       alarm: await state.storage.getAlarm(),
     }));
     expect(held.rows).toBe(1);

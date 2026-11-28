@@ -12,22 +12,43 @@
  * (A5 adds the shadow recorder), so in production the broker holds what it accepts, bounded by
  * `BROKER_HELD_RETENTION_MS`, with one alarm to prune it. An object holding nothing arms nothing
  * (D-79).
+ *
+ * Retries, the pause per receiver, ordering per key and dead letter (A4, #3470) are the kernel's
+ * `BrokerStore` over this object's SQLite; the alarm is what runs them. Each receiver is a
+ * subscription: `receiver` alone is the one named `'default'`. A dead letter is resent or discarded
+ * over RPC (`resend`, `discard`), and read with `deadLetters`.
  */
 import { DurableObject } from 'cloudflare:workers';
 import {
   BrokerStore,
   runDeliveryPass,
   type BrokerMessage,
+  type BrokerTiming,
+  type DeadLetter,
+  type DeliveryPolicyInput,
   type DeliveryReceiver,
   type HandOffAnswer,
   type HandoffMarks,
 } from '@substrat-run/kernel';
 
+/** One receiver of the broker, made from the script's env. */
+export interface DeliveryBrokerSubscription<Env> {
+  name: string;
+  receiver: (env: Env) => DeliveryReceiver;
+  policy?: DeliveryPolicyInput;
+}
+
 export interface DeliveryBrokerOptions<Env> {
-  /** Where due messages are delivered. Omitted, the broker holds what it accepts. */
+  /** Where due messages are delivered, as the subscription named `'default'`. Omitted (and no `subscriptions`), the broker holds what it accepts. */
   receiver?: (env: Env) => DeliveryReceiver;
-  /** The waits after each failed delivery. Defaults to `BROKER_RETRY_MS`. */
-  retryMs?: readonly number[];
+  /** The `receiver`'s policy, over the platform's (`DEFAULT_DELIVERY_POLICY`). */
+  policy?: DeliveryPolicyInput;
+  /** Further receivers, each its own subscription: its own attempts, pause and lanes. */
+  subscriptions?: readonly DeliveryBrokerSubscription<Env>[];
+  /** The platform's timing, over `BROKER_TIMING`. Production passes nothing. */
+  timing?: Partial<BrokerTiming>;
+  /** The jitter's draw. Defaults to `Math.random`. */
+  random?: () => number;
 }
 
 /** The broker as a scope reaches it over RPC. */
@@ -36,31 +57,47 @@ export interface DeliveryBrokerRpc {
   marks(tenantId: string, scopeId: string): Promise<HandoffMarks>;
 }
 
+/** The broker's dead letter, over RPC: read, resend, discard. */
+export interface DeliveryBrokerDeadLetterRpc {
+  deadLetters(opts?: { receiver?: string; limit?: number; content?: boolean }): Promise<DeadLetter[]>;
+  resend(messageId: string, receiver?: string): Promise<number>;
+  discard(messageId: string, receiver?: string): Promise<number>;
+}
+
 export type DeliveryBrokerDOClass<Env> = new (
   ctx: DurableObjectState,
   env: Env,
-) => DurableObject<Env> & DeliveryBrokerRpc & { alarm(): Promise<void> };
+) => DurableObject<Env> & DeliveryBrokerRpc & DeliveryBrokerDeadLetterRpc & { alarm(): Promise<void> };
 
 export function defineDeliveryBrokerDO<Env = unknown>(options: DeliveryBrokerOptions<Env> = {}): DeliveryBrokerDOClass<Env> {
-  return class DeliveryBrokerDO extends DurableObject<Env> implements DeliveryBrokerRpc {
+  const subscriptions: DeliveryBrokerSubscription<Env>[] = [
+    ...(options.receiver ? [{ name: 'default', receiver: options.receiver, ...(options.policy ? { policy: options.policy } : {}) }] : []),
+    ...(options.subscriptions ?? []),
+  ];
+  return class DeliveryBrokerDO extends DurableObject<Env> implements DeliveryBrokerRpc, DeliveryBrokerDeadLetterRpc {
     private readonly store: BrokerStore;
-    private readonly receiver: DeliveryReceiver | null;
+    private readonly receivers: Record<string, DeliveryReceiver>;
 
     constructor(ctx: DurableObjectState, env: Env) {
       super(ctx, env);
-      this.receiver = options.receiver ? options.receiver(env) : null;
+      this.receivers = Object.fromEntries(subscriptions.map((s) => [s.name, s.receiver(env)]));
       const sql = ctx.storage.sql;
       this.store = new BrokerStore(
         {
           run: (q, ...params) => void sql.exec(q, ...params),
           all: <T>(q: string, ...params: unknown[]) => sql.exec(q, ...params).toArray() as T[],
+          transaction: (fn) => ctx.storage.transactionSync(fn),
         },
-        { delivers: this.receiver !== null, ...(options.retryMs ? { retryMs: options.retryMs } : {}) },
+        {
+          subscriptions: subscriptions.map((s) => ({ name: s.name, ...(s.policy ? { policy: s.policy } : {}) })),
+          ...(options.timing ? { timing: options.timing } : {}),
+          ...(options.random ? { random: options.random } : {}),
+        },
       );
     }
 
     async handOff(messages: BrokerMessage[]): Promise<HandOffAnswer> {
-      const answer = this.ctx.storage.transactionSync(() => this.store.accept(messages, Date.now()));
+      const answer = this.store.accept(messages, Date.now());
       await this.armFor();
       return answer;
     }
@@ -69,9 +106,25 @@ export function defineDeliveryBrokerDO<Env = unknown>(options: DeliveryBrokerOpt
       return this.store.marks(tenantId, scopeId);
     }
 
+    async deadLetters(opts: { receiver?: string; limit?: number; content?: boolean } = {}): Promise<DeadLetter[]> {
+      return this.store.deadLetters(opts);
+    }
+
+    async resend(messageId: string, receiver?: string): Promise<number> {
+      const moved = this.store.resend(messageId, receiver, Date.now());
+      if (moved) await this.armFor();
+      return moved;
+    }
+
+    async discard(messageId: string, receiver?: string): Promise<number> {
+      const settled = this.store.discard(messageId, receiver, Date.now());
+      // A discarded head lets its lane move on: what waited behind it is due now.
+      if (settled) await this.armFor();
+      return settled;
+    }
+
     async alarm(): Promise<void> {
-      if (this.receiver) await runDeliveryPass(this.store, this.receiver, Date.now);
-      else this.store.prune(Date.now());
+      await runDeliveryPass(this.store, this.receivers, Date.now);
       await this.armFor();
     }
 

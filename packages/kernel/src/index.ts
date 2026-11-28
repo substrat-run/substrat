@@ -738,12 +738,19 @@ export type {
   BrokerMessage,
   BrokerMessageKind,
   BrokerSql,
+  BrokerStoreOptions,
+  BrokerSubscriptionSpec,
+  DeadLetter,
   DeliveryBroker,
   DeliveryPass,
   DeliveryReceiver,
+  DueDelivery,
+  FailureOutcome,
   HandOffAnswer,
   HandoffMarks,
 } from './delivery-broker.js';
+export { BROKER_TIMING, DeliveryFailure } from './delivery-policy.js';
+export type { BrokerTiming, DeliveryPolicy, DeliveryPolicyInput, FailureClass } from './delivery-policy.js';
 export { CLEAN_ROOM_COPY_SQL, COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, loadDropsRowsOf, markCopyOrigin, settleCopiedWork } from './scope-copy.js';
 // RFC wire-signing §4: the nonce store a signed call that changes state spends its nonce in.
 export {

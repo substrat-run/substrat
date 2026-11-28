@@ -410,7 +410,7 @@ export class WakeScopeDO extends WakeBase {
 /**
  * K-74: a delivery broker whose receiver records what it is given, and which refuses or fails on
  * request (delivery-broker.test.ts). Its state is the isolate's, so the suite reads what the object
- * was given. Every retry is due at once (`retryMs: [0]`): the suite runs passes back to back.
+ * was given. Every retry is due at once (a backoff of 0): the suite runs passes back to back.
  */
 export const DELIVERY_BROKER_TEST = Symbol.for('substrat.test.delivery-broker');
 export interface DeliveryBrokerTestState {
@@ -421,7 +421,7 @@ export interface DeliveryBrokerTestState {
 export const deliveryBrokerTest = (): DeliveryBrokerTestState =>
   ((globalThis as Record<symbol, DeliveryBrokerTestState>)[DELIVERY_BROKER_TEST] ??= { received: [], refusals: 0, failures: 0 });
 const TestDeliveryBrokerBase = defineDeliveryBrokerDO({
-  retryMs: [0],
+  policy: { backoff: { initialMs: 0 }, jitter: 0 },
   receiver: () => ({
     async deliver(m) {
       const state = deliveryBrokerTest();

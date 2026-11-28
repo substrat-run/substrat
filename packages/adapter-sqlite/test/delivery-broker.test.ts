@@ -28,7 +28,7 @@ deliveryBrokerContractSuite('adapter-sqlite', async () => {
     if (!b) {
       b = new InProcessDeliveryBroker({
         // Every retry due at once: the suite runs passes back to back, on no clock of its own.
-        retryMs: [0],
+        policy: { backoff: { initialMs: 0 }, jitter: 0 },
         receiver: {
           async deliver(m) {
             if (failures > 0) {
@@ -166,7 +166,7 @@ describe('the in-process broker (K-74)', () => {
     expect(pass.nextAt).toBeGreaterThan(delivered);
     now = pass.nextAt!;
     // At that moment the row is pruned, and a broker holding nothing has no next wake.
-    expect(await broker.deliverDue()).toEqual({ delivered: 0, failed: 0, nextAt: null });
+    expect(await broker.deliverDue()).toEqual({ delivered: 0, failed: 0, deadLettered: 0, nextAt: null });
     broker.close();
   });
 });

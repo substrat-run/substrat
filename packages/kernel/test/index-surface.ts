@@ -36,6 +36,8 @@ export const INDEX_VALUE_EXPORTS = [
   'BIND_EXPORT_BREAK_REFUSAL',
   // K-74: how long a broker with no receiver holds a message; the Durable Object broker arms its prune on it.
   'BROKER_HELD_RETENTION_MS',
+  // K-74 (A4): the platform's pause, slow-down and retention for every receiver, production's values.
+  'BROKER_TIMING',
   'BUILD_USAGE_RETENTION_DAYS',
   // K-74: the broker's own tables and statements, shared so both adapters' brokers cannot drift.
   'BrokerStore',
@@ -99,6 +101,8 @@ export const INDEX_VALUE_EXPORTS = [
   'DOWNLOAD_LINK_DDL',
   'DOWNLOAD_LINK_GONE',
   'DO_SQL_LIMITS',
+  // K-74 (A4): what a broker receiver throws to say how a delivery failed (retry, fail at once, slow down).
+  'DeliveryFailure',
   'EMITTED_REPORT_CAP',
   'ENTITY_STATE_MOVES_DDL',
   'ENTITY_UNBIND_OPERATION',
