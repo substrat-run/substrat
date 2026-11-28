@@ -7,12 +7,18 @@
  * It has no alarm. A delivery pass runs when `deliverDue()` is called: by the harness on its own
  * timer, or by a test. Without a receiver it only holds what it accepts, as the hosted broker does
  * until its receivers exist (A5).
+ *
+ * #3474: given `telemetry`, it reports what the Durable Object broker reports, through the same
+ * kernel `BrokerTelemetry`: a point per receipt and delivery attempt, its state when that moves.
  */
 import Database from 'better-sqlite3';
 import {
   BrokerStore,
+  BrokerTelemetry,
   runDeliveryPass,
   type BrokerMessage,
+  type BrokerStateReport,
+  type BrokerTelemetrySink,
   type DeliveryBroker,
   type DeliveryPass,
   type DeliveryReceiver,
@@ -29,6 +35,8 @@ export interface InProcessDeliveryBrokerOptions {
   retryMs?: readonly number[];
   /** Epoch ms, for a test that judges retries on its own clock. */
   now?: () => number;
+  /** #3474: where its points and state reports go, and the (tenant, app) it is the broker of. */
+  telemetry?: { sink: BrokerTelemetrySink; tenantId: string; app: string };
 }
 
 export class InProcessDeliveryBroker implements DeliveryBroker {
@@ -36,6 +44,7 @@ export class InProcessDeliveryBroker implements DeliveryBroker {
   private readonly store: BrokerStore;
   private readonly receiver: DeliveryReceiver | null;
   private readonly now: () => number;
+  private readonly telemetry: BrokerTelemetry | null;
 
   constructor(options: InProcessDeliveryBrokerOptions = {}) {
     this.db = new Database(options.file ?? ':memory:');
@@ -48,10 +57,21 @@ export class InProcessDeliveryBroker implements DeliveryBroker {
       },
       { delivers: this.receiver !== null, ...(options.retryMs ? { retryMs: options.retryMs } : {}) },
     );
+    const t = options.telemetry;
+    this.telemetry = t ? new BrokerTelemetry(this.store, t.sink, { tenantId: t.tenantId, app: t.app }) : null;
   }
 
   async handOff(messages: readonly BrokerMessage[]): Promise<HandOffAnswer> {
-    return this.db.transaction(() => this.store.accept(messages, this.now()))();
+    const held = this.telemetry?.heldBefore(messages);
+    const now = this.now();
+    const answer = this.db.transaction(() => this.store.accept(messages, now))();
+    if (held) this.telemetry!.received(messages, held, now);
+    return answer;
+  }
+
+  /** #3474: the broker's state now, as a staff read sees it. Null without telemetry. */
+  state(): BrokerStateReport | null {
+    return this.telemetry?.current(this.now()) ?? null;
   }
 
   async marks(tenantId: string, scopeId: string): Promise<HandoffMarks> {
@@ -83,9 +103,12 @@ export class InProcessDeliveryBroker implements DeliveryBroker {
   private async pass(): Promise<DeliveryPass> {
     if (!this.receiver) {
       this.store.prune(this.now());
+      this.telemetry?.settle(this.now());
       return { delivered: 0, failed: 0, nextAt: this.store.nextWakeAt() };
     }
-    return runDeliveryPass(this.store, this.receiver, this.now);
+    const pass = await runDeliveryPass(this.store, this.receiver, this.now, undefined, this.telemetry?.passObserver());
+    this.telemetry?.settle(this.now());
+    return pass;
   }
 
   /** How many messages it holds that are not delivered yet. */

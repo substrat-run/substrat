@@ -738,12 +738,24 @@ export type {
   BrokerMessage,
   BrokerMessageKind,
   BrokerSql,
+  BrokerStats,
   DeliveryBroker,
+  DeliveryObserver,
   DeliveryPass,
   DeliveryReceiver,
   HandOffAnswer,
   HandoffMarks,
 } from './delivery-broker.js';
+// #3474: what a delivery broker reports — a point per step, and its state on change.
+export {
+  BROKER_DATA_POINT_LAYOUT,
+  BROKER_TELEMETRY_BINDING,
+  BrokerTelemetry,
+  brokerDataPoint,
+  reportHandoff,
+  traceIdOf,
+} from './broker-telemetry.js';
+export type { BrokerOutcome, BrokerPoint, BrokerStateReport, BrokerStep, BrokerTelemetrySink } from './broker-telemetry.js';
 export { CLEAN_ROOM_COPY_SQL, COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, loadDropsRowsOf, markCopyOrigin, settleCopiedWork } from './scope-copy.js';
 // RFC wire-signing §4: the nonce store a signed call that changes state spends its nonce in.
 export {

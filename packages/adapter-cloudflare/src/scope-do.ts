@@ -522,6 +522,9 @@ import type {
 import { createDoTupleChecker, createLocalControlPlaneReader, scopeTupleReader, type ControlPlaneReader } from './checker.js';
 import { settlePlatformRequestIn, type PlatformRequestSettle } from '@substrat-run/kernel';
 import { loadDropsRowsOf, SCOPE_COPY_LEASE_MS, ulidTime } from '@substrat-run/kernel';
+import { reportHandoff, traceIdOf, type BrokerMessage, type BrokerTelemetrySink } from '@substrat-run/kernel';
+import { currentTraceparent } from '@substrat-run/kernel/invocation-line';
+import { analyticsBrokerSink, brokerTelemetryDataset, handoffOutcome } from './broker-telemetry.js';
 import { DELIVERY_HANDOFF_KEY, HANDOFF_ROUNDS, handoffAfterFailure, handoffDue, handoffPending, mergeHandoff, sameMarks, type HandoffState } from './delivery-handoff.js';
 import { advanceMarks, brokerName, handoffQueries, messagesOf } from '@substrat-run/kernel';
 import type { DeliveryBrokerRpc } from './delivery-broker-do.js';
@@ -591,6 +594,11 @@ export interface ScopeDoEnv {
    * handed off and delivery stays the control plane's drain. The upload does not bind it yet (A5).
    */
   SUBSTRAT_DELIVERY_BROKER?: DurableObjectNamespace;
+  /**
+   * #3474: the Analytics Engine dataset the handoff and the broker write their points into
+   * (`BROKER_TELEMETRY_BINDING`). Unbound, nothing is written.
+   */
+  SUBSTRAT_BROKER_TELEMETRY?: AnalyticsEngineDatasetLike;
 }
 
 interface RegisteredModule {
@@ -4329,12 +4337,15 @@ export function defineScopeDO(
       const ids = { tenantId, scopeId };
       const stored = (await this.ctx.storage.get<HandoffState>(DELIVERY_HANDOFF_KEY)) ?? null;
       let marks = stored?.marks;
+      /** #3474: the round now with the broker, so a throw reports what it tried. */
+      let inFlight: { sent: BrokerMessage[]; startedAt: number } | null = null;
       try {
         marks ??= await broker.marks(tenantId, scopeId);
         let retry: HandoffState | null = null;
         let drained = false;
         // A backlog larger than one batch follows in the next round; bounded, so a commit never spins.
         for (let round = 0; round < HANDOFF_ROUNDS; round++) {
+          inFlight = null;
           const sent = handoffQueries(marks).flatMap((q) =>
             messagesOf(q.kind, this.sql.exec(q.sql, ...q.params).toArray() as Record<string, unknown>[], ids),
           );
@@ -4347,9 +4358,13 @@ export function defineScopeDO(
             await this.keepHandoff(retry);
             await this.armAlarmBy(retry.due!);
           }
-          const next = advanceMarks(marks, sent, await broker.handOff(sent));
+          inFlight = { sent, startedAt: Date.now() };
+          const answer = await broker.handOff(sent);
+          const next = advanceMarks(marks, sent, answer);
           // An answer that acknowledges nothing new: stop, and leave the retry armed.
           if (sameMarks(next, marks)) throw new Error('the broker acknowledged none of the handoff');
+          this.reportHandoffRound(tenantId, scopeId, inFlight, handoffOutcome(sent, answer));
+          inFlight = null;
           marks = next;
           await this.keepHandoff({ ...retry, marks });
         }
@@ -4362,12 +4377,33 @@ export function defineScopeDO(
         await this.keepHandoff(more);
         await this.armAlarmBy(more.due!);
       } catch (err) {
+        if (inFlight) this.reportHandoffRound(tenantId, scopeId, inFlight, 'failed');
         console.error('substrat: delivery handoff failed; the scope alarm retries it', err);
         const next = handoffAfterFailure(stored, marks, Date.now(), ids);
         await this.keepHandoff(next);
         await this.armAlarmBy(next.due!);
       }
     }
+
+    /** #3474: one point per handoff round, when the script binds `SUBSTRAT_BROKER_TELEMETRY`. */
+    private reportHandoffRound(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      round: { sent: BrokerMessage[]; startedAt: number },
+      outcome: 'acked' | 'partial' | 'failed',
+    ): void {
+      if (this.brokerSink === undefined) {
+        const dataset = brokerTelemetryDataset(this.env);
+        this.brokerSink = dataset ? analyticsBrokerSink(dataset) : null;
+      }
+      if (!this.brokerSink) return;
+      reportHandoff(
+        this.brokerSink,
+        { tenantId, app: this.env.SUBSTRAT_VERTICAL ?? 'vertical', scopeId },
+        { ...round, outcome, at: Date.now(), traceId: traceIdOf(currentTraceparent()) },
+      );
+    }
+    private brokerSink: BrokerTelemetrySink | null | undefined;
 
     /**
      * Store the handoff state, never moving a mark backwards: another commit's handoff may have

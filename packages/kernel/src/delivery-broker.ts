@@ -198,6 +198,30 @@ interface StoredRow {
   attempts: number;
 }
 
+/** What `BrokerStore.held` probes per statement: under the Durable Object's 100 bound parameters. */
+const HELD_PROBE_CHUNK = 50;
+
+/** A broker's state, as `BrokerStore.stats` reads it (#3474). */
+export interface BrokerStats {
+  /** Messages not delivered yet: held or due. */
+  depth: number;
+  /** Epoch ms the oldest of them arrived, or null when there are none. */
+  oldestAt: number | null;
+  /** Receivers paused now (#3470). */
+  pausedReceivers: number;
+  /** Messages in dead letter now (#3470). */
+  deadLetters: number;
+}
+
+/**
+ * Told the outcome of each attempt in a pass (#3474, `BrokerTelemetry.passObserver`). It must not
+ * throw: it is called inside the attempt's own try.
+ */
+export interface DeliveryObserver {
+  delivered(message: BrokerMessage, startedAt: number, at: number): void;
+  retried(message: BrokerMessage, startedAt: number, at: number, retry: { attempts: number; nextAt: number }): void;
+}
+
 /** One delivery pass's outcome, for the caller to re-arm on. */
 export interface DeliveryPass {
   delivered: number;
@@ -274,7 +298,8 @@ export class BrokerStore {
     this.sql.run('UPDATE broker_messages SET next_at = NULL, delivered_at = ?, last_error = NULL WHERE id = ?', now, id);
   }
 
-  failed(id: string, error: string, now: number): void {
+  /** Record a failed attempt, and say when the next one is (#3474 reports it as the retry). */
+  failed(id: string, error: string, now: number): { attempts: number; nextAt: number } {
     const row = this.sql.all<{ attempts: number }>('SELECT attempts FROM broker_messages WHERE id = ?', id)[0];
     const attempts = (row?.attempts ?? 0) + 1;
     const wait = retryAfter(this.opts.retryMs ?? BROKER_RETRY_MS, attempts);
@@ -285,6 +310,7 @@ export class BrokerStore {
       error.slice(0, 500),
       id,
     );
+    return { attempts, nextAt: now + wait };
   }
 
   /** Epoch ms of the next due message, or null. */
@@ -326,6 +352,35 @@ export class BrokerStore {
     );
   }
 
+  /**
+   * #3474: which of `ids` the store already holds, so a receipt can tell a new message from a repeated
+   * handoff. Primary-key reads only, in chunks under the Durable Object's bound-parameter limit.
+   */
+  held(ids: readonly string[]): Set<string> {
+    const found = new Set<string>();
+    for (let i = 0; i < ids.length; i += HELD_PROBE_CHUNK) {
+      const chunk = ids.slice(i, i + HELD_PROBE_CHUNK);
+      const rows = this.sql.all<{ id: string }>(
+        `SELECT id FROM broker_messages WHERE id IN (${chunk.map(() => '?').join(', ')})`,
+        ...chunk,
+      );
+      for (const r of rows) found.add(r.id);
+    }
+    return found;
+  }
+
+  /**
+   * #3474: the broker's state, in one aggregate read: how many messages wait (held or due), and when
+   * the oldest of them arrived. Paused receivers and dead letters are #3470's: they are 0 until its
+   * tables exist, and this is the one read it extends.
+   */
+  stats(): BrokerStats {
+    const row = this.sql.all<{ depth: number; oldest: number | null }>(
+      'SELECT COUNT(*) AS depth, MIN(received_at) AS oldest FROM broker_messages WHERE delivered_at IS NULL',
+    )[0];
+    return { depth: Number(row?.depth ?? 0), oldestAt: row?.oldest ?? null, pausedReceivers: 0, deadLetters: 0 };
+  }
+
   /** How many messages it holds that are not delivered yet (held or due). */
   pending(): number {
     const row = this.sql.all<{ n: number }>('SELECT COUNT(*) AS n FROM broker_messages WHERE delivered_at IS NULL')[0];
@@ -342,17 +397,21 @@ export async function runDeliveryPass(
   receiver: DeliveryReceiver,
   now: () => number,
   limit = BROKER_DELIVERY_BATCH,
+  observer?: DeliveryObserver,
 ): Promise<DeliveryPass> {
   let delivered = 0;
   let failed = 0;
   for (const m of store.due(now(), limit)) {
+    const startedAt = now();
     try {
       await receiver.deliver(m);
       store.delivered(m.id, now());
       delivered++;
+      observer?.delivered(m, startedAt, now());
     } catch (err) {
-      store.failed(m.id, err instanceof Error ? err.message : String(err), now());
+      const retry = store.failed(m.id, err instanceof Error ? err.message : String(err), now());
       failed++;
+      observer?.retried(m, startedAt, now(), retry);
     }
   }
   store.prune(now());

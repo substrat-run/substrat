@@ -107,6 +107,9 @@
       { "name": "UNBROKERED_SCOPE", "class_name": "UnbrokeredScopeDO" },
       { "name": "TEST_DELIVERY_BROKER", "class_name": "TestDeliveryBrokerDO" },
       { "name": "HOLDING_DELIVERY_BROKER", "class_name": "HoldingDeliveryBrokerDO" },
+      // #3474: the same, with broker telemetry bound to a recorder — delivery-broker-telemetry.test.ts.
+      { "name": "TELEMETRY_BROKER_SCOPE", "class_name": "TelemetryBrokerScopeDO" },
+      { "name": "TELEMETRY_DELIVERY_BROKER", "class_name": "TelemetryDeliveryBrokerDO" },
       // #2209: the scope-store door's same-script counter. The cross-script binding is the spike's.
       { "name": "SUBSTRAT_STORE_GRAPH", "class_name": "ScopeStoreCounterDO" },
       // #1686: vertical-auth's real identity directory, for the owner claim link suite — the
@@ -244,6 +247,10 @@
     {
       "tag": "v30",
       "new_sqlite_classes": ["BrokerScopeDO", "HoldingBrokerScopeDO", "UnbrokeredScopeDO", "TestDeliveryBrokerDO", "HoldingDeliveryBrokerDO"]
+    },
+    {
+      "tag": "v31",
+      "new_sqlite_classes": ["TelemetryBrokerScopeDO", "TelemetryDeliveryBrokerDO"]
     }
   ],
   // #3395: the routing read model's namespace, seen by RoutesControlPlaneDO alone (as `ROUTES`).

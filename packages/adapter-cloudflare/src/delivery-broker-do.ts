@@ -12,16 +12,23 @@
  * (A5 adds the shadow recorder), so in production the broker holds what it accepts, bounded by
  * `BROKER_HELD_RETENTION_MS`, with one alarm to prune it. An object holding nothing arms nothing
  * (D-79).
+ *
+ * #3474: with `SUBSTRAT_BROKER_TELEMETRY` bound, it writes a data point at each receipt and delivery
+ * attempt, and its state (depth, oldest age, paused receivers, dead letters) whenever that moves
+ * (`BrokerTelemetry`, `broker-telemetry.ts`). `state()` answers the same report to a staff read.
  */
 import { DurableObject } from 'cloudflare:workers';
 import {
   BrokerStore,
+  BrokerTelemetry,
   runDeliveryPass,
   type BrokerMessage,
+  type BrokerStateReport,
   type DeliveryReceiver,
   type HandOffAnswer,
   type HandoffMarks,
 } from '@substrat-run/kernel';
+import { analyticsBrokerSink, brokerIdsOf, brokerTelemetryDataset } from './broker-telemetry.js';
 
 export interface DeliveryBrokerOptions<Env> {
   /** Where due messages are delivered. Omitted, the broker holds what it accepts. */
@@ -34,6 +41,8 @@ export interface DeliveryBrokerOptions<Env> {
 export interface DeliveryBrokerRpc {
   handOff(messages: BrokerMessage[]): Promise<HandOffAnswer>;
   marks(tenantId: string, scopeId: string): Promise<HandoffMarks>;
+  /** #3474: the broker's state now, for staff. Null when telemetry is not bound. */
+  state(): Promise<BrokerStateReport | null>;
 }
 
 export type DeliveryBrokerDOClass<Env> = new (
@@ -45,6 +54,7 @@ export function defineDeliveryBrokerDO<Env = unknown>(options: DeliveryBrokerOpt
   return class DeliveryBrokerDO extends DurableObject<Env> implements DeliveryBrokerRpc {
     private readonly store: BrokerStore;
     private readonly receiver: DeliveryReceiver | null;
+    private readonly telemetry: BrokerTelemetry | null;
 
     constructor(ctx: DurableObjectState, env: Env) {
       super(ctx, env);
@@ -57,12 +67,24 @@ export function defineDeliveryBrokerDO<Env = unknown>(options: DeliveryBrokerOpt
         },
         { delivers: this.receiver !== null, ...(options.retryMs ? { retryMs: options.retryMs } : {}) },
       );
+      const dataset = brokerTelemetryDataset(env);
+      this.telemetry = dataset
+        ? new BrokerTelemetry(this.store, analyticsBrokerSink(dataset), brokerIdsOf(ctx.id.name))
+        : null;
     }
 
     async handOff(messages: BrokerMessage[]): Promise<HandOffAnswer> {
-      const answer = this.ctx.storage.transactionSync(() => this.store.accept(messages, Date.now()));
+      // Read before the transaction, with no await between: nothing else runs on the object.
+      const held = this.telemetry?.heldBefore(messages);
+      const now = Date.now();
+      const answer = this.ctx.storage.transactionSync(() => this.store.accept(messages, now));
+      if (held) this.telemetry!.received(messages, held, now);
       await this.armFor();
       return answer;
+    }
+
+    async state(): Promise<BrokerStateReport | null> {
+      return this.telemetry?.current(Date.now()) ?? null;
     }
 
     async marks(tenantId: string, scopeId: string): Promise<HandoffMarks> {
@@ -70,8 +92,10 @@ export function defineDeliveryBrokerDO<Env = unknown>(options: DeliveryBrokerOpt
     }
 
     async alarm(): Promise<void> {
-      if (this.receiver) await runDeliveryPass(this.store, this.receiver, Date.now);
-      else this.store.prune(Date.now());
+      if (this.receiver) {
+        await runDeliveryPass(this.store, this.receiver, Date.now, undefined, this.telemetry?.passObserver());
+      } else this.store.prune(Date.now());
+      this.telemetry?.settle(Date.now());
       await this.armFor();
     }
 

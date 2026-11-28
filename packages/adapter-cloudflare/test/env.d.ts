@@ -92,6 +92,9 @@ declare namespace Cloudflare {
     UNBROKERED_SCOPE: DurableObjectNamespace;
     TEST_DELIVERY_BROKER: DurableObjectNamespace;
     HOLDING_DELIVERY_BROKER: DurableObjectNamespace;
+    /** #3474: a scope and broker with broker telemetry bound to a recorder. */
+    TELEMETRY_BROKER_SCOPE: DurableObjectNamespace;
+    TELEMETRY_DELIVERY_BROKER: DurableObjectNamespace;
     /** #2498: a real R2 bucket for the streamed upload — attachment-stream.test.ts. */
     STREAM_BUCKET: R2Bucket;
   }
